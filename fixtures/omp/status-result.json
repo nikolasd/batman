@@ -1,0 +1,10 @@
+{
+  "running": true,
+  "protocol": { "major": 1, "minor": 0 },
+  "projectId": "018f1435-2e2b-7c1a-9d4b-6a1e2f3c4d5b",
+  "activeRuns": 0,
+  "schemaVersion": 1,
+  "protocolHealthy": true,
+  "uptimeSeconds": 42,
+  "binarySource": "override"
+}

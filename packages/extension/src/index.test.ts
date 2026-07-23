@@ -1,6 +1,283 @@
-import { expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+
+import { validateRuntimeStatus } from "@satori/batman-protocol/validate";
+
 import extension from "./index";
+import type { RuntimeStatusResult } from "./status";
+
+import statusResultFixture from "../../../fixtures/omp/status-result.json" with { type: "json" };
+
+const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
+const BATCAVE = join(REPO_ROOT, "target", "debug", "batcave");
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 test("exports an OMP extension factory", () => {
   expect(typeof extension).toBe("function");
+});
+
+// A minimal fake mirroring the subset of the real `ExtensionAPI` surface
+// (node_modules/@oh-my-pi/pi-coding-agent/dist/types/extensibility/extensions/types.d.ts)
+// that `index.ts` calls: `registerTool`, `registerCommand`, `zod.object`, and `on`.
+interface FakeToolDefinition {
+  readonly name: string;
+  readonly execute: (
+    toolCallId: string,
+    params: unknown,
+    signal: AbortSignal | undefined,
+    onUpdate: undefined,
+    ctx: ExtensionContext,
+  ) => Promise<RuntimeStatusResult>;
+}
+
+interface FakeRegisteredCommand {
+  readonly description?: string;
+  readonly handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
+}
+
+function createFakeApi(): {
+  api: ExtensionAPI;
+  tools: Map<string, FakeToolDefinition>;
+  commands: Map<string, FakeRegisteredCommand>;
+} {
+  const tools = new Map<string, FakeToolDefinition>();
+  const commands = new Map<string, FakeRegisteredCommand>();
+
+  const api = {
+    zod: { object: (shape: unknown) => shape },
+    logger: { debug() {}, info() {}, warn() {}, error() {} },
+    registerTool(tool: FakeToolDefinition) {
+      tools.set(tool.name, tool);
+    },
+    registerCommand(name: string, options: FakeRegisteredCommand) {
+      commands.set(name, options);
+    },
+    on() {
+      // Not exercised by these tests.
+    },
+  };
+
+  return { api: api as unknown as ExtensionAPI, tools, commands };
+}
+
+test("registers exactly the batman_status tool and the batman-status command", () => {
+  const { api, tools, commands } = createFakeApi();
+  extension(api);
+  expect([...tools.keys()]).toEqual(["batman_status"]);
+  expect([...commands.keys()]).toEqual(["batman-status"]);
+});
+
+// ---- Live-daemon path: a real foreground `batcave` the tool must reach. ----
+
+let daemon: ReturnType<typeof Bun.spawn> | undefined;
+let stateDir: string;
+let repoDir: string;
+const savedEnv: Record<string, string | undefined> = {};
+
+function setEnv(key: string, value: string): void {
+  if (!(key in savedEnv)) {
+    savedEnv[key] = process.env[key];
+  }
+  process.env[key] = value;
+}
+
+function restoreEnv(): void {
+  for (const [key, value] of Object.entries(savedEnv)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  for (const key of Object.keys(savedEnv)) {
+    delete savedEnv[key];
+  }
+}
+
+function findSocket(state: string): string | undefined {
+  const reposDir = join(state, "repos");
+  if (!existsSync(reposDir)) {
+    return undefined;
+  }
+  for (const entry of readdirSync(reposDir)) {
+    const candidate = join(reposDir, entry, "runtime.sock");
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+async function waitForSocket(state: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (findSocket(state) !== undefined) {
+      return;
+    }
+    await sleep(25);
+  }
+  throw new Error("runtime socket did not appear");
+}
+
+beforeAll(async () => {
+  const build = Bun.spawnSync(["cargo", "build", "-p", "batman-runtime"], { cwd: REPO_ROOT });
+  if (build.exitCode !== 0) {
+    throw new Error(`cargo build failed: ${build.stderr.toString()}`);
+  }
+
+  stateDir = mkdtempSync("/tmp/bat-omp-s-");
+  repoDir = mkdtempSync("/tmp/bat-omp-r-");
+  mkdirSync(join(repoDir, ".git"));
+
+  daemon = Bun.spawn(
+    [BATCAVE, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir],
+    { stdout: "ignore", stderr: "pipe" },
+  );
+
+  await waitForSocket(stateDir);
+}, 180_000);
+
+afterAll(async () => {
+  daemon?.kill("SIGTERM");
+  await daemon?.exited;
+});
+
+afterEach(() => {
+  restoreEnv();
+});
+
+test("batman_status tool reports a healthy runtime for a real foreground daemon", async () => {
+  setEnv("BATMAN_STATE_DIR", stateDir);
+
+  const { api, tools } = createFakeApi();
+  extension(api);
+  const tool = tools.get("batman_status")!;
+
+  const ctx = { cwd: repoDir } as unknown as ExtensionContext;
+  const result = await tool.execute("call-1", {}, undefined, undefined, ctx);
+
+  expect(result.isError).toBeUndefined();
+  expect(result.details).toMatchObject({
+    running: true,
+    protocol: { major: 1, minor: 0 },
+    activeRuns: 0,
+    protocolHealthy: true,
+  });
+});
+
+test("batman_status tool reuses the cached client across a second call", async () => {
+  setEnv("BATMAN_STATE_DIR", stateDir);
+
+  const { api, tools } = createFakeApi();
+  extension(api);
+  const tool = tools.get("batman_status")!;
+  const ctx = { cwd: repoDir } as unknown as ExtensionContext;
+
+  const first = await tool.execute("call-1", {}, undefined, undefined, ctx);
+  const second = await tool.execute("call-2", {}, undefined, undefined, ctx);
+
+  expect(first.isError).toBeUndefined();
+  expect(second.isError).toBeUndefined();
+  expect((second.details as { projectId: string }).projectId).toBe(
+    (first.details as { projectId: string }).projectId,
+  );
+});
+
+test("batman_status tool returns a sanitized error when the runtime cannot be reached", async () => {
+  const emptyState = mkdtempSync("/tmp/bat-omp-empty-");
+  const brokenRepo = mkdtempSync("/tmp/bat-omp-broken-");
+  mkdirSync(join(brokenRepo, ".git"));
+
+  const invalidBinary = "/nonexistent/batcave-does-not-exist";
+  setEnv("BATMAN_STATE_DIR", emptyState);
+  setEnv("OMP_BATMAN_BINARY", invalidBinary);
+
+  const { api, tools } = createFakeApi();
+  extension(api);
+  const tool = tools.get("batman_status")!;
+  const ctx = { cwd: brokenRepo } as unknown as ExtensionContext;
+
+  const result = await tool.execute("call-1", {}, undefined, undefined, ctx);
+
+  expect(result.isError).toBe(true);
+  const details = result.details as { code: string; message: string; doctorCommand: string };
+  expect(typeof details.code).toBe("string");
+  expect(details.code.length).toBeGreaterThan(0);
+  expect(details.doctorCommand).toContain("batcave status --repo");
+  expect(details.doctorCommand).toContain(brokenRepo);
+
+  // Sanitized: no stack frames, no leaked environment values (e.g. the
+  // invalid binary override path) anywhere in the returned payload.
+  const serialized = JSON.stringify(result);
+  expect(serialized).not.toContain(invalidBinary);
+  expect(serialized).not.toMatch(/\n\s*at .+:\d+:\d+/);
+  expect(details.message).not.toContain(invalidBinary);
+});
+
+test("batman-status command notifies (not console.logs) in interactive mode", async () => {
+  setEnv("BATMAN_STATE_DIR", stateDir);
+
+  const { api, commands } = createFakeApi();
+  extension(api);
+  const command = commands.get("batman-status")!;
+
+  const notifications: string[] = [];
+  const logSpy = spyOn(console, "log");
+  const ctx = {
+    cwd: repoDir,
+    hasUI: true,
+    ui: { notify: (message: string) => notifications.push(message) },
+  } as unknown as ExtensionCommandContext;
+
+  try {
+    await command.handler("", ctx);
+  } finally {
+    logSpy.mockRestore();
+  }
+
+  expect(notifications.length).toBe(1);
+  expect(notifications[0]).toContain("running");
+  // A raw console.log in interactive mode would corrupt the TUI.
+  expect(logSpy).not.toHaveBeenCalled();
+});
+
+test("batman-status command console.logs (not notify) outside interactive mode", async () => {
+  setEnv("BATMAN_STATE_DIR", stateDir);
+
+  const { api, commands } = createFakeApi();
+  extension(api);
+  const command = commands.get("batman-status")!;
+
+  const logged: string[] = [];
+  const logSpy = spyOn(console, "log").mockImplementation((message: string) => {
+    logged.push(message);
+  });
+  // `ctx.ui.notify` is a no-op outside interactive mode; assert the command
+  // never calls it so print/RPC output relies solely on console.log.
+  const notify = () => {
+    throw new Error("ctx.ui.notify must not be called when hasUI is false");
+  };
+  const ctx = {
+    cwd: repoDir,
+    hasUI: false,
+    ui: { notify },
+  } as unknown as ExtensionCommandContext;
+
+  try {
+    await command.handler("", ctx);
+  } finally {
+    logSpy.mockRestore();
+  }
+
+  expect(logged.length).toBe(1);
+  expect(logged[0]).toContain("running");
+});
+
+test("the golden runtime/status fixture validates against the canonical schema", () => {
+  // Guards fixtures/omp/status-result.json against drift from the real
+  // `RuntimeStatus` schema: nothing else in the suite loads this fixture.
+  expect(validateRuntimeStatus(statusResultFixture)).toBe(true);
 });
