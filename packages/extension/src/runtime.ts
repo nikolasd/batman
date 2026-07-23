@@ -68,9 +68,10 @@ export class BinarySelectionError extends Error {
 }
 
 /** The origin of the selected binary, mirrored by `runtime/status`. */
-type BinarySource = "override" | "package";
+export type BinarySource = "override" | "package";
 
-interface SelectedBinary {
+/** The result of a binary-selection step: a path and where it came from. */
+export interface SelectedBinary {
   readonly path: string;
   readonly source: BinarySource;
 }
@@ -157,53 +158,70 @@ function discoverVcsRoot(dir: string): string | undefined {
 }
 
 /**
- * Selects the `batcave` binary. A set `OMP_BATMAN_BINARY` is a development
- * override: it must be absolute, exist, be a regular file, and be executable;
- * each violation throws before any spawn. When unset, the packaged resolver is
- * used if provided.
+ * Validates and returns the `OMP_BATMAN_BINARY` development override from
+ * `env`, or `undefined` if it is unset (or empty). The override must be
+ * absolute, exist, be a regular file, and be executable; each violation
+ * throws a {@link BinarySelectionError} before any spawn.
+ *
+ * Shared by {@link ensureRuntime}'s binary selection and by
+ * `platform.ts`'s `resolveBatcave`, so override precedence and validation
+ * behave identically wherever a `batcave` binary is selected.
+ */
+export function resolveOverride(
+  env: Readonly<Record<string, string | undefined>>,
+): SelectedBinary | undefined {
+  const override = env.OMP_BATMAN_BINARY;
+  if (override === undefined || override === "") {
+    return undefined;
+  }
+
+  if (!isAbsolute(override)) {
+    throw new BinarySelectionError(
+      "not-absolute",
+      `OMP_BATMAN_BINARY must be an absolute path, got ${JSON.stringify(override)}`,
+    );
+  }
+
+  // Canonicalize to prove existence (and follow symlinks for the file-type
+  // and executability checks, so the override cannot point at a directory).
+  let canonical: string;
+  try {
+    canonical = realpathSync(override);
+  } catch {
+    throw new BinarySelectionError("not-found", `OMP_BATMAN_BINARY does not exist: ${override}`);
+  }
+
+  const stat = statSync(canonical);
+  if (!stat.isFile()) {
+    throw new BinarySelectionError(
+      "not-regular",
+      `OMP_BATMAN_BINARY is not a regular file: ${override}`,
+    );
+  }
+  // Owner/group/other execute bit set?
+  if ((stat.mode & 0o111) === 0) {
+    throw new BinarySelectionError(
+      "not-executable",
+      `OMP_BATMAN_BINARY is not executable: ${override}`,
+    );
+  }
+
+  // Selected verbatim: the override path is used as given.
+  return { path: override, source: "override" };
+}
+
+/**
+ * Selects the `batcave` binary. A set `OMP_BATMAN_BINARY` wins as a
+ * development override (see {@link resolveOverride}); otherwise the packaged
+ * resolver is used if provided.
  */
 function selectBinary(
   env: Readonly<Record<string, string | undefined>>,
   packagedBinaryResolver?: () => string,
 ): SelectedBinary {
-  const override = env.OMP_BATMAN_BINARY;
-  if (override !== undefined && override !== "") {
-    if (!isAbsolute(override)) {
-      throw new BinarySelectionError(
-        "not-absolute",
-        `OMP_BATMAN_BINARY must be an absolute path, got ${JSON.stringify(override)}`,
-      );
-    }
-
-    // Canonicalize to prove existence (and follow symlinks for the file-type
-    // and executability checks, so the override cannot point at a directory).
-    let canonical: string;
-    try {
-      canonical = realpathSync(override);
-    } catch {
-      throw new BinarySelectionError(
-        "not-found",
-        `OMP_BATMAN_BINARY does not exist: ${override}`,
-      );
-    }
-
-    const stat = statSync(canonical);
-    if (!stat.isFile()) {
-      throw new BinarySelectionError(
-        "not-regular",
-        `OMP_BATMAN_BINARY is not a regular file: ${override}`,
-      );
-    }
-    // Owner/group/other execute bit set?
-    if ((stat.mode & 0o111) === 0) {
-      throw new BinarySelectionError(
-        "not-executable",
-        `OMP_BATMAN_BINARY is not executable: ${override}`,
-      );
-    }
-
-    // Selected verbatim: the override path is used as given.
-    return { path: override, source: "override" };
+  const override = resolveOverride(env);
+  if (override !== undefined) {
+    return override;
   }
 
   if (packagedBinaryResolver !== undefined) {

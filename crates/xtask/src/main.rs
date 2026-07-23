@@ -21,6 +21,7 @@ use batman_protocol::{
 use clap::Subcommand;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use ts_rs::TS;
 
 #[derive(clap::Parser)]
@@ -40,6 +41,43 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Assemble a platform leaf package: copy `--binary` into the matching
+    /// `packages/batman-<target>/bin/batcave` and emit its `manifest.json`.
+    Package {
+        /// One of the four supported target triples: `darwin-arm64`,
+        /// `darwin-x64`, `linux-arm64-gnu`, `linux-x64-gnu`.
+        #[arg(long)]
+        target: String,
+        /// Path to the built `batcave` binary to package.
+        #[arg(long)]
+        binary: PathBuf,
+    },
+}
+
+/// The target triples the foundation ships prebuilt `batcave` leaves for.
+/// Windows and any musl libc are explicitly unsupported.
+const SUPPORTED_TARGETS: &[&str] = &[
+    "darwin-arm64",
+    "darwin-x64",
+    "linux-arm64-gnu",
+    "linux-x64-gnu",
+];
+
+/// The deterministic checksum/provenance payload written to each leaf
+/// package's `manifest.json`. Field order here is the JSON key order: serde
+/// serializes struct fields in declaration order, so this is stable across
+/// runs without needing a `preserve_order` feature. Carries no timestamp or
+/// other non-reproducible data, so packaging the same binary twice produces
+/// byte-identical output. Unsigned: the release plan signs this payload
+/// later.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct LeafManifest {
+    name: String,
+    version: String,
+    target: String,
+    sha256: String,
+    #[serde(rename = "sizeBytes")]
+    size_bytes: u64,
 }
 
 /// Root schema document referencing every exported request/result/event
@@ -63,6 +101,7 @@ fn main() -> Result<()> {
     let args = <Args as clap::Parser>::parse();
     match args.command {
         Command::Generate { check } => run_generate(check),
+        Command::Package { target, binary } => package_leaf(&workspace_root(), &target, &binary),
     }
 }
 
@@ -263,4 +302,199 @@ fn run_generate(check: bool) -> Result<()> {
         generated_dir.display()
     );
     Ok(())
+}
+
+/// This leaf package's `name` field for a given target triple, e.g.
+/// `@satori/batman-darwin-arm64` for `darwin-arm64`.
+fn leaf_package_name(target: &str) -> String {
+    format!("@satori/batman-{target}")
+}
+
+/// The leaf package directory for a given target triple, rooted at
+/// `packages/batman-<target>` under the workspace root.
+fn leaf_package_dir(root: &Path, target: &str) -> PathBuf {
+    root.join("packages").join(format!("batman-{target}"))
+}
+
+/// Reads the `version` field out of `packages/extension/package.json`; every
+/// leaf manifest's `version` must equal it so `resolveBatcave` (the
+/// TypeScript loader) can require an exact match before running a packaged
+/// binary.
+fn read_extension_version(root: &Path) -> Result<String> {
+    let package_json_path = root.join("packages/extension/package.json");
+    let raw = fs::read_to_string(&package_json_path)
+        .with_context(|| format!("reading {}", package_json_path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing {}", package_json_path.display()))?;
+    value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .with_context(|| {
+            format!(
+                "{} has no string `version` field",
+                package_json_path.display()
+            )
+        })
+}
+
+/// Copies `binary` into the leaf package directory matching `target` as
+/// `bin/batcave` (mode `0755` on Unix) and writes its deterministic
+/// `manifest.json` (SHA-256 + size + target + version provenance).
+///
+/// `root` is the workspace root, parameterized so this is independently
+/// testable against a temporary fixture root rather than the real workspace.
+fn package_leaf(root: &Path, target: &str, binary: &Path) -> Result<()> {
+    if !SUPPORTED_TARGETS.contains(&target) {
+        bail!(
+            "unsupported target {target:?}; supported targets are: {}",
+            SUPPORTED_TARGETS.join(", ")
+        );
+    }
+
+    let leaf_dir = leaf_package_dir(root, target);
+    if !leaf_dir.is_dir() {
+        bail!(
+            "leaf package directory does not exist: {} (expected one package.json per supported \
+             target under packages/)",
+            leaf_dir.display()
+        );
+    }
+
+    let bin_dir = leaf_dir.join("bin");
+    fs::create_dir_all(&bin_dir).with_context(|| format!("creating {}", bin_dir.display()))?;
+    let bin_path = bin_dir.join("batcave");
+
+    let bytes =
+        fs::read(binary).with_context(|| format!("reading binary at {}", binary.display()))?;
+    fs::write(&bin_path, &bytes).with_context(|| format!("writing {}", bin_path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&bin_path, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("setting permissions on {}", bin_path.display()))?;
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let sha256 = hex::encode(hasher.finalize());
+
+    let manifest = LeafManifest {
+        name: leaf_package_name(target),
+        version: read_extension_version(root)?,
+        target: target.to_string(),
+        sha256,
+        size_bytes: bytes.len() as u64,
+    };
+
+    let mut manifest_json =
+        serde_json::to_string_pretty(&manifest).context("serializing leaf manifest")?;
+    manifest_json.push('\n');
+
+    let manifest_path = leaf_dir.join("manifest.json");
+    fs::write(&manifest_path, manifest_json.as_bytes())
+        .with_context(|| format!("writing {}", manifest_path.display()))?;
+
+    println!(
+        "package: wrote {} and {}",
+        bin_path.display(),
+        manifest_path.display()
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod package_tests {
+    use super::*;
+
+    /// Builds a fixture workspace root with a `packages/extension/package.json`
+    /// declaring `version` and an empty `packages/batman-<target>` leaf
+    /// directory, mirroring just enough of the real workspace layout for
+    /// `package_leaf` to operate on.
+    fn fixture_root(version: &str, target: &str) -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("creating fixture workspace root");
+
+        let extension_dir = root.path().join("packages/extension");
+        fs::create_dir_all(&extension_dir).expect("creating fixture extension dir");
+        fs::write(
+            extension_dir.join("package.json"),
+            format!(r#"{{"name": "@satori/batman", "version": "{version}"}}"#),
+        )
+        .expect("writing fixture extension package.json");
+
+        let leaf_dir = root
+            .path()
+            .join("packages")
+            .join(format!("batman-{target}"));
+        fs::create_dir_all(&leaf_dir).expect("creating fixture leaf dir");
+
+        root
+    }
+
+    #[test]
+    fn package_leaf_rejects_unsupported_targets() {
+        let root = fixture_root("0.1.0", "darwin-arm64");
+        let binary = root.path().join("batcave-built");
+        fs::write(&binary, b"binary-bytes").unwrap();
+
+        let err = package_leaf(root.path(), "windows-x64", &binary).unwrap_err();
+        assert!(err.to_string().contains("unsupported target"));
+    }
+
+    #[test]
+    fn package_leaf_writes_binary_and_manifest() {
+        let target = "darwin-arm64";
+        let root = fixture_root("0.1.0", target);
+        let binary = root.path().join("batcave-built");
+        let bytes = b"pretend-this-is-a-batcave-binary";
+        fs::write(&binary, bytes).unwrap();
+
+        package_leaf(root.path(), target, &binary).expect("package_leaf should succeed");
+
+        let leaf_dir = leaf_package_dir(root.path(), target);
+        let bin_path = leaf_dir.join("bin").join("batcave");
+        assert_eq!(fs::read(&bin_path).unwrap(), bytes);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&bin_path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+
+        let manifest_path = leaf_dir.join("manifest.json");
+        let manifest_bytes = fs::read(&manifest_path).unwrap();
+        assert!(manifest_bytes.ends_with(b"\n"));
+
+        let manifest: LeafManifest = serde_json::from_slice(&manifest_bytes).unwrap();
+        assert_eq!(manifest.name, "@satori/batman-darwin-arm64");
+        assert_eq!(manifest.version, "0.1.0");
+        assert_eq!(manifest.target, target);
+        assert_eq!(manifest.size_bytes, bytes.len() as u64);
+
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        assert_eq!(manifest.sha256, hex::encode(hasher.finalize()));
+    }
+
+    #[test]
+    fn package_leaf_manifest_is_byte_identical_across_runs() {
+        let target = "linux-x64-gnu";
+        let root = fixture_root("0.1.0", target);
+        let binary = root.path().join("batcave-built");
+        fs::write(&binary, b"deterministic-fixture-bytes").unwrap();
+
+        package_leaf(root.path(), target, &binary).unwrap();
+        let manifest_path = leaf_package_dir(root.path(), target).join("manifest.json");
+        let first = fs::read(&manifest_path).unwrap();
+
+        package_leaf(root.path(), target, &binary).unwrap();
+        let second = fs::read(&manifest_path).unwrap();
+
+        assert_eq!(
+            first, second,
+            "packaging the same binary twice must be byte-identical"
+        );
+    }
 }

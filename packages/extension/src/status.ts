@@ -4,6 +4,7 @@
 // OMP's extension types so it is trivial to unit test.
 
 import { BinarySelectionError, ensureRuntime, type EnsureRuntimeOptions } from "./runtime";
+import { BinaryIntegrityError, UnsupportedPlatformError } from "./platform";
 import type { BatmanClient } from "./client";
 import type { RuntimeStatus } from "@satori/batman-protocol";
 
@@ -94,13 +95,28 @@ export async function getRuntimeStatus(ctx: GetRuntimeStatusContext): Promise<Ru
 }
 
 function failureResult(options: EnsureRuntimeOptions, err: unknown): RuntimeStatusError {
-  const code = err instanceof BinarySelectionError ? err.code : "connection-failed";
+  const code = errorCode(err);
   const doctorCommand = `batcave status --repo ${options.repository}`;
   return {
     isError: true,
     content: [{ type: "text", text: GENERIC_FAILURE_MESSAGE }],
     details: { code, message: GENERIC_FAILURE_MESSAGE, doctorCommand },
   };
+}
+
+/**
+ * Maps a binary-selection/platform/integrity error to its machine-readable
+ * `code`, or `"connection-failed"` for anything else (e.g. a generic
+ * connect/spawn failure). Only the `code` is ever surfaced here -- in
+ * particular, {@link BinaryIntegrityError}'s `message` embeds filesystem
+ * paths and must never be copied into the (generic, sanitized) result
+ * returned to the caller.
+ */
+function errorCode(err: unknown): string {
+  if (err instanceof BinarySelectionError || err instanceof BinaryIntegrityError || err instanceof UnsupportedPlatformError) {
+    return err.code;
+  }
+  return "connection-failed";
 }
 
 function formatStatus(status: RuntimeStatus): string {

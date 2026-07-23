@@ -1,0 +1,16 @@
+{
+  "name": "@satori/batman-darwin-arm64",
+  "version": "0.1.0",
+  "description": "Prebuilt batcave binary for darwin-arm64.",
+  "type": "module",
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "private": false,
+  "publishConfig": { "access": "public" },
+  "files": ["bin/batcave", "index.js", "manifest.json"],
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./manifest.json": "./manifest.json"
+  }
+}

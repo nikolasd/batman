@@ -7,6 +7,7 @@
 
 import { homedir } from "node:os";
 
+import { detectLibc, resolveBatcave } from "./platform";
 import type { EnsureRuntimeOptions } from "./runtime";
 import { resolveStateRoot } from "./state";
 
@@ -29,7 +30,12 @@ export interface BuildStatusContextOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
   /** Home directory used to resolve the default state root. Defaults to `os.homedir()`. */
   readonly home?: string;
-  /** Resolves the packaged `batcave` binary when no `OMP_BATMAN_BINARY` override is set. */
+  /**
+   * Resolves the packaged `batcave` binary when no `OMP_BATMAN_BINARY`
+   * override is set. Defaults to {@link resolveBatcave} against the current
+   * process's platform/arch/libc; tests inject a stand-in here to stay
+   * hermetic.
+   */
   readonly packagedBinaryResolver?: () => string;
 }
 
@@ -56,7 +62,9 @@ export function buildStatusContext(options: BuildStatusContextOptions = {}): Sta
       repository,
       idleSeconds: DEFAULT_IDLE_SECONDS,
       env,
-      packagedBinaryResolver: options.packagedBinaryResolver,
+      packagedBinaryResolver:
+        options.packagedBinaryResolver ??
+        (() => resolveBatcave(process.platform, process.arch, detectLibc(), env).path),
     },
   };
 }

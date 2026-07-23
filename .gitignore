@@ -6,3 +6,8 @@ dist/
 # ts-rs `#[ts(export)]` writes here as a `cargo test` side effect; Task 3's
 # xtask owns the real export destination and invocation.
 crates/protocol/bindings/
+
+# `batman-xtask package` writes these into each platform leaf package; they
+# are release artifacts, never committed to source control.
+packages/batman-*/bin/
+packages/batman-*/manifest.json

@@ -7,7 +7,8 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@o
 import { validateRuntimeStatus } from "@satori/batman-protocol/validate";
 
 import extension from "./index";
-import type { RuntimeStatusResult } from "./status";
+import { getRuntimeStatus, type RuntimeStatusResult } from "./status";
+import { BinaryIntegrityError } from "./platform";
 
 import statusResultFixture from "../../../fixtures/omp/status-result.json" with { type: "json" };
 
@@ -215,6 +216,42 @@ test("batman_status tool returns a sanitized error when the runtime cannot be re
   expect(serialized).not.toContain(invalidBinary);
   expect(serialized).not.toMatch(/\n\s*at .+:\d+:\d+/);
   expect(details.message).not.toContain(invalidBinary);
+});
+
+test("batman_status surfaces a typed BinaryIntegrityError code without leaking its path", async () => {
+  const emptyState = mkdtempSync("/tmp/bat-omp-empty-");
+  const brokenRepo = mkdtempSync("/tmp/bat-omp-broken-");
+  mkdirSync(join(brokenRepo, ".git"));
+
+  const sensitivePath = "/leaf/package/dir/bin/batcave";
+
+  const result = await getRuntimeStatus({
+    ensureRuntimeOptions: {
+      stateDir: emptyState,
+      repository: brokenRepo,
+      idleSeconds: 60,
+      env: {},
+      packagedBinaryResolver: () => {
+        throw new BinaryIntegrityError(
+          "checksum-mismatch",
+          `checksum mismatch for ${sensitivePath}: manifest ${sensitivePath}.json declares ` +
+            "aaa, computed bbb",
+        );
+      },
+    },
+    cache: { get: () => undefined, set: () => {} },
+  });
+
+  expect(result.isError).toBe(true);
+  const details = result.details as { code: string; message: string; doctorCommand: string };
+  // The specific typed code survives, not the generic "connection-failed".
+  expect(details.code).toBe("checksum-mismatch");
+  // But the error's message -- which embeds a filesystem path -- must never
+  // be copied into the sanitized, user-facing result.
+  expect(details.message).not.toContain(sensitivePath);
+  expect(details.message).not.toMatch(/\n\s*at .+:\d+:\d+/);
+  const serialized = JSON.stringify(result);
+  expect(serialized).not.toContain(sensitivePath);
 });
 
 test("batman-status command notifies (not console.logs) in interactive mode", async () => {

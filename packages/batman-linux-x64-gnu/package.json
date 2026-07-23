@@ -1,0 +1,17 @@
+{
+  "name": "@satori/batman-linux-x64-gnu",
+  "version": "0.1.0",
+  "description": "Prebuilt batcave binary for linux-x64-gnu.",
+  "type": "module",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "libc": ["glibc"],
+  "private": false,
+  "publishConfig": { "access": "public" },
+  "files": ["bin/batcave", "index.js", "manifest.json"],
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./manifest.json": "./manifest.json"
+  }
+}

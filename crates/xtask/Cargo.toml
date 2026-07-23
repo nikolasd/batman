@@ -9,6 +9,7 @@ license.workspace = true
 anyhow.workspace = true
 batman-protocol = { path = "../protocol" }
 clap.workspace = true
+hex.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

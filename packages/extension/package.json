@@ -10,6 +10,12 @@
     "build": "bun build src/index.ts --outdir dist --target bun --external @oh-my-pi/pi-coding-agent"
   },
   "peerDependencies": { "@oh-my-pi/pi-coding-agent": ">=17.0.7 <18" },
+  "optionalDependencies": {
+    "@satori/batman-darwin-arm64": "workspace:*",
+    "@satori/batman-darwin-x64": "workspace:*",
+    "@satori/batman-linux-arm64-gnu": "workspace:*",
+    "@satori/batman-linux-x64-gnu": "workspace:*"
+  },
   "devDependencies": {
     "@oh-my-pi/pi-coding-agent": ">=17.0.7 <18",
     "@satori/batman-protocol": "workspace:*",
