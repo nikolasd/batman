@@ -1,0 +1,286 @@
+import { afterEach, beforeAll, expect, test } from "bun:test";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
+
+import type { BatmanClient } from "./client";
+import {
+  BinarySelectionError,
+  buildServeArgs,
+  ensureRuntime,
+  type EnsureRuntimeOptions,
+} from "./runtime";
+
+const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
+const BATCAVE = join(REPO_ROOT, "target", "debug", "batcave");
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Clients/daemons started by each test, torn down in afterEach. */
+const openClients: BatmanClient[] = [];
+const stateDirs: string[] = [];
+
+function newRepo(): string {
+  const repo = mkdtempSync("/tmp/bat-rt-r-");
+  mkdirSync(join(repo, ".git"));
+  return repo;
+}
+
+function newStateDir(): string {
+  const state = mkdtempSync("/tmp/bat-rt-s-");
+  stateDirs.push(state);
+  return state;
+}
+
+function baseOptions(stateDir: string, repository: string): EnsureRuntimeOptions {
+  return {
+    stateDir,
+    repository,
+    idleSeconds: 30,
+    env: { OMP_BATMAN_BINARY: BATCAVE },
+  };
+}
+
+/** Sends SIGTERM to every daemon under a state dir via its lock-file pid. */
+function stopDaemons(stateDir: string): void {
+  const repos = join(stateDir, "repos");
+  if (!existsSync(repos)) {
+    return;
+  }
+  for (const entry of readdirSync(repos)) {
+    const lock = join(repos, entry, "runtime.lock");
+    if (!existsSync(lock)) {
+      continue;
+    }
+    try {
+      const { pid } = JSON.parse(readFileSync(lock, "utf8")) as { pid: number };
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Already gone.
+    }
+  }
+}
+
+beforeAll(() => {
+  const build = Bun.spawnSync(["cargo", "build", "-p", "batman-runtime"], { cwd: REPO_ROOT });
+  if (build.exitCode !== 0) {
+    throw new Error(`cargo build failed: ${build.stderr.toString()}`);
+  }
+}, 180_000);
+
+afterEach(async () => {
+  for (const client of openClients.splice(0)) {
+    client.close();
+  }
+  for (const stateDir of stateDirs.splice(0)) {
+    stopDaemons(stateDir);
+  }
+  // Give SIGTERM'd daemons a moment to release their sockets.
+  await sleep(200);
+});
+
+test("buildServeArgs returns the exact detached serve argument vector", () => {
+  const args = buildServeArgs({
+    stateDir: "/s",
+    repository: "/r",
+    idleSeconds: 42,
+    env: {},
+  });
+  expect(args).toEqual([
+    "serve",
+    "--state-dir",
+    "/s",
+    "--repo",
+    "/r",
+    "--idle-seconds",
+    "42",
+  ]);
+  // Detached launches never pass --foreground.
+  expect(args).not.toContain("--foreground");
+});
+
+test("ensureRuntime spawns a detached daemon that logs runtime_started to runtime.log", async () => {
+  const stateDir = newStateDir();
+  const repository = newRepo();
+
+  const { client, childStarted } = await ensureRuntime(baseOptions(stateDir, repository));
+  openClients.push(client);
+
+  expect(childStarted).toBe(true);
+
+  const status = (await client.request("runtime/status")) as { running: boolean };
+  expect(status.running).toBe(true);
+
+  // The detached daemon owns runtime.log; a structured runtime_started record
+  // must be present there (not on any inherited stdio, which is discarded).
+  const repos = join(stateDir, "repos");
+  const repoId = readdirSync(repos)[0]!;
+  const logPath = join(repos, repoId, "runtime.log");
+  expect(existsSync(logPath)).toBe(true);
+  const log = readFileSync(logPath, "utf8");
+  expect(log).toContain("runtime_started");
+  // Structured: each line is a JSON object.
+  const firstLine = log.split("\n").find((l) => l.length > 0)!;
+  expect(() => JSON.parse(firstLine)).not.toThrow();
+});
+
+test("foreground startup writes the runtime_started record to stderr instead", async () => {
+  const stateDir = newStateDir();
+  const repository = newRepo();
+
+  const proc = Bun.spawn(
+    [
+      BATCAVE,
+      "serve",
+      "--foreground",
+      "--state-dir",
+      stateDir,
+      "--repo",
+      repository,
+      "--idle-seconds",
+      "30",
+    ],
+    { stdout: "ignore", stderr: "pipe" },
+  );
+
+  try {
+    // Read stderr until the runtime_started record shows up.
+    const decoder = new TextDecoder();
+    let stderr = "";
+    const reader = proc.stderr.getReader();
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && !stderr.includes("runtime_started")) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      stderr += decoder.decode(value, { stream: true });
+    }
+    reader.releaseLock();
+
+    expect(stderr).toContain("runtime_started");
+
+    // The detached log must NOT exist for a foreground launch.
+    const repos = join(stateDir, "repos");
+    const repoId = readdirSync(repos)[0]!;
+    const logPath = join(repos, repoId, "runtime.log");
+    if (existsSync(logPath)) {
+      expect(readFileSync(logPath, "utf8")).not.toContain("runtime_started");
+    }
+  } finally {
+    proc.kill("SIGTERM");
+    await proc.exited;
+  }
+});
+
+test("a missing OMP_BATMAN_BINARY override fails before spawn", async () => {
+  const stateDir = newStateDir();
+  const repository = newRepo();
+  await expect(
+    ensureRuntime({
+      stateDir,
+      repository,
+      idleSeconds: 30,
+      env: { OMP_BATMAN_BINARY: "/nonexistent/batcave-does-not-exist" },
+    }),
+  ).rejects.toBeInstanceOf(BinarySelectionError);
+});
+
+test("a relative OMP_BATMAN_BINARY override fails before spawn", async () => {
+  const stateDir = newStateDir();
+  const repository = newRepo();
+  await expect(
+    ensureRuntime({
+      stateDir,
+      repository,
+      idleSeconds: 30,
+      env: { OMP_BATMAN_BINARY: "relative/batcave" },
+    }),
+  ).rejects.toMatchObject({ code: "not-absolute" });
+});
+
+test("a non-regular (directory) OMP_BATMAN_BINARY override fails before spawn", async () => {
+  const stateDir = newStateDir();
+  const repository = newRepo();
+  const dir = mkdtempSync("/tmp/bat-rt-dir-");
+  await expect(
+    ensureRuntime({
+      stateDir,
+      repository,
+      idleSeconds: 30,
+      env: { OMP_BATMAN_BINARY: dir },
+    }),
+  ).rejects.toMatchObject({ code: "not-regular" });
+});
+
+test("a non-executable OMP_BATMAN_BINARY override fails before spawn", async () => {
+  const stateDir = newStateDir();
+  const repository = newRepo();
+  const file = join(mkdtempSync("/tmp/bat-rt-ne-"), "batcave");
+  writeFileSync(file, "#!/bin/sh\n");
+  chmodSync(file, 0o644);
+  await expect(
+    ensureRuntime({
+      stateDir,
+      repository,
+      idleSeconds: 30,
+      env: { OMP_BATMAN_BINARY: file },
+    }),
+  ).rejects.toMatchObject({ code: "not-executable" });
+});
+
+test("a valid override is selected verbatim, bypassing the package resolver", async () => {
+  const stateDir = newStateDir();
+  const repository = newRepo();
+  let resolverCalled = false;
+
+  const { client, childStarted } = await ensureRuntime({
+    stateDir,
+    repository,
+    idleSeconds: 30,
+    env: { OMP_BATMAN_BINARY: BATCAVE },
+    packagedBinaryResolver: () => {
+      resolverCalled = true;
+      return "/should/not/be/used";
+    },
+  });
+  openClients.push(client);
+
+  expect(childStarted).toBe(true);
+  expect(resolverCalled).toBe(false);
+  const status = (await client.request("runtime/status")) as {
+    running: boolean;
+    binarySource: string;
+  };
+  expect(status.running).toBe(true);
+  expect(status.binarySource).toBe("override");
+});
+
+test("a second ensureRuntime caller connects to the same runtime", async () => {
+  const stateDir = newStateDir();
+  const repository = newRepo();
+
+  const first = await ensureRuntime(baseOptions(stateDir, repository));
+  openClients.push(first.client);
+  expect(first.childStarted).toBe(true);
+
+  const second = await ensureRuntime(baseOptions(stateDir, repository));
+  openClients.push(second.client);
+  // The runtime already exists, so the second caller connects without
+  // spawning its own child.
+  expect(second.childStarted).toBe(false);
+
+  const status = (await second.client.request("runtime/status")) as { running: boolean };
+  expect(status.running).toBe(true);
+
+  // Exactly one repo directory (one runtime) exists.
+  const repos = join(stateDir, "repos");
+  expect(readdirSync(repos).length).toBe(1);
+});

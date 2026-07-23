@@ -386,13 +386,13 @@ async fn dispatch(
             success(&id, json!({ "active": true }))
         }
         BatmanMethod::RuntimeShutdown => {
-            // Foundation scope: real stop semantics (locking, idle-exit,
-            // graceful drain) are owned by Task 7. Report unsupported for now.
-            error(
-                &id,
-                error_code::CAPABILITY_UNSUPPORTED,
-                "runtime/shutdown is not implemented at foundation scope",
-            )
+            // Role-gated to ompExtension (see `ClientPrincipal::allowed_methods`).
+            // Trigger a graceful shutdown of the accept loop; the serve driver
+            // then journals the stop record and removes the socket. The
+            // success frame is queued to the writer before the loop tears
+            // down, so a cooperative client still sees its acknowledgement.
+            shared.shutdown.notify_one();
+            success(&id, json!({ "stopping": true }))
         }
         BatmanMethod::Initialize => error(
             &id,

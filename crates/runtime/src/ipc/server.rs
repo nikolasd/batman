@@ -7,15 +7,14 @@ use std::future::Future;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use batman_protocol::ProjectId;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 
 use crate::db::DatabaseHandle;
-use crate::paths::RuntimePaths;
-use crate::security::redaction::{RawEventKind, RawRuntimeEvent, Redactor};
 
 use super::{IpcError, PeerCredentials, ServerConfig};
 
@@ -26,6 +25,15 @@ pub(crate) struct Shared {
     pub(crate) project_id: ProjectId,
     pub(crate) started_at: Instant,
     pub(crate) events_tx: broadcast::Sender<batman_protocol::EventEnvelope>,
+    /// Number of connections currently admitted and being served. Used to
+    /// decide whether the runtime is idle.
+    pub(crate) active_connections: Arc<AtomicUsize>,
+    /// Number of active runs. A placeholder at foundation scope (always `0`),
+    /// but wired into the idle decision so a live run suppresses shutdown.
+    pub(crate) active_runs: Arc<AtomicUsize>,
+    /// Fired by an in-band `runtime/shutdown` request to trigger a graceful
+    /// shutdown of the accept loop.
+    pub(crate) shutdown: Arc<Notify>,
 }
 
 /// Per-connection context derived from the accepted peer's credentials.
@@ -44,6 +52,23 @@ pub struct Server {
     socket: PathBuf,
     shared: Arc<Shared>,
     owner_only_verified: bool,
+    idle: Option<Duration>,
+}
+
+/// The longest a Unix domain socket path may be, including its NUL
+/// terminator, before `bind(2)` truncates or rejects it. macOS `sun_path` is
+/// 104 bytes; Linux allows 108.
+#[cfg(target_os = "macos")]
+const SUN_PATH_MAX: usize = 104;
+#[cfg(not(target_os = "macos"))]
+const SUN_PATH_MAX: usize = 108;
+
+/// Whether `socket` fits within the platform `sun_path` bound (leaving room
+/// for the NUL terminator). Guards against a silently truncated bind.
+#[must_use]
+pub fn socket_path_within_limit(socket: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    socket.as_os_str().as_bytes().len() < SUN_PATH_MAX
 }
 
 impl Server {
@@ -58,6 +83,17 @@ impl Server {
         project_id: ProjectId,
         config: ServerConfig,
     ) -> Result<Self, IpcError> {
+        // Guard the platform `sun_path` bound before attempting to bind: an
+        // over-long path would otherwise be silently truncated.
+        if !socket_path_within_limit(&socket) {
+            use std::os::unix::ffi::OsStrExt;
+            return Err(IpcError::SocketPathTooLong {
+                path: socket.clone(),
+                len: socket.as_os_str().as_bytes().len(),
+                limit: SUN_PATH_MAX,
+            });
+        }
+
         // Remove a stale socket file from a previous run so bind() succeeds.
         match std::fs::remove_file(&socket) {
             Ok(()) => {}
@@ -89,6 +125,9 @@ impl Server {
             project_id,
             started_at: Instant::now(),
             events_tx,
+            active_connections: Arc::new(AtomicUsize::new(0)),
+            active_runs: Arc::new(AtomicUsize::new(0)),
+            shutdown: Arc::new(Notify::new()),
         });
 
         Ok(Self {
@@ -96,6 +135,7 @@ impl Server {
             socket,
             shared,
             owner_only_verified,
+            idle: None,
         })
     }
 
@@ -103,6 +143,22 @@ impl Server {
     #[must_use]
     pub fn socket_path(&self) -> &Path {
         &self.socket
+    }
+
+    /// Sets the idle interval: the server exits once no connection has been
+    /// admitted and no run is active for this long. `None` (the default)
+    /// never idle-exits.
+    #[must_use]
+    pub fn with_idle(mut self, idle: Option<Duration>) -> Self {
+        self.idle = idle;
+        self
+    }
+
+    /// A handle that, when notified, triggers a graceful shutdown of the
+    /// accept loop -- used to serve an in-band `runtime/shutdown` request.
+    #[must_use]
+    pub fn shutdown_handle(&self) -> Arc<Notify> {
+        Arc::clone(&self.shared.shutdown)
     }
 
     /// Accepts and serves connections until `shutdown` resolves.
@@ -122,17 +178,45 @@ impl Server {
             listener,
             shared,
             owner_only_verified,
+            idle,
             socket: _,
         } = self;
 
         tokio::pin!(shutdown);
 
+        let in_band_shutdown = Arc::clone(&shared.shutdown);
+        // The server is idle from the moment it starts serving with no
+        // connected clients; the interval below observes when that changes.
+        let mut idle_since: Option<Instant> = idle.map(|_| Instant::now());
+        let mut ticker = idle.map(|_| tokio::time::interval(Duration::from_millis(100)));
+
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
+                () = in_band_shutdown.notified() => break,
+                _ = async { ticker.as_mut().expect("ticker present when idle set").tick().await },
+                    if ticker.is_some() =>
+                {
+                    let limit = idle.expect("idle set when ticker present");
+                    let connections = shared.active_connections.load(Ordering::Relaxed);
+                    let runs = shared.active_runs.load(Ordering::Relaxed);
+                    if connections == 0 && runs == 0 {
+                        match idle_since {
+                            Some(since) => {
+                                if should_idle_shutdown(connections, runs, since.elapsed(), limit) {
+                                    break;
+                                }
+                            }
+                            None => idle_since = Some(Instant::now()),
+                        }
+                    } else {
+                        idle_since = None;
+                    }
+                }
                 accepted = listener.accept() => {
                     match accepted {
                         Ok((stream, _addr)) => {
+                            idle_since = None;
                             Self::admit(stream, &shared, owner_only_verified);
                         }
                         Err(err) => {
@@ -187,10 +271,27 @@ impl Server {
             peer_pid: creds.pid,
         };
         let shared = Arc::clone(shared);
+        shared.active_connections.fetch_add(1, Ordering::Relaxed);
         tokio::spawn(async move {
+            let connections = Arc::clone(&shared.active_connections);
             super::connection::handle(stream, ctx, shared).await;
+            connections.fetch_sub(1, Ordering::Relaxed);
         });
     }
+}
+
+/// Decides whether the runtime should idle-exit: only when no connection is
+/// live, no run is active, and the idle interval has fully elapsed. The
+/// connection and run counts are ANDed, so either a live client or an active
+/// run suppresses shutdown.
+#[must_use]
+pub fn should_idle_shutdown(
+    active_connections: usize,
+    active_runs: usize,
+    idle_elapsed: Duration,
+    idle_limit: Duration,
+) -> bool {
+    active_connections == 0 && active_runs == 0 && idle_elapsed >= idle_limit
 }
 
 /// Checks that `socket`'s parent directory is owned by `euid` and accessible
@@ -246,66 +347,4 @@ pub(crate) fn read_system_peer_credentials(stream: &UnixStream) -> PeerCredentia
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn read_system_peer_credentials(_stream: &UnixStream) -> PeerCredentials {
     PeerCredentials::default()
-}
-
-/// Runs the runtime in the foreground: resolves the per-repository paths under
-/// `state_dir`, opens the durable database, records a `RuntimeStarted` event,
-/// binds the socket, and serves connections until `SIGINT`/`SIGTERM`.
-///
-/// Task 7 will add background/detached operation, single-instance locking,
-/// idle-exit, and the `status`/`stop` commands; this foundation entry point is
-/// structured so that work can wrap it without reshaping the server.
-///
-/// # Errors
-/// Returns [`IpcError`] if the state cannot be secured, the database cannot be
-/// opened, or the socket cannot be bound.
-pub async fn serve_foreground(state_dir: &Path, repo: &Path) -> Result<(), IpcError> {
-    crate::security::ensure_private_dir(state_dir)?;
-    let paths = RuntimePaths::resolve(state_dir, repo)?;
-
-    let db = Arc::new(DatabaseHandle::start(paths.database.clone()).await?);
-
-    // Seed a durable RuntimeStarted event through the redaction boundary so
-    // reconnecting clients can replay a non-empty history.
-    let redactor = Redactor::new();
-    let started = redactor.sanitize(RawRuntimeEvent {
-        timestamp: batman_protocol::Timestamp::now(),
-        project_id: paths.project_id,
-        run_id: None,
-        kind: RawEventKind::RuntimeStarted,
-    });
-    db.append_event(started).await?;
-
-    let server = Server::bind(
-        paths.socket.clone(),
-        db,
-        paths.project_id,
-        ServerConfig::default(),
-    )
-    .await?;
-
-    tracing::info!(socket = %paths.socket.display(), "batcave serving in foreground");
-    server.serve(shutdown_signal()).await?;
-    tracing::info!("batcave shutting down");
-
-    Ok(())
-}
-
-/// Resolves when the process receives `SIGINT` or `SIGTERM`.
-async fn shutdown_signal() {
-    use tokio::signal::unix::{SignalKind, signal};
-
-    let mut term = match signal(SignalKind::terminate()) {
-        Ok(term) => term,
-        Err(err) => {
-            tracing::warn!(error = %err, "failed to install SIGTERM handler; only SIGINT will stop the runtime");
-            let _ = tokio::signal::ctrl_c().await;
-            return;
-        }
-    };
-
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = term.recv() => {}
-    }
 }

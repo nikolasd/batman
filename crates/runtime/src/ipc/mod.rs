@@ -21,7 +21,7 @@ use std::sync::Arc;
 use batman_protocol::{BatmanMethod, ClientRole, ProtocolVersion, RunId, VersionRange};
 use tokio::net::UnixStream;
 
-pub use server::{Server, serve_foreground};
+pub use server::{Server, should_idle_shutdown, socket_path_within_limit};
 
 /// The lowest frame size, in bytes, a client may negotiate. Offers below this
 /// are rejected with `INVALID_PARAMS`: a client that cannot buffer 64 KiB
@@ -208,6 +208,15 @@ pub enum IpcError {
         path: std::path::PathBuf,
         #[source]
         source: std::io::Error,
+    },
+    /// The socket path exceeds the platform `sun_path` limit, so binding it
+    /// would silently truncate the path. Callers must root state under a
+    /// shorter directory.
+    #[error("runtime socket path {path:?} is {len} bytes, exceeding the platform limit of {limit}")]
+    SocketPathTooLong {
+        path: std::path::PathBuf,
+        len: usize,
+        limit: usize,
     },
     /// A filesystem operation on the socket (removing a stale socket,
     /// tightening permissions) failed.
