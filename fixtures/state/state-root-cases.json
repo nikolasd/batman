@@ -1,0 +1,47 @@
+[
+  {
+    "name": "batman_state_dir_wins",
+    "env": { "BATMAN_STATE_DIR": "/var/lib/batman" },
+    "home": "/home/alice",
+    "expected": "/var/lib/batman"
+  },
+  {
+    "name": "batman_state_dir_wins_over_xdg",
+    "env": {
+      "BATMAN_STATE_DIR": "/var/lib/batman",
+      "XDG_STATE_HOME": "/home/alice/.local/state"
+    },
+    "home": "/home/alice",
+    "expected": "/var/lib/batman"
+  },
+  {
+    "name": "xdg_state_home_appends_omp_batman",
+    "env": { "XDG_STATE_HOME": "/home/alice/.local/state" },
+    "home": "/home/alice",
+    "expected": "/home/alice/.local/state/omp/batman"
+  },
+  {
+    "name": "default_fallback_uses_home_and_default_pi_config_dir",
+    "env": {},
+    "home": "/home/alice",
+    "expected": "/home/alice/.omp/orchestrator"
+  },
+  {
+    "name": "default_fallback_honors_pi_config_dir_override",
+    "env": { "PI_CONFIG_DIR": ".config/omp" },
+    "home": "/home/alice",
+    "expected": "/home/alice/.config/omp/orchestrator"
+  },
+  {
+    "name": "rejects_relative_batman_state_dir",
+    "env": { "BATMAN_STATE_DIR": "relative/state" },
+    "home": "/home/alice",
+    "error": "relative-override"
+  },
+  {
+    "name": "rejects_relative_xdg_state_home",
+    "env": { "XDG_STATE_HOME": "relative/state" },
+    "home": "/home/alice",
+    "error": "relative-override"
+  }
+]
