@@ -9,7 +9,7 @@ license.workspace = true
 schemars.workspace = true
 serde.workspace = true
 time.workspace = true
-ts-rs.workspace = true
+ts-rs = { workspace = true, features = ["no-serde-warnings"] }
 uuid.workspace = true
 
 [dev-dependencies]
