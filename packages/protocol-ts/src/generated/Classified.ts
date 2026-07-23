@@ -5,5 +5,10 @@ import type { ContentClass } from "./ContentClass";
  * A value tagged with its [`ContentClass`]. Used for raw, in-memory event
  * fields before sanitization; the durable [`RuntimeEvent`] must never
  * contain a `Classified<T>` field, only plain sanitized values.
+ *
+ * `Debug` is implemented manually (not derived): printing a
+ * `Thinking`/`Secret`-classified value must never leak its raw content,
+ * even via `{:?}`, so only `Visible` values are actually printed -- see
+ * the `impl fmt::Debug` below.
  */
 export type Classified<T> = { class: ContentClass, value: T, };

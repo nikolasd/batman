@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 use nix::unistd::Uid;
 
+pub mod redaction;
+
 /// Errors resolving or securing BATMAN's on-disk state.
 #[derive(Debug, thiserror::Error)]
 pub enum SecurityError {

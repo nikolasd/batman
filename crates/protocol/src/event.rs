@@ -107,12 +107,48 @@ pub enum ContentClass {
 /// A value tagged with its [`ContentClass`]. Used for raw, in-memory event
 /// fields before sanitization; the durable [`RuntimeEvent`] must never
 /// contain a `Classified<T>` field, only plain sanitized values.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+///
+/// `Debug` is implemented manually (not derived): printing a
+/// `Thinking`/`Secret`-classified value must never leak its raw content,
+/// even via `{:?}`, so only `Visible` values are actually printed -- see
+/// the `impl fmt::Debug` below.
+#[derive(Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export)]
 pub struct Classified<T> {
     pub class: ContentClass,
     pub value: T,
+}
+
+/// A placeholder printed in place of a redacted `Classified` value; has its
+/// own `Debug` impl so it renders without the surrounding quotes a `&str`
+/// placeholder would otherwise get.
+struct RedactedPlaceholder;
+
+impl fmt::Debug for RedactedPlaceholder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<redacted>")
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for Classified<T> {
+    /// Prints `value` only when `class` is [`ContentClass::Visible`];
+    /// `Thinking`/`Secret` values print [`RedactedPlaceholder`] instead, so
+    /// `{:?}` on a raw classified value can never leak secret or thinking
+    /// content.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug_struct = f.debug_struct("Classified");
+        debug_struct.field("class", &self.class);
+        match self.class {
+            ContentClass::Visible => {
+                debug_struct.field("value", &self.value);
+            }
+            ContentClass::Thinking | ContentClass::Secret => {
+                debug_struct.field("value", &RedactedPlaceholder);
+            }
+        }
+        debug_struct.finish()
+    }
 }
 
 /// Identifies which subsystem produced an event.
@@ -222,6 +258,28 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn classified_debug_redacts_secret_and_thinking_but_not_visible() {
+        let visible = Classified {
+            class: ContentClass::Visible,
+            value: "plain narration".to_string(),
+        };
+        let secret = Classified {
+            class: ContentClass::Secret,
+            value: "sk-super-secret-value".to_string(),
+        };
+        let thinking = Classified {
+            class: ContentClass::Thinking,
+            value: "internal chain of thought".to_string(),
+        };
+
+        assert!(format!("{visible:?}").contains("plain narration"));
+        assert!(!format!("{secret:?}").contains("sk-super-secret-value"));
+        assert!(format!("{secret:?}").contains("<redacted>"));
+        assert!(!format!("{thinking:?}").contains("internal chain of thought"));
+        assert!(format!("{thinking:?}").contains("<redacted>"));
     }
 
     #[test]
