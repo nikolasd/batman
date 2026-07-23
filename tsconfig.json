@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "Bundler",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "types": ["bun"]
+  }
+}

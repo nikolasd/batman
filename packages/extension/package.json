@@ -1,0 +1,20 @@
+{
+  "name": "@satori/batman",
+  "version": "0.1.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "restricted" },
+  "exports": { ".": "./dist/index.js" },
+  "omp": { "extensions": ["./dist/index.js"] },
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target bun --external @oh-my-pi/pi-coding-agent"
+  },
+  "peerDependencies": { "@oh-my-pi/pi-coding-agent": ">=17.0.7 <18" },
+  "devDependencies": {
+    "@oh-my-pi/pi-coding-agent": ">=17.0.7 <18",
+    "@satori/batman-protocol": "workspace:*",
+    "@types/bun": "latest",
+    "ajv": "8.17.1",
+    "typescript": "latest"
+  }
+}

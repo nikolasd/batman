@@ -1,0 +1,34 @@
+[package]
+name = "batman-runtime"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "batcave"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+batman-protocol = { path = "../protocol" }
+clap.workspace = true
+futures-util.workspace = true
+hex.workspace = true
+nix.workspace = true
+rusqlite.workspace = true
+rusqlite_migration.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
