@@ -137,6 +137,44 @@ pub enum BatmanMethod {
     RuntimeShutdown,
 }
 
+/// Where the running `batcave` binary was loaded from. `override` means a
+/// developer override path, `package` a bundled/installed binary, and
+/// `unknown` that the source could not be determined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum BinarySource {
+    Override,
+    Package,
+    Unknown,
+}
+
+/// Result of a `runtime/status` request: a snapshot of the runtime's health
+/// and identity. Kept intentionally small at foundation scope; later tasks
+/// extend it with richer run/queue detail.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export)]
+pub struct RuntimeStatus {
+    /// Whether the runtime is accepting connections and serving requests.
+    pub running: bool,
+    /// The protocol version the runtime negotiated for this session.
+    pub protocol: ProtocolVersion,
+    /// The canonical project id this runtime serves.
+    pub project_id: ProjectId,
+    /// Number of active runs. Always `0` at foundation scope.
+    pub active_runs: u32,
+    /// The durable database schema version currently applied.
+    pub schema_version: u32,
+    /// Whether the negotiated protocol is within the runtime's supported
+    /// range (a self-check that always holds for a live, negotiated session).
+    pub protocol_healthy: bool,
+    /// Seconds the runtime has been up since it started serving.
+    pub uptime_seconds: u64,
+    /// Where the running binary was loaded from.
+    pub binary_source: BinarySource,
+}
+
 /// Result of a successful `initialize` request.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -224,13 +262,17 @@ impl<R> JsonRpcResponse<R> {
     }
 }
 
-/// A JSON-RPC 2.0 error object.
+/// A JSON-RPC 2.0 error object. `data` carries optional, already-sanitized
+/// diagnostic detail; it is omitted from the wire form when absent.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export)]
 pub struct JsonRpcError {
     pub code: i32,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "unknown")]
+    pub data: Option<serde_json::Value>,
 }
 
 /// A JSON-RPC 2.0 error response envelope. `id` is `None` when the request
@@ -253,10 +295,58 @@ impl JsonRpcErrorResponse {
             error: JsonRpcError {
                 code,
                 message: message.into(),
+                data: None,
+            },
+        }
+    }
+
+    /// Like [`JsonRpcErrorResponse::new`], but attaches already-sanitized
+    /// diagnostic `data` to the error object.
+    #[must_use]
+    pub fn with_data(
+        id: Option<RequestId>,
+        code: i32,
+        message: impl Into<String>,
+        data: serde_json::Value,
+    ) -> Self {
+        Self {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id,
+            error: JsonRpcError {
+                code,
+                message: message.into(),
+                data: Some(data),
             },
         }
     }
 }
+
+/// A JSON-RPC 2.0 notification envelope: a method call with no `id`, for
+/// which no response is expected. BATMAN uses these to push runtime events to
+/// subscribed clients via the `events/event` method.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export)]
+pub struct JsonRpcNotification<P> {
+    pub jsonrpc: String,
+    pub method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<P>,
+}
+
+impl<P> JsonRpcNotification<P> {
+    #[must_use]
+    pub fn new(method: impl Into<String>, params: Option<P>) -> Self {
+        Self {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            method: method.into(),
+            params,
+        }
+    }
+}
+
+/// The method name carried by an `events/event` notification.
+pub const EVENTS_EVENT_METHOD: &str = "events/event";
 
 #[cfg(test)]
 mod tests {

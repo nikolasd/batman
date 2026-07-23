@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 schemars.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 time.workspace = true
 ts-rs = { workspace = true, features = ["no-serde-warnings"] }
 uuid.workspace = true

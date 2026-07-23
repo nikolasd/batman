@@ -1,0 +1,500 @@
+//! A single accepted connection: one reader loop plus one serialized writer
+//! task, the bounded `initialize` handshake, and role-scoped dispatch.
+//!
+//! The reader never holds a database transaction across socket I/O -- it
+//! awaits the [`crate::db::DatabaseHandle`] actor, which commits before
+//! replying. Outbound frames are serialized through a single writer task so a
+//! subscription's event notifications can never interleave mid-frame with a
+//! request response.
+
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
+use std::sync::Arc;
+
+use batman_protocol::{
+    BatmanMethod, ClientAuth, ClientPrincipalSummary, EVENTS_EVENT_METHOD, EventEnvelope,
+    EventSource, InitializeParams, InitializeResult, JsonRpcNotification, ProtocolVersion,
+    RuntimeCapabilities, RuntimeEvent, RuntimeInfo, RuntimeStatus, error_code,
+};
+use futures_util::StreamExt;
+use serde_json::{Value, json};
+use tokio::io::AsyncWriteExt;
+use tokio::net::UnixStream;
+use tokio::net::unix::OwnedWriteHalf;
+use tokio::sync::mpsc;
+use tokio_util::codec::{Framed, FramedParts, LinesCodec};
+
+use super::server::{ConnContext, Shared};
+use super::{
+    ClientPrincipal, PROTOCOL_MIN_FRAME_BYTES, RUNTIME_PROTOCOL_VERSION, SCHEMA_VERSION,
+    runtime_supported_versions,
+};
+
+/// A message for the serialized writer task.
+enum WriterMsg {
+    /// A single NDJSON frame (without the trailing newline).
+    Frame(String),
+    /// Update the outbound frame-size limit to the negotiated maximum.
+    SetMax(usize),
+    /// Flush and close the writer.
+    Shutdown,
+}
+
+/// Handles one accepted, admitted connection to completion.
+pub(crate) async fn handle(stream: UnixStream, ctx: ConnContext, shared: Arc<Shared>) {
+    let bootstrap_max = shared.config.runtime_max_frame_bytes as usize;
+
+    let (read_half, write_half) = stream.into_split();
+    let (writer_tx, writer_rx) = mpsc::channel::<WriterMsg>(64);
+    let writer_task = tokio::spawn(writer_loop(write_half, writer_rx, bootstrap_max));
+
+    let mut framed = Framed::new(read_half, LinesCodec::new_with_max_length(bootstrap_max));
+
+    // ---- bootstrap: read frames until a successful `initialize`. ----
+    let (principal, negotiated_version, negotiated_frame) = loop {
+        let line = match framed.next().await {
+            Some(Ok(line)) => line,
+            Some(Err(err)) => {
+                tracing::warn!(error = %err, "closing connection: invalid bootstrap frame");
+                let _ = writer_tx.send(WriterMsg::Shutdown).await;
+                let _ = writer_task.await;
+                return;
+            }
+            None => {
+                let _ = writer_tx.send(WriterMsg::Shutdown).await;
+                let _ = writer_task.await;
+                return;
+            }
+        };
+
+        match handle_bootstrap(&line, &ctx, &shared).await {
+            Bootstrap::Initialized {
+                id,
+                result,
+                principal,
+                frame,
+                version,
+            } => {
+                let _ = writer_tx.send(WriterMsg::Frame(success(&id, result))).await;
+                break (principal, version, frame);
+            }
+            Bootstrap::Reply { id, code, message } => {
+                let _ = writer_tx
+                    .send(WriterMsg::Frame(error(&id, code, &message)))
+                    .await;
+                // Stay open so the client may retry `initialize`.
+            }
+        }
+    };
+
+    // ---- switch both directions to the negotiated frame size. ----
+    let _ = writer_tx.send(WriterMsg::SetMax(negotiated_frame)).await;
+    let parts = framed.into_parts();
+    let mut new_parts =
+        FramedParts::new::<String>(parts.io, LinesCodec::new_with_max_length(negotiated_frame));
+    new_parts.read_buf = parts.read_buf;
+    let mut framed = Framed::from_parts(new_parts);
+
+    // ---- initialized: dispatch until close. ----
+    loop {
+        let line = match framed.next().await {
+            Some(Ok(line)) => line,
+            Some(Err(err)) => {
+                tracing::warn!(error = %err, "closing connection: frame exceeded negotiated maximum");
+                break;
+            }
+            None => break,
+        };
+
+        let frame = dispatch(&line, &principal, negotiated_version, &shared, &writer_tx).await;
+        if writer_tx.send(WriterMsg::Frame(frame)).await.is_err() {
+            break;
+        }
+    }
+
+    let _ = writer_tx.send(WriterMsg::Shutdown).await;
+    let _ = writer_task.await;
+}
+
+/// The outcome of processing one bootstrap-phase frame.
+enum Bootstrap {
+    Initialized {
+        id: Value,
+        result: Value,
+        principal: ClientPrincipal,
+        frame: usize,
+        version: ProtocolVersion,
+    },
+    Reply {
+        id: Value,
+        code: i32,
+        message: String,
+    },
+}
+
+async fn handle_bootstrap(line: &str, ctx: &ConnContext, shared: &Arc<Shared>) -> Bootstrap {
+    let message: Value = match serde_json::from_str(line) {
+        Ok(value) => value,
+        Err(_) => {
+            return Bootstrap::Reply {
+                id: Value::Null,
+                code: error_code::PARSE_ERROR,
+                message: "request is not valid JSON".to_string(),
+            };
+        }
+    };
+
+    let id = message.get("id").cloned().unwrap_or(Value::Null);
+    let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+
+    if method != "initialize" {
+        return Bootstrap::Reply {
+            id,
+            code: error_code::NOT_INITIALIZED,
+            message: "the connection must call `initialize` before any other method".to_string(),
+        };
+    }
+
+    let params_value = message.get("params").cloned().unwrap_or(Value::Null);
+    let params: InitializeParams = match serde_json::from_value(params_value) {
+        Ok(params) => params,
+        Err(err) => {
+            return Bootstrap::Reply {
+                id,
+                code: error_code::INVALID_PARAMS,
+                message: format!("invalid initialize params: {err}"),
+            };
+        }
+    };
+
+    // Protocol-version negotiation.
+    let runtime = RUNTIME_PROTOCOL_VERSION;
+    if !(params.supported.min <= runtime && runtime <= params.supported.max) {
+        let supported = runtime_supported_versions();
+        return Bootstrap::Reply {
+            id,
+            code: error_code::INCOMPATIBLE_VERSION,
+            message: format!(
+                "no overlapping protocol version: client supports {}.{}-{}.{}, runtime supports {}.{}-{}.{}",
+                params.supported.min.major,
+                params.supported.min.minor,
+                params.supported.max.major,
+                params.supported.max.minor,
+                supported.min.major,
+                supported.min.minor,
+                supported.max.major,
+                supported.max.minor,
+            ),
+        };
+    }
+
+    // Frame-size negotiation.
+    let offer = params.capabilities.max_frame_bytes;
+    if offer < PROTOCOL_MIN_FRAME_BYTES {
+        return Bootstrap::Reply {
+            id,
+            code: error_code::INVALID_PARAMS,
+            message: format!(
+                "maxFrameBytes {offer} is below the protocol minimum of {PROTOCOL_MIN_FRAME_BYTES}"
+            ),
+        };
+    }
+    let negotiated_frame = offer.min(shared.config.runtime_max_frame_bytes);
+
+    // Authenticate the client into a ClientPrincipal from its ClientAuth.
+    let principal = match authenticate(&params.auth, ctx, shared) {
+        Ok(principal) => principal,
+        Err(message) => {
+            return Bootstrap::Reply {
+                id,
+                code: error_code::INVALID_PARAMS,
+                message,
+            };
+        }
+    };
+
+    // Compute the next sequence the client should expect.
+    let next_sequence = match shared.db.replay_events(0).await {
+        Ok(events) => events.last().map_or(0, |event| event.sequence) + 1,
+        Err(err) => {
+            return Bootstrap::Reply {
+                id,
+                code: error_code::INTERNAL_ERROR,
+                message: format!("failed to read event tip: {err}"),
+            };
+        }
+    };
+
+    let result = InitializeResult {
+        runtime: RuntimeInfo {
+            name: "batman-runtime".to_string(),
+            version: crate::VERSION.to_string(),
+        },
+        negotiated: runtime,
+        project_id: shared.project_id,
+        principal: ClientPrincipalSummary {
+            role: principal.role,
+            instance_id: principal.instance_id.clone(),
+        },
+        allowed_methods: principal.allowed_methods(),
+        capabilities: RuntimeCapabilities {
+            max_frame_bytes: negotiated_frame,
+            peer_credentials_verified: ctx.peer_credentials_verified,
+        },
+        next_sequence,
+    };
+
+    let result =
+        serde_json::to_value(&result).expect("InitializeResult is a plain, serializable wire type");
+
+    Bootstrap::Initialized {
+        id,
+        result,
+        principal,
+        frame: negotiated_frame as usize,
+        version: runtime,
+    }
+}
+
+/// Turns a validated [`ClientAuth`] into a [`ClientPrincipal`], applying the
+/// role-specific admission checks. Returns a human-readable message on
+/// failure (mapped to `INVALID_PARAMS` by the caller).
+fn authenticate(
+    auth: &ClientAuth,
+    ctx: &ConnContext,
+    shared: &Arc<Shared>,
+) -> Result<ClientPrincipal, String> {
+    match auth {
+        ClientAuth::OmpExtension {
+            instance_id,
+            agent_directory,
+        } => {
+            validate_agent_directory(agent_directory, shared.config.euid)?;
+            Ok(ClientPrincipal {
+                role: batman_protocol::ClientRole::OmpExtension,
+                instance_id: instance_id.clone(),
+                scoped_run_id: None,
+            })
+        }
+        ClientAuth::Display { instance_id } => Ok(ClientPrincipal {
+            role: batman_protocol::ClientRole::Display,
+            instance_id: instance_id.clone(),
+            scoped_run_id: None,
+        }),
+        ClientAuth::WorkerMcp {
+            instance_id,
+            scope_token,
+        } => {
+            let scoped = shared
+                .config
+                .worker_verifier
+                .verify(scope_token, ctx.peer_pid)
+                .map_err(|err| format!("worker credential rejected: {err}"))?;
+            Ok(ClientPrincipal {
+                role: batman_protocol::ClientRole::WorkerMcp,
+                instance_id: instance_id.clone(),
+                scoped_run_id: Some(scoped.run_id),
+            })
+        }
+    }
+}
+
+/// An ompExtension agent directory must be an absolute path that exists,
+/// canonicalizes cleanly, and is owned by the current user.
+fn validate_agent_directory(dir: &str, euid: u32) -> Result<(), String> {
+    let path = Path::new(dir);
+    if !path.is_absolute() {
+        return Err(format!("agentDirectory {dir:?} must be an absolute path"));
+    }
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|err| format!("agentDirectory {dir:?} does not resolve: {err}"))?;
+    let metadata = std::fs::metadata(&canonical)
+        .map_err(|err| format!("agentDirectory {dir:?} cannot be inspected: {err}"))?;
+    if metadata.uid() != euid {
+        return Err(format!(
+            "agentDirectory {dir:?} is owned by uid {}, not the current uid {euid}",
+            metadata.uid()
+        ));
+    }
+    Ok(())
+}
+
+/// Dispatches one initialized-phase request against the principal's method
+/// table, returning the serialized response frame.
+async fn dispatch(
+    line: &str,
+    principal: &ClientPrincipal,
+    negotiated_version: ProtocolVersion,
+    shared: &Arc<Shared>,
+    writer_tx: &mpsc::Sender<WriterMsg>,
+) -> String {
+    let message: Value = match serde_json::from_str(line) {
+        Ok(value) => value,
+        Err(_) => {
+            return error(
+                &Value::Null,
+                error_code::PARSE_ERROR,
+                "request is not valid JSON",
+            );
+        }
+    };
+
+    let id = message.get("id").cloned().unwrap_or(Value::Null);
+    let method_name = message.get("method").and_then(Value::as_str).unwrap_or("");
+
+    // Resolve the method from the authenticated principal's table only.
+    // Unknown or out-of-role methods are hidden as METHOD_NOT_FOUND.
+    let method: Option<BatmanMethod> = serde_json::from_value(json!(method_name)).ok();
+    let allowed = method.is_some_and(|m| principal.allowed_methods().contains(&m));
+    if !allowed {
+        return error(
+            &id,
+            error_code::METHOD_NOT_FOUND,
+            &format!("method {method_name:?} is not available to this client"),
+        );
+    }
+
+    match method.expect("allowed implies a known method") {
+        BatmanMethod::RuntimeStatus => {
+            let status = RuntimeStatus {
+                running: true,
+                protocol: negotiated_version,
+                project_id: shared.project_id,
+                active_runs: 0,
+                schema_version: SCHEMA_VERSION,
+                protocol_healthy: is_protocol_healthy(negotiated_version),
+                uptime_seconds: shared.started_at.elapsed().as_secs(),
+                binary_source: shared.config.binary_source,
+            };
+            let value = serde_json::to_value(&status)
+                .expect("RuntimeStatus is a plain, serializable wire type");
+            success(&id, value)
+        }
+        BatmanMethod::EventsReplay => {
+            let after = message
+                .get("params")
+                .and_then(|p| p.get("afterSequence"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            match replay(shared, after).await {
+                Ok(events) => success(&id, events),
+                Err(message) => error(&id, error_code::INTERNAL_ERROR, &message),
+            }
+        }
+        BatmanMethod::EventsSubscribe => {
+            spawn_subscription(shared, writer_tx.clone());
+            success(&id, json!({ "active": true }))
+        }
+        BatmanMethod::RuntimeShutdown => {
+            // Foundation scope: real stop semantics (locking, idle-exit,
+            // graceful drain) are owned by Task 7. Report unsupported for now.
+            error(
+                &id,
+                error_code::CAPABILITY_UNSUPPORTED,
+                "runtime/shutdown is not implemented at foundation scope",
+            )
+        }
+        BatmanMethod::Initialize => error(
+            &id,
+            error_code::METHOD_NOT_FOUND,
+            "the connection is already initialized",
+        ),
+    }
+}
+
+/// Whether the negotiated protocol version lies within the runtime's declared
+/// supported range (a self-check that always holds for a live session).
+fn is_protocol_healthy(negotiated: ProtocolVersion) -> bool {
+    let supported = runtime_supported_versions();
+    supported.min <= negotiated && negotiated <= supported.max
+}
+
+/// Reads committed events with `sequence > after` and renders them as a JSON
+/// array of [`EventEnvelope`]s.
+async fn replay(shared: &Arc<Shared>, after: u64) -> Result<Value, String> {
+    let rows = shared
+        .db
+        .replay_events(after)
+        .await
+        .map_err(|err| format!("failed to replay events: {err}"))?;
+
+    let mut envelopes = Vec::with_capacity(rows.len());
+    for row in rows {
+        let event: RuntimeEvent = serde_json::from_str(&row.event_json)
+            .map_err(|err| format!("stored event is not a valid RuntimeEvent: {err}"))?;
+        envelopes.push(EventEnvelope {
+            sequence: row.sequence,
+            timestamp: row.timestamp,
+            project_id: row.project_id,
+            task_id: None,
+            worker_id: None,
+            run_id: row.run_id,
+            parent_worker_id: None,
+            source: EventSource::Runtime,
+            event,
+            vendor_event_ref: None,
+        });
+    }
+
+    Ok(serde_json::to_value(&envelopes)
+        .expect("a Vec of EventEnvelope is a plain, serializable wire type"))
+}
+
+/// Registers this connection for live event notifications: forwards every
+/// broadcast [`EventEnvelope`] to the writer as an `events/event`
+/// notification until the connection closes.
+fn spawn_subscription(shared: &Arc<Shared>, writer_tx: mpsc::Sender<WriterMsg>) {
+    let mut events_rx = shared.events_tx.subscribe();
+    tokio::spawn(async move {
+        // On a lag/closed error the loop ends; reconnect/replay is the
+        // recovery path for a dropped notification.
+        while let Ok(envelope) = events_rx.recv().await {
+            let params = serde_json::to_value(&envelope)
+                .expect("EventEnvelope is a plain, serializable wire type");
+            let notification = JsonRpcNotification::new(EVENTS_EVENT_METHOD, Some(params));
+            let frame = serde_json::to_string(&notification)
+                .expect("a notification of plain wire types serializes");
+            if writer_tx.send(WriterMsg::Frame(frame)).await.is_err() {
+                break;
+            }
+        }
+    });
+}
+
+/// The serialized writer task: writes NDJSON frames in order, enforcing the
+/// current outbound frame-size limit in the write direction.
+async fn writer_loop(mut half: OwnedWriteHalf, mut rx: mpsc::Receiver<WriterMsg>, mut max: usize) {
+    while let Some(message) = rx.recv().await {
+        match message {
+            WriterMsg::SetMax(new_max) => max = new_max,
+            WriterMsg::Shutdown => break,
+            WriterMsg::Frame(line) => {
+                if line.len() + 1 > max {
+                    tracing::warn!(
+                        frame_bytes = line.len() + 1,
+                        max,
+                        "refusing to write a frame above the negotiated maximum; closing"
+                    );
+                    break;
+                }
+                if half.write_all(line.as_bytes()).await.is_err()
+                    || half.write_all(b"\n").await.is_err()
+                    || half.flush().await.is_err()
+                {
+                    break;
+                }
+            }
+        }
+    }
+    let _ = half.shutdown().await;
+}
+
+/// Builds a JSON-RPC success response frame echoing `id`.
+fn success(id: &Value, result: Value) -> String {
+    json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
+}
+
+/// Builds a JSON-RPC error response frame echoing `id`.
+fn error(id: &Value, code: i32, message: &str) -> String {
+    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }).to_string()
+}

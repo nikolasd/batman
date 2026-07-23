@@ -16,6 +16,9 @@
     "jsonRpcErrorResponse": {
       "$ref": "#/$defs/JsonRpcErrorResponse"
     },
+    "jsonRpcNotification": {
+      "$ref": "#/$defs/JsonRpcNotification"
+    },
     "jsonRpcRequest": {
       "$ref": "#/$defs/JsonRpcRequest"
     },
@@ -24,6 +27,9 @@
     },
     "runtimeEvent": {
       "$ref": "#/$defs/RuntimeEvent"
+    },
+    "runtimeStatus": {
+      "$ref": "#/$defs/RuntimeStatus"
     }
   },
   "required": [
@@ -33,7 +39,9 @@
     "runtimeEvent",
     "jsonRpcRequest",
     "jsonRpcResponse",
-    "jsonRpcErrorResponse"
+    "jsonRpcErrorResponse",
+    "jsonRpcNotification",
+    "runtimeStatus"
   ],
   "$defs": {
     "BatmanMethod": {
@@ -45,6 +53,15 @@
         "events/subscribe",
         "events/replay",
         "runtime/shutdown"
+      ]
+    },
+    "BinarySource": {
+      "description": "Where the running `batcave` binary was loaded from. `override` means a\ndeveloper override path, `package` a bundled/installed binary, and\n`unknown` that the source could not be determined.",
+      "type": "string",
+      "enum": [
+        "override",
+        "package",
+        "unknown"
       ]
     },
     "ClientAuth": {
@@ -346,13 +363,14 @@
       ]
     },
     "JsonRpcError": {
-      "description": "A JSON-RPC 2.0 error object.",
+      "description": "A JSON-RPC 2.0 error object. `data` carries optional, already-sanitized\ndiagnostic detail; it is omitted from the wire form when absent.",
       "type": "object",
       "properties": {
         "code": {
           "type": "integer",
           "format": "int32"
         },
+        "data": true,
         "message": {
           "type": "string"
         }
@@ -388,6 +406,24 @@
       "required": [
         "jsonrpc",
         "error"
+      ]
+    },
+    "JsonRpcNotification": {
+      "description": "A JSON-RPC 2.0 notification envelope: a method call with no `id`, for\nwhich no response is expected. BATMAN uses these to push runtime events to\nsubscribed clients via the `events/event` method.",
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "jsonrpc",
+        "method"
       ]
     },
     "JsonRpcRequest": {
@@ -592,6 +628,61 @@
       "required": [
         "name",
         "version"
+      ]
+    },
+    "RuntimeStatus": {
+      "description": "Result of a `runtime/status` request: a snapshot of the runtime's health\nand identity. Kept intentionally small at foundation scope; later tasks\nextend it with richer run/queue detail.",
+      "type": "object",
+      "properties": {
+        "activeRuns": {
+          "description": "Number of active runs. Always `0` at foundation scope.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "binarySource": {
+          "description": "Where the running binary was loaded from.",
+          "$ref": "#/$defs/BinarySource"
+        },
+        "projectId": {
+          "description": "The canonical project id this runtime serves.",
+          "$ref": "#/$defs/ProjectId"
+        },
+        "protocol": {
+          "description": "The protocol version the runtime negotiated for this session.",
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "protocolHealthy": {
+          "description": "Whether the negotiated protocol is within the runtime's supported\nrange (a self-check that always holds for a live, negotiated session).",
+          "type": "boolean"
+        },
+        "running": {
+          "description": "Whether the runtime is accepting connections and serving requests.",
+          "type": "boolean"
+        },
+        "schemaVersion": {
+          "description": "The durable database schema version currently applied.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "uptimeSeconds": {
+          "description": "Seconds the runtime has been up since it started serving.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "running",
+        "protocol",
+        "projectId",
+        "activeRuns",
+        "schemaVersion",
+        "protocolHealthy",
+        "uptimeSeconds",
+        "binarySource"
       ]
     },
     "TaskId": {

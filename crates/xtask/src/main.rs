@@ -11,12 +11,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use batman_protocol::{
-    ApprovalId, ArtifactId, BatmanMethod, Classified, ClientAuth, ClientCapabilities, ClientInfo,
-    ClientPrincipalSummary, ClientRole, ContentClass, DiagnosticLevel, EventEnvelope, EventSource,
-    InitializeParams, InitializeResult, JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest,
-    JsonRpcResponse, MessageId, OperationId, ProjectId, ProtocolVersion, RepositoryIdentity,
-    RequestId, RunId, RuntimeCapabilities, RuntimeEvent, RuntimeInfo, TaskId, Timestamp,
-    VersionRange, WorkerId,
+    ApprovalId, ArtifactId, BatmanMethod, BinarySource, Classified, ClientAuth, ClientCapabilities,
+    ClientInfo, ClientPrincipalSummary, ClientRole, ContentClass, DiagnosticLevel, EventEnvelope,
+    EventSource, InitializeParams, InitializeResult, JsonRpcError, JsonRpcErrorResponse,
+    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, MessageId, OperationId, ProjectId,
+    ProtocolVersion, RepositoryIdentity, RequestId, RunId, RuntimeCapabilities, RuntimeEvent,
+    RuntimeInfo, RuntimeStatus, TaskId, Timestamp, VersionRange, WorkerId,
 };
 use clap::Subcommand;
 use schemars::JsonSchema;
@@ -55,6 +55,8 @@ struct ProtocolDocument {
     json_rpc_request: JsonRpcRequest<serde_json::Value>,
     json_rpc_response: JsonRpcResponse<serde_json::Value>,
     json_rpc_error_response: JsonRpcErrorResponse,
+    json_rpc_notification: JsonRpcNotification<serde_json::Value>,
+    runtime_status: RuntimeStatus,
 }
 
 fn main() -> Result<()> {
@@ -109,6 +111,7 @@ fn export_bindings(dir: &Path) -> Result<()> {
         TaskId,
         WorkerId,
         BatmanMethod,
+        BinarySource,
         ClientAuth,
         ClientCapabilities,
         ClientInfo,
@@ -118,12 +121,14 @@ fn export_bindings(dir: &Path) -> Result<()> {
         InitializeResult,
         JsonRpcError,
         JsonRpcErrorResponse,
+        JsonRpcNotification<ts_rs::Dummy>,
         JsonRpcRequest<ts_rs::Dummy>,
         JsonRpcResponse<ts_rs::Dummy>,
         RepositoryIdentity,
         RequestId,
         RuntimeCapabilities,
         RuntimeInfo,
+        RuntimeStatus,
         ProtocolVersion,
         VersionRange,
         Classified<ts_rs::Dummy>,

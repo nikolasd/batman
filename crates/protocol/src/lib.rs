@@ -17,10 +17,10 @@ pub use event::{
 };
 pub use ids::{ApprovalId, ArtifactId, MessageId, OperationId, ProjectId, RunId, TaskId, WorkerId};
 pub use rpc::{
-    BatmanMethod, ClientAuth, ClientCapabilities, ClientInfo, ClientPrincipalSummary, ClientRole,
-    InitializeParams, InitializeResult, JSONRPC_VERSION, JsonRpcError, JsonRpcErrorResponse,
-    JsonRpcRequest, JsonRpcResponse, RepositoryIdentity, RequestId, RuntimeCapabilities,
-    RuntimeInfo, error_code,
+    BatmanMethod, BinarySource, ClientAuth, ClientCapabilities, ClientInfo, ClientPrincipalSummary,
+    ClientRole, EVENTS_EVENT_METHOD, InitializeParams, InitializeResult, JSONRPC_VERSION,
+    JsonRpcError, JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+    RepositoryIdentity, RequestId, RuntimeCapabilities, RuntimeInfo, RuntimeStatus, error_code,
 };
 pub use version::{ProtocolVersion, VersionRange};
 
