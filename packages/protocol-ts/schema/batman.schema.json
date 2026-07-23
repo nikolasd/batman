@@ -1,0 +1,627 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProtocolDocument",
+  "description": "Root schema document referencing every exported request/result/event\ntype, so that a single `schemars` invocation produces one JSON Schema\nwith everything reachable from the wire protocol in `$defs`.",
+  "type": "object",
+  "properties": {
+    "eventEnvelope": {
+      "$ref": "#/$defs/EventEnvelope"
+    },
+    "initializeParams": {
+      "$ref": "#/$defs/InitializeParams"
+    },
+    "initializeResult": {
+      "$ref": "#/$defs/InitializeResult"
+    },
+    "jsonRpcErrorResponse": {
+      "$ref": "#/$defs/JsonRpcErrorResponse"
+    },
+    "jsonRpcRequest": {
+      "$ref": "#/$defs/JsonRpcRequest"
+    },
+    "jsonRpcResponse": {
+      "$ref": "#/$defs/JsonRpcResponse"
+    },
+    "runtimeEvent": {
+      "$ref": "#/$defs/RuntimeEvent"
+    }
+  },
+  "required": [
+    "initializeParams",
+    "initializeResult",
+    "eventEnvelope",
+    "runtimeEvent",
+    "jsonRpcRequest",
+    "jsonRpcResponse",
+    "jsonRpcErrorResponse"
+  ],
+  "$defs": {
+    "BatmanMethod": {
+      "description": "The JSON-RPC methods implemented at foundation scope. Serialized as the\nliteral method name string used on the wire.",
+      "type": "string",
+      "enum": [
+        "initialize",
+        "runtime/status",
+        "events/subscribe",
+        "events/replay",
+        "runtime/shutdown"
+      ]
+    },
+    "ClientAuth": {
+      "description": "Authentication payload presented by a connecting client. The `role` tag\ndetermines which shape the remaining fields take.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "agentDirectory": {
+              "type": "string"
+            },
+            "instanceId": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string",
+              "const": "ompExtension"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "instanceId",
+            "agentDirectory"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "instanceId": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string",
+              "const": "workerMcp"
+            },
+            "scopeToken": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "instanceId",
+            "scopeToken"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "instanceId": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string",
+              "const": "display"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "instanceId"
+          ]
+        }
+      ]
+    },
+    "ClientCapabilities": {
+      "description": "Capabilities a connecting client declares support for.",
+      "type": "object",
+      "properties": {
+        "eventReplay": {
+          "type": "boolean"
+        },
+        "maxFrameBytes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "eventReplay",
+        "maxFrameBytes"
+      ]
+    },
+    "ClientInfo": {
+      "description": "Identifies the connecting client implementation (name + version), for\ndiagnostics only.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version"
+      ]
+    },
+    "ClientPrincipalSummary": {
+      "description": "A summary of the authenticated client, echoed back so the client can\nconfirm how the runtime identified it.",
+      "type": "object",
+      "properties": {
+        "instanceId": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/ClientRole"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "instanceId"
+      ]
+    },
+    "ClientRole": {
+      "description": "The role a connecting client authenticates as.",
+      "type": "string",
+      "enum": [
+        "ompExtension",
+        "workerMcp",
+        "display"
+      ]
+    },
+    "DiagnosticLevel": {
+      "description": "The severity of a [`RuntimeEvent::Diagnostic`].",
+      "type": "string",
+      "enum": [
+        "info",
+        "warning",
+        "error"
+      ]
+    },
+    "EventEnvelope": {
+      "description": "The envelope wrapping every durable runtime event, carrying its sequence\nnumber and routing metadata.",
+      "type": "object",
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/RuntimeEvent"
+        },
+        "parentWorkerId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkerId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "runId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "source": {
+          "$ref": "#/$defs/EventSource"
+        },
+        "taskId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timestamp": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "vendorEventRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workerId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkerId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "timestamp",
+        "projectId",
+        "source",
+        "event"
+      ]
+    },
+    "EventSource": {
+      "description": "Identifies which subsystem produced an event.",
+      "type": "string",
+      "enum": [
+        "runtime"
+      ]
+    },
+    "InitializeParams": {
+      "description": "Parameters for the `initialize` request.",
+      "type": "object",
+      "properties": {
+        "auth": {
+          "$ref": "#/$defs/ClientAuth"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/ClientCapabilities"
+        },
+        "client": {
+          "$ref": "#/$defs/ClientInfo"
+        },
+        "lastSequence": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "repository": {
+          "$ref": "#/$defs/RepositoryIdentity"
+        },
+        "supported": {
+          "$ref": "#/$defs/VersionRange"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "client",
+        "supported",
+        "repository",
+        "auth",
+        "capabilities"
+      ]
+    },
+    "InitializeResult": {
+      "description": "Result of a successful `initialize` request.",
+      "type": "object",
+      "properties": {
+        "allowedMethods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BatmanMethod"
+          }
+        },
+        "capabilities": {
+          "$ref": "#/$defs/RuntimeCapabilities"
+        },
+        "negotiated": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "nextSequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "principal": {
+          "$ref": "#/$defs/ClientPrincipalSummary"
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "runtime": {
+          "$ref": "#/$defs/RuntimeInfo"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "runtime",
+        "negotiated",
+        "projectId",
+        "principal",
+        "allowedMethods",
+        "capabilities",
+        "nextSequence"
+      ]
+    },
+    "JsonRpcError": {
+      "description": "A JSON-RPC 2.0 error object.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "JsonRpcErrorResponse": {
+      "description": "A JSON-RPC 2.0 error response envelope. `id` is `None` when the request\nidentifier could not be determined (for example, on a parse error).",
+      "type": "object",
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/JsonRpcError"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "jsonrpc": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "jsonrpc",
+        "error"
+      ]
+    },
+    "JsonRpcRequest": {
+      "description": "A JSON-RPC 2.0 request envelope.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "jsonrpc",
+        "id",
+        "method"
+      ]
+    },
+    "JsonRpcResponse": {
+      "description": "A JSON-RPC 2.0 success response envelope.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ]
+    },
+    "ProjectId": {
+      "description": "Identifies a repository/project managed by the BATMAN runtime.",
+      "type": "string"
+    },
+    "ProtocolVersion": {
+      "description": "A BATMAN protocol version, expressed as `major.minor` with no patch\ncomponent (patch-level changes must be backward compatible).",
+      "type": "object",
+      "properties": {
+        "major": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "minor": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "major",
+        "minor"
+      ]
+    },
+    "RepositoryIdentity": {
+      "description": "Identifies a repository on disk, independent of any particular runtime\ninstance.",
+      "type": "object",
+      "properties": {
+        "canonicalPath": {
+          "type": "string"
+        },
+        "vcsRoot": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "canonicalPath",
+        "vcsRoot"
+      ]
+    },
+    "RequestId": {
+      "description": "A JSON-RPC request identifier, either a number or a string.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "RunId": {
+      "description": "Identifies a single run of a task.",
+      "type": "string"
+    },
+    "RuntimeCapabilities": {
+      "description": "Capabilities the runtime grants for the negotiated session.",
+      "type": "object",
+      "properties": {
+        "maxFrameBytes": {
+          "description": "The negotiated maximum NDJSON frame size, in bytes.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "peerCredentialsVerified": {
+          "description": "Whether the runtime was able to verify the peer's OS credentials for\nthis connection. `false` on platforms where peer credential lookup is\nunavailable.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "maxFrameBytes",
+        "peerCredentialsVerified"
+      ]
+    },
+    "RuntimeEvent": {
+      "description": "A sanitized, durable runtime event. Fields are plain, already-sanitized\ntypes (never [`Classified`]) so that raw thinking/secret content can\nnever reach the durable log through this type.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "runtimeStarted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "runtimeStopping"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "level": {
+                  "$ref": "#/$defs/DiagnosticLevel"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "level",
+                "code",
+                "message"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "diagnostic"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        }
+      ]
+    },
+    "RuntimeInfo": {
+      "description": "Identifies the runtime implementation (name + version), for diagnostics\nonly.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version"
+      ]
+    },
+    "TaskId": {
+      "description": "Identifies a task tracked by the runtime.",
+      "type": "string"
+    },
+    "Timestamp": {
+      "description": "Canonical UTC RFC 3339 timestamp text, as carried on the wire.\n\nRather than expose [`time::OffsetDateTime`] across generated bindings,\nBATMAN normalizes every timestamp to a UTC RFC 3339 string at\nconstruction time; downstream consumers (including schemars/ts-rs) only\never see a plain string.",
+      "type": "string"
+    },
+    "VersionRange": {
+      "description": "An inclusive range of protocol versions a client (or runtime) supports.",
+      "type": "object",
+      "properties": {
+        "max": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "min": {
+          "$ref": "#/$defs/ProtocolVersion"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "min",
+        "max"
+      ]
+    },
+    "WorkerId": {
+      "description": "Identifies a worker process spawned by the runtime.",
+      "type": "string"
+    }
+  }
+}

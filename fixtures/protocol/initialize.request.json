@@ -1,0 +1,24 @@
+{
+  "client": {
+    "name": "@satori/batman",
+    "version": "0.1.0"
+  },
+  "supported": {
+    "min": { "major": 1, "minor": 0 },
+    "max": { "major": 1, "minor": 0 }
+  },
+  "repository": {
+    "canonicalPath": "/tmp/example-repo",
+    "vcsRoot": "/tmp/example-repo"
+  },
+  "auth": {
+    "role": "ompExtension",
+    "instanceId": "omp-1",
+    "agentDirectory": "/tmp/example-repo/.omp/agent"
+  },
+  "capabilities": {
+    "eventReplay": true,
+    "maxFrameBytes": 4194304
+  },
+  "lastSequence": null
+}

@@ -1,0 +1,23 @@
+{
+  "runtime": {
+    "name": "batman-runtime",
+    "version": "0.1.0"
+  },
+  "negotiated": { "major": 1, "minor": 0 },
+  "projectId": "018f1435-2e2b-7c1a-9d4b-6a1e2f3c4d5b",
+  "principal": {
+    "role": "ompExtension",
+    "instanceId": "omp-1"
+  },
+  "allowedMethods": [
+    "runtime/status",
+    "events/subscribe",
+    "events/replay",
+    "runtime/shutdown"
+  ],
+  "capabilities": {
+    "maxFrameBytes": 4194304,
+    "peerCredentialsVerified": true
+  },
+  "nextSequence": 1
+}

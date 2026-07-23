@@ -119,6 +119,7 @@ dependencies = [
  "batman-protocol",
  "clap",
  "schemars",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",
