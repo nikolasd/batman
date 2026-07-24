@@ -12,8 +12,8 @@
 
 use batman_protocol::{
     ApprovalRequest, DeliveryState, EventEnvelope, EventSource, ProjectId, Run, RunFlags,
-    RunMessage, RunState, RuntimeEvent, RuntimeEventKind, TaskRef, Timestamp, Worker,
-    WorkerProfileRef,
+    RunId, RunMessage, RunState, RuntimeEvent, RuntimeEventKind, TaskId, TaskRef, Timestamp,
+    Worker, WorkerId,
 };
 use rusqlite::Connection;
 
@@ -605,6 +605,125 @@ impl<'c> DomainRepository<'c> {
             Ok(())
         })
     }
+
+    /// Records a child-worker request: appends `ChildWorkerRequested` and
+    /// transitions the requesting run `working -> waitingPeer`. Never
+    /// creates a task or worker itself -- OMP answers through
+    /// [`DomainRepository::decide_child`].
+    pub fn request_child(
+        &mut self,
+        parent_run_id: RunId,
+        reason: &str,
+    ) -> Result<Committed, DomainError> {
+        let (from_str, task_id_str, worker_id_str): (String, String, String) = self
+            .conn
+            .query_row(
+                "SELECT state, task_id, worker_id FROM runs WHERE run_id = ?1",
+                [parent_run_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|_| DomainError::NotFound {
+                kind: "run",
+                id: parent_run_id.to_string(),
+            })?;
+        let from = RunState::try_from(from_str.as_str()).map_err(|_| DomainError::NotFound {
+            kind: "run-state",
+            id: from_str.clone(),
+        })?;
+        let waiting_peer = RunState::try_from("waitingPeer").expect("waitingPeer is valid");
+        check_transition(&parent_run_id.to_string(), &from, &waiting_peer)?;
+
+        let task_id = TaskId::parse(&task_id_str)
+            .map_err(|_| DomainError::NotFound { kind: "task", id: task_id_str.clone() })?;
+        let worker_id = WorkerId::parse(&worker_id_str)
+            .map_err(|_| DomainError::NotFound { kind: "worker", id: worker_id_str.clone() })?;
+
+        let event = RuntimeEvent::ChildEvent {
+            kind: RuntimeEventKind::ChildWorkerRequested,
+            parent_run_id,
+            child_task_id: None,
+            child_worker_id: None,
+            child_run_id: None,
+            reason: Some(reason.to_string()),
+        };
+        self.append_and_apply(
+            &event,
+            Some(task_id),
+            Some(worker_id),
+            Some(parent_run_id),
+            move |tx| {
+                tx.execute(
+                    "UPDATE runs SET state = 'waitingPeer' WHERE run_id = ?1",
+                    rusqlite::params![parent_run_id.to_string()],
+                )?;
+                Ok(())
+            },
+        )
+    }
+
+    /// Records OMP's decision on a prior child-worker request and returns
+    /// the parent run to `working`. Acceptance carries the OMP-created
+    /// child ids; denial carries a reason. The runtime owns both
+    /// transitions after the correlated decision commits.
+    pub fn decide_child(
+        &mut self,
+        parent_run_id: RunId,
+        accepted: bool,
+        child_task_id: Option<TaskId>,
+        child_worker_id: Option<WorkerId>,
+        child_run_id: Option<RunId>,
+        reason: Option<&str>,
+    ) -> Result<Committed, DomainError> {
+        let (from_str, task_id_str, worker_id_str): (String, String, String) = self
+            .conn
+            .query_row(
+                "SELECT state, task_id, worker_id FROM runs WHERE run_id = ?1",
+                [parent_run_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|_| DomainError::NotFound {
+                kind: "run",
+                id: parent_run_id.to_string(),
+            })?;
+        let from = RunState::try_from(from_str.as_str()).map_err(|_| DomainError::NotFound {
+            kind: "run-state",
+            id: from_str.clone(),
+        })?;
+        let working = RunState::try_from("working").expect("working is valid");
+        check_transition(&parent_run_id.to_string(), &from, &working)?;
+
+        let task_id = TaskId::parse(&task_id_str)
+            .map_err(|_| DomainError::NotFound { kind: "task", id: task_id_str.clone() })?;
+        let worker_id = WorkerId::parse(&worker_id_str)
+            .map_err(|_| DomainError::NotFound { kind: "worker", id: worker_id_str.clone() })?;
+
+        let kind = if accepted {
+            RuntimeEventKind::ChildWorkerRequested
+        } else {
+            RuntimeEventKind::ChildWorkerRequestDenied
+        };
+        let event = RuntimeEvent::ChildEvent {
+            kind,
+            parent_run_id,
+            child_task_id,
+            child_worker_id,
+            child_run_id,
+            reason: reason.map(str::to_string),
+        };
+        self.append_and_apply(
+            &event,
+            Some(task_id),
+            Some(worker_id),
+            Some(parent_run_id),
+            move |tx| {
+                tx.execute(
+                    "UPDATE runs SET state = 'working' WHERE run_id = ?1",
+                    rusqlite::params![parent_run_id.to_string()],
+                )?;
+                Ok(())
+            },
+        )
+    }
 }
 
 /// Maps a run state to the event kind that records entering it.
@@ -654,7 +773,7 @@ fn message_kind_str(kind: &batman_protocol::MessageKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use batman_protocol::{ProjectId, RunId, TaskId, WorkerId};
+    use batman_protocol::{ProjectId, RunId, TaskId, WorkerId, WorkerProfileRef};
     use rusqlite::Connection;
 
     fn open_test_db() -> Connection {

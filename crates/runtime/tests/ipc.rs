@@ -509,6 +509,8 @@ async fn omp_extension_receives_all_mutation_methods() {
             "message/list",
             "approval/list",
             "approval/decide",
+            "coordination/child/list",
+            "coordination/child/decide",
             "reconcile/omp"
         ]
     );
@@ -615,9 +617,14 @@ async fn worker_mcp_accepted_with_valid_credential_and_ancestry() {
         names,
         vec![
             "runtime/status",
-            "message/send",
-            "coordination/child/list",
-            "coordination/child/decide"
+            "coordination/task",
+            "coordination/peers",
+            "coordination/send",
+            "coordination/requestChild",
+            "coordination/publishArtifact",
+            "coordination/reportBlocked",
+            "coordination/askPolicy",
+            "coordination/child/list"
         ]
     );
 

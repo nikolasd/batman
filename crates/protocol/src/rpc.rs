@@ -190,6 +190,7 @@ pub mod error_code {
     pub const CAPABILITY_UNSUPPORTED: i32 = -32003;
     pub const SEQUENCE_GONE: i32 = -32004;
     pub const ADAPTER_UNAVAILABLE: i32 = -32005;
+    pub const RATE_LIMITED: i32 = -32006;
     /// Reserved application error range per JSON-RPC 2.0: an invalid
     /// lifecycle-state transition was requested.
     pub const ILLEGAL_TRANSITION: i32 = -32100;

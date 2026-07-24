@@ -7,6 +7,7 @@
 //! from this crate.
 
 mod approval;
+mod coordination;
 mod event;
 mod ids;
 mod message;
@@ -37,6 +38,12 @@ pub use event::RunFlags;
 pub use run::{Run, RunSpec, RunState};
 pub use task::TaskRef;
 pub use worker::{Worker, WorkerProfileRef};
+pub use coordination::{
+    CoordinationAskPolicyParams, CoordinationChildDecision, CoordinationPeersParams,
+    CoordinationPublishArtifactParams, CoordinationReportBlockedParams,
+    CoordinationRequestChildParams, CoordinationSendParams, CoordinationTaskParams,
+    COORDINATION_PAYLOAD_MAX_BYTES, COORDINATION_RATE_LIMIT_PER_MINUTE,
+};
 pub use version::{ProtocolVersion, VersionRange};
 
 #[cfg(test)]

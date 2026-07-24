@@ -13,8 +13,9 @@ use std::sync::Arc;
 
 use batman_protocol::{
     BatmanMethod, ClientAuth, ClientPrincipalSummary, EVENTS_EVENT_METHOD, EventEnvelope,
-    EventSource, InitializeParams, InitializeResult, JsonRpcNotification, ProtocolVersion,
-    RuntimeCapabilities, RuntimeEvent, RuntimeInfo, RuntimeStatus, error_code,
+    EventSource, InitializeParams, InitializeResult, JsonRpcNotification, MessageId, MessageKind,
+    ProtocolVersion, RuntimeCapabilities, RuntimeEvent, RuntimeInfo, RuntimeStatus,
+    TaskId, WorkerId, error_code,
 };
 use futures_util::StreamExt;
 use serde_json::{Value, json};
@@ -416,6 +417,8 @@ async fn dispatch(
         | BatmanMethod::MessageList
         | BatmanMethod::ApprovalList
         | BatmanMethod::ApprovalDecide
+        | BatmanMethod::CoordinationChildList
+        | BatmanMethod::CoordinationChildDecide
         | BatmanMethod::ReconcileOmp => {
             let resolved = method.expect("allowed implies a known method");
             let params = message.get("params").cloned().unwrap_or(Value::Null);
@@ -424,12 +427,158 @@ async fn dispatch(
                 Err(err) => error(&id, err.code, &err.message),
             }
         }
-        // Coordination methods: not yet implemented (Task 6).
-        BatmanMethod::CoordinationChildList | BatmanMethod::CoordinationChildDecide => error(
-            &id,
-            error_code::METHOD_NOT_FOUND,
-            &format!("method {method_name:?} is not yet implemented"),
-        ),
+        // Coordination methods: routed through CoordinationBroker, scoped
+        // to the connection's bound run when the principal carries one.
+        BatmanMethod::CoordinationTask
+        | BatmanMethod::CoordinationPeers
+        | BatmanMethod::CoordinationSend
+        | BatmanMethod::CoordinationRequestChild
+        | BatmanMethod::CoordinationPublishArtifact
+        | BatmanMethod::CoordinationReportBlocked
+        | BatmanMethod::CoordinationAskPolicy => {
+            let resolved = method.expect("allowed implies a known method");
+            let params = message.get("params").cloned().unwrap_or(Value::Null);
+            match dispatch_coordination(resolved, principal, &params, shared).await {
+                Ok(value) => success(&id, value),
+                Err(err) => error(&id, err.code, &err.message),
+            }
+        }
+    }
+}
+
+/// Dispatches one worker-safe `coordination/*` method to the shared
+/// [`crate::coordination::CoordinationBroker`], using the connection's
+/// bound scope (`principal.scoped_run_id`) as the trusted run identity --
+/// never a client-supplied one.
+async fn dispatch_coordination(
+    method: BatmanMethod,
+    principal: &ClientPrincipal,
+    params: &Value,
+    shared: &Arc<Shared>,
+) -> Result<Value, crate::coordination::CoordinationError> {
+    let run_id = principal.scoped_run_id.ok_or_else(|| {
+        crate::coordination::CoordinationError {
+            code: error_code::INVALID_PARAMS,
+            message: "this connection has no bound scope".to_string(),
+        }
+    })?;
+    match method {
+        BatmanMethod::CoordinationTask => shared.coordination.task(run_id).await,
+        BatmanMethod::CoordinationPeers => shared.coordination.peers(run_id).await,
+        BatmanMethod::CoordinationSend => {
+            let sender_worker_id = parse_worker_field(params, "senderWorkerId")?;
+            let task_id = parse_task_field(params, "taskId")?;
+            let kind = parse_message_kind_field(params)?;
+            let payload = params
+                .get("payload")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_params("payload is required"))?
+                .to_string();
+            let recipient_worker_id = params
+                .get("recipientWorkerId")
+                .and_then(Value::as_str)
+                .map(WorkerId::parse)
+                .transpose()
+                .map_err(|_| invalid_params("recipientWorkerId is not a valid id"))?;
+            let reply_to = params
+                .get("replyTo")
+                .and_then(Value::as_str)
+                .map(MessageId::parse)
+                .transpose()
+                .map_err(|_| invalid_params("replyTo is not a valid id"))?;
+            shared
+                .coordination
+                .send(run_id, sender_worker_id, task_id, kind, payload, recipient_worker_id, reply_to)
+                .await
+        }
+        BatmanMethod::CoordinationRequestChild => {
+            let reason = params
+                .get("reason")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_params("reason is required"))?
+                .to_string();
+            shared.coordination.request_child(run_id, reason).await
+        }
+        BatmanMethod::CoordinationPublishArtifact => {
+            let artifact_ref = params
+                .get("artifactRef")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_params("artifactRef is required"))?
+                .to_string();
+            let description = params
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            shared.coordination.publish_artifact(run_id, artifact_ref, description).await
+        }
+        BatmanMethod::CoordinationReportBlocked => {
+            let reason = params
+                .get("reason")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_params("reason is required"))?
+                .to_string();
+            shared.coordination.report_blocked(run_id, reason).await
+        }
+        BatmanMethod::CoordinationAskPolicy => {
+            let question = params
+                .get("question")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_params("question is required"))?
+                .to_string();
+            shared.coordination.ask_policy(run_id, question).await
+        }
+        _ => Err(crate::coordination::CoordinationError {
+            code: error_code::METHOD_NOT_FOUND,
+            message: "method is not routed through CoordinationBroker".to_string(),
+        }),
+    }
+}
+
+fn invalid_params(message: &str) -> crate::coordination::CoordinationError {
+    crate::coordination::CoordinationError {
+        code: error_code::INVALID_PARAMS,
+        message: message.to_string(),
+    }
+}
+
+fn parse_worker_field(
+    params: &Value,
+    field: &str,
+) -> Result<WorkerId, crate::coordination::CoordinationError> {
+    params
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_params(&format!("{field} is required")))
+        .and_then(|s| WorkerId::parse(s).map_err(|_| invalid_params(&format!("{field} is not a valid id"))))
+}
+
+fn parse_task_field(
+    params: &Value,
+    field: &str,
+) -> Result<TaskId, crate::coordination::CoordinationError> {
+    params
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_params(&format!("{field} is required")))
+        .and_then(|s| TaskId::parse(s).map_err(|_| invalid_params(&format!("{field} is not a valid id"))))
+}
+
+fn parse_message_kind_field(params: &Value) -> Result<MessageKind, crate::coordination::CoordinationError> {
+    let raw = params
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_params("kind is required"))?;
+    match raw {
+        "assign" => Ok(MessageKind::Assign),
+        "steer" => Ok(MessageKind::Steer),
+        "followUp" => Ok(MessageKind::FollowUp),
+        "question" => Ok(MessageKind::Question),
+        "answer" => Ok(MessageKind::Answer),
+        "peerMessage" => Ok(MessageKind::PeerMessage),
+        "approvalDecision" => Ok(MessageKind::ApprovalDecision),
+        "cancel" => Ok(MessageKind::Cancel),
+        "shutdown" => Ok(MessageKind::Shutdown),
+        other => Err(invalid_params(&format!("unknown message kind {other:?}"))),
     }
 }
 

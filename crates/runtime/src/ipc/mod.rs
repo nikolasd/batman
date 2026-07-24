@@ -190,10 +190,12 @@ impl ClientPrincipal {
     #[must_use]
     pub fn allowed_methods(&self) -> Vec<BatmanMethod> {
         use BatmanMethod::{
-            ApprovalDecide, ApprovalList, CoordinationChildDecide, CoordinationChildList,
-            EventsReplay, EventsSubscribe, MessageList, MessageSend, ReconcileOmp,
-            RuntimeShutdown, RuntimeStatus, RunCancel, RunGet, RunList, RunRetry, RunSubmit,
-            TaskGet, TaskUpsert, WorkerCreate, WorkerGet, WorkerList,
+            ApprovalDecide, ApprovalList, CoordinationAskPolicy, CoordinationChildDecide,
+            CoordinationChildList, CoordinationPeers, CoordinationPublishArtifact,
+            CoordinationReportBlocked, CoordinationRequestChild, CoordinationSend,
+            CoordinationTask, EventsReplay, EventsSubscribe, MessageList, MessageSend,
+            ReconcileOmp, RuntimeShutdown, RuntimeStatus, RunCancel, RunGet, RunList, RunRetry,
+            RunSubmit, TaskGet, TaskUpsert, WorkerCreate, WorkerGet, WorkerList,
         };
         match self.role {
             ClientRole::OmpExtension => vec![
@@ -215,6 +217,8 @@ impl ClientPrincipal {
                 MessageList,
                 ApprovalList,
                 ApprovalDecide,
+                CoordinationChildList,
+                CoordinationChildDecide,
                 ReconcileOmp,
             ],
             ClientRole::Display => {
@@ -234,9 +238,14 @@ impl ClientPrincipal {
             }
             ClientRole::WorkerMcp => vec![
                 RuntimeStatus,
-                MessageSend,
+                CoordinationTask,
+                CoordinationPeers,
+                CoordinationSend,
+                CoordinationRequestChild,
+                CoordinationPublishArtifact,
+                CoordinationReportBlocked,
+                CoordinationAskPolicy,
                 CoordinationChildList,
-                CoordinationChildDecide,
             ],
         }
     }

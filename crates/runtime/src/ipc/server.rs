@@ -36,6 +36,9 @@ pub(crate) struct Shared {
     pub(crate) shutdown: Arc<Notify>,
     /// Routes every orchestration method to the domain repository.
     pub(crate) orchestration: Arc<crate::service::OrchestrationService>,
+    /// Routes every worker-safe `coordination/*` method to the domain
+    /// repository.
+    pub(crate) coordination: Arc<crate::coordination::CoordinationBroker>,
 }
 
 /// Per-connection context derived from the accepted peer's credentials.
@@ -126,6 +129,10 @@ impl Server {
             project_id,
             config.run_driver.clone(),
         ));
+        let coordination = Arc::new(crate::coordination::CoordinationBroker::new(
+            db.clone(),
+            project_id,
+        ));
 
         let shared = Arc::new(Shared {
             db,
@@ -137,6 +144,7 @@ impl Server {
             active_runs: Arc::new(AtomicUsize::new(0)),
             shutdown: Arc::new(Notify::new()),
             orchestration,
+            coordination,
         });
 
         Ok(Self {

@@ -112,6 +112,8 @@ impl OrchestrationService {
             BatmanMethod::ApprovalList => self.approval_list(params).await,
             BatmanMethod::ApprovalDecide => self.approval_decide(params).await,
             BatmanMethod::ReconcileOmp => self.reconcile_omp(principal, params).await,
+            BatmanMethod::CoordinationChildList => self.coordination_child_list(principal, params).await,
+            BatmanMethod::CoordinationChildDecide => self.coordination_child_decide(params).await,
             _ => Err(ServiceError::internal(
                 "method is not routed through OrchestrationService",
             )),
@@ -539,6 +541,104 @@ impl OrchestrationService {
             "newOwnerClientInstanceId": principal.instance_id,
             "sequence": sequence["sequence"],
         }))
+    }
+
+    // ---------------------------------------------------- coordination
+
+    /// `coordination/child/list`: pending child-worker requests. A
+    /// `workerMcp` principal sees only its own scoped run's request;
+    /// `ompExtension`/`display` see every pending request in the project.
+    async fn coordination_child_list(
+        &self,
+        principal: &crate::ipc::ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
+        let scoped_run_id = principal.scoped_run_id;
+        let requested_run_id = params
+            .get("runId")
+            .and_then(Value::as_str)
+            .map(RunId::parse)
+            .transpose()
+            .map_err(|_| ServiceError::invalid_params("runId is not a valid id"))?;
+        let run_filter = match scoped_run_id {
+            Some(run_id) => Some(run_id),
+            None => requested_run_id,
+        };
+
+        self.db
+            .run_domain_op(Box::new(move |conn| {
+                let (sql, params): (&str, Vec<String>) = match run_filter {
+                    Some(run_id) => (
+                        "SELECT sequence, event_json FROM events
+                         WHERE run_id = ?1 AND event_json LIKE '%\"childEvent\"%'
+                         ORDER BY sequence",
+                        vec![run_id.to_string()],
+                    ),
+                    None => (
+                        "SELECT sequence, event_json FROM events
+                         WHERE event_json LIKE '%\"childEvent\"%' ORDER BY sequence",
+                        vec![],
+                    ),
+                };
+                let mut stmt = conn.prepare(sql)?;
+                let rows: Vec<Value> = stmt
+                    .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                        row.get::<_, String>(1)
+                    })?
+                    .filter_map(|r| r.ok())
+                    .filter_map(|json_text| serde_json::from_str::<Value>(&json_text).ok())
+                    .collect();
+                Ok(json!({ "requests": rows }))
+            }))
+            .await
+            .map_err(ServiceError::from)
+    }
+
+    /// `coordination/child/decide`: OMP's answer to a prior
+    /// `coordination/requestChild`. Acceptance supplies the OMP-created
+    /// child ids and returns the parent run to `working`; denial records
+    /// a reason and also returns the parent to `working`.
+    async fn coordination_child_decide(&self, params: &Value) -> Result<Value, ServiceError> {
+        let parent_run_id = parse_run_id(params.get("parentRunId"))?;
+        let decision = str_field(params, "decision")?;
+        let project_id = self.project_id;
+
+        match decision.as_str() {
+            "accept" => {
+                let child_task_id = parse_task_id(params.get("childTaskId"))?;
+                let child_worker_id = parse_worker_id(params.get("childWorkerId"))?;
+                let child_run_id = parse_run_id(params.get("childRunId"))?;
+                self.db
+                    .run_domain_op(Box::new(move |conn| {
+                        let mut repo = DomainRepository::new(conn, project_id);
+                        repo.decide_child(
+                            parent_run_id,
+                            true,
+                            Some(child_task_id),
+                            Some(child_worker_id),
+                            Some(child_run_id),
+                            None,
+                        )
+                        .map(|c| json!({ "sequence": c.sequence }))
+                    }))
+                    .await
+                    .map_err(ServiceError::from)
+            }
+            "deny" => {
+                let reason = str_field(params, "reason")?;
+                self.db
+                    .run_domain_op(Box::new(move |conn| {
+                        let mut repo = DomainRepository::new(conn, project_id);
+                        repo.decide_child(parent_run_id, false, None, None, None, Some(&reason))
+                            .map(|c| json!({ "sequence": c.sequence }))
+                    }))
+                    .await
+                    .map_err(ServiceError::from)
+            }
+            other => Err(ServiceError::invalid_params(format!(
+                "decision must be \"accept\" or \"deny\", got {other:?}"
+            ))),
+        }
     }
 }
 

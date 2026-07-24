@@ -72,6 +72,22 @@ pub enum BatmanMethod {
     #[serde(rename = "coordination/child/decide")]
     CoordinationChildDecide,
 
+    // Orchestration: coordination (worker-safe broker surface)
+    #[serde(rename = "coordination/task")]
+    CoordinationTask,
+    #[serde(rename = "coordination/peers")]
+    CoordinationPeers,
+    #[serde(rename = "coordination/send")]
+    CoordinationSend,
+    #[serde(rename = "coordination/requestChild")]
+    CoordinationRequestChild,
+    #[serde(rename = "coordination/publishArtifact")]
+    CoordinationPublishArtifact,
+    #[serde(rename = "coordination/reportBlocked")]
+    CoordinationReportBlocked,
+    #[serde(rename = "coordination/askPolicy")]
+    CoordinationAskPolicy,
+
     // Orchestration: reconcile OMP-native agents
     #[serde(rename = "reconcile/omp")]
     ReconcileOmp,
