@@ -66,7 +66,7 @@ function createFakeApi(): {
   return { api: api as unknown as ExtensionAPI, tools, commands };
 }
 
-test("registers batman_status plus every orchestration tool, and the batman-status command", () => {
+test("registers batman_status plus every orchestration tool, and both slash commands", () => {
   const { api, tools, commands } = createFakeApi();
   extension(api);
   expect([...tools.keys()]).toEqual([
@@ -78,7 +78,7 @@ test("registers batman_status plus every orchestration tool, and the batman-stat
     "batman_approval",
     "batman_reconcile",
   ]);
-  expect([...commands.keys()]).toEqual(["batman-status"]);
+  expect([...commands.keys()]).toEqual(["batman-status", "batman"]);
 });
 
 // ---- Live-daemon path: a real foreground `batcave` the tool must reach. ----

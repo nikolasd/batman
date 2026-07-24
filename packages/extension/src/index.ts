@@ -22,6 +22,7 @@ import { normalizeEventPayload, normalizeLifecyclePayload, normalizeProgressPayl
 import { OmpNativeReconciler, createOmpProcessEpoch } from "./omp-native/reconcile";
 import { getRuntimeStatus, type GetRuntimeStatusContext } from "./status";
 import { registerOrchestrationTools } from "./tools";
+import { registerMonitor } from "./monitor/controller";
 import { ensureRuntime } from "./runtime";
 
 const TOOL_NAME = "batman_status";
@@ -89,6 +90,7 @@ export default function batmanExtension(pi: ExtensionAPI): void {
   });
 
   registerOrchestrationTools(pi, { getClient });
+  registerMonitor(pi, { getClient });
 
   // OMP-native subagent lifecycle mirroring: one epoch per extension
   // process, normalized facts recorded by the reconciler, listeners
