@@ -128,6 +128,7 @@ impl Server {
             db.clone(),
             project_id,
             config.run_driver.clone(),
+            config.approval_callback.clone(),
         ));
         let coordination = Arc::new(crate::coordination::CoordinationBroker::new(
             db.clone(),

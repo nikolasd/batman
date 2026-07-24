@@ -1,5 +1,6 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod approval;
 pub mod coordination;
 pub mod db;
 pub mod domain;
@@ -17,3 +18,4 @@ pub use security::{SecurityError, StateRoot};
 pub use domain::{Committed, DomainError, DomainRepository, TransitionError};
 pub use service::{FakeRunDriver, OrchestrationService, RunDriver, RunDriverContext, ServiceError};
 pub use coordination::{CoordinationBroker, CoordinationError, ScopeTokenStore};
+pub use approval::{ApprovalCallback, ApprovalError, ApprovalService, DecideOutcome, NoopApprovalCallback};

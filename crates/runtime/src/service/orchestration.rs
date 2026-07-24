@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use batman_protocol::{
-    ApprovalDecision as WireApprovalDecision, ApprovalId, ApprovalRequest, BatmanMethod,
+    ApprovalId, ApprovalRequest, BatmanMethod,
     DeliveryState, MessageId, MessageKind, ProjectId, Run, RunFlags, RunId, RunMessage, RunSpec,
     RunState, TaskId, TaskRef, Timestamp, Worker, WorkerId, WorkerProfileRef, error_code,
 };
@@ -63,6 +63,27 @@ impl From<DomainError> for ServiceError {
     }
 }
 
+impl From<crate::approval::ApprovalError> for ServiceError {
+    fn from(err: crate::approval::ApprovalError) -> Self {
+        use crate::approval::ApprovalError;
+        match err {
+            ApprovalError::Forbidden { .. } => Self {
+                code: error_code::INVALID_PARAMS,
+                message: err.to_string(),
+            },
+            ApprovalError::Conflict { .. } | ApprovalError::RunSettled { .. } => Self {
+                code: error_code::INVALID_PARAMS,
+                message: err.to_string(),
+            },
+            ApprovalError::NotFound { kind, id } => Self {
+                code: error_code::INVALID_PARAMS,
+                message: format!("{kind} {id} not found"),
+            },
+            ApprovalError::Domain(domain_err) => Self::from(domain_err),
+        }
+    }
+}
+
 /// Routes every orchestration method to the domain repository. Holds no
 /// mutable state itself; every command borrows the shared
 /// [`DatabaseHandle`] and commits on the actor thread.
@@ -70,6 +91,7 @@ pub struct OrchestrationService {
     db: Arc<DatabaseHandle>,
     project_id: ProjectId,
     run_driver: Option<Arc<dyn RunDriver>>,
+    approval: Arc<crate::approval::ApprovalService>,
 }
 
 impl OrchestrationService {
@@ -78,11 +100,18 @@ impl OrchestrationService {
         db: Arc<DatabaseHandle>,
         project_id: ProjectId,
         run_driver: Option<Arc<dyn RunDriver>>,
+        approval_callback: Arc<dyn crate::approval::ApprovalCallback>,
     ) -> Self {
+        let approval = Arc::new(crate::approval::ApprovalService::new(
+            db.clone(),
+            project_id,
+            approval_callback,
+        ));
         Self {
             db,
             project_id,
             run_driver,
+            approval,
         }
     }
 
@@ -110,7 +139,7 @@ impl OrchestrationService {
             BatmanMethod::MessageSend => self.message_send(params).await,
             BatmanMethod::MessageList => self.message_list(params).await,
             BatmanMethod::ApprovalList => self.approval_list(params).await,
-            BatmanMethod::ApprovalDecide => self.approval_decide(params).await,
+            BatmanMethod::ApprovalDecide => self.approval_decide(principal, params).await,
             BatmanMethod::ReconcileOmp => self.reconcile_omp(principal, params).await,
             BatmanMethod::CoordinationChildList => self.coordination_child_list(principal, params).await,
             BatmanMethod::CoordinationChildDecide => self.coordination_child_decide(params).await,
@@ -467,7 +496,11 @@ impl OrchestrationService {
             .map_err(ServiceError::from)
     }
 
-    async fn approval_decide(&self, params: &Value) -> Result<Value, ServiceError> {
+    async fn approval_decide(
+        &self,
+        principal: &crate::ipc::ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
         let approval_id = params
             .get("approvalId")
             .and_then(Value::as_str)
@@ -483,20 +516,21 @@ impl OrchestrationService {
             ));
         }
         let reason = str_field(params, "reason")?;
-        let _typed = WireApprovalDecision {
-            decision: decision.clone(),
-            reason: reason.clone(),
-        };
 
-        let project_id = self.project_id;
-        self.db
-            .run_domain_op(Box::new(move |conn| {
-                let mut repo = DomainRepository::new(conn, project_id);
-                repo.decide_approval(approval_id, &decision, &reason)
-                    .map(|c| json!({ "sequence": c.sequence }))
-            }))
+        let outcome = self
+            .approval
+            .decide(approval_id, &principal.instance_id, &decision, &reason)
             .await
-            .map_err(ServiceError::from)
+            .map_err(ServiceError::from)?;
+
+        Ok(json!({
+            "approvalId": approval_id.to_string(),
+            "outcome": match outcome {
+                crate::approval::DecideOutcome::Decided => "decided",
+                crate::approval::DecideOutcome::DecidedCallbackFailed => "decidedCallbackFailed",
+                crate::approval::DecideOutcome::AlreadyDecided => "alreadyDecided",
+            },
+        }))
     }
 
     // -------------------------------------------------------- reconcile

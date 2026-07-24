@@ -477,11 +477,31 @@ impl<'c> DomainRepository<'c> {
         })
     }
 
-    /// Creates an approval request. Emits an `ApprovalRequested` event.
+    /// Creates an approval request and atomically transitions its run
+    /// `working -> waitingUser`, in one durable event. Called when an
+    /// adapter reports it needs approval for `action`.
     pub fn create_approval(
         &mut self,
         approval: &ApprovalRequest,
     ) -> Result<Committed, DomainError> {
+        let (from_str,): (String,) = self
+            .conn
+            .query_row(
+                "SELECT state FROM runs WHERE run_id = ?1",
+                [approval.run_id.to_string()],
+                |row| Ok((row.get(0)?,)),
+            )
+            .map_err(|_| DomainError::NotFound {
+                kind: "run",
+                id: approval.run_id.to_string(),
+            })?;
+        let from = RunState::try_from(from_str.as_str()).map_err(|_| DomainError::NotFound {
+            kind: "run-state",
+            id: from_str.clone(),
+        })?;
+        let waiting_user = RunState::try_from("waitingUser").expect("waitingUser is valid");
+        check_transition(&approval.run_id.to_string(), &from, &waiting_user)?;
+
         let event = RuntimeEvent::ApprovalEvent {
             kind: RuntimeEventKind::ApprovalRequested,
             approval_id: approval.approval_id,
@@ -512,6 +532,10 @@ impl<'c> DomainRepository<'c> {
                         approval.decided_at.as_ref().map(|t| t.as_str().to_string()),
                         approval.decision,
                     ],
+                )?;
+                tx.execute(
+                    "UPDATE runs SET state = 'waitingUser' WHERE run_id = ?1",
+                    rusqlite::params![approval.run_id.to_string()],
                 )?;
                 Ok(())
             },

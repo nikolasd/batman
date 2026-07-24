@@ -154,6 +154,10 @@ pub struct ServerConfig {
     /// run and reports `adapter_unavailable` rather than pretending the run
     /// started.
     pub run_driver: Option<std::sync::Arc<dyn crate::service::RunDriver>>,
+    /// The adapter-callback seam invoked after `approval/decide` records a
+    /// decision. Defaults to [`crate::approval::NoopApprovalCallback`],
+    /// which acknowledges immediately.
+    pub approval_callback: std::sync::Arc<dyn crate::approval::ApprovalCallback>,
 }
 
 impl Default for ServerConfig {
@@ -166,6 +170,7 @@ impl Default for ServerConfig {
             owner_only_override: None,
             binary_source: batman_protocol::BinarySource::Unknown,
             run_driver: None,
+            approval_callback: Arc::new(crate::approval::NoopApprovalCallback),
         }
     }
 }
