@@ -1,3 +1,14 @@
+// Adapter submodules (claude/codex/copilot/omp_rpc) reference the crate's
+// own public API via its external path (`batman_runtime::adapter::...`,
+// `batman_runtime::supervisor::...`) rather than `crate::...`, so that the
+// exact same source compiles unchanged both here (inside the library
+// itself) and when pulled into a standalone integration test binary via
+// `#[path = "..."] mod x;` (where `batman_runtime::` is the only path that
+// resolves, since the test binary has no `crate::adapter` of its own).
+// This standard 2018+-edition idiom makes the crate's own external name
+// resolve to itself from the inside.
+extern crate self as batman_runtime;
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod adapter;

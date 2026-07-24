@@ -1,40 +1,29 @@
 //! Integration tests for the version-gated Copilot ACP adapter.
 //!
-//! Compiles `crates/runtime/src/adapter/copilot/mod.rs` directly into this
-//! test binary (see the `#[path]` inclusion below) rather than requiring
-//! `crates/runtime/src/adapter/mod.rs` to already register it -- that
-//! file is a shared integration point four parallel adapter tasks touch,
-//! and is wired up by the orchestrator once all four land (see
-//! `local://adapter-shared-context.md`'s non-negotiable constraints).
-//! Every `batman_runtime::adapter::...`/`batman_runtime::supervisor::...`
-//! path used inside `copilot/*.rs` resolves the same way once that
-//! wiring lands, so no code changes there when it does.
-//!
 //! Every test here is a genuine no-model-call structured-protocol check:
 //! pure fixture/negotiation/normalization assertions, or a real
 //! `copilot --acp` handshake (`initialize`/`session/list`) that never
 //! sends a `session/prompt`.
-
-#[path = "../src/adapter/copilot/mod.rs"]
-mod copilot;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use batman_runtime::adapter::copilot::CopilotAdapter;
+use batman_runtime::adapter::copilot::client::{
+    CopilotAcpClient, CopilotClientEvent, parse_initialize_response,
+};
+use batman_runtime::adapter::copilot::compatibility::{
+    COPILOT_MAX_ACP_PROTOCOL_VERSION, COPILOT_MIN_ACP_PROTOCOL_VERSION,
+    copilot_acp_protocol_version_supported, copilot_cli_version_known,
+};
+use batman_runtime::adapter::copilot::normalize::copilot_normalize_session_update;
 use batman_runtime::adapter::{
     Adapter, AdapterCapabilities, AdapterErrorCode, ApprovalsCapability, DurabilityCapability,
     NativeViewCapability, NestedCapability, ProtocolKind, ResumeCapability, SteeringCapability,
     UsageCapability, WorkspaceControlCapability,
 };
-use copilot::CopilotAdapter;
-use copilot::client::{CopilotAcpClient, CopilotClientEvent, parse_initialize_response};
-use copilot::compatibility::{
-    COPILOT_MAX_ACP_PROTOCOL_VERSION, COPILOT_MIN_ACP_PROTOCOL_VERSION,
-    copilot_acp_protocol_version_supported, copilot_cli_version_known,
-};
-use copilot::normalize::copilot_normalize_session_update;
 use serde_json::Value;
 use tokio::time::timeout;
 

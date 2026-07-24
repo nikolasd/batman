@@ -15,18 +15,17 @@
 //! static, recorded-looking JSONL through `normalize.rs` directly rather
 //! than spawning `fake-worker` (whose `omp-rpc` mode predates this
 //! adapter's real wire-shape grounding and does not attempt to match it).
-#[path = "../src/adapter/omp_rpc/mod.rs"]
-mod omp_rpc;
-
 use std::path::PathBuf;
 
 use batman_runtime::adapter::AdapterEventPayload;
-use batman_runtime::supervisor::{EnvironmentPolicy, SpawnSpec, Supervisor};
-use omp_rpc::client::{
+use batman_runtime::adapter::omp_rpc::client::{
     self, OmpRpcClient, abort_command, follow_up_command, get_session_stats_command,
     get_state_command, prompt_command, set_subagent_subscription_command, steer_command,
 };
-use omp_rpc::normalize::{PROMPT_ACCEPTED_MARKER, PROMPT_COMPLETED_MARKER, normalize_frame};
+use batman_runtime::adapter::omp_rpc::normalize::{
+    PROMPT_ACCEPTED_MARKER, PROMPT_COMPLETED_MARKER, normalize_frame,
+};
+use batman_runtime::supervisor::{EnvironmentPolicy, SpawnSpec, Supervisor};
 use serde_json::Value;
 
 // ------------------------------------------------------------- fixtures

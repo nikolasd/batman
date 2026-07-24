@@ -5,8 +5,12 @@
 //! adapters push normalized telemetry through rather than writing
 //! [`crate::domain::DomainRepository`] directly.
 mod capability;
+pub mod claude;
+pub mod codex;
+pub mod copilot;
 mod error;
 mod event_sink;
+pub mod omp_rpc;
 mod profile;
 mod profile_store;
 #[path = "trait.rs"]
@@ -20,8 +24,12 @@ pub use capability::{
     NestedCapability, ProtocolKind, ResumeCapability, SteeringCapability, UsageCapability,
     WorkspaceControlCapability,
 };
+pub use claude::ClaudeAdapter;
+pub use codex::CodexAdapter;
+pub use copilot::CopilotAdapter;
 pub use error::{AdapterError, AdapterErrorCode};
 pub use event_sink::{AdapterEvent, AdapterEventPayload, AdapterEventSink, DomainAdapterEventSink};
+pub use omp_rpc::{OmpRpcAdapter, OmpRpcAdapterOptions};
 pub use profile::{
     AdapterKind, ClaudeStartupOptions, CodexStartupOptions, CopilotStartupOptions, EffectivePolicy,
     OmpRpcStartupOptions, ProfileError, ProfileId, StartupOptions, TerminalDegradedStartupOptions,

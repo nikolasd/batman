@@ -4,30 +4,6 @@
 //! usage, and artifact events, all correlated to one run, with hidden
 //! `reasoning` content dropped before it ever reaches an event), and
 //! approval-request normalization from a dedicated fixture.
-//!
-//! `crates/runtime/src/adapter/mod.rs` does not yet declare `mod codex;`
-//! (Task 4 develops in parallel with three sibling adapter tasks; the
-//! orchestrator wires every adapter's `mod`/`pub use` in one pass after
-//! all four land -- see this adapter's final summary for the exact two
-//! lines). Until then, this test file pulls the adapter's source in
-//! directly via `#[path]` and provides tiny shim modules so its internal
-//! `crate::adapter::*`/`crate::supervisor::*` paths -- which will resolve
-//! against `batman_runtime`'s own module tree once wired -- resolve here
-//! against `batman_runtime`'s public re-exports instead. Once wired, this
-//! `#[path]`/shim scaffold becomes dead weight the orchestrator should
-//! delete in the same pass (the adapter module will then live at
-//! `batman_runtime::adapter::codex` and this file should switch to a
-//! plain `use batman_runtime::adapter::CodexAdapter;`).
-
-mod adapter {
-    pub use batman_runtime::adapter::*;
-}
-mod supervisor {
-    pub use batman_runtime::supervisor::*;
-}
-
-#[path = "../src/adapter/codex/mod.rs"]
-mod codex;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -37,10 +13,13 @@ use batman_runtime::adapter::{
     Adapter, AdapterEvent, AdapterEventPayload, AdapterEventSink, AdapterFuture,
     CodexStartupOptions,
 };
+use batman_runtime::supervisor::{EnvironmentPolicy, SpawnSpec, Supervisor};
 use serde_json::Value;
 
-use codex::normalize;
-use codex::schema::{SchemaManifest, verify_against_installed_binary};
+use batman_runtime::adapter::codex::CodexAdapter;
+use batman_runtime::adapter::codex::client::CodexRpcClient;
+use batman_runtime::adapter::codex::normalize;
+use batman_runtime::adapter::codex::schema::{SchemaManifest, verify_against_installed_binary};
 
 // --------------------------------------------------------------- fixtures
 
@@ -224,7 +203,7 @@ fn decision_mapping_matches_the_verified_review_decision_shape() {
 
 #[tokio::test]
 async fn capabilities_match_the_verified_protocol_surface() {
-    let adapter = codex::CodexAdapter::new(
+    let adapter = CodexAdapter::new(
         std::env::temp_dir(),
         CodexStartupOptions::default(),
         Vec::new(),
@@ -263,7 +242,7 @@ async fn capabilities_match_the_verified_protocol_surface() {
 
 #[tokio::test]
 async fn probe_reports_the_installed_codex_version_without_a_model_call() {
-    let adapter = codex::CodexAdapter::with_binary(
+    let adapter = CodexAdapter::with_binary(
         "codex",
         std::env::temp_dir(),
         CodexStartupOptions::default(),
@@ -291,19 +270,19 @@ async fn real_transport_completes_initialize_and_thread_start_with_zero_model_ca
     // actually starts with input (`turn/start`), which this test
     // deliberately never issues.
     let current_env: std::collections::HashMap<String, String> = std::env::vars().collect();
-    let env = supervisor::EnvironmentPolicy::baseline().build(&current_env, &[]);
-    let spec = supervisor::SpawnSpec {
+    let env = EnvironmentPolicy::baseline().build(&current_env, &[]);
+    let spec = SpawnSpec {
         program: PathBuf::from("codex"),
         args: vec!["app-server".to_string()],
         cwd: std::env::temp_dir(),
         env,
-        ..supervisor::SpawnSpec::minimal()
+        ..SpawnSpec::minimal()
     };
-    let process = supervisor::Supervisor::new()
+    let process = Supervisor::new()
         .spawn(spec)
         .await
         .expect("spawning the real installed codex app-server must succeed");
-    let (client, _inbound_rx) = codex::client::CodexRpcClient::spawn(process);
+    let (client, _inbound_rx) = CodexRpcClient::spawn(process);
 
     let init = tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -370,7 +349,7 @@ async fn live_start_actually_runs_a_turn_against_a_real_model() {
         Ok("1"),
         "set BATMAN_LIVE_CODEX=1 to opt into this live, model-invoking test"
     );
-    let adapter = codex::CodexAdapter::new(
+    let adapter = CodexAdapter::new(
         std::env::temp_dir(),
         CodexStartupOptions::default(),
         Vec::new(),

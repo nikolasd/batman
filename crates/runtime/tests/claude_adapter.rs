@@ -1,27 +1,10 @@
 //! Integration tests for the Claude stream-JSON worker adapter.
 //!
-//! `claude/mod.rs` is not yet wired into `crates/runtime/src/adapter/mod.rs`
-//! (the orchestrator adds `mod claude; pub use claude::ClaudeAdapter;` once
-//! all four parallel adapters land), so this file pulls the submodule tree
-//! in directly via `#[path]` -- see the Worker Adapters plan's shared
-//! context for why. Every item the module needs from the adapter contract
-//! itself (`Adapter`, `AdapterError`, `ClaudeStartupOptions`, ...) is
-//! already frozen and exported from `batman_runtime::adapter`, so the
-//! submodule files import those by their real external path
-//! (`batman_runtime::adapter::...`) rather than `crate::adapter::...` --
-//! that is what makes them compile identically both here (as a submodule
-//! of this standalone test binary) and later, once actually wired inside
-//! the `batman-runtime` library crate itself (which can always refer to
-//! itself by its own package name under the 2018+ edition extern prelude).
-//!
 //! No test in this file ever invokes a model: `probe()` runs only
 //! `claude --version`/`claude auth status` against the real installed CLI;
 //! every other test either exercises pure command-argv/normalization logic
 //! against static fixtures, or calls an adapter method before any vendor
 //! process has been started.
-
-#[path = "../src/adapter/claude/mod.rs"]
-mod claude;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,9 +17,9 @@ use batman_runtime::adapter::{
     StartSpec, SteeringCapability, UsageCapability, VendorSessionRef, WorkspaceControlCapability,
 };
 
-use claude::ClaudeAdapter;
-use claude::command;
-use claude::normalize::{ClaudeEvent, ClaudeNormalizer};
+use batman_runtime::adapter::claude::ClaudeAdapter;
+use batman_runtime::adapter::claude::command;
+use batman_runtime::adapter::claude::normalize::{ClaudeEvent, ClaudeNormalizer};
 
 fn new_adapter() -> ClaudeAdapter {
     ClaudeAdapter::new(
