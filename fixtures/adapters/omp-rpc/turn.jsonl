@@ -1,0 +1,7 @@
+{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1,2],"maxFrameBytes":1048576,"maxReassembledFrameBytes":67108864}
+{"type":"extension_ui_request","id":"e1","method":"setWidget","widgetKey":"autoresearch"}
+{"type":"available_commands_update","commands":[]}
+this-is-not-json
+{"type":"response","id":"1","command":"prompt","success":true,"data":{"agentInvoked":false}}
+{"type":"response","id":"2","command":"get_session_stats","success":true,"data":{"sessionId":"019f9652-7aac-7000-a8e1-db0d90064c58","userMessages":1,"assistantMessages":1,"tokens":{"input":42,"output":7,"reasoning":0,"cacheRead":0,"cacheWrite":0,"total":49},"cost":0.0007}}
+{"type":"response","id":"3","command":"get_state","success":true,"data":{"sessionId":"019f9652-7aac-7000-a8e1-db0d90064c58","sessionFile":".omp/sessions/019f9652-7aac-7000-a8e1-db0d90064c58.jsonl","isStreaming":false}}
