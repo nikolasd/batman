@@ -7,9 +7,19 @@
 // session, and every tool reuses that connection.
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import {
+  TASK_SUBAGENT_EVENT_CHANNEL,
+  TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+  TASK_SUBAGENT_PROGRESS_CHANNEL,
+  type SubagentEventPayload,
+  type SubagentLifecyclePayload,
+  type SubagentProgressPayload,
+} from "@oh-my-pi/pi-coding-agent/task";
 
 import type { BatmanClient } from "./client";
 import { buildStatusContext } from "./context";
+import { normalizeEventPayload, normalizeLifecyclePayload, normalizeProgressPayload } from "./omp-native/events";
+import { OmpNativeReconciler, createOmpProcessEpoch } from "./omp-native/reconcile";
 import { getRuntimeStatus, type GetRuntimeStatusContext } from "./status";
 import { registerOrchestrationTools } from "./tools";
 import { ensureRuntime } from "./runtime";
@@ -80,8 +90,44 @@ export default function batmanExtension(pi: ExtensionAPI): void {
 
   registerOrchestrationTools(pi, { getClient });
 
+  // OMP-native subagent lifecycle mirroring: one epoch per extension
+  // process, normalized facts recorded by the reconciler, listeners
+  // registered on session_start and removed on session_shutdown.
+  const ompProcessEpoch = createOmpProcessEpoch();
+  const reconciler = new OmpNativeReconciler();
+  let unsubscribers: Array<() => void> = [];
+
+  pi.on("session_start", async () => {
+    unsubscribers = [
+      // The event bus is untyped (`EventBus.on` receives `unknown`); these
+      // three channels are SDK-internal and documented at
+      // `@oh-my-pi/pi-coding-agent/task`, with no runtime schema exported to
+      // validate against, so the cast is the pinned public contract itself.
+      pi.events.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, (data) => {
+        const payload = data as SubagentLifecyclePayload;
+        reconciler.record(normalizeLifecyclePayload(payload, ompProcessEpoch, Date.now()));
+      }),
+      pi.events.on(TASK_SUBAGENT_PROGRESS_CHANNEL, (data) => {
+        const payload = data as SubagentProgressPayload;
+        reconciler.record(normalizeProgressPayload(payload, ompProcessEpoch, Date.now()));
+      }),
+      pi.events.on(TASK_SUBAGENT_EVENT_CHANNEL, (data) => {
+        const payload = data as SubagentEventPayload;
+        const fact = normalizeEventPayload(payload);
+        if (fact !== undefined) {
+          reconciler.record(fact);
+        }
+      }),
+    ];
+  });
+
   pi.on("session_shutdown", async () => {
     cachedClient?.close();
     cachedClient = undefined;
+    for (const unsubscribe of unsubscribers) {
+      unsubscribe();
+    }
+    unsubscribers = [];
+    reconciler.dispose();
   });
 }
