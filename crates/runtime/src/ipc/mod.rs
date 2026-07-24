@@ -183,18 +183,55 @@ impl ClientPrincipal {
     /// extend these tables explicitly.
     #[must_use]
     pub fn allowed_methods(&self) -> Vec<BatmanMethod> {
-        use BatmanMethod::{EventsReplay, EventsSubscribe, RuntimeShutdown, RuntimeStatus};
+        use BatmanMethod::{
+            ApprovalDecide, ApprovalList, CoordinationChildDecide, CoordinationChildList,
+            EventsReplay, EventsSubscribe, Initialize, MessageList, MessageSend, ReconcileOmp,
+            RuntimeShutdown, RuntimeStatus, RunCancel, RunGet, RunList, RunRetry, RunSubmit,
+            TaskGet, TaskUpsert, WorkerCreate, WorkerGet, WorkerList,
+        };
         match self.role {
-            ClientRole::OmpExtension => {
+            ClientRole::OmpExtension => vec![
+                RuntimeStatus,
+                EventsSubscribe,
+                EventsReplay,
+                RuntimeShutdown,
+                TaskUpsert,
+                TaskGet,
+                WorkerCreate,
+                WorkerList,
+                WorkerGet,
+                RunSubmit,
+                RunList,
+                RunGet,
+                RunRetry,
+                RunCancel,
+                MessageSend,
+                MessageList,
+                ApprovalList,
+                ApprovalDecide,
+                ReconcileOmp,
+            ],
+            ClientRole::Display => {
                 vec![
                     RuntimeStatus,
                     EventsSubscribe,
                     EventsReplay,
-                    RuntimeShutdown,
+                    TaskGet,
+                    WorkerList,
+                    WorkerGet,
+                    RunList,
+                    RunGet,
+                    MessageList,
+                    ApprovalList,
+                    CoordinationChildList,
                 ]
             }
-            ClientRole::Display => vec![RuntimeStatus, EventsSubscribe, EventsReplay],
-            ClientRole::WorkerMcp => vec![RuntimeStatus],
+            ClientRole::WorkerMcp => vec![
+                RuntimeStatus,
+                MessageSend,
+                CoordinationChildList,
+                CoordinationChildDecide,
+            ],
         }
     }
 }

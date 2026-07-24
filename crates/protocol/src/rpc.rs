@@ -4,10 +4,11 @@
 //! request/response/error envelopes plus the concrete payloads exchanged
 //! during the `initialize` handshake.
 
+use crate::BatmanMethod;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json;
 use ts_rs::TS;
-
 use crate::ids::ProjectId;
 use crate::version::{ProtocolVersion, VersionRange};
 
@@ -120,22 +121,7 @@ pub struct ClientPrincipalSummary {
     pub instance_id: String,
 }
 
-/// The JSON-RPC methods implemented at foundation scope. Serialized as the
-/// literal method name string used on the wire.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
-pub enum BatmanMethod {
-    #[serde(rename = "initialize")]
-    Initialize,
-    #[serde(rename = "runtime/status")]
-    RuntimeStatus,
-    #[serde(rename = "events/subscribe")]
-    EventsSubscribe,
-    #[serde(rename = "events/replay")]
-    EventsReplay,
-    #[serde(rename = "runtime/shutdown")]
-    RuntimeShutdown,
-}
+// BatmanMethod is re-exported from method.rs.
 
 /// Where the running `batcave` binary was loaded from. `override` means a
 /// developer override path, `package` a bundled/installed binary, and

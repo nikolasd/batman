@@ -401,6 +401,28 @@ async fn dispatch(
             error_code::METHOD_NOT_FOUND,
             "the connection is already initialized",
         ),
+        // Orchestration methods: not yet implemented.
+        BatmanMethod::TaskUpsert
+        | BatmanMethod::TaskGet
+        | BatmanMethod::WorkerCreate
+        | BatmanMethod::WorkerList
+        | BatmanMethod::WorkerGet
+        | BatmanMethod::RunSubmit
+        | BatmanMethod::RunList
+        | BatmanMethod::RunGet
+        | BatmanMethod::RunRetry
+        | BatmanMethod::RunCancel
+        | BatmanMethod::MessageSend
+        | BatmanMethod::MessageList
+        | BatmanMethod::ApprovalList
+        | BatmanMethod::ApprovalDecide
+        | BatmanMethod::CoordinationChildList
+        | BatmanMethod::CoordinationChildDecide
+        | BatmanMethod::ReconcileOmp => error(
+            &id,
+            error_code::METHOD_NOT_FOUND,
+            &format!("method {method_name:?} is not yet implemented"),
+        ),
     }
 }
 

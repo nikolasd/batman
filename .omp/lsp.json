@@ -1,0 +1,16 @@
+{
+  "servers": {
+    "rust-analyzer": {
+      "command": "/opt/homebrew/bin/rust-analyzer"
+    },
+    "typescript-language-server": {
+      "command": "/Users/nikolasdemiridis/.bun/bin/typescript-language-server",
+      "args": ["--stdio"],
+      "initOptions": {
+        "tsserver": {
+          "path": "/Users/nikolasdemiridis/.bun/install/global/node_modules/typescript/lib/tsserver.js"
+        }
+      }
+    }
+  }
+}
