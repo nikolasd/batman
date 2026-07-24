@@ -164,8 +164,14 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
         kind: RawEventKind::RuntimeStopping,
     });
     let _ = db.append_event(stopping).await;
-    if let Some(handle) = Arc::into_inner(db) {
-        let _ = handle.shutdown().await;
+    // Reliably drain-and-close the database actor: `shutdown` takes `&self`, so
+    // it runs even though `db` is an `Arc` still cloned into any in-flight
+    // connection tasks. Only this clean path -- the actor thread actually
+    // joined -- emits `db_actor_closed`, so the log line is proof the journal
+    // shut down before the socket is removed below.
+    match db.shutdown().await {
+        Ok(()) => tracing::info!("db_actor_closed"),
+        Err(err) => tracing::warn!(error = %err, "db actor shutdown did not complete cleanly"),
     }
     let _ = std::fs::remove_file(&paths.socket);
     drop(lock);

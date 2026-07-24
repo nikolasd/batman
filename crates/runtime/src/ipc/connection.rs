@@ -213,9 +213,11 @@ async fn handle_bootstrap(line: &str, ctx: &ConnContext, shared: &Arc<Shared>) -
         }
     };
 
-    // Compute the next sequence the client should expect.
-    let next_sequence = match shared.db.replay_events(0).await {
-        Ok(events) => events.last().map_or(0, |event| event.sequence) + 1,
+    // Compute the next sequence the client should expect. A single indexed
+    // MAX(sequence) read -- never a full event-log replay -- so `initialize`
+    // stays O(1) regardless of journal size.
+    let next_sequence = match shared.db.max_sequence().await {
+        Ok(max) => max.unwrap_or(0) + 1,
         Err(err) => {
             return Bootstrap::Reply {
                 id,

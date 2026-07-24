@@ -1,0 +1,27 @@
+[
+  {
+    "name": "posix_home_project",
+    "canonicalRoot": "/home/alice/project",
+    "repositoryId": "9c2098df26004b2420961b6cdeafe0a9"
+  },
+  {
+    "name": "var_lib_batman_repo",
+    "canonicalRoot": "/var/lib/batman/repo",
+    "repositoryId": "e6cfcaf00443359c91150af99932acc7"
+  },
+  {
+    "name": "tmp_example_checkout",
+    "canonicalRoot": "/tmp/example-checkout",
+    "repositoryId": "0dbfb3ee35b5d3c2505e219907e9d575"
+  },
+  {
+    "name": "macos_style_root",
+    "canonicalRoot": "/Users/nikolas/dev/batman",
+    "repositoryId": "b5e32692efc1833e765eece53ea0fa54"
+  },
+  {
+    "name": "filesystem_root",
+    "canonicalRoot": "/",
+    "repositoryId": "8a5edab282632443219e051e4ade2d1d"
+  }
+]

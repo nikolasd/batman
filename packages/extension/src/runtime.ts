@@ -10,8 +10,8 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 
 import { BatmanClient } from "./client";
 import type { InitializeParams } from "@satori/batman-protocol";
@@ -134,26 +134,63 @@ function socketPathFor(stateDir: string, repository: string): string {
   return join(stateDir, "repos", repositoryId(repository), "runtime.sock");
 }
 
-function repositoryId(repository: string): string {
+/**
+ * The stable `repository-id` for a repository path on disk: canonicalizes it,
+ * discovers its VCS root (see {@link discoverVcsRoot}), and hashes that root
+ * exactly as the Rust runtime does. Exported so the reconciled `.git`
+ * discovery semantics are directly testable.
+ */
+export function repositoryId(repository: string): string {
   const canonical = realpathSync(repository);
   const vcsRoot = discoverVcsRoot(canonical) ?? canonical;
-  const digest = createHash("sha256").update(vcsRoot, "utf8").digest();
+  return repositoryIdFromRoot(vcsRoot);
+}
+
+/**
+ * The stable `repository-id` for an already-canonical VCS root: the lowercase
+ * hex of the first 16 bytes of the SHA-256 of its UTF-8 bytes (32 hex
+ * characters). A pure function of the path string -- no filesystem access --
+ * and the exact hash the Rust runtime's `repository_id_from_canonical_root`
+ * produces. Both sides are guarded by `fixtures/repo-id/repo-id-cases.json`.
+ */
+export function repositoryIdFromRoot(canonicalRoot: string): string {
+  const digest = createHash("sha256").update(canonicalRoot, "utf8").digest();
   return digest.subarray(0, 16).toString("hex");
 }
 
-/** Walks up from `dir` (inclusive) for a `.git` entry, mirroring the runtime. */
-function discoverVcsRoot(dir: string): string | undefined {
-  let current = dir;
+/**
+ * Walks up from `canonical` (inclusive) for a `.git` entry, mirroring the Rust
+ * runtime's `discover_vcs_root` exactly: it treats presence alone as the
+ * marker via `lstat` (so a `.git` file, directory, or even a *broken* symlink
+ * counts -- the entry's contents are never read), and walks the *lexical*
+ * parents of the canonical path (never re-resolving symlinks mid-walk). Returns
+ * `undefined` if none is found before the filesystem root.
+ */
+function discoverVcsRoot(canonical: string): string | undefined {
+  let current = canonical;
   for (;;) {
-    if (existsSync(join(current, ".git"))) {
+    if (pathExists(join(current, ".git"))) {
       return current;
     }
-    const parent = join(current, "..");
-    const resolvedParent = realpathSync(parent);
-    if (resolvedParent === current) {
+    const parent = dirname(current);
+    if (parent === current) {
       return undefined;
     }
-    current = resolvedParent;
+    current = parent;
+  }
+}
+
+/**
+ * Whether `path` exists as any kind of entry, matched by `lstat` so a broken
+ * symlink still counts (it is the link node's presence that matters, never its
+ * target). This mirrors Rust's `symlink_metadata` check.
+ */
+function pathExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 

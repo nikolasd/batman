@@ -132,6 +132,16 @@ impl AsRef<Path> for StateRoot {
 /// # Errors
 /// See [`SecurityError`].
 pub fn ensure_private_dir(path: &Path) -> Result<(), SecurityError> {
+    ensure_private_dir_as(path, Uid::current().as_raw())
+}
+
+/// The implementation of [`ensure_private_dir`], parameterized on the uid the
+/// directory is expected to be owned by. Production always passes the real
+/// effective uid via the public wrapper; the `expected_uid` seam exists so a
+/// test can simulate a foreign-owned directory (a directory owned by someone
+/// other than `expected_uid`) and assert [`SecurityError::UntrustedOwner`]
+/// without needing root or a second real user.
+fn ensure_private_dir_as(path: &Path, expected_uid: u32) -> Result<(), SecurityError> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     builder.mode(0o700);
@@ -145,12 +155,11 @@ pub fn ensure_private_dir(path: &Path) -> Result<(), SecurityError> {
         source,
     })?;
 
-    let current_uid = Uid::current().as_raw();
-    if metadata.uid() != current_uid {
+    if metadata.uid() != expected_uid {
         return Err(SecurityError::UntrustedOwner {
             path: path.to_path_buf(),
             owner: metadata.uid(),
-            expected: current_uid,
+            expected: expected_uid,
         });
     }
 
@@ -367,6 +376,32 @@ mod tests {
         fs::set_permissions(&readonly_parent, fs::Permissions::from_mode(0o700)).unwrap();
 
         assert!(matches!(result, Err(SecurityError::Io { .. })));
+    }
+
+    #[test]
+    fn ensure_private_dir_rejects_a_foreign_owned_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("state");
+
+        // The directory is created owned by the current uid; injecting a
+        // *different* expected uid via the seam simulates BATMAN encountering a
+        // pre-existing directory owned by someone else, which must be rejected
+        // rather than reused.
+        let real_uid = Uid::current().as_raw();
+        let foreign_uid = real_uid.wrapping_add(1);
+
+        let err = ensure_private_dir_as(&target, foreign_uid)
+            .expect_err("a directory not owned by the expected uid must be rejected");
+
+        match err {
+            SecurityError::UntrustedOwner {
+                owner, expected, ..
+            } => {
+                assert_eq!(owner, real_uid, "owner is the real creating uid");
+                assert_eq!(expected, foreign_uid, "expected is the injected uid");
+            }
+            other => panic!("expected UntrustedOwner, got {other:?}"),
+        }
     }
 
     #[test]

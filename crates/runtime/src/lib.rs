@@ -9,5 +9,5 @@ pub mod security;
 pub use db::{DatabaseHandle, DbError};
 pub use ipc::{IpcError, Server, ServerConfig};
 pub use lifecycle::should_idle_shutdown;
-pub use paths::{PathError, RuntimePaths};
+pub use paths::{PathError, RuntimePaths, repository_id_from_canonical_root};
 pub use security::{SecurityError, StateRoot};

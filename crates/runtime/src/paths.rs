@@ -108,7 +108,7 @@ impl RuntimePaths {
             path: vcs_root.clone(),
         })?;
 
-        let digest = Sha256::digest(vcs_root_str.as_bytes());
+        let digest = repository_digest(vcs_root_str);
         let repository_id = hex::encode(&digest[..16]);
 
         let mut project_uuid_bytes = [0u8; 16];
@@ -132,6 +132,26 @@ impl RuntimePaths {
             root,
         })
     }
+}
+
+/// The raw SHA-256 digest of a canonical VCS root's UTF-8 bytes. The
+/// `repository-id` is the lowercase hex of its first 16 bytes (32 hex
+/// characters), and the [`ProjectId`] is those same 16 bytes as a UUID. This
+/// hashing is deliberately a pure function of the path *string* -- no
+/// filesystem access -- so it can be cross-checked against the shared
+/// `fixtures/repo-id/repo-id-cases.json` fixture in both Rust and TypeScript.
+fn repository_digest(canonical_root: &str) -> [u8; 32] {
+    Sha256::digest(canonical_root.as_bytes()).into()
+}
+
+/// The stable `repository-id` for an already-canonical VCS root: the lowercase
+/// hex of the first 16 bytes of the SHA-256 of its UTF-8 bytes (32 hex
+/// characters). Pure -- takes no filesystem access -- and is the exact hash
+/// the TypeScript launcher's `repositoryIdFromRoot` must reproduce. Both sides
+/// are guarded by `fixtures/repo-id/repo-id-cases.json`.
+#[must_use]
+pub fn repository_id_from_canonical_root(canonical_root: &str) -> String {
+    hex::encode(&repository_digest(canonical_root)[..16])
 }
 
 /// Walks up from `canonical` (inclusive) looking for a `.git` entry -- a

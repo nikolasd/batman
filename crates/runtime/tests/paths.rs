@@ -8,12 +8,42 @@ use std::path::PathBuf;
 
 #[cfg(target_os = "linux")]
 use batman_runtime::PathError;
-use batman_runtime::{RuntimePaths, SecurityError, StateRoot};
+use batman_runtime::{RuntimePaths, SecurityError, StateRoot, repository_id_from_canonical_root};
 
 const STATE_ROOT_CASES_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/state/state-root-cases.json"
 ));
+
+const REPO_ID_CASES_FIXTURE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/repo-id/repo-id-cases.json"
+));
+
+#[derive(serde::Deserialize)]
+struct RepoIdCase {
+    name: String,
+    #[serde(rename = "canonicalRoot")]
+    canonical_root: String,
+    #[serde(rename = "repositoryId")]
+    repository_id: String,
+}
+
+#[test]
+fn repository_id_matches_shared_cross_language_fixture() {
+    let cases: Vec<RepoIdCase> =
+        serde_json::from_str(REPO_ID_CASES_FIXTURE).expect("fixture is valid JSON");
+    assert!(!cases.is_empty(), "fixture must contain at least one case");
+
+    for case in cases {
+        assert_eq!(
+            repository_id_from_canonical_root(&case.canonical_root),
+            case.repository_id,
+            "case {:?} produced an unexpected repository id",
+            case.name
+        );
+    }
+}
 
 #[derive(serde::Deserialize)]
 struct StateRootCase {

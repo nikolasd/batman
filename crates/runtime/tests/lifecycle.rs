@@ -108,6 +108,19 @@ fn find_lock(state: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Scans `<state>/repos/*/runtime.log`.
+fn find_log(state: &Path) -> Option<PathBuf> {
+    let repos = state.join("repos");
+    let entries = std::fs::read_dir(&repos).ok()?;
+    for entry in entries.flatten() {
+        let candidate = entry.path().join("runtime.log");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// Waits up to `deadline` for the daemon's socket to appear.
 fn wait_for_socket(state: &Path, deadline: Duration) -> PathBuf {
     let start = Instant::now();
@@ -379,6 +392,17 @@ fn graceful_stop_removes_socket_only_after_journal_shutdown() {
     assert!(
         saw_stopping,
         "a durable runtimeStopping event must be journaled before shutdown"
+    );
+
+    // Prove the *clean* shutdown path ran: `db_actor_closed` is logged only
+    // after the database actor thread was actually drained and joined, and it
+    // is emitted before the socket is removed -- so with the socket already
+    // gone the line must be present in runtime.log.
+    let log_path = find_log(fixture.state_dir()).expect("daemon created a runtime.log");
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    assert!(
+        log.contains("db_actor_closed"),
+        "the clean db-actor shutdown path must have run (db_actor_closed missing from {log_path:?}):\n{log}"
     );
 }
 

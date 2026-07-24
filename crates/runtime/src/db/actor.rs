@@ -5,6 +5,7 @@
 //! after commit.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::thread;
 
 use rusqlite::Connection;
@@ -69,6 +70,9 @@ enum Command {
         after_sequence: u64,
         respond: oneshot::Sender<Result<Vec<ReplayedEvent>, DbError>>,
     },
+    MaxSequence {
+        respond: oneshot::Sender<Result<Option<u64>, DbError>>,
+    },
     RecordOperationIntent {
         operation_id: OperationId,
         kind: String,
@@ -92,11 +96,18 @@ enum Command {
     },
 }
 
-/// A handle to the running database actor. Cheap to hold; every method
-/// sends a command over a bounded channel and awaits the actor's reply.
+/// A handle to the running database actor. Cheap to hold and safe to share
+/// behind an [`std::sync::Arc`]: every method sends a command over a bounded
+/// channel and awaits the actor's reply, and [`DatabaseHandle::shutdown`] takes
+/// `&self` so the clean drain-and-join runs even while other clones of the
+/// handle are still live (it does not require unique `Arc` ownership).
 pub struct DatabaseHandle {
     sender: mpsc::Sender<Command>,
-    worker: Option<thread::JoinHandle<()>>,
+    /// The actor's OS thread, taken exactly once by whichever call to
+    /// [`DatabaseHandle::shutdown`] joins it. Behind a `Mutex<Option<..>>` so
+    /// the join can happen through a shared `&self` rather than requiring the
+    /// handle to be uniquely owned.
+    worker: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl DatabaseHandle {
@@ -121,7 +132,7 @@ impl DatabaseHandle {
 
         Ok(Self {
             sender,
-            worker: Some(worker),
+            worker: Mutex::new(Some(worker)),
         })
     }
 
@@ -148,6 +159,19 @@ impl DatabaseHandle {
             respond,
         })
         .await?;
+        rx.await.map_err(|_| DbError::ActorUnavailable)?
+    }
+
+    /// Returns the highest event sequence currently in the journal, or `None`
+    /// if the journal holds no events. A single indexed `MAX(sequence)` read --
+    /// used at `initialize` to compute the next sequence a client should
+    /// expect without loading the entire event log into memory.
+    ///
+    /// # Errors
+    /// Returns [`DbError`] if the actor is unavailable or the query fails.
+    pub async fn max_sequence(&self) -> Result<Option<u64>, DbError> {
+        let (respond, rx) = oneshot::channel();
+        self.send(Command::MaxSequence { respond }).await?;
         rx.await.map_err(|_| DbError::ActorUnavailable)?
     }
 
@@ -227,11 +251,20 @@ impl DatabaseHandle {
         rx.await.map_err(|_| DbError::ActorUnavailable)?
     }
 
-    /// Signals the actor to stop and joins its thread. Consumes the handle.
+    /// Signals the actor to drain outstanding commands, commit, and stop, then
+    /// joins its OS thread so the connection is closed (and WAL checkpointed)
+    /// before returning. Takes `&self`, so a runtime holding this handle behind
+    /// an [`std::sync::Arc`] -- shared with live connection tasks -- can still
+    /// drive a clean shutdown without needing to reclaim unique ownership
+    /// first. The thread is joined at most once; later calls are no-ops for the
+    /// join and simply report the actor as unavailable.
+    ///
+    /// The blocking `JoinHandle::join` runs on a [`tokio::task::spawn_blocking`]
+    /// thread so it never blocks the async runtime's worker.
     ///
     /// # Errors
     /// Returns [`DbError`] if the actor was already unavailable.
-    pub async fn shutdown(mut self) -> Result<(), DbError> {
+    pub async fn shutdown(&self) -> Result<(), DbError> {
         let (respond, rx) = oneshot::channel();
         let sent = self.sender.send(Command::Shutdown { respond }).await;
 
@@ -241,8 +274,13 @@ impl DatabaseHandle {
             Err(DbError::ActorUnavailable)
         };
 
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+        let worker = self
+            .worker
+            .lock()
+            .expect("db actor worker mutex is never poisoned")
+            .take();
+        if let Some(worker) = worker {
+            let _ = tokio::task::spawn_blocking(move || worker.join()).await;
         }
 
         result
@@ -286,6 +324,9 @@ fn run_actor(
                 respond,
             } => {
                 let _ = respond.send(tx_replay_events(&conn, after_sequence));
+            }
+            Command::MaxSequence { respond } => {
+                let _ = respond.send(tx_max_sequence(&conn));
             }
             Command::RecordOperationIntent {
                 operation_id,
@@ -382,6 +423,14 @@ fn tx_replay_events(conn: &Connection, after_sequence: u64) -> Result<Vec<Replay
         events.push(parse_event_row(row?)?);
     }
     Ok(events)
+}
+
+/// Reads `MAX(sequence)` from the events table. Returns `None` on an empty
+/// journal (SQLite yields a single `NULL` row for `MAX` over no rows).
+fn tx_max_sequence(conn: &Connection) -> Result<Option<u64>, DbError> {
+    let max: Option<i64> =
+        conn.query_row("SELECT MAX(sequence) FROM events", [], |row| row.get(0))?;
+    Ok(max.map(|value| value as u64))
 }
 
 fn parse_event_row(row: RawEventRow) -> Result<ReplayedEvent, DbError> {

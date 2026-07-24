@@ -78,6 +78,32 @@ async fn append_two_events_reopen_and_replay_returns_only_events_after_given_seq
 }
 
 #[tokio::test]
+async fn max_sequence_reports_the_tip_without_replaying_the_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("runtime.db");
+    let redactor = Redactor::new();
+
+    let handle = DatabaseHandle::start(db_path.clone()).await.unwrap();
+
+    // An empty journal has no tip.
+    assert_eq!(handle.max_sequence().await.unwrap(), None);
+
+    handle
+        .append_event(redactor.sanitize(diagnostic_fixture("first event")))
+        .await
+        .unwrap();
+    handle
+        .append_event(redactor.sanitize(diagnostic_fixture("second event")))
+        .await
+        .unwrap();
+
+    // Two events appended: the tip is sequence 2.
+    assert_eq!(handle.max_sequence().await.unwrap(), Some(2));
+
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn operation_intent_without_acknowledgement_survives_reopen_as_incomplete() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("runtime.db");

@@ -6,6 +6,8 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -16,7 +18,52 @@ import {
   buildServeArgs,
   ensureRuntime,
   type EnsureRuntimeOptions,
+  repositoryId,
+  repositoryIdFromRoot,
 } from "./runtime";
+
+interface RepoIdCase {
+  name: string;
+  canonicalRoot: string;
+  repositoryId: string;
+}
+
+const repoIdCases = (await Bun.file(
+  "fixtures/repo-id/repo-id-cases.json",
+).json()) as RepoIdCase[];
+
+test("shared repo-id fixture has at least one case", () => {
+  expect(repoIdCases.length).toBeGreaterThan(0);
+});
+
+for (const testCase of repoIdCases) {
+  test(`repository id matches shared cross-language fixture: ${testCase.name}`, () => {
+    expect(repositoryIdFromRoot(testCase.canonicalRoot)).toBe(testCase.repositoryId);
+  });
+}
+
+test("a .git FILE (worktree) is a VCS marker and a nested dir resolves to the same repo", () => {
+  const worktree = mkdtempSync("/tmp/bat-rt-wt-");
+  writeFileSync(join(worktree, ".git"), "gitdir: /elsewhere/.git/worktrees/example\n");
+  const nested = join(worktree, "src");
+  mkdirSync(nested);
+
+  const canonicalRoot = realpathSync(worktree);
+  const expected = repositoryIdFromRoot(canonicalRoot);
+  // The worktree root and a subdirectory both discover the same .git FILE.
+  expect(repositoryId(worktree)).toBe(expected);
+  expect(repositoryId(nested)).toBe(expected);
+});
+
+test("a broken .git symlink still counts as a VCS marker (matches Rust lstat semantics)", () => {
+  const repo = mkdtempSync("/tmp/bat-rt-sym-");
+  // A dangling symlink: its target does not exist, so existsSync would miss it
+  // but lstat (and Rust's symlink_metadata) treat the link node as present.
+  symlinkSync("/does/not/exist", join(repo, ".git"));
+
+  const canonicalRoot = realpathSync(repo);
+  expect(repositoryId(repo)).toBe(repositoryIdFromRoot(canonicalRoot));
+});
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
 const BATCAVE = join(REPO_ROOT, "target", "debug", "batcave");
