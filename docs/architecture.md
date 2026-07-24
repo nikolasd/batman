@@ -254,15 +254,313 @@ machine-readable `code` (including `checksum-mismatch`, `version-mismatch`,
 (state root, repository detection, binary resolver wiring, `DEFAULT_IDLE_SECONDS = 1800`) lives in
 `context.ts`.
 
-## 10. Known deferred items
+Since the orchestration extension, `index.ts` also wires the orchestration tools (§13), the
+OMP-native reconciler (§14), and the embedded monitor (§17) — this section covers only the
+foundation-era status surface `batman_status` reuses.
 
-Consciously deferred as non-blocking after review (tracked for the next milestone):
+## 10. Domain records and lifecycle
 
-- The `events` table persists a subset of `EventEnvelope` (`task_id`/`worker_id`/
-  `parent_worker_id`/`vendor_event_ref` are not stored yet; `source` is hardcoded `runtime`). The
-  orchestration milestone needs a schema migration plus an append-API extension.
+`crates/protocol/src/{task,worker,run,message,approval}.rs` define the orchestration domain's
+canonical wire types, all `camelCase` + `deny_unknown_fields` like every other protocol type:
+
+- `TaskRef { ownerClientInstanceId, revision }` — OMP-owned intent: an opaque owner identity and
+  a monotonic revision. Batman never edits this; `reconcile/omp` only ever rebinds
+  `ownerClientInstanceId` when the revision matches.
+- `WorkerProfileRef { id, fingerprint, adapter, model, permissionEnvelope }` and `Worker { workerId,
+  profileRef, parentWorkerId, createdAt }` — an immutable harness identity; later adapter
+  configuration resolves and stores a full profile snapshot without changing these identity
+  fields. `parentWorkerId` supports nested/child workers.
+- `Run { runId, taskId, workerId, state, flags, vendorSessionId, startedAt, completedAt }` and
+  `RunSpec` — one supervised execution of a task by a worker.
+- `RunState` — ten variants (`queued`, `starting`, `working`, `waitingUser`, `waitingPeer`,
+  `paused`, `succeeded`, `failed`, `cancelled`, `lost`) with `can_transition_to` enforcing the
+  canonical lifecycle relation and `is_terminal()` for the four sink states. **Only the runtime
+  applies an edge, and only after process/protocol evidence** — OMP may request cancellation, but
+  the state changes only when the adapter acknowledges it or the supervised process supplies
+  terminal evidence. There is no generic pause/resume command: entering `paused` and
+  `paused -> working` both require correlated adapter evidence.
+- `RunFlags` — six independent booleans (`degradedControl`, `needsReconciliation`,
+  `protocolUnhealthy`, `policyQuarantined`, `workspaceDirty`, `childrenActive`), never inferred
+  from state.
+- `RunMessage`/`MessageKind` (`assign`, `steer`, `followUp`, `question`, `answer`, `peerMessage`,
+  `approvalDecision`, `cancel`, `shutdown`) and `DeliveryState` (`recorded`, `sent`,
+  `acknowledged`, `failed`, `unknown`) — see §15 for the broker that drives these.
+- `ApprovalRequest` and the correlated decision flow — see §16.
+
+`crates/protocol/src/method.rs` extends `BatmanMethod` with `task/upsert|get`,
+`worker/create|list|get`, `run/submit|list|get|retry|cancel`, `message/send|list`,
+`approval/list|decide`, `coordination/child/list|decide`, and `reconcile/omp` — all registered
+only in the `ompExtension` role table (§6). `crates/protocol/src/event.rs`'s `RuntimeEvent` gained
+`TaskEvent`, `WorkerEvent`, `RunEvent`, `RunFlagsEvent`, `MessageEvent`, `ApprovalEvent`,
+`ChildEvent`, and `ReconcileEvent` variants — one event per record creation, lifecycle transition,
+flag change, message-delivery change, and approval request/decision.
+
+## 11. Projection persistence
+
+Migration 2 (`crates/runtime/src/db/migrations.rs`) adds six normalized tables —
+`worker_profiles`, `tasks`, `workers`, `runs`, `messages`, `approvals` — alongside the append-only
+`events` journal from §4. `runs.vendor_session_id` is a plain column (the plan's separate
+`vendor_sessions` table was simplified away; nothing needed it as its own entity yet). Foreign
+keys enforce referential integrity (`workers.profile_id -> worker_profiles`, `runs.task_id/
+worker_id -> tasks/workers`, `messages.run_id -> runs`, `approvals.run_id -> runs`), and
+`PRAGMA foreign_keys=ON` (§4) makes this fail fast rather than silently.
+
+`crates/runtime/src/domain/repository.rs`'s `DomainRepository` is the only way to mutate these
+tables. Every command runs through `append_and_apply`, one SQLite transaction: insert the event
+row (placeholder `event_json`), learn the assigned `sequence` from the rowid, rewrite `event_json`
+with the **bare `RuntimeEvent`** (not the full envelope — see §18 for why that distinction is
+load-bearing), run the caller's projection-update closure, then commit. A failed projection update
+rolls back the event insert too — the journal and its projections can never diverge.
+`append_and_apply` returns `Committed { sequence, envelope }`: the full `EventEnvelope` (assembled
+from the caller's `task_id`/`worker_id`/`run_id` plus the columns just written) is handed back so
+the service layer can broadcast it (§18).
+
+`crates/runtime/src/domain/transitions.rs::check_transition` validates every `RunState` edge
+against `RunState::can_transition_to` before `DomainRepository::transition_run` appends anything;
+an illegal edge (including every self-transition and every edge out of a terminal state) returns
+`TransitionError::Illegal` and appends nothing.
+
+## 12. The orchestration RPC service
+
+`crates/runtime/src/service/orchestration.rs`'s `OrchestrationService` routes every method from
+§10 to a typed `DomainRepository` command (mutations) or a read-only query closure
+(`service/query.rs`), translating results and errors to JSON-RPC shapes. It holds no state beyond
+its `db`/`project_id`/an optional `run_driver`/an `ApprovalService` (§16) — every command borrows
+the shared `DatabaseHandle` and commits on the actor thread (§4).
+
+`task/upsert` is idempotent for a repeated identical revision and rejects a lower revision than
+what is stored; `reconcile/omp` rebinds `ownerClientInstanceId` only when the caller's `taskId` and
+revision match what's stored, and journals the old/new owner ids. `run/retry` takes a prior
+`RunId` in a terminal state and a new `WorkerId`; the result always carries a distinct `RunId` and
+the same `TaskId` — a retry is never an in-place resurrection.
+
+`run/submit` records the run (`queued`) and only then calls the injected `RunDriver` seam
+(`service/run_driver.rs`). Production `ServerConfig::run_driver` defaults to `None`: without an
+adapter registry, `run/submit` returns application error `adapter_unavailable`
+**after** the queued run is durably committed — it never pretends the run started and never drops
+it. Orchestration tests inject `FakeRunDriver`, which drives `queued -> starting -> working`
+through the same domain-repository transitions a real adapter would use. Implementing a real
+adapter registry is out of scope for this milestone (see §19).
+
+## 13. OMP orchestration tools
+
+`packages/extension/src/tools/{tasks,workers,runs,messages,approvals,reconcile}.ts` register six
+deterministic OMP tools — `batman_task`, `batman_worker`, `batman_run`, `batman_message`,
+`batman_approval`, `batman_reconcile` — each with an explicit discriminated `op` parameter
+(`pi.zod`) and a `tools/shared.ts:callOrchestration(client, method, params)` execute body that
+does exactly one thing: call the runtime method and shape the result as `{ content, details }`, or
+map a `JsonRpcRemoteError` to a non-throwing `{ code, message, data, isError: true }`. No tool
+selects a worker, retries, mutates OMP's own todos, approves, merges, or infers lifecycle state —
+that authority stays with OMP and the runtime. Mutating tools (`batman_worker` create,
+`batman_run` submit/cancel, `batman_approval` decide) use the `exec` approval tier;
+`batman_approval` additionally overrides with a reason and never auto-approves.
+
+`batman_task` is the `ompExtension`-authorized front for `task/upsert|get` — a *different*,
+worker-scoped MCP tool of the same display name (out of scope this milestone; the coordination
+broker in §15 is its runtime-side seam) runs in a different process/tool registry and exposes
+read-only task context to a supervised vendor process.
+
+## 14. OMP-native reconciliation
+
+`packages/extension/src/omp-native/{events,reconcile,types}.ts` mirrors OMP's own `task:subagent:
+lifecycle|progress|event` bus events into Batman worker/run facts **without ever changing OMP's
+state** — `index.ts` subscribes during `session_start` and unsubscribes during `session_shutdown`.
+`OmpNativeReconciler` coalesces non-terminal `progress` updates for 150 ms but lets every terminal
+lifecycle event (`succeeded`/`failed`/`lost`) through immediately, and never regresses a committed
+terminal fact back to non-terminal from a stale update racing behind it.
+
+`createOmpProcessEpoch()` mints one UUID per OMP process, included in every normalized
+`OmpNativeAgentFact`. `reconcileAcrossRestart(priorFacts, currentEpoch)` is the mechanism behind
+the plan's most specific invariant: an OMP-native, parent-scoped run that a new OMP process
+doesn't re-report becomes `lost` — never `succeeded`, and never silently promoted into a
+runtime-scoped `Run` row. `reconcileWithRuntime` calls `reconcile/omp` for the task a prior
+`task/upsert` correlated with a subagent, so ownership rebinds before prior parent-scoped runs are
+ever rendered as live again.
+
+## 15. The coordination broker
+
+`crates/protocol/src/coordination.rs` and `crates/runtime/src/coordination/{broker,rate_limit,
+scope_token}.rs` implement the worker-safe messaging surface a supervised vendor process uses
+through its scope-bound `workerMcp` connection — the connection layer authenticates via
+`ClientAuth::WorkerMcp { instanceId, scopeToken }`, resolving it to a `ClientPrincipal` whose
+`scoped_run_id` is the run identity every `coordination/*` call trusts, never a client-supplied
+one (`ipc/connection.rs:dispatch_coordination`).
+
+**Scope tokens.** `ScopeTokenStore::mint` is called immediately before launching the supervised
+vendor process, binding a token to `{ projectId, taskId, workerId, runId, vendorProcessIdentity,
+expiresAt }`. `verify(token, peer_pid)` checks the token's run binding, expiry, and that
+`peer_pid` is a live descendant of the recorded vendor process (`PidAncestryChecker` — platforms
+without trustworthy peer-process identity report `worker coordination as unsupported` rather than
+accept an unverifiable reconnect); a restarted MCP subprocess in the same process tree may
+re-initialize with the same token while the run/vendor process/expiry stay live, but replay from
+an unrelated process, after vendor exit, or after expiry fails. Token bytes are never persisted or
+logged.
+
+**Record-before-delivery.** `CoordinationBroker::send` commits `recorded` (one durable event +
+projection row) first, then attempts delivery and commits the outcome — `sent` today (no adapter
+exists in this milestone to acknowledge further), `acknowledged`/`failed` once one does. A crash
+between the two commits leaves a message `sent`/`recorded`;
+`sweep_unacknowledged_as_unknown` (called once at startup, after journal recovery) settles any
+such message to `unknown` — it never resends automatically. Bounds: payloads over
+`COORDINATION_PAYLOAD_MAX_BYTES` (64 KiB) are rejected, `replyTo` must reference a visible prior
+message on the same run, a run cannot address a task other than its own, and each sender is capped
+at `COORDINATION_RATE_LIMIT_PER_MINUTE` (30) messages per rolling minute (`RATE_LIMITED`).
+
+**Worker-safe operations:** `coordination/task`, `coordination/peers`, `coordination/send`,
+`coordination/requestChild`, `coordination/publishArtifact`, `coordination/reportBlocked`,
+`coordination/askPolicy` — registered only in the `workerMcp` role table (§6), rejecting any task
+dependency, ownership, or merge mutation. `coordination/requestChild` only records
+`ChildWorkerRequested` and transitions the requesting run to `waitingPeer`; OMP answers through
+`coordination/child/decide` (an `ompExtension`-only method, §10): acceptance supplies the
+OMP-created child task/worker/run ids and returns the parent to `working`, denial records
+`ChildWorkerRequestDenied { reason }` and also returns the parent to `working`. The runtime owns
+both transitions; OMP decides, Rust never does.
+
+## 16. The correlated approval flow
+
+`crates/runtime/src/approval/service.rs`'s `ApprovalService` is the seam an adapter calls when a
+vendor process reports it needs human approval for an action (adapters are out of scope this
+milestone, so today only `crates/runtime/tests/approval.rs` exercises `request`/`decide`
+directly — there is no `approval/request` RPC method). `request(ApprovalRequest)` atomically
+creates the request and transitions the run `working -> waitingUser` in one durable event.
+
+`approval/decide` (the one approval RPC method the extension calls, via `batman_approval`, §13)
+enforces: only the connected `ompExtension` principal whose `instanceId` matches the task's
+current owner may decide (`ApprovalError::Forbidden`); an identical repeated decision is
+idempotent (`DecideOutcome::AlreadyDecided`); a conflicting second decision fails
+(`ApprovalError::Conflict`); and a decision cannot target an already-settled run
+(`ApprovalError::RunSettled`). The decision is recorded **before** the configured
+`ApprovalCallback::acknowledge` runs; on success the run returns to `working`
+(`DecideOutcome::Decided`), on failure the decision is kept and the run is marked
+`protocolUnhealthy` instead of ever asking again (`DecideOutcome::DecidedCallbackFailed`) —
+`NoopApprovalCallback` is the default with no adapter registry wired up.
+
+`packages/extension/src/tools/approvals.ts` (`batman_approval`) lists pending approvals and
+records a decision; `approval-ui.ts` shows the human dialog (worker, requested action, redacted
+arguments, policy reason, approval id) only when OMP policy marks a decision
+`humanRequired: true`, never auto-approving even under `tools.approvalMode` overrides.
+
+## 17. The embedded monitor
+
+`packages/extension/src/monitor/{model,render,controller}.ts` render `/batman` as a pure
+event-reducer over the same durable stream every other client consumes:
+
+- `model.ts::reduceEvent(state, envelope)` is a pure function: one row per `runId`, built from
+  `RuntimeEvent`'s `TaskEvent`/`WorkerEvent`/`RunEvent`/`RunFlagsEvent`/`MessageEvent`/
+  `ApprovalEvent`/`ChildEvent` variants. It never mutates `state`, is a no-op for a `sequence` not
+  newer than the row's `lastAppliedSequence` (idempotent replay/resume), and never lets a raw
+  message payload, thinking, or secret content reach the model — only kind-based labels derived
+  from `RuntimeEventKind`.
+- `render.ts` turns `MonitorState` into the widget's concise lines (at most 10 rows; a fuller view
+  is always available via `/batman status <runId>`, never a silent truncation) and a per-run
+  status detail.
+- `controller.ts::registerMonitor` wires both into the live extension: on `session_start`, reads
+  the last persisted sequence from the session's own `batman-monitor` custom entry
+  (`pi.appendEntry`) and calls `client.subscribe(fromSequence, onEvent)` — which itself first
+  drains `events/replay(afterSequence)` (rebuilding state from history) before delivering live
+  `events/event` notifications, so there is no separate "replay mode": every event, replayed or
+  live, flows through the same `reduceEvent`. `refresh()` re-renders the widget
+  (`ctx.ui.setWidget`, `placement: "aboveEditor"`) and persists the new last-applied sequence after
+  every applied event. If the runtime is unreachable at session start the monitor degrades to
+  inactive rather than failing session startup; `/batman` retries the connection.
+- `compat.ts::assertCompatiblePiCodingAgentVersion` is a **test-only** no-model compatibility
+  check (`render.test.ts`) that the installed `@oh-my-pi/pi-coding-agent` falls within the
+  `[17.0.7, 18.0.0)` range this monitor's `pi.appendEntry`/`ctx.ui.setWidget` usage is pinned to —
+  see §18 for why it must never run at extension-load time.
+
+## 18. Lessons from the smoke scenario
+
+Three defects surfaced only by running the Orchestration Extension's smoke scenario against a
+real `omp` session — none caught by the unit/integration suites, because each needed the exact
+combination of "the real compiled `omp` binary" and "a mutation had actually committed". Fixed in
+one commit with a regression test per bug; documented here so the same class of mistake isn't
+repeated.
+
+**1. A static `with { type: "json" }` import can hang the extension, or corrupt `bun test`.**
+`compat.ts` originally did `import pkg from "@oh-my-pi/pi-coding-agent/package.json" with { type:
+"json" }` at module scope, called from `registerMonitor` at extension-load time. That import
+resolves fine under `bun run`/`bun test` in this repo's own `node_modules`, but **hangs forever**
+the instant the real `omp` binary (itself a compiled, bundled Bun executable) loads the extension
+file and tries to resolve that exact subpath from *its own* bundled module graph — confirmed by
+bisecting a minimal repro down to the bare import statement with no call. The same import, when
+present in a test file, also triggers an unrelated Bun resolver defect (`NameTooLong` on a
+runaway `file:` prefix chain) but *only* when several other test files run in the same `bun test`
+invocation — passes in isolation, fails in the full suite. Fix: the version check now lives only
+in a test (`render.test.ts`), matching the plan's own framing of it as a "no-model fixture", never
+called from production code; and the check itself now reads the peer's `package.json` via a plain
+filesystem walk from `import.meta.dir`, never through Bun's module resolver. **Lesson:** never run
+a `with { type: "json" }` import — or any dynamic resolution of a peer package's own metadata — at
+extension-load time or module scope in code the real `omp` binary will load; if you need a peer's
+installed version, read the file directly.
+
+**2. A single cached client must authenticate with the union of every role its callers need.**
+`runtime.ts::ensureRuntime()` hardcoded `ClientAuth::Display` (read-only) for what its own doc
+comment called "a launcher connection" — correct for `batman_status`, the only caller when it was
+written. `index.ts::getClient()` later cached and reused that exact client for every orchestration
+tool too, so every mutation (`task/upsert`, `run/submit`, ...) failed
+`-32601 method ... is not available to this client` — silently, since `display`'s method table
+(§6) is a strict *subset* of `ompExtension`'s and nothing checks that relationship at compile
+time. Fix: `ensureRuntime` now authenticates as `ompExtension` unconditionally, safe for every
+existing caller because `ompExtension`'s allowed methods are always a superset. **Lesson:** when
+one cached connection is shared across callers with different needs, its role must be the
+*union*, not whatever the first caller happened to need — and a role table's superset/subset
+relationships between roles are exactly the kind of fact that belongs in a comment next to the
+role definition (see §6), not just in reviewers' heads.
+
+**3. A durable mutation must broadcast the same event it just committed, in the same call.**
+`DomainRepository::append_and_apply` stored the *full* `EventEnvelope` (with `sequence`,
+`timestamp`, ...) into `event_json`, but `ipc/connection.rs::replay()` expects that column to hold
+only the bare `RuntimeEvent` — it reconstructs the envelope from the `events` table's own
+`sequence`/`timestamp`/`project_id`/`run_id` columns (§11). Every `events/replay` call therefore
+failed to deserialize once any mutation had committed. Separately, and worse: `Shared.events_tx`
+(the `tokio::sync::broadcast` channel §6's `spawn_subscription` reads from) had a subscriber but
+**no publisher anywhere** — none of the 15+ mutation call sites across `OrchestrationService`,
+`ApprovalService`, `CoordinationBroker`, and `RunDriverContext` ever called `.send()` on it. A
+monitor connected before a mutation committed would never observe it without reconnecting (which
+re-triggers `events/replay` — itself broken by the first bug). Fixed both: storage now writes the
+bare event; `Committed` now carries the full `EventEnvelope`; and
+`domain::{embed_envelope, take_envelope}` smuggle it across the `run_domain_op` closure boundary
+(whose closures are constrained to return a plain `serde_json::Value`) so every service broadcasts
+after every commit. **This is now invariant #7 in the README, and it is not enforced by the type
+system** — the compiler cannot catch "this new mutation appended an event but forgot to broadcast
+it". Any new `DomainRepository` mutation method **must** be wired through
+`embed_envelope`/`take_envelope`/`self.broadcast(&mut result)` at its call site, matching every
+existing sibling in `service/orchestration.rs`, or the monitor will silently show stale state for
+that mutation alone. `crates/runtime/tests/orchestration_rpc.rs`'s
+`events_replay_round_trips_committed_mutation_events` and
+`events_subscribe_delivers_live_notifications_for_orchestration_mutations` are the regression
+tests for both halves; the latter reproduced the bug as an infinite hang, not a clean failure —
+run it with a test-runner timeout if you ever suspect a new mutation has regressed this.
+
+## 19. Known deferred items
+
+Consciously deferred as non-blocking after review (tracked for later milestones):
+
+- **The `events` table still only stores `run_id`, not `task_id`/`worker_id`/`parent_worker_id`/
+  `vendor_event_ref`** (`source` is still hardcoded `runtime`). A *live* `events/event`
+  notification's envelope carries `task_id`/`worker_id` (§11's `append_and_apply` sets them from
+  its caller's parameters), but a *replayed* one from `events/replay` always has them `None` —
+  `ipc/connection.rs::replay()` can only reconstruct an envelope from what the `events` table's
+  columns hold. The monitor (§17) is unaffected because it reads the inner `RuntimeEvent`
+  variant's own `task_id`/`worker_id` fields (always present, part of the payload), never the
+  outer envelope's convenience fields — but any future consumer that filters `events/replay` by
+  the envelope's `task_id`/`worker_id` will get silently wrong (empty) results. Needs a schema
+  migration plus populating those columns in `append_and_apply`'s insert.
+- **The coordination broker (§15) has no production wiring point yet.** `ScopeTokenStore::new` is
+  called only from `crates/runtime/tests/coordination.rs`; `ServerConfig::default()`'s
+  `worker_verifier` stays `RejectAllWorkerVerifier`, and nothing in `run/submit`'s (absent)
+  adapter-start path calls `ScopeTokenStore::mint`. This is consistent with adapters being out of
+  scope this milestone — there is no supervised vendor process yet that would need a token — but
+  the Worker Adapters plan must wire a `ScopeTokenStore` into `Shared`/`ServerConfig` and mint a
+  token at adapter-start time before any real `workerMcp` connection can succeed against a
+  production daemon.
+- Worker adapters (real Claude/Codex/Copilot/OMP-RPC/local-model harnesses behind `RunDriver`),
+  workspaces, displays (Herdr/tmux), a policy engine, and any remote service are explicitly out of
+  scope for this milestone (Global Constraints) — every orchestration RPC method, tool, and the
+  monitor are exercised end to end only against `FakeRunDriver` and manually-created records.
 - The redaction regex denylist is intentionally small (API-key/bearer shapes); classification is
   the primary boundary. Expanding the denylist (`ghp_`, `AKIA…`, JWT shapes) is planned
   defense-in-depth.
 - Subscription forwarder tasks for closed connections are reaped lazily on the next event
-  broadcast; harmless at foundation scope where nothing emits after startup.
+  broadcast; harmless in practice since a closed connection's own `events_rx.recv()` loop
+  (`spawn_subscription`) exits on its own `Err` the next time anything is broadcast.

@@ -9,16 +9,23 @@ harness adapter protocols, persists a durable event journal, recovers after cras
 display backends. Everything is delivered as an external npm package (`@satori/batman`) plus a
 Rust daemon binary (`batcave`) — no OMP fork, no private APIs.
 
-## Current status: M0 / Foundation complete
+## Current status: M1 / Orchestration Extension complete
 
-The foundation vertical slice is implemented and verified end to end:
+The foundation vertical slice and the orchestration extension are both implemented and verified
+end to end:
 
 > OMP loads `@satori/batman`, starts or reconnects to `batcave`, negotiates protocol 1.0 over an
-> owner-only Unix socket, persists and replays a redacted event in SQLite, and returns runtime
-> status through the `batman_status` tool — without a model call.
+> owner-only Unix socket, persists and replays redacted events in SQLite, and returns runtime
+> status through the `batman_status` tool — all without a model call. On top of that: stable
+> task/worker/run records with an enforced lifecycle, six OMP-facing orchestration tools
+> (`batman_task`, `batman_worker`, `batman_run`, `batman_message`, `batman_approval`,
+> `batman_reconcile`), OMP-native subagent reconciliation, an audited worker-safe coordination
+> broker, a correlated human-approval flow, and an embedded `/batman` monitor that replays and
+> live-updates task/run state — all backed by one durable event journal, with no task-graph,
+> retry, worker-selection, or merge decision made inside Rust.
 
-Worker adapters, workspaces, displays, and orchestration records are later milestones (see the
-roadmap in the project design documents). Nothing in this repository calls a model.
+Worker adapters, workspaces, and displays are later milestones (see the roadmap in the project
+design documents). Nothing in this repository calls a model.
 
 ## How it fits together
 
@@ -45,9 +52,11 @@ flowchart LR
 
 ```
 crates/protocol/          Canonical Rust wire types (source of truth for the protocol)
-crates/runtime/           The batcave daemon: CLI, lifecycle, IPC server, SQLite journal, security
+crates/runtime/           The batcave daemon: CLI, lifecycle, IPC server, SQLite journal, security,
+                          domain persistence, orchestration/coordination/approval services
 crates/xtask/             Codegen (schema + TS bindings) and platform package assembly
-packages/extension/       The OMP extension: client, launcher, platform loader, batman_status tool
+packages/extension/       The OMP extension: client, launcher, platform loader, orchestration
+                          tools, OMP-native reconciliation, embedded /batman monitor
 packages/protocol-ts/     Generated TypeScript bindings + JSON Schema + Ajv validators
 packages/batman-*/        Per-platform binary leaf packages (npm optionalDependencies)
 fixtures/                 Cross-language golden fixtures (protocol frames, state roots, repo ids)
@@ -77,12 +86,28 @@ OMP_BATMAN_BINARY="$PWD/target/debug/batcave" \
 The OMP command prints the runtime status (protocol 1.0, project id, schema version) with no model
 call; running it twice reconnects to the same daemon instead of starting a second one.
 
+Orchestration tools need a model call (they're regular OMP tools, not slash commands) — start an
+interactive session and ask the model to use `batman_task`, `batman_worker`, and `batman_run`, then
+open `/batman` to watch the run's state live:
+
+```bash
+OMP_BATMAN_BINARY="$PWD/target/debug/batcave" \
+  omp --extension ./packages/extension/src/index.ts
+# then, inside the session: "create a task, a worker, and submit a run with batman_task/
+# batman_worker/batman_run, then run /batman"
+```
+
+Without a wired adapter (this repository never implements one), `run/submit` reports
+`adapter_unavailable` and the run stays `queued` — the monitor still shows it, live, via the same
+durable event stream. See docs/getting-started.md ("Smoke-testing the orchestration extension")
+for the full smoke-test walkthrough, including approvals and messages.
+
 ## Documentation
 
 | Document | Read it when you want to… |
 |---|---|
-| [docs/getting-started.md](docs/getting-started.md) | build, test, and run the codebase; environment variables; common workflows |
-| [docs/architecture.md](docs/architecture.md) | understand the design: protocol, codegen, journal, redaction, IPC, lifecycle |
+| [docs/getting-started.md](docs/getting-started.md) | build, test, and run the codebase; smoke-test the orchestration extension; environment variables; common workflows |
+| [docs/architecture.md](docs/architecture.md) | understand the design: protocol, codegen, journal, redaction, IPC, lifecycle, domain persistence, orchestration RPC, coordination, approvals, the monitor |
 | [docs/code-walkthrough.md](docs/code-walkthrough.md) | navigate the source, trace a request end to end, debug, and find the right test |
 | [docs/rust-primer.md](docs/rust-primer.md) | learn Rust fast, using this repository's own code as the textbook (a one-week plan) |
 
@@ -99,3 +124,9 @@ These hold everywhere in the codebase; changes that weaken them will be rejected
 4. Intent is persisted before side effects; content is redacted before it becomes durable.
 5. Supported platforms are macOS and glibc Linux on arm64/x64 — everything else is rejected with a
    typed error, never a silent fallback.
+6. OMP owns the task graph, scheduling, worker selection, policy, approvals, and merge/synthesis
+   decisions — Rust never creates or edits OMP's task graph; a retry always creates a new run and
+   a harness replacement always creates a new worker and run.
+7. Every domain mutation commits its event and broadcasts the same `EventEnvelope` to live
+   `events/subscribe` listeners in the same call — a mutation that appends without broadcasting
+   silently breaks the embedded monitor (see `docs/architecture.md` §18).

@@ -339,6 +339,14 @@ Sharing state across tasks combines Day 2 tools: `Arc<Shared>` (shared ownership
 `ipc/server.rs`, and channels rather than locks wherever possible. The per-connection design —
 one reader task, one writer task fed by a bounded channel — is in `ipc/connection.rs`.
 
+A second channel shape worth knowing: `tokio::sync::broadcast` (`Shared.events_tx` in
+`ipc/server.rs`), one sender, many receivers, every receiver gets every message (unlike `mpsc`,
+where one message goes to exactly one receiver). Each live `events/subscribe` connection calls
+`.subscribe()` for its own receiver; every orchestration mutation calls `.send()` once on the
+shared sender (`OrchestrationService::broadcast`, `service/orchestration.rs`) after its
+transaction commits. If you add a mutation and forget the `.send()`, nothing errors — the
+monitor just never updates for that one case; see `docs/architecture.md` §18 for exactly this bug.
+
 **Do now:** read `db/actor.rs` top to bottom (it is the best-commented file in the repo), then
 find where `lifecycle::serve` calls `db.shutdown()` and confirm the ordering guarantee the
 architecture doc promises: stopping event committed → actor closed → socket removed.
@@ -352,9 +360,9 @@ architecture doc promises: stopping event committed → actor closed → socket 
 - **Unit tests** live inside source files in a `#[cfg(test)] mod tests { ... }` block (= "compile
   only when testing"). See the bottom of `security/redaction.rs`.
 - **Integration tests** are files in `tests/` compiled as separate crates using only the public
-  API — `crates/runtime/tests/{paths,database,redaction_boundary,ipc,lifecycle}.rs`. The lifecycle
-  suite runs the actual compiled binary via `env!("CARGO_BIN_EXE_batcave")` as real child
-  processes.
+  API — `crates/runtime/tests/{paths,database,redaction_boundary,ipc,lifecycle,domain_repository,
+  orchestration_rpc,coordination,approval}.rs`. The lifecycle suite runs the actual compiled
+  binary via `env!("CARGO_BIN_EXE_batcave")` as real child processes.
 - `#[test]` marks a test; `#[tokio::test]` gives it an async runtime; `assert!`, `assert_eq!`
   are the assertion macros. `tempfile::TempDir` is the throwaway-directory helper you'll see in
   nearly every runtime test.

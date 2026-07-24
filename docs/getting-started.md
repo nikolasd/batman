@@ -37,12 +37,16 @@ If it's green, you're in a good state.
 bun run test                                   # bun test packages && cargo test --workspace
 
 # Rust, per area (integration test targets live in crates/runtime/tests/)
-cargo test -p batman-protocol                  # wire contract + fixtures
+cargo test -p batman-protocol                  # wire contract + fixtures + domain_contract + coordination_contract
 cargo test -p batman-runtime --test paths      # state paths, repo identity, permissions
 cargo test -p batman-runtime --test database   # SQLite actor, replay, intent ledger
 cargo test -p batman-runtime --test redaction_boundary   # secret/thinking bytes never durable
 cargo test -p batman-runtime --test ipc        # socket protocol, negotiation, roles, auth
 cargo test -p batman-runtime --test lifecycle  # flock singleton, idle shutdown, graceful stop
+cargo test -p batman-runtime --test domain_repository  # projection transactions, rollback, event rebuild
+cargo test -p batman-runtime --test orchestration_rpc  # task/worker/run/message/approval/reconcile RPC
+cargo test -p batman-runtime --test coordination       # worker-safe messaging, scope tokens, rate limits
+cargo test -p batman-runtime --test approval            # correlated approval ownership/idempotency/recovery
 cargo test -p batman-xtask                     # packaging determinism
 
 # TypeScript, per file
@@ -50,6 +54,9 @@ bun test packages/extension/src/client.test.ts    # spawns the real batcave — 
 bun test packages/extension/src/runtime.test.ts   # ensureRuntime, detach, binary override
 bun test packages/extension/src/index.test.ts     # OMP tool/command registration + live daemon
 bun test packages/extension/src/platform.test.ts  # tuple mapping, integrity, override precedence
+bun test packages/extension/src/tools            # batman_task/worker/run/message/approval/reconcile
+bun test packages/extension/src/omp-native       # task:subagent:* mapping, coalescing, restart/lost
+bun test packages/extension/src/monitor          # event-reducer, rendering, replay-then-live
 bun test packages/protocol-ts/src/schema.test.ts  # generated schema sanity
 
 # Lint/format gates
@@ -112,6 +119,57 @@ the **same project id** with a higher uptime, proving it reconnected to the exis
 Afterwards, `./target/debug/batcave stop --repo "$PWD"` shuts the detached daemon down (or just
 wait out the idle interval).
 
+## Smoke-testing the orchestration extension
+
+Unlike `/batman-status`, the six orchestration tools (`batman_task`, `batman_worker`,
+`batman_run`, `batman_message`, `batman_approval`, `batman_reconcile`) are regular OMP tools the
+model chooses to call — this needs a real model call and takes a minute or two per step, so it's
+a manual smoke test, not something CI runs. This is the same scenario the orchestration
+extension's completion check documents.
+
+```bash
+cargo build -p batman-runtime
+bun run --cwd packages/extension build            # produces packages/extension/dist/index.js
+mkdir -p /tmp/batman-smoke && cd /tmp/batman-smoke && git init -q && git commit -q --allow-empty -m init
+
+export OMP_BATMAN_BINARY="$OLDPWD/target/debug/batcave"
+EXT="$OLDPWD/packages/extension/dist/index.js"
+
+omp --extension "$EXT" --print \
+  'Use batman_task to upsert a task with ownerClientInstanceId "smoke" and revision 1. Then use
+   batman_worker to create a worker with fingerprint "sha256:smoke" and adapter "fake". Then use
+   batman_run to submit a run for that task against that worker. Report the taskId, workerId, and
+   runId plainly.'
+```
+
+Expected: `run/submit` reports `adapter_unavailable` (no adapter is wired in this milestone) but
+the run is preserved `queued` — it never pretends a run started that it can't back. Open
+`/batman` in an interactive session (`omp --extension "$EXT"`, no `--print`) to watch it live:
+
+```
+<runId-prefix> · queued · run queued
+```
+
+Send a message and confirm the widget updates without reconnecting:
+
+```bash
+omp --extension "$EXT" --print \
+  'Use batman_message to send a "question" from your worker on that run with payload
+   "should I proceed?".'
+```
+
+`/batman` now reads `... · queued · messageRecorded recorded`. Restarting `omp` against the same
+repository (a fresh daemon, since the detached daemon exits after its idle timeout) replays the
+identical state from the durable journal — nothing is lost, nothing duplicates.
+
+Approval creation (`ApprovalService::request`) is only ever invoked by an adapter reporting it
+needs human sign-off, and there is no `approval/request` RPC method — adapters are out of scope
+this milestone. Exercise that half of the flow with `cargo test -p batman-runtime --test
+approval` instead; it drives `ApprovalService` directly, the same way the smoke scenario can't.
+
+Clean up: `./target/debug/batcave stop --repo /tmp/batman-smoke` (or wait out the idle interval),
+then `rm -rf /tmp/batman-smoke`.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -137,14 +195,15 @@ Never edit anything under `packages/protocol-ts/src/generated/` or the schema JS
 
 ### Adding a JSON-RPC method
 
-1. Add the variant to `BatmanMethod` (`crates/protocol/src/rpc.rs`) with its wire name.
+1. Add the variant to `BatmanMethod` (`crates/protocol/src/method.rs`) with its wire name.
 2. Add it to the appropriate role table(s) in `ClientPrincipal::allowed_methods`
    (`crates/runtime/src/ipc/mod.rs`) — methods not in a caller's table are invisible
    (`METHOD_NOT_FOUND`).
 3. Implement dispatch in `crates/runtime/src/ipc/connection.rs`, add params/result wire types, and
    regenerate (previous workflow).
-4. Add integration coverage in `crates/runtime/tests/ipc.rs` and, if the extension calls it,
-   validation + tests on the TypeScript side.
+4. Add integration coverage in `crates/runtime/tests/ipc.rs` (foundation methods) or
+   `crates/runtime/tests/orchestration_rpc.rs`/`coordination.rs`/`approval.rs` (orchestration
+   methods), and, if the extension calls it, validation + tests on the TypeScript side.
 
 ### Anything that must be persisted
 
@@ -152,6 +211,30 @@ Route it through the redaction boundary. Events go `RawRuntimeEvent → Redactor
 PersistableEvent → DatabaseHandle::append_event`; operation payloads go
 `serde_json::Value → Redactor::sanitize_json → SanitizedJson`. If you find yourself wanting a
 raw-string append API, stop — that's the boundary you'd be deleting.
+
+### Adding a new domain mutation (task/worker/run/message/approval)
+
+Every `DomainRepository` mutation (`crates/runtime/src/domain/repository.rs`) must reach live
+`events/subscribe` listeners — including the embedded monitor — the moment it commits, or you
+will reintroduce the exact bug documented in `docs/architecture.md` §18 (item 3). At your
+service-layer call site (`service/orchestration.rs`, `approval/service.rs`, or
+`coordination/broker.rs`):
+
+1. Inside the `run_domain_op` closure, wrap the repository call's success value with
+   `domain::embed_envelope(json!({ ... }), &committed.envelope)` instead of returning the JSON
+   bare.
+2. After `.await`, call `self.broadcast(&mut result)` (or the free-standing equivalent if you're
+   not inside one of those three services) **before** using `result` to build the RPC response —
+   `broadcast`/`take_envelope` mutates `result` in place, stripping the internal `__envelope` key.
+3. If your service doesn't yet hold an `events_tx: broadcast::Sender<EventEnvelope>` field, add
+   one and thread it through from wherever `crates/runtime/src/ipc/server.rs::bind` constructs
+   your service (it already holds the one true `events_tx`).
+4. Prove it: add a case to `events_subscribe_delivers_live_notifications_for_orchestration_
+   mutations` in `crates/runtime/tests/orchestration_rpc.rs`, or write a sibling test following
+   its exact shape (subscribe, mutate on a second connection, assert the notification arrives).
+   A missed broadcast doesn't fail loudly — the test either fails a value assertion or, if you
+   forget the broadcast entirely, **hangs forever** waiting on a notification that never comes;
+   run new tests in this family with an explicit timeout the first few times.
 
 ## Troubleshooting
 
@@ -163,6 +246,8 @@ raw-string append API, stop — that's the boundary you'd be deleting.
 | `batcave` refuses to start: socket path too long | Unix socket paths are limited (~104 bytes on macOS). Use a shorter `--state-dir`. |
 | Status tool returns `isError` with a code | Run the `doctorCommand` it hands back (`batcave status --repo <repo>`); codes like `checksum-mismatch`/`unsupported-platform` point at binary resolution, `connection-failed` at the daemon. |
 | Nothing in `runtime.log` | Foreground daemons log to stderr instead; the log file is only written by detached daemons. |
+| An orchestration tool fails `method "..." is not available to this client` | The client authenticated with too narrow a role for what it's calling. Check `ClientPrincipal::allowed_methods` (`crates/runtime/src/ipc/mod.rs`) for the role your `ensureRuntime`/test client actually used — this is exactly the bug documented in `docs/architecture.md` §18 (item 2). |
+| `/batman` shows nothing even though a mutation succeeded | Either `events/replay` is failing to deserialize (check the daemon's response to a raw `events/replay` call) or the mutation never broadcast — see the "Adding a new domain mutation" workflow above and `docs/architecture.md` §18 (item 3). |
 
 For deeper debugging techniques (inspecting the SQLite journal, tracing a request), see the
 [code walkthrough](code-walkthrough.md).
