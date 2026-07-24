@@ -49,14 +49,31 @@
       "type": "string"
     },
     "BatmanMethod": {
-      "description": "The JSON-RPC methods implemented at foundation scope. Serialized as the\nliteral method name string used on the wire.",
+      "description": "All JSON-RPC methods implemented by the BATMAN runtime, including\norchestration extension methods.\n\nSerialized as the literal method name string used on the wire.",
       "type": "string",
       "enum": [
         "initialize",
         "runtime/status",
         "events/subscribe",
         "events/replay",
-        "runtime/shutdown"
+        "runtime/shutdown",
+        "task/upsert",
+        "task/get",
+        "worker/create",
+        "worker/list",
+        "worker/get",
+        "run/submit",
+        "run/list",
+        "run/get",
+        "run/retry",
+        "run/cancel",
+        "message/send",
+        "message/list",
+        "approval/list",
+        "approval/decide",
+        "coordination/child/list",
+        "coordination/child/decide",
+        "reconcile/omp"
       ]
     },
     "BinarySource": {
