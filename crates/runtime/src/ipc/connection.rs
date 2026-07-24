@@ -401,7 +401,7 @@ async fn dispatch(
             error_code::METHOD_NOT_FOUND,
             "the connection is already initialized",
         ),
-        // Orchestration methods: not yet implemented.
+        // Orchestration methods: routed through OrchestrationService.
         BatmanMethod::TaskUpsert
         | BatmanMethod::TaskGet
         | BatmanMethod::WorkerCreate
@@ -416,9 +416,16 @@ async fn dispatch(
         | BatmanMethod::MessageList
         | BatmanMethod::ApprovalList
         | BatmanMethod::ApprovalDecide
-        | BatmanMethod::CoordinationChildList
-        | BatmanMethod::CoordinationChildDecide
-        | BatmanMethod::ReconcileOmp => error(
+        | BatmanMethod::ReconcileOmp => {
+            let resolved = method.expect("allowed implies a known method");
+            let params = message.get("params").cloned().unwrap_or(Value::Null);
+            match shared.orchestration.dispatch(resolved, principal, &params).await {
+                Ok(value) => success(&id, value),
+                Err(err) => error(&id, err.code, &err.message),
+            }
+        }
+        // Coordination methods: not yet implemented (Task 6).
+        BatmanMethod::CoordinationChildList | BatmanMethod::CoordinationChildDecide => error(
             &id,
             error_code::METHOD_NOT_FOUND,
             &format!("method {method_name:?} is not yet implemented"),

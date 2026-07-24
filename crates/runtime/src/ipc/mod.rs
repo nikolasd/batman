@@ -149,6 +149,11 @@ pub struct ServerConfig {
     pub owner_only_override: Option<bool>,
     /// Where the running binary was loaded from, reported by `runtime/status`.
     pub binary_source: batman_protocol::BinarySource,
+    /// The injected adapter-start seam for `run/submit`. `None` means no
+    /// adapter registry is wired up; `run/submit` then preserves the queued
+    /// run and reports `adapter_unavailable` rather than pretending the run
+    /// started.
+    pub run_driver: Option<std::sync::Arc<dyn crate::service::RunDriver>>,
 }
 
 impl Default for ServerConfig {
@@ -160,6 +165,7 @@ impl Default for ServerConfig {
             worker_verifier: Arc::new(RejectAllWorkerVerifier),
             owner_only_override: None,
             binary_source: batman_protocol::BinarySource::Unknown,
+            run_driver: None,
         }
     }
 }

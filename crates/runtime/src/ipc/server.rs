@@ -34,6 +34,8 @@ pub(crate) struct Shared {
     /// Fired by an in-band `runtime/shutdown` request to trigger a graceful
     /// shutdown of the accept loop.
     pub(crate) shutdown: Arc<Notify>,
+    /// Routes every orchestration method to the domain repository.
+    pub(crate) orchestration: Arc<crate::service::OrchestrationService>,
 }
 
 /// Per-connection context derived from the accepted peer's credentials.
@@ -119,6 +121,12 @@ impl Server {
 
         let (events_tx, _events_rx) = broadcast::channel(64);
 
+        let orchestration = Arc::new(crate::service::OrchestrationService::new(
+            db.clone(),
+            project_id,
+            config.run_driver.clone(),
+        ));
+
         let shared = Arc::new(Shared {
             db,
             config,
@@ -128,6 +136,7 @@ impl Server {
             active_connections: Arc::new(AtomicUsize::new(0)),
             active_runs: Arc::new(AtomicUsize::new(0)),
             shutdown: Arc::new(Notify::new()),
+            orchestration,
         });
 
         Ok(Self {

@@ -189,6 +189,10 @@ pub mod error_code {
     pub const INCOMPATIBLE_VERSION: i32 = -32002;
     pub const CAPABILITY_UNSUPPORTED: i32 = -32003;
     pub const SEQUENCE_GONE: i32 = -32004;
+    pub const ADAPTER_UNAVAILABLE: i32 = -32005;
+    /// Reserved application error range per JSON-RPC 2.0: an invalid
+    /// lifecycle-state transition was requested.
+    pub const ILLEGAL_TRANSITION: i32 = -32100;
 }
 
 /// The fixed `jsonrpc` version string used on every envelope.

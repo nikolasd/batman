@@ -11,5 +11,5 @@ mod actor;
 mod migrations;
 mod models;
 
-pub use actor::{DatabaseHandle, DbError};
+pub use actor::{DatabaseHandle, DbError, DomainClosure};
 pub use models::{Diagnostics, OperationIntent, ReplayedEvent};

@@ -22,6 +22,15 @@ use super::models::{Diagnostics, OperationIntent, ReplayedEvent};
 /// this rather than the channel growing without limit.
 const COMMAND_CHANNEL_CAPACITY: usize = 32;
 
+/// A boxed, one-shot domain operation dispatched to the actor thread. Takes
+/// the owned connection and returns a JSON value describing the committed
+/// result (or a [`crate::domain::DomainError`]).
+pub type DomainClosure = Box<
+    dyn FnOnce(&mut Connection) -> Result<serde_json::Value, crate::domain::DomainError>
+        + Send
+        + 'static,
+>;
+
 /// Errors returned by the database actor.
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -90,6 +99,14 @@ enum Command {
     },
     Diagnostics {
         respond: oneshot::Sender<Result<Diagnostics, DbError>>,
+    },
+    /// Runs an arbitrary domain operation against the owned connection on
+    /// the actor thread. The closure receives `&mut Connection` so it can
+    /// open its own transaction (append event + update projection) and
+    /// returns a JSON value describing the committed result.
+    DomainOp {
+        op: DomainClosure,
+        respond: oneshot::Sender<Result<serde_json::Value, crate::domain::DomainError>>,
     },
     Shutdown {
         respond: oneshot::Sender<Result<(), DbError>>,
@@ -286,6 +303,26 @@ impl DatabaseHandle {
         result
     }
 
+    /// Runs a boxed domain operation against the owned connection on the
+    /// actor thread. The closure opens its own transaction (append event +
+    /// update projection) and commits before this returns.
+    ///
+    /// # Errors
+    /// Returns [`crate::domain::DomainError::ActorUnavailable`] if the actor
+    /// is not running, or whatever error the closure itself returns.
+    pub async fn run_domain_op(
+        &self,
+        op: DomainClosure,
+    ) -> Result<serde_json::Value, crate::domain::DomainError> {
+        let (respond, rx) = oneshot::channel();
+        self.sender
+            .send(Command::DomainOp { op, respond })
+            .await
+            .map_err(|_| crate::domain::DomainError::ActorUnavailable)?;
+        rx.await
+            .map_err(|_| crate::domain::DomainError::ActorUnavailable)?
+    }
+
     async fn send(&self, command: Command) -> Result<(), DbError> {
         self.sender
             .send(command)
@@ -361,6 +398,9 @@ fn run_actor(
             }
             Command::Diagnostics { respond } => {
                 let _ = respond.send(tx_diagnostics(&conn));
+            }
+            Command::DomainOp { op, respond } => {
+                let _ = respond.send(op(&mut conn));
             }
             Command::Shutdown { respond } => {
                 let _ = respond.send(Ok(()));

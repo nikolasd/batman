@@ -13,6 +13,7 @@
 use batman_protocol::{
     ApprovalRequest, DeliveryState, EventEnvelope, EventSource, ProjectId, Run, RunFlags,
     RunMessage, RunState, RuntimeEvent, RuntimeEventKind, TaskRef, Timestamp, Worker,
+    WorkerProfileRef,
 };
 use rusqlite::Connection;
 
@@ -33,6 +34,9 @@ pub enum DomainError {
     /// A serialization step failed.
     #[error("failed to serialize event: {0}")]
     Serialize(#[from] serde_json::Error),
+    /// The database actor thread is no longer running.
+    #[error("database actor is not running")]
+    ActorUnavailable,
 }
 
 /// The committed result of a mutation: the durable event sequence number the
@@ -223,6 +227,7 @@ impl<'c> DomainRepository<'c> {
             Some(run.worker_id),
             Some(run.run_id),
             move |tx| {
+                let now = Timestamp::now();
                 tx.execute(
                     "INSERT INTO runs (run_id, task_id, worker_id, state,
                        flags_degraded_control, flags_needs_reconciliation, flags_protocol_unhealthy,
@@ -241,7 +246,7 @@ impl<'c> DomainRepository<'c> {
                         run.flags.workspace_dirty as i64,
                         run.flags.children_active as i64,
                         run.vendor_session_id,
-                        run.started_at.as_ref().map(|t| t.as_str().to_string()),
+                        now.as_str(),
                         run.started_at.as_ref().map(|t| t.as_str().to_string()),
                         run.completed_at.as_ref().map(|t| t.as_str().to_string()),
                     ],
@@ -643,5 +648,187 @@ fn message_kind_str(kind: &batman_protocol::MessageKind) -> &'static str {
         MessageKind::ApprovalDecision => "approvalDecision",
         MessageKind::Cancel => "cancel",
         MessageKind::Shutdown => "shutdown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use batman_protocol::{ProjectId, RunId, TaskId, WorkerId};
+    use rusqlite::Connection;
+
+    fn open_test_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE events (
+                sequence INTEGER PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                run_id TEXT,
+                event_json TEXT NOT NULL
+            );
+            CREATE TABLE worker_profiles (
+                id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, adapter TEXT NOT NULL,
+                model TEXT NOT NULL, permission_envelope TEXT NOT NULL
+            );
+            CREATE TABLE tasks (
+                task_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                owner_client_instance_id TEXT NOT NULL, revision INTEGER NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE workers (
+                worker_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                profile_id TEXT NOT NULL REFERENCES worker_profiles(id),
+                parent_worker_id TEXT REFERENCES workers(worker_id), created_at TEXT NOT NULL
+            );
+            CREATE TABLE runs (
+                run_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(task_id),
+                worker_id TEXT NOT NULL REFERENCES workers(worker_id), state TEXT NOT NULL,
+                flags_degraded_control INTEGER NOT NULL DEFAULT 0,
+                flags_needs_reconciliation INTEGER NOT NULL DEFAULT 0,
+                flags_protocol_unhealthy INTEGER NOT NULL DEFAULT 0,
+                flags_policy_quarantined INTEGER NOT NULL DEFAULT 0,
+                flags_workspace_dirty INTEGER NOT NULL DEFAULT 0,
+                flags_children_active INTEGER NOT NULL DEFAULT 0,
+                vendor_session_id TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT
+            );
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id),
+                sender_worker_id TEXT NOT NULL, recipient_worker_id TEXT, task_id TEXT NOT NULL,
+                kind TEXT NOT NULL, payload TEXT NOT NULL, delivery_state TEXT NOT NULL,
+                created_at TEXT NOT NULL, sent_at TEXT, acknowledged_at TEXT, reply_to TEXT
+            );
+            CREATE TABLE approvals (
+                approval_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id),
+                task_id TEXT NOT NULL, action TEXT NOT NULL, arguments TEXT NOT NULL,
+                human_required INTEGER NOT NULL DEFAULT 0, policy_reason TEXT NOT NULL,
+                created_at TEXT NOT NULL, decided_at TEXT, decision TEXT
+            );",
+        )
+        .expect("schema");
+        conn
+    }
+
+    fn seed_worker(conn: &mut Connection, project_id: ProjectId) -> (TaskId, WorkerId) {
+        let mut repo = DomainRepository::new(conn, project_id);
+        let task_id = TaskId::new();
+        repo.upsert_task(
+            task_id,
+            &TaskRef {
+                owner_client_instance_id: "omp-1".into(),
+                revision: 1,
+            },
+        )
+        .expect("upsert task");
+        let worker_id = WorkerId::new();
+        let worker = Worker {
+            worker_id,
+            profile_ref: WorkerProfileRef {
+                id: worker_id,
+                fingerprint: "sha256:fake".into(),
+                adapter: "fake".into(),
+                model: "test".into(),
+                permission_envelope: serde_json::json!({}),
+            },
+            parent_worker_id: None,
+            created_at: Timestamp::now(),
+        };
+        repo.create_worker(&worker).expect("create worker");
+        (task_id, worker_id)
+    }
+
+    /// Exercises the actual `DomainRepository` API (not raw SQL): submits a
+    /// run through `submit_run`, then transitions it through the repository,
+    /// proving each command commits one event + one projection update in a
+    /// single transaction.
+    #[test]
+    fn submit_run_and_transition_commit_event_and_projection_together() {
+        let mut conn = open_test_db();
+        let project_id = ProjectId::new();
+        let (task_id, worker_id) = seed_worker(&mut conn, project_id);
+
+        let run_id = RunId::new();
+        let run = Run {
+            run_id,
+            task_id,
+            worker_id,
+            state: RunState::try_from("queued").unwrap(),
+            flags: RunFlags::default(),
+            vendor_session_id: None,
+            started_at: None,
+            completed_at: None,
+        };
+
+        let mut repo = DomainRepository::new(&mut conn, project_id);
+        let committed = repo.submit_run(&run).expect("submit_run commits");
+        assert_eq!(committed.sequence, 3, "task upsert (1), worker create (2), run submit (3)");
+
+        let working = RunState::try_from("starting").unwrap();
+        let committed2 = repo
+            .transition_run(run_id, &working)
+            .expect("transition_run commits");
+        assert_eq!(committed2.sequence, 4);
+
+        // The projection reflects the transition.
+        let state: String = conn
+            .query_row(
+                "SELECT state FROM runs WHERE run_id = ?1",
+                [run_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "starting");
+
+        // The event journal has exactly 4 durable rows (task, worker, run, transition).
+        let event_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(event_count, 4);
+    }
+
+    /// An illegal transition through the real repository API commits
+    /// nothing: no new event, no projection change.
+    #[test]
+    fn transition_run_rejects_illegal_edge_and_appends_nothing() {
+        let mut conn = open_test_db();
+        let project_id = ProjectId::new();
+        let (task_id, worker_id) = seed_worker(&mut conn, project_id);
+        let run_id = RunId::new();
+        let run = Run {
+            run_id,
+            task_id,
+            worker_id,
+            state: RunState::try_from("queued").unwrap(),
+            flags: RunFlags::default(),
+            vendor_session_id: None,
+            started_at: None,
+            completed_at: None,
+        };
+        let mut repo = DomainRepository::new(&mut conn, project_id);
+        repo.submit_run(&run).unwrap();
+
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+
+        // queued -> succeeded is not a legal edge.
+        let mut repo = DomainRepository::new(&mut conn, project_id);
+        let target = RunState::try_from("succeeded").unwrap();
+        let err = repo.transition_run(run_id, &target).unwrap_err();
+        assert!(matches!(err, DomainError::Transition(_)));
+
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before, after, "illegal transition must append no event");
+
+        let state: String = conn
+            .query_row(
+                "SELECT state FROM runs WHERE run_id = ?1",
+                [run_id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "queued", "projection must be unchanged");
     }
 }
