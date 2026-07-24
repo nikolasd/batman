@@ -1,4 +1,4 @@
-# BA.T.MA.N.
+# B.A.T.M.A.N.
 
 **B**orderline **A**wesome **T**ool for **M**ultiagent **A**utomation by **N**ikolas.
 
