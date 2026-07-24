@@ -44,6 +44,10 @@
     "runtimeStatus"
   ],
   "$defs": {
+    "ApprovalId": {
+      "description": "Identifies an approval request raised by the runtime.",
+      "type": "string"
+    },
     "BatmanMethod": {
       "description": "The JSON-RPC methods implemented at foundation scope. Serialized as the\nliteral method name string used on the wire.",
       "type": "string",
@@ -467,6 +471,10 @@
         "result"
       ]
     },
+    "MessageId": {
+      "description": "Identifies a single message within a run's transcript.",
+      "type": "string"
+    },
     "ProjectId": {
       "description": "Identifies a repository/project managed by the BATMAN runtime.",
       "type": "string"
@@ -521,6 +529,39 @@
         {
           "type": "string"
         }
+      ]
+    },
+    "RunFlags": {
+      "description": "Independent boolean flags on a run.\n\n`degradedControl`, `needsReconciliation`, `protocolUnhealthy`,\n`policyQuarantined`, `workspaceDirty`, and `childrenActive` are all\nindependent booleans.",
+      "type": "object",
+      "properties": {
+        "childrenActive": {
+          "type": "boolean"
+        },
+        "degradedControl": {
+          "type": "boolean"
+        },
+        "needsReconciliation": {
+          "type": "boolean"
+        },
+        "policyQuarantined": {
+          "type": "boolean"
+        },
+        "protocolUnhealthy": {
+          "type": "boolean"
+        },
+        "workspaceDirty": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "degradedControl",
+        "needsReconciliation",
+        "protocolUnhealthy",
+        "policyQuarantined",
+        "workspaceDirty",
+        "childrenActive"
       ]
     },
     "RunId": {
@@ -610,7 +651,380 @@
             "type",
             "payload"
           ]
+        },
+        {
+          "description": "A task was created or updated via `task/upsert`.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "ownerClientInstanceId": {
+                  "type": "string"
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "taskId",
+                "ownerClientInstanceId",
+                "revision"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "taskEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "A worker was created via `worker/create`.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "profileId": {
+                  "type": "string"
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "workerId",
+                "profileId"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "workerEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "A run entered a new lifecycle state.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "runId",
+                "taskId",
+                "workerId",
+                "state"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "runEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "Flags on a run were changed.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "flags": {
+                  "$ref": "#/$defs/RunFlags"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "runId",
+                "flags"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "runFlagsEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "A message was recorded, sent, acknowledged, or failed.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "deliveryState": {
+                  "type": "string"
+                },
+                "kind": {
+                  "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "messageId": {
+                  "$ref": "#/$defs/MessageId"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "messageId",
+                "runId",
+                "taskId",
+                "deliveryState"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "messageEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "An approval request was created.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "approvalId": {
+                  "$ref": "#/$defs/ApprovalId"
+                },
+                "kind": {
+                  "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "approvalId",
+                "runId",
+                "taskId",
+                "action"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "approvalEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "A child worker was requested or denied.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "childRunId": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/RunId"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "childTaskId": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/TaskId"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "childWorkerId": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/WorkerId"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "kind": {
+                  "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "parentRunId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "parentRunId"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "childEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "Ownership of a task was rebound via `reconcile/omp`.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "newOwnerClientInstanceId": {
+                  "type": "string"
+                },
+                "oldOwnerClientInstanceId": {
+                  "type": "string"
+                },
+                "revision": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "taskId",
+                "oldOwnerClientInstanceId",
+                "newOwnerClientInstanceId",
+                "revision"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "reconcileEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
         }
+      ]
+    },
+    "RuntimeEventKind": {
+      "description": "The semantic kind of an orchestration event stored in the durable journal.\n\nEvery record creation, lifecycle transition, flag change, message delivery\nchange, and approval request/decision produces one of these variants.",
+      "type": "string",
+      "enum": [
+        "taskCreated",
+        "taskUpdated",
+        "workerCreated",
+        "runQueued",
+        "runStarting",
+        "runWorking",
+        "runWaitingUser",
+        "runWaitingPeer",
+        "runPaused",
+        "runSucceeded",
+        "runFailed",
+        "runCancelled",
+        "runLost",
+        "runFlagsChanged",
+        "messageRecorded",
+        "messageSent",
+        "messageAcknowledged",
+        "messageFailed",
+        "approvalRequested",
+        "approvalDecided",
+        "childWorkerRequested",
+        "childWorkerRequestDenied",
+        "reconcileOwnershipChanged"
       ]
     },
     "RuntimeInfo": {

@@ -10,7 +10,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use ts_rs::TS;
 
-use crate::ids::{ProjectId, RunId, TaskId, WorkerId};
+use crate::ids::{ApprovalId, MessageId, ProjectId, RunId, TaskId, WorkerId};
 
 /// Canonical UTC RFC 3339 timestamp text, as carried on the wire.
 ///
@@ -169,6 +169,96 @@ pub enum DiagnosticLevel {
     Error,
 }
 
+/// Independent boolean flags on a run.
+///
+/// `degradedControl`, `needsReconciliation`, `protocolUnhealthy`,
+/// `policyQuarantined`, `workspaceDirty`, and `childrenActive` are all
+/// independent booleans.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export)]
+pub struct RunFlags {
+    pub degraded_control: bool,
+    #[serde(rename = "needsReconciliation")]
+    pub needs_reconciliation: bool,
+    #[serde(rename = "protocolUnhealthy")]
+    pub protocol_unhealthy: bool,
+    #[serde(rename = "policyQuarantined")]
+    pub policy_quarantined: bool,
+    #[serde(rename = "workspaceDirty")]
+    pub workspace_dirty: bool,
+    #[serde(rename = "childrenActive")]
+    pub children_active: bool,
+}
+
+impl Default for RunFlags {
+    fn default() -> Self {
+        Self {
+            degraded_control: false,
+            needs_reconciliation: false,
+            protocol_unhealthy: false,
+            policy_quarantined: false,
+            workspace_dirty: false,
+            children_active: false,
+        }
+    }
+}
+
+/// The semantic kind of an orchestration event stored in the durable journal.
+///
+/// Every record creation, lifecycle transition, flag change, message delivery
+/// change, and approval request/decision produces one of these variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub enum RuntimeEventKind {
+    #[serde(rename = "taskCreated")]
+    TaskCreated,
+    #[serde(rename = "taskUpdated")]
+    TaskUpdated,
+    #[serde(rename = "workerCreated")]
+    WorkerCreated,
+    #[serde(rename = "runQueued")]
+    RunQueued,
+    #[serde(rename = "runStarting")]
+    RunStarting,
+    #[serde(rename = "runWorking")]
+    RunWorking,
+    #[serde(rename = "runWaitingUser")]
+    RunWaitingUser,
+    #[serde(rename = "runWaitingPeer")]
+    RunWaitingPeer,
+    #[serde(rename = "runPaused")]
+    RunPaused,
+    #[serde(rename = "runSucceeded")]
+    RunSucceeded,
+    #[serde(rename = "runFailed")]
+    RunFailed,
+    #[serde(rename = "runCancelled")]
+    RunCancelled,
+    #[serde(rename = "runLost")]
+    RunLost,
+    #[serde(rename = "runFlagsChanged")]
+    RunFlagsChanged,
+    #[serde(rename = "messageRecorded")]
+    MessageRecorded,
+    #[serde(rename = "messageSent")]
+    MessageSent,
+    #[serde(rename = "messageAcknowledged")]
+    MessageAcknowledged,
+    #[serde(rename = "messageFailed")]
+    MessageFailed,
+    #[serde(rename = "approvalRequested")]
+    ApprovalRequested,
+    #[serde(rename = "approvalDecided")]
+    ApprovalDecided,
+    #[serde(rename = "childWorkerRequested")]
+    ChildWorkerRequested,
+    #[serde(rename = "childWorkerRequestDenied")]
+    ChildWorkerRequestDenied,
+    #[serde(rename = "reconcileOwnershipChanged")]
+    ReconcileOwnershipChanged,
+}
+
 /// A sanitized, durable runtime event. Fields are plain, already-sanitized
 /// types (never [`Classified`]) so that raw thinking/secret content can
 /// never reach the durable log through this type.
@@ -188,6 +278,64 @@ pub enum RuntimeEvent {
         level: DiagnosticLevel,
         code: String,
         message: String,
+    },
+    /// A task was created or updated via `task/upsert`.
+    TaskEvent {
+        kind: RuntimeEventKind,
+        task_id: TaskId,
+        owner_client_instance_id: String,
+        revision: u64,
+    },
+    /// A worker was created via `worker/create`.
+    WorkerEvent {
+        kind: RuntimeEventKind,
+        worker_id: WorkerId,
+        profile_id: String,
+    },
+    /// A run entered a new lifecycle state.
+    RunEvent {
+        kind: RuntimeEventKind,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        state: String,
+    },
+    /// Flags on a run were changed.
+    RunFlagsEvent {
+        run_id: RunId,
+        flags: RunFlags,
+    },
+    /// A message was recorded, sent, acknowledged, or failed.
+    MessageEvent {
+        kind: RuntimeEventKind,
+        message_id: MessageId,
+        run_id: RunId,
+        task_id: TaskId,
+        delivery_state: String,
+    },
+    /// An approval request was created.
+    ApprovalEvent {
+        kind: RuntimeEventKind,
+        approval_id: ApprovalId,
+        run_id: RunId,
+        task_id: TaskId,
+        action: String,
+    },
+    /// A child worker was requested or denied.
+    ChildEvent {
+        kind: RuntimeEventKind,
+        parent_run_id: RunId,
+        child_task_id: Option<TaskId>,
+        child_worker_id: Option<WorkerId>,
+        child_run_id: Option<RunId>,
+        reason: Option<String>,
+    },
+    /// Ownership of a task was rebound via `reconcile/omp`.
+    ReconcileEvent {
+        task_id: TaskId,
+        old_owner_client_instance_id: String,
+        new_owner_client_instance_id: String,
+        revision: u64,
     },
 }
 
