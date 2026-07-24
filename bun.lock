@@ -30,6 +30,7 @@
         "@types/bun": "latest",
         "ajv": "8.17.1",
         "typescript": "latest",
+        "zod": "^4",
       },
       "optionalDependencies": {
         "@satori/batman-darwin-arm64": "workspace:*",

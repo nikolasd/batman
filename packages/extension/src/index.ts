@@ -1,14 +1,18 @@
 // The `@satori/batman` OMP extension entry point. Registers `batman_status`
-// (an LLM-callable tool) and `/batman-status` (a slash command), both backed
-// by the single `getRuntimeStatus` path in `status.ts`: OMP loading this
-// extension starts or reconnects to the per-repository `batcave` runtime and
-// reports its status without any model call.
+// (an LLM-callable tool), `/batman-status` (a slash command), and every
+// deterministic orchestration tool (`batman_task`, `batman_worker`,
+// `batman_run`, `batman_message`, `batman_approval`, `batman_reconcile`).
+// All share the single cached-client path: OMP loading this extension
+// starts or reconnects to the per-repository `batcave` runtime once per
+// session, and every tool reuses that connection.
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import type { BatmanClient } from "./client";
 import { buildStatusContext } from "./context";
 import { getRuntimeStatus, type GetRuntimeStatusContext } from "./status";
+import { registerOrchestrationTools } from "./tools";
+import { ensureRuntime } from "./runtime";
 
 const TOOL_NAME = "batman_status";
 const COMMAND_NAME = "batman-status";
@@ -29,6 +33,21 @@ export default function batmanExtension(pi: ExtensionAPI): void {
         },
       },
     };
+  }
+
+  /**
+   * Resolves the cached client for `cwd`, connecting (or spawning) the
+   * repository's runtime on first use. Shared by every orchestration tool so
+   * a session holds exactly one runtime connection.
+   */
+  async function getClient(cwd: string): Promise<BatmanClient> {
+    if (cachedClient !== undefined) {
+      return cachedClient;
+    }
+    const { ensureRuntimeOptions } = buildStatusContext({ cwd });
+    const { client } = await ensureRuntime(ensureRuntimeOptions);
+    cachedClient = client;
+    return client;
   }
 
   pi.registerTool({
@@ -58,6 +77,8 @@ export default function batmanExtension(pi: ExtensionAPI): void {
       }
     },
   });
+
+  registerOrchestrationTools(pi, { getClient });
 
   pi.on("session_shutdown", async () => {
     cachedClient?.close();

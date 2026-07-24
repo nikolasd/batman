@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
+import { z as zod } from "zod/v4";
+
 import { validateRuntimeStatus } from "@satori/batman-protocol/validate";
 
 import extension from "./index";
@@ -47,9 +49,8 @@ function createFakeApi(): {
 } {
   const tools = new Map<string, FakeToolDefinition>();
   const commands = new Map<string, FakeRegisteredCommand>();
-
   const api = {
-    zod: { object: (shape: unknown) => shape },
+    zod,
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     registerTool(tool: FakeToolDefinition) {
       tools.set(tool.name, tool);
@@ -65,10 +66,18 @@ function createFakeApi(): {
   return { api: api as unknown as ExtensionAPI, tools, commands };
 }
 
-test("registers exactly the batman_status tool and the batman-status command", () => {
+test("registers batman_status plus every orchestration tool, and the batman-status command", () => {
   const { api, tools, commands } = createFakeApi();
   extension(api);
-  expect([...tools.keys()]).toEqual(["batman_status"]);
+  expect([...tools.keys()]).toEqual([
+    "batman_status",
+    "batman_task",
+    "batman_worker",
+    "batman_run",
+    "batman_message",
+    "batman_approval",
+    "batman_reconcile",
+  ]);
   expect([...commands.keys()]).toEqual(["batman-status"]);
 });
 
