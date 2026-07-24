@@ -10,6 +10,7 @@ pub mod lifecycle;
 pub mod paths;
 pub mod security;
 pub mod service;
+pub mod supervisor;
 
 pub use approval::{
     ApprovalCallback, ApprovalError, ApprovalService, DecideOutcome, NoopApprovalCallback,
