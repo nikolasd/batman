@@ -107,6 +107,8 @@ for the full smoke-test walkthrough, including approvals and messages.
 | Document | Read it when you want to… |
 |---|---|
 | [docs/getting-started.md](docs/getting-started.md) | build, test, and run the codebase; smoke-test the orchestration extension; environment variables; common workflows |
+| [docs/journal.md](docs/journal.md) | read the story of how this got built, commit by commit — the decisions, the whys, and the hows |
+| [docs/adr/](docs/adr/) | look up a specific architectural decision (MADR format) — what was decided, what was considered, and why |
 | [docs/architecture.md](docs/architecture.md) | understand the design: protocol, codegen, journal, redaction, IPC, lifecycle, domain persistence, orchestration RPC, coordination, approvals, the monitor |
 | [docs/code-walkthrough.md](docs/code-walkthrough.md) | navigate the source, trace a request end to end, debug, and find the right test |
 | [docs/rust-primer.md](docs/rust-primer.md) | learn Rust fast, using this repository's own code as the textbook (a one-week plan) |
