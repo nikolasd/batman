@@ -99,6 +99,31 @@ CREATE TABLE approvals (
 );
 ";
 
+/// Migration 3: registered adapter worker profiles (Worker Adapters
+/// milestone), plus a `workers.resolved_profile_json` column carrying the
+/// full resolved `WorkerProfile` snapshot (startup options, environment
+/// allowlist, source) for a worker created from a `profileId` -- copied
+/// in once at creation time, so it is immune to whatever later happens to
+/// the source row in `adapter_profiles`. `adapter_profiles` itself is
+/// deliberately outside the append-only `events` journal -- profile
+/// registration is configuration, not an orchestration fact, so it is
+/// never journaled or broadcast (see
+/// `crate::adapter::profile_store::ProfileStore`).
+const MIGRATION_3: &str = "
+CREATE TABLE adapter_profiles (
+  id TEXT PRIMARY KEY,
+  adapter TEXT NOT NULL,
+  model TEXT NOT NULL,
+  permission_envelope TEXT NOT NULL,
+  startup_options_json TEXT NOT NULL,
+  environment_allowlist_json TEXT NOT NULL,
+  source TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+ALTER TABLE workers ADD COLUMN resolved_profile_json TEXT;
+";
+
 /// Opens `path` as a private (mode `0600`) SQLite database, configures its
 /// PRAGMAs (`journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`,
 /// `synchronous=FULL`), and migrates it to the latest schema. Migrations
@@ -117,7 +142,11 @@ pub(super) fn open_and_migrate(path: &Path) -> Result<Connection, DbError> {
     conn.pragma_update(None, "busy_timeout", 5000_i64)?;
     conn.pragma_update(None, "synchronous", "FULL")?;
 
-    let migrations = Migrations::new(vec![M::up(MIGRATION_1), M::up(MIGRATION_2)]);
+    let migrations = Migrations::new(vec![
+        M::up(MIGRATION_1),
+        M::up(MIGRATION_2),
+        M::up(MIGRATION_3),
+    ]);
     migrations.to_latest(&mut conn)?;
 
     Ok(conn)

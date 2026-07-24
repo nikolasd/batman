@@ -11,14 +11,15 @@
 //! before its event is appended.
 
 use batman_protocol::{
-    ApprovalRequest, DeliveryState, EventEnvelope, EventSource, ProjectId, Run, RunFlags,
-    RunId, RunMessage, RunState, RuntimeEvent, RuntimeEventKind, TaskId, TaskRef, Timestamp,
-    Worker, WorkerId,
+    ApprovalRequest, DeliveryState, EventEnvelope, EventSource, ProjectId, Run, RunFlags, RunId,
+    RunMessage, RunState, RuntimeEvent, RuntimeEventKind, TaskId, TaskRef, Timestamp, Worker,
+    WorkerId,
 };
 use rusqlite::Connection;
 use serde_json::Value;
+use tokio::sync::broadcast;
 
-use super::transitions::{check_transition, TransitionError};
+use super::transitions::{TransitionError, check_transition};
 
 /// Errors returned by [`DomainRepository`] commands.
 #[derive(Debug, thiserror::Error)]
@@ -58,7 +59,8 @@ pub fn embed_envelope(mut value: Value, envelope: &EventEnvelope) -> Value {
     if let Some(map) = value.as_object_mut() {
         map.insert(
             "__envelope".to_string(),
-            serde_json::to_value(envelope).expect("EventEnvelope is a plain, serializable wire type"),
+            serde_json::to_value(envelope)
+                .expect("EventEnvelope is a plain, serializable wire type"),
         );
     }
     value
@@ -70,6 +72,26 @@ pub fn embed_envelope(mut value: Value, envelope: &EventEnvelope) -> Value {
 pub fn take_envelope(value: &mut Value) -> Option<EventEnvelope> {
     let raw = value.as_object_mut()?.remove("__envelope")?;
     serde_json::from_value(raw).ok()
+}
+
+/// Takes the envelope [`embed_envelope`] embedded in `value` (if present),
+/// sends it to every live `events/subscribe` listener on `events_tx`, and
+/// returns its committed sequence number. Every call site that commits a
+/// [`DomainRepository`] mutation across a `run_domain_op` boundary --
+/// `OrchestrationService`, `ApprovalService`, `CoordinationBroker`, and
+/// `crate::adapter::event_sink::DomainAdapterEventSink` alike -- should
+/// route through this one function rather than reimplementing the
+/// take-then-send pair inline, so there is exactly one place this
+/// take-before-strip-then-broadcast behavior can regress (see
+/// `docs/architecture.md` §18 item 3).
+pub fn broadcast_committed(
+    events_tx: &broadcast::Sender<EventEnvelope>,
+    value: &mut Value,
+) -> Option<u64> {
+    let envelope = take_envelope(value)?;
+    let sequence = envelope.sequence;
+    let _ = events_tx.send(envelope);
+    Some(sequence)
 }
 
 /// A repository over the orchestration projection tables and the durable
@@ -201,9 +223,28 @@ impl<'c> DomainRepository<'c> {
         })
     }
 
-    /// Creates a worker, persisting its immutable profile reference. Emits a
-    /// `WorkerCreated` event. Fails if the worker id already exists.
+    /// Creates a worker, persisting its immutable profile reference. Emits
+    /// a `WorkerCreated` event. Fails if the worker id already exists.
     pub fn create_worker(&mut self, worker: &Worker) -> Result<Committed, DomainError> {
+        self.create_worker_with_snapshot(worker, None)
+    }
+
+    /// Like [`Self::create_worker`], but also stores the full resolved
+    /// [`crate::adapter::WorkerProfile`] snapshot (serialized JSON,
+    /// including `startupOptions`/`environmentAllowlist`/`source` --
+    /// everything `WorkerProfileRef`'s five frozen fields cannot carry)
+    /// alongside the worker row, when `worker/create` resolved a
+    /// `profileId`. Copied in at creation time and never re-read from the
+    /// profile store afterward, so the worker's own row is immutable
+    /// regardless of what later happens to the source profile: this is
+    /// what makes "changing the source profile after worker creation
+    /// never mutates the stored snapshot" true even if a profile store
+    /// implementation someday allows updates.
+    pub fn create_worker_with_snapshot(
+        &mut self,
+        worker: &Worker,
+        resolved_profile_json: Option<String>,
+    ) -> Result<Committed, DomainError> {
         let event = RuntimeEvent::WorkerEvent {
             kind: RuntimeEventKind::WorkerCreated,
             worker_id: worker.worker_id,
@@ -226,18 +267,49 @@ impl<'c> DomainRepository<'c> {
                 ],
             )?;
             tx.execute(
-                "INSERT INTO workers (worker_id, project_id, profile_id, parent_worker_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO workers (worker_id, project_id, profile_id, parent_worker_id, created_at, resolved_profile_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![
                     worker.worker_id.to_string(),
                     project.to_string(),
                     profile.id.to_string(),
                     worker.parent_worker_id.map(|w| w.to_string()),
                     worker.created_at.as_str(),
+                    resolved_profile_json,
                 ],
             )?;
             Ok(())
         })
+    }
+
+    /// Reads back the full resolved [`crate::adapter::WorkerProfile`]
+    /// snapshot json stored by [`Self::create_worker_with_snapshot`], or
+    /// `None` for a worker created without a `profileId` (e.g. `adapter:
+    /// "fake"`/`"ompNative"`). Runtime-internal only: never exposed over
+    /// `worker/get`'s wire response, which stays exactly
+    /// `WorkerProfileRef`'s five frozen fields. The (later) adapter
+    /// registry reads this to reconstruct the exact validated launch
+    /// profile for a run's worker.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::NotFound`] if `worker_id` does not exist.
+    pub fn resolved_profile_snapshot(
+        &self,
+        worker_id: WorkerId,
+    ) -> Result<Option<String>, DomainError> {
+        self.conn
+            .query_row(
+                "SELECT resolved_profile_json FROM workers WHERE worker_id = ?1",
+                [worker_id.to_string()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .map_err(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => DomainError::NotFound {
+                    kind: "worker",
+                    id: worker_id.to_string(),
+                },
+                other => DomainError::Sqlite(other),
+            })
     }
 
     /// Submits a run in `queued` state. Requires the task and worker to
@@ -312,12 +384,11 @@ impl<'c> DomainRepository<'c> {
         })?;
         check_transition(&run_id.to_string(), &from, to)?;
 
-        let task_id = batman_protocol::TaskId::parse(&task_id_str).map_err(|_| {
-            DomainError::NotFound {
+        let task_id =
+            batman_protocol::TaskId::parse(&task_id_str).map_err(|_| DomainError::NotFound {
                 kind: "task",
                 id: task_id_str.clone(),
-            }
-        })?;
+            })?;
         let worker_id = batman_protocol::WorkerId::parse(&worker_id_str).map_err(|_| {
             DomainError::NotFound {
                 kind: "worker",
@@ -455,18 +526,16 @@ impl<'c> DomainRepository<'c> {
                 kind: "message",
                 id: message_id.to_string(),
             })?;
-        let run_id = batman_protocol::RunId::parse(&run_id_str).map_err(|_| {
-            DomainError::NotFound {
+        let run_id =
+            batman_protocol::RunId::parse(&run_id_str).map_err(|_| DomainError::NotFound {
                 kind: "run",
                 id: run_id_str.clone(),
-            }
-        })?;
-        let task_id = batman_protocol::TaskId::parse(&task_id_str).map_err(|_| {
-            DomainError::NotFound {
+            })?;
+        let task_id =
+            batman_protocol::TaskId::parse(&task_id_str).map_err(|_| DomainError::NotFound {
                 kind: "task",
                 id: task_id_str.clone(),
-            }
-        })?;
+            })?;
 
         let kind = match state {
             DeliveryState::Sent => RuntimeEventKind::MessageSent,
@@ -590,18 +659,16 @@ impl<'c> DomainRepository<'c> {
                 kind: "approval",
                 id: approval_id.to_string(),
             })?;
-        let run_id = batman_protocol::RunId::parse(&run_id_str).map_err(|_| {
-            DomainError::NotFound {
+        let run_id =
+            batman_protocol::RunId::parse(&run_id_str).map_err(|_| DomainError::NotFound {
                 kind: "run",
                 id: run_id_str.clone(),
-            }
-        })?;
-        let task_id = batman_protocol::TaskId::parse(&task_id_str).map_err(|_| {
-            DomainError::NotFound {
+            })?;
+        let task_id =
+            batman_protocol::TaskId::parse(&task_id_str).map_err(|_| DomainError::NotFound {
                 kind: "task",
                 id: task_id_str.clone(),
-            }
-        })?;
+            })?;
 
         let event = RuntimeEvent::ApprovalEvent {
             kind: RuntimeEventKind::ApprovalDecided,
@@ -687,10 +754,14 @@ impl<'c> DomainRepository<'c> {
         let waiting_peer = RunState::try_from("waitingPeer").expect("waitingPeer is valid");
         check_transition(&parent_run_id.to_string(), &from, &waiting_peer)?;
 
-        let task_id = TaskId::parse(&task_id_str)
-            .map_err(|_| DomainError::NotFound { kind: "task", id: task_id_str.clone() })?;
-        let worker_id = WorkerId::parse(&worker_id_str)
-            .map_err(|_| DomainError::NotFound { kind: "worker", id: worker_id_str.clone() })?;
+        let task_id = TaskId::parse(&task_id_str).map_err(|_| DomainError::NotFound {
+            kind: "task",
+            id: task_id_str.clone(),
+        })?;
+        let worker_id = WorkerId::parse(&worker_id_str).map_err(|_| DomainError::NotFound {
+            kind: "worker",
+            id: worker_id_str.clone(),
+        })?;
 
         let event = RuntimeEvent::ChildEvent {
             kind: RuntimeEventKind::ChildWorkerRequested,
@@ -746,10 +817,14 @@ impl<'c> DomainRepository<'c> {
         let working = RunState::try_from("working").expect("working is valid");
         check_transition(&parent_run_id.to_string(), &from, &working)?;
 
-        let task_id = TaskId::parse(&task_id_str)
-            .map_err(|_| DomainError::NotFound { kind: "task", id: task_id_str.clone() })?;
-        let worker_id = WorkerId::parse(&worker_id_str)
-            .map_err(|_| DomainError::NotFound { kind: "worker", id: worker_id_str.clone() })?;
+        let task_id = TaskId::parse(&task_id_str).map_err(|_| DomainError::NotFound {
+            kind: "task",
+            id: task_id_str.clone(),
+        })?;
+        let worker_id = WorkerId::parse(&worker_id_str).map_err(|_| DomainError::NotFound {
+            kind: "worker",
+            id: worker_id_str.clone(),
+        })?;
 
         let kind = if accepted {
             RuntimeEventKind::ChildWorkerRequested
@@ -774,6 +849,45 @@ impl<'c> DomainRepository<'c> {
                     "UPDATE runs SET state = 'working' WHERE run_id = ?1",
                     rusqlite::params![parent_run_id.to_string()],
                 )?;
+                Ok(())
+            },
+        )
+    }
+
+    /// Appends a normalized adapter telemetry event (visible messages,
+    /// tool lifecycle, usage, protocol health, nested-worker observation,
+    /// ...) to the durable journal, correlated to
+    /// `task_id`/`worker_id`/`run_id`. Unlike the mutations above, this
+    /// never itself applies a run-state transition -- adapters call
+    /// `transition_run` directly for that, through the same seam
+    /// `FakeRunDriver` already uses. The one exception is
+    /// `AdapterVendorSessionEvent`, which also records the run's vendor
+    /// session id in the same transaction.
+    pub fn record_adapter_event(
+        &mut self,
+        event: &RuntimeEvent,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        run_id: RunId,
+    ) -> Result<Committed, DomainError> {
+        let vendor_session_id = match event {
+            RuntimeEvent::AdapterVendorSessionEvent {
+                vendor_session_id, ..
+            } => Some(vendor_session_id.clone()),
+            _ => None,
+        };
+        self.append_and_apply(
+            event,
+            Some(task_id),
+            Some(worker_id),
+            Some(run_id),
+            move |tx| {
+                if let Some(vendor_session_id) = vendor_session_id {
+                    tx.execute(
+                        "UPDATE runs SET vendor_session_id = ?1 WHERE run_id = ?2",
+                        rusqlite::params![vendor_session_id, run_id.to_string()],
+                    )?;
+                }
                 Ok(())
             },
         )
@@ -852,7 +966,8 @@ mod tests {
             CREATE TABLE workers (
                 worker_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
                 profile_id TEXT NOT NULL REFERENCES worker_profiles(id),
-                parent_worker_id TEXT REFERENCES workers(worker_id), created_at TEXT NOT NULL
+                parent_worker_id TEXT REFERENCES workers(worker_id), created_at TEXT NOT NULL,
+                resolved_profile_json TEXT
             );
             CREATE TABLE runs (
                 run_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(task_id),
@@ -934,7 +1049,10 @@ mod tests {
 
         let mut repo = DomainRepository::new(&mut conn, project_id);
         let committed = repo.submit_run(&run).expect("submit_run commits");
-        assert_eq!(committed.sequence, 3, "task upsert (1), worker create (2), run submit (3)");
+        assert_eq!(
+            committed.sequence, 3,
+            "task upsert (1), worker create (2), run submit (3)"
+        );
 
         let working = RunState::try_from("starting").unwrap();
         let committed2 = repo

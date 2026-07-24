@@ -1,0 +1,37 @@
+//! The worker adapter contract: capability declaration, the [`Adapter`]
+//! trait every harness integration implements, the immutable
+//! [`WorkerProfile`] a supervised process is launched from, the error
+//! boundary every adapter operation returns through, and the event sink
+//! adapters push normalized telemetry through rather than writing
+//! [`crate::domain::DomainRepository`] directly.
+mod capability;
+mod error;
+mod event_sink;
+mod profile;
+mod profile_store;
+#[path = "trait.rs"]
+mod r#trait;
+
+use std::future::Future;
+use std::pin::Pin;
+
+pub use capability::{
+    AdapterCapabilities, ApprovalsCapability, DurabilityCapability, NativeViewCapability,
+    NestedCapability, ProtocolKind, ResumeCapability, SteeringCapability, UsageCapability,
+    WorkspaceControlCapability,
+};
+pub use error::{AdapterError, AdapterErrorCode};
+pub use event_sink::{AdapterEvent, AdapterEventPayload, AdapterEventSink, DomainAdapterEventSink};
+pub use profile::{
+    AdapterKind, ClaudeStartupOptions, CodexStartupOptions, CopilotStartupOptions, EffectivePolicy,
+    OmpRpcStartupOptions, ProfileError, ProfileId, StartupOptions, TerminalDegradedStartupOptions,
+    WorkerProfile,
+};
+pub use profile_store::{ProfileStore, ProfileStoreError};
+pub use r#trait::{
+    Adapter, AdapterMessage, AdapterSnapshot, CancelScope, ProbeResult, StartSpec, VendorSessionRef,
+};
+
+/// A boxed future returned by every [`Adapter`]/[`AdapterEventSink`]
+/// operation, resolving to `Result<T, AdapterError>`.
+pub type AdapterFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AdapterError>> + Send + 'a>>;

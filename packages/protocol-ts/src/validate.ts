@@ -20,12 +20,14 @@ const ajv = new Ajv2020({
   useDefaults: false,
 });
 
-// The schema carries Rust integer-width `format` hints (`uint32`, `int64`,
-// ...). These are not JSON validation constraints -- each numeric field
-// already carries `minimum`/`maximum` bounds -- so, rather than relax
-// `strict`, register them as always-passing formats. This is the single
-// documented relaxation required by the schema's keyword set.
-for (const format of ["int16", "uint16", "int32", "uint32", "int64", "uint64"]) {
+// The schema carries Rust numeric-width `format` hints (`uint32`,
+// `int64`, `double`, ...). These are not JSON validation constraints --
+// each numeric field already carries `minimum`/`maximum` bounds where
+// applicable -- so, rather than relax `strict`, register them as
+// always-passing formats. This is the single documented relaxation
+// required by the schema's keyword set. `float`/`double` cover `f32`/
+// `f64` fields (e.g. `AdapterUsageEvent.costUsd`).
+for (const format of ["int16", "uint16", "int32", "uint32", "int64", "uint64", "float", "double"]) {
   ajv.addFormat(format, true);
 }
 

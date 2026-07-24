@@ -10,7 +10,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use ts_rs::TS;
 
-use crate::ids::{ApprovalId, MessageId, ProjectId, RunId, TaskId, WorkerId};
+use crate::ids::{ApprovalId, ArtifactId, MessageId, ProjectId, RunId, TaskId, WorkerId};
 
 /// Canonical UTC RFC 3339 timestamp text, as carried on the wire.
 ///
@@ -257,6 +257,44 @@ pub enum RuntimeEventKind {
     ChildWorkerRequestDenied,
     #[serde(rename = "reconcileOwnershipChanged")]
     ReconcileOwnershipChanged,
+    /// A worker adapter's supervised process started.
+    #[serde(rename = "adapterProcessStarted")]
+    AdapterProcessStarted,
+    /// A worker adapter's supervised process exited.
+    #[serde(rename = "adapterProcessExited")]
+    AdapterProcessExited,
+    /// A worker adapter established (or re-established) its vendor
+    /// session/thread identifier.
+    #[serde(rename = "adapterVendorSessionEstablished")]
+    AdapterVendorSessionEstablished,
+    /// A worker adapter streamed a partial visible-message chunk.
+    #[serde(rename = "adapterMessageChunk")]
+    AdapterMessageChunk,
+    /// A worker adapter completed a visible message.
+    #[serde(rename = "adapterMessageFinal")]
+    AdapterMessageFinal,
+    /// A worker adapter's tool call started.
+    #[serde(rename = "adapterToolStarted")]
+    AdapterToolStarted,
+    /// A worker adapter's tool call reported progress.
+    #[serde(rename = "adapterToolProgress")]
+    AdapterToolProgress,
+    /// A worker adapter's tool call finished.
+    #[serde(rename = "adapterToolResult")]
+    AdapterToolResult,
+    /// A worker adapter reported usage/cost.
+    #[serde(rename = "adapterUsageReported")]
+    AdapterUsageReported,
+    /// A worker adapter produced an artifact.
+    #[serde(rename = "adapterArtifactProduced")]
+    AdapterArtifactProduced,
+    /// A worker adapter's protocol health changed.
+    #[serde(rename = "adapterProtocolHealthChanged")]
+    AdapterProtocolHealthChanged,
+    /// A worker adapter observed a vendor-created child, regardless of its
+    /// declared `nested` capability.
+    #[serde(rename = "adapterNestedWorkerObserved")]
+    AdapterNestedWorkerObserved,
 }
 
 /// A sanitized, durable runtime event. Fields are plain, already-sanitized
@@ -336,6 +374,89 @@ pub enum RuntimeEvent {
         old_owner_client_instance_id: String,
         new_owner_client_instance_id: String,
         revision: u64,
+    },
+    /// A supervised adapter process started or exited.
+    AdapterProcessEvent {
+        kind: RuntimeEventKind,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        pid: Option<u32>,
+        exit_code: Option<i32>,
+        signal: Option<String>,
+    },
+    /// A worker adapter established (or re-established) its vendor
+    /// session/thread identifier.
+    AdapterVendorSessionEvent {
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        vendor_session_id: String,
+    },
+    /// A visible message chunk or final message from a worker adapter.
+    /// `text` has already crossed the redaction boundary; `None` means
+    /// the entire fragment was `Thinking`/`Secret`-classified and was
+    /// dropped, not that the message was empty.
+    AdapterMessageEvent {
+        kind: RuntimeEventKind,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        role: String,
+        text: Option<String>,
+    },
+    /// A tool call lifecycle event from a worker adapter. `detail` has
+    /// already crossed the redaction boundary; `None` means the detail
+    /// fragment was `Thinking`/`Secret`-classified and was dropped, not
+    /// that it was empty.
+    AdapterToolEvent {
+        kind: RuntimeEventKind,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        tool_call_id: String,
+        name: String,
+        ok: Option<bool>,
+        detail: Option<String>,
+    },
+    /// Usage/cost reported by a worker adapter.
+    AdapterUsageEvent {
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_usd: Option<f64>,
+    },
+    /// An artifact produced by a worker adapter.
+    AdapterArtifactEvent {
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        artifact_id: ArtifactId,
+        artifact_kind: String,
+    },
+    /// A worker adapter's protocol health changed. `detail` has already
+    /// crossed the redaction boundary; `None` means the detail fragment
+    /// was `Thinking`/`Secret`-classified and was dropped, not that it
+    /// was empty.
+    AdapterProtocolHealthEvent {
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        healthy: bool,
+        detail: Option<String>,
+    },
+    /// A worker adapter observed a vendor-created child worker, emitted
+    /// even when the adapter declares `nested: none` -- emission alone
+    /// never upgrades a declared capability; conformance/policy decide
+    /// what an unexpected observation means.
+    AdapterNestedWorkerEvent {
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        vendor_child_id: String,
+        vendor_parent_ref: String,
     },
 }
 

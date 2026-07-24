@@ -1,0 +1,320 @@
+//! The adapter event sink: the sole path from a worker adapter's raw,
+//! possibly-classified output into the durable, correlated `RuntimeEvent`
+//! journal.
+//!
+//! Adapters call [`AdapterEventSink::emit`] rather than writing
+//! [`crate::domain::DomainRepository`] directly, per the Worker Adapters
+//! plan's Global Constraints. Any free-text field (`role`+`text`, tool
+//! `detail`, protocol-health `detail`) is carried as `Classified<String>`
+//! and crosses the redaction boundary
+//! (`crate::security::redaction::Redactor`) before it becomes part of the
+//! plain `RuntimeEvent` the journal accepts -- reusing exactly the
+//! "raw classified -> sanitized" shape `crate::security::redaction`
+//! already enforces for foundation events, rather than re-implementing it.
+//!
+//! **Adapters should filter out fragments classified as `Thinking` before
+//! ever constructing an [`AdapterEvent`]** (e.g. the Claude adapter's
+//! normalization discards thinking blocks before they reach the sink at
+//! all -- see the Claude adapter task). This sink's own `None`-on-drop
+//! handling below is a defensive backstop, not the primary mechanism: if a
+//! non-`Visible` fragment does reach `emit`, its text/detail becomes
+//! `None` in the durable event, never an empty string that could be
+//! mistaken for genuinely empty content.
+
+use std::sync::Arc;
+
+use batman_protocol::{
+    ArtifactId, Classified, EventEnvelope, ProjectId, RunId, RuntimeEvent, RuntimeEventKind,
+    TaskId, WorkerId,
+};
+use serde_json::json;
+use tokio::sync::broadcast;
+
+use crate::db::DatabaseHandle;
+use crate::domain::{DomainRepository, embed_envelope};
+use crate::security::redaction::Redactor;
+
+use super::AdapterFuture;
+use super::error::AdapterError;
+
+/// One normalized event a worker adapter reports for a single run, before
+/// it crosses the redaction boundary.
+#[derive(Debug, Clone)]
+pub struct AdapterEvent {
+    pub run_id: RunId,
+    pub task_id: TaskId,
+    pub worker_id: WorkerId,
+    pub payload: AdapterEventPayload,
+}
+
+/// The raw, pre-redaction payload of an [`AdapterEvent`]. Free-text fields
+/// are [`Classified<String>`]; everything else is already narrow,
+/// structured, vendor-assigned data (ids, counters, short labels) that
+/// carries no narrative content and therefore needs no classification.
+#[derive(Debug, Clone)]
+pub enum AdapterEventPayload {
+    ProcessStarted {
+        pid: u32,
+    },
+    ProcessExited {
+        exit_code: Option<i32>,
+        signal: Option<String>,
+    },
+    VendorSessionEstablished {
+        vendor_session_id: String,
+    },
+    MessageChunk {
+        role: String,
+        text: Classified<String>,
+    },
+    MessageFinal {
+        role: String,
+        text: Classified<String>,
+    },
+    ToolStarted {
+        tool_call_id: String,
+        name: String,
+    },
+    ToolProgress {
+        tool_call_id: String,
+        name: String,
+        detail: Classified<String>,
+    },
+    ToolResult {
+        tool_call_id: String,
+        name: String,
+        ok: bool,
+        detail: Classified<String>,
+    },
+    UsageReported {
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_usd: Option<f64>,
+    },
+    ArtifactProduced {
+        artifact_id: ArtifactId,
+        artifact_kind: String,
+    },
+    ProtocolHealthChanged {
+        healthy: bool,
+        detail: Classified<String>,
+    },
+    /// Emitted even when the reporting adapter declares `nested: none` --
+    /// emission alone never upgrades a declared capability. Never carries
+    /// classified content: vendor child/parent references are opaque
+    /// vendor-assigned identifiers, not narrative text.
+    NestedWorkerObserved {
+        vendor_child_id: String,
+        vendor_parent_ref: String,
+    },
+}
+
+/// Adapters push ordered normalized events into the runtime journal
+/// through this trait rather than touching [`DomainRepository`] directly.
+/// `emit` resolves to the durably committed runtime sequence number.
+pub trait AdapterEventSink: Send + Sync {
+    fn emit(&self, event: AdapterEvent) -> AdapterFuture<'_, u64>;
+}
+
+/// The production [`AdapterEventSink`]: sanitizes, journals (correlated to
+/// task/worker/run), and broadcasts to live `events/subscribe` listeners,
+/// mirroring exactly what every `OrchestrationService` mutation already
+/// does after `append_and_apply` (see `docs/architecture.md` §18 item 3 --
+/// a mutation that doesn't broadcast breaks the monitor silently).
+pub struct DomainAdapterEventSink {
+    db: Arc<DatabaseHandle>,
+    project_id: ProjectId,
+    events_tx: broadcast::Sender<EventEnvelope>,
+    redactor: Arc<Redactor>,
+}
+
+impl DomainAdapterEventSink {
+    #[must_use]
+    pub fn new(
+        db: Arc<DatabaseHandle>,
+        project_id: ProjectId,
+        events_tx: broadcast::Sender<EventEnvelope>,
+    ) -> Self {
+        Self {
+            db,
+            project_id,
+            events_tx,
+            redactor: Arc::new(Redactor::new()),
+        }
+    }
+
+    /// Sanitizes a single classified fragment: `Visible` text is
+    /// redaction-scanned and kept; `Thinking`/`Secret` fragments are
+    /// dropped to `None`, never coerced to an empty string.
+    fn sanitize(&self, fragment: Classified<String>) -> Option<String> {
+        self.redactor.sanitize_fragment(&fragment)
+    }
+
+    /// Applies the same built-in regex rules to a short, always-visible,
+    /// vendor-sourced label (never dropped for classification -- see
+    /// [`Redactor::redact_text`]).
+    fn label(&self, text: String) -> String {
+        self.redactor.redact_text(&text)
+    }
+
+    fn build_runtime_event(&self, event: AdapterEvent) -> RuntimeEvent {
+        let AdapterEvent {
+            run_id,
+            task_id,
+            worker_id,
+            payload,
+        } = event;
+        match payload {
+            AdapterEventPayload::ProcessStarted { pid } => RuntimeEvent::AdapterProcessEvent {
+                kind: RuntimeEventKind::AdapterProcessStarted,
+                run_id,
+                task_id,
+                worker_id,
+                pid: Some(pid),
+                exit_code: None,
+                signal: None,
+            },
+            AdapterEventPayload::ProcessExited { exit_code, signal } => {
+                RuntimeEvent::AdapterProcessEvent {
+                    kind: RuntimeEventKind::AdapterProcessExited,
+                    run_id,
+                    task_id,
+                    worker_id,
+                    pid: None,
+                    exit_code,
+                    signal: signal.map(|s| self.label(s)),
+                }
+            }
+            AdapterEventPayload::VendorSessionEstablished { vendor_session_id } => {
+                RuntimeEvent::AdapterVendorSessionEvent {
+                    run_id,
+                    task_id,
+                    worker_id,
+                    vendor_session_id: self.label(vendor_session_id),
+                }
+            }
+            AdapterEventPayload::MessageChunk { role, text } => RuntimeEvent::AdapterMessageEvent {
+                kind: RuntimeEventKind::AdapterMessageChunk,
+                run_id,
+                task_id,
+                worker_id,
+                role: self.label(role),
+                text: self.sanitize(text),
+            },
+            AdapterEventPayload::MessageFinal { role, text } => RuntimeEvent::AdapterMessageEvent {
+                kind: RuntimeEventKind::AdapterMessageFinal,
+                run_id,
+                task_id,
+                worker_id,
+                role: self.label(role),
+                text: self.sanitize(text),
+            },
+            AdapterEventPayload::ToolStarted { tool_call_id, name } => {
+                RuntimeEvent::AdapterToolEvent {
+                    kind: RuntimeEventKind::AdapterToolStarted,
+                    run_id,
+                    task_id,
+                    worker_id,
+                    tool_call_id: self.label(tool_call_id),
+                    name: self.label(name),
+                    ok: None,
+                    detail: None,
+                }
+            }
+            AdapterEventPayload::ToolProgress {
+                tool_call_id,
+                name,
+                detail,
+            } => RuntimeEvent::AdapterToolEvent {
+                kind: RuntimeEventKind::AdapterToolProgress,
+                run_id,
+                task_id,
+                worker_id,
+                tool_call_id: self.label(tool_call_id),
+                name: self.label(name),
+                ok: None,
+                detail: self.sanitize(detail),
+            },
+            AdapterEventPayload::ToolResult {
+                tool_call_id,
+                name,
+                ok,
+                detail,
+            } => RuntimeEvent::AdapterToolEvent {
+                kind: RuntimeEventKind::AdapterToolResult,
+                run_id,
+                task_id,
+                worker_id,
+                tool_call_id: self.label(tool_call_id),
+                name: self.label(name),
+                ok: Some(ok),
+                detail: self.sanitize(detail),
+            },
+            AdapterEventPayload::UsageReported {
+                input_tokens,
+                output_tokens,
+                cost_usd,
+            } => RuntimeEvent::AdapterUsageEvent {
+                run_id,
+                task_id,
+                worker_id,
+                input_tokens,
+                output_tokens,
+                cost_usd,
+            },
+            AdapterEventPayload::ArtifactProduced {
+                artifact_id,
+                artifact_kind,
+            } => RuntimeEvent::AdapterArtifactEvent {
+                run_id,
+                task_id,
+                worker_id,
+                artifact_id,
+                artifact_kind: self.label(artifact_kind),
+            },
+            AdapterEventPayload::ProtocolHealthChanged { healthy, detail } => {
+                RuntimeEvent::AdapterProtocolHealthEvent {
+                    run_id,
+                    task_id,
+                    worker_id,
+                    healthy,
+                    detail: self.sanitize(detail),
+                }
+            }
+            AdapterEventPayload::NestedWorkerObserved {
+                vendor_child_id,
+                vendor_parent_ref,
+            } => RuntimeEvent::AdapterNestedWorkerEvent {
+                run_id,
+                task_id,
+                worker_id,
+                vendor_child_id: self.label(vendor_child_id),
+                vendor_parent_ref: self.label(vendor_parent_ref),
+            },
+        }
+    }
+}
+
+impl AdapterEventSink for DomainAdapterEventSink {
+    fn emit(&self, event: AdapterEvent) -> AdapterFuture<'_, u64> {
+        let run_id = event.run_id;
+        let task_id = event.task_id;
+        let worker_id = event.worker_id;
+        let runtime_event = self.build_runtime_event(event);
+        let project_id = self.project_id;
+        let events_tx = self.events_tx.clone();
+        let db = self.db.clone();
+        Box::pin(async move {
+            let mut result = db
+                .run_domain_op(Box::new(move |conn| {
+                    let mut repo = DomainRepository::new(conn, project_id);
+                    repo.record_adapter_event(&runtime_event, task_id, worker_id, run_id)
+                        .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+                }))
+                .await
+                .map_err(|e| AdapterError::process("sink", "emit", e.to_string()))?;
+            crate::domain::broadcast_committed(&events_tx, &mut result)
+                .ok_or_else(|| AdapterError::process("sink", "emit", "no envelope committed"))
+        })
+    }
+}

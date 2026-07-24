@@ -12,39 +12,37 @@ mod event;
 mod ids;
 mod message;
 mod method;
-mod run;
 mod rpc;
+mod run;
 mod task;
-mod worker;
 mod version;
+mod worker;
 
 pub use approval::{ApprovalDecision, ApprovalRequest};
+pub use coordination::{
+    COORDINATION_PAYLOAD_MAX_BYTES, COORDINATION_RATE_LIMIT_PER_MINUTE,
+    CoordinationAskPolicyParams, CoordinationChildDecision, CoordinationPeersParams,
+    CoordinationPublishArtifactParams, CoordinationReportBlockedParams,
+    CoordinationRequestChildParams, CoordinationSendParams, CoordinationTaskParams,
+};
+pub use event::RunFlags;
 pub use event::{
     Classified, ContentClass, DiagnosticLevel, EventEnvelope, EventSource, RuntimeEvent,
     RuntimeEventKind, Timestamp, TimestampParseError,
 };
-pub use ids::{
-    ApprovalId, ArtifactId, MessageId, OperationId, ProjectId, RunId, TaskId, WorkerId,
-};
+pub use ids::{ApprovalId, ArtifactId, MessageId, OperationId, ProjectId, RunId, TaskId, WorkerId};
 pub use message::{DeliveryState, MessageKind, RunMessage};
 pub use method::BatmanMethod;
 pub use rpc::{
-    BinarySource, ClientAuth, ClientCapabilities, ClientInfo, ClientPrincipalSummary,
-    ClientRole, EVENTS_EVENT_METHOD, InitializeParams, InitializeResult, JSONRPC_VERSION,
-    JsonRpcError, JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
-    RepositoryIdentity, RequestId, RuntimeCapabilities, RuntimeInfo, RuntimeStatus, error_code,
+    BinarySource, ClientAuth, ClientCapabilities, ClientInfo, ClientPrincipalSummary, ClientRole,
+    EVENTS_EVENT_METHOD, InitializeParams, InitializeResult, JSONRPC_VERSION, JsonRpcError,
+    JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, RepositoryIdentity,
+    RequestId, RuntimeCapabilities, RuntimeInfo, RuntimeStatus, error_code,
 };
-pub use event::RunFlags;
 pub use run::{Run, RunSpec, RunState};
 pub use task::TaskRef;
-pub use worker::{Worker, WorkerProfileRef};
-pub use coordination::{
-    CoordinationAskPolicyParams, CoordinationChildDecision, CoordinationPeersParams,
-    CoordinationPublishArtifactParams, CoordinationReportBlockedParams,
-    CoordinationRequestChildParams, CoordinationSendParams, CoordinationTaskParams,
-    COORDINATION_PAYLOAD_MAX_BYTES, COORDINATION_RATE_LIMIT_PER_MINUTE,
-};
 pub use version::{ProtocolVersion, VersionRange};
+pub use worker::{Worker, WorkerProfileRef};
 
 #[cfg(test)]
 mod tests {

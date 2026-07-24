@@ -14,8 +14,8 @@ use std::sync::Arc;
 use batman_protocol::{
     BatmanMethod, ClientAuth, ClientPrincipalSummary, EVENTS_EVENT_METHOD, EventEnvelope,
     EventSource, InitializeParams, InitializeResult, JsonRpcNotification, MessageId, MessageKind,
-    ProtocolVersion, RuntimeCapabilities, RuntimeEvent, RuntimeInfo, RuntimeStatus,
-    TaskId, WorkerId, error_code,
+    ProtocolVersion, RuntimeCapabilities, RuntimeEvent, RuntimeInfo, RuntimeStatus, TaskId,
+    WorkerId, error_code,
 };
 use futures_util::StreamExt;
 use serde_json::{Value, json};
@@ -419,10 +419,15 @@ async fn dispatch(
         | BatmanMethod::ApprovalDecide
         | BatmanMethod::CoordinationChildList
         | BatmanMethod::CoordinationChildDecide
-        | BatmanMethod::ReconcileOmp => {
+        | BatmanMethod::ReconcileOmp
+        | BatmanMethod::ProfileRegister => {
             let resolved = method.expect("allowed implies a known method");
             let params = message.get("params").cloned().unwrap_or(Value::Null);
-            match shared.orchestration.dispatch(resolved, principal, &params).await {
+            match shared
+                .orchestration
+                .dispatch(resolved, principal, &params)
+                .await
+            {
                 Ok(value) => success(&id, value),
                 Err(err) => error(&id, err.code, &err.message),
             }
@@ -456,12 +461,12 @@ async fn dispatch_coordination(
     params: &Value,
     shared: &Arc<Shared>,
 ) -> Result<Value, crate::coordination::CoordinationError> {
-    let run_id = principal.scoped_run_id.ok_or_else(|| {
-        crate::coordination::CoordinationError {
+    let run_id = principal
+        .scoped_run_id
+        .ok_or_else(|| crate::coordination::CoordinationError {
             code: error_code::INVALID_PARAMS,
             message: "this connection has no bound scope".to_string(),
-        }
-    })?;
+        })?;
     match method {
         BatmanMethod::CoordinationTask => shared.coordination.task(run_id).await,
         BatmanMethod::CoordinationPeers => shared.coordination.peers(run_id).await,
@@ -488,7 +493,15 @@ async fn dispatch_coordination(
                 .map_err(|_| invalid_params("replyTo is not a valid id"))?;
             shared
                 .coordination
-                .send(run_id, sender_worker_id, task_id, kind, payload, recipient_worker_id, reply_to)
+                .send(
+                    run_id,
+                    sender_worker_id,
+                    task_id,
+                    kind,
+                    payload,
+                    recipient_worker_id,
+                    reply_to,
+                )
                 .await
         }
         BatmanMethod::CoordinationRequestChild => {
@@ -509,7 +522,10 @@ async fn dispatch_coordination(
                 .get("description")
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            shared.coordination.publish_artifact(run_id, artifact_ref, description).await
+            shared
+                .coordination
+                .publish_artifact(run_id, artifact_ref, description)
+                .await
         }
         BatmanMethod::CoordinationReportBlocked => {
             let reason = params
@@ -549,7 +565,9 @@ fn parse_worker_field(
         .get(field)
         .and_then(Value::as_str)
         .ok_or_else(|| invalid_params(&format!("{field} is required")))
-        .and_then(|s| WorkerId::parse(s).map_err(|_| invalid_params(&format!("{field} is not a valid id"))))
+        .and_then(|s| {
+            WorkerId::parse(s).map_err(|_| invalid_params(&format!("{field} is not a valid id")))
+        })
 }
 
 fn parse_task_field(
@@ -560,10 +578,14 @@ fn parse_task_field(
         .get(field)
         .and_then(Value::as_str)
         .ok_or_else(|| invalid_params(&format!("{field} is required")))
-        .and_then(|s| TaskId::parse(s).map_err(|_| invalid_params(&format!("{field} is not a valid id"))))
+        .and_then(|s| {
+            TaskId::parse(s).map_err(|_| invalid_params(&format!("{field} is not a valid id")))
+        })
 }
 
-fn parse_message_kind_field(params: &Value) -> Result<MessageKind, crate::coordination::CoordinationError> {
+fn parse_message_kind_field(
+    params: &Value,
+) -> Result<MessageKind, crate::coordination::CoordinationError> {
     let raw = params
         .get("kind")
         .and_then(Value::as_str)

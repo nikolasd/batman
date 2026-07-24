@@ -10,15 +10,17 @@
 use std::sync::Arc;
 
 use batman_protocol::{
-    ApprovalId, ApprovalRequest, BatmanMethod,
-    DeliveryState, EventEnvelope, MessageId, MessageKind, ProjectId, Run, RunFlags, RunId, RunMessage, RunSpec,
-    RunState, TaskId, TaskRef, Timestamp, Worker, WorkerId, WorkerProfileRef, error_code,
+    ApprovalId, ApprovalRequest, BatmanMethod, DeliveryState, EventEnvelope, MessageId,
+    MessageKind, ProjectId, Run, RunFlags, RunId, RunMessage, RunSpec, RunState, TaskId, TaskRef,
+    Timestamp, Worker, WorkerId, WorkerProfileRef, error_code,
 };
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
 use crate::db::DatabaseHandle;
-use crate::domain::{embed_envelope, take_envelope, DomainError, DomainRepository, TransitionError};
+use crate::domain::{
+    DomainError, DomainRepository, TransitionError, embed_envelope, take_envelope,
+};
 use crate::ipc::ClientPrincipal;
 
 use super::query;
@@ -155,8 +157,11 @@ impl OrchestrationService {
             BatmanMethod::ApprovalList => self.approval_list(params).await,
             BatmanMethod::ApprovalDecide => self.approval_decide(principal, params).await,
             BatmanMethod::ReconcileOmp => self.reconcile_omp(principal, params).await,
-            BatmanMethod::CoordinationChildList => self.coordination_child_list(principal, params).await,
+            BatmanMethod::CoordinationChildList => {
+                self.coordination_child_list(principal, params).await
+            }
             BatmanMethod::CoordinationChildDecide => self.coordination_child_decide(params).await,
+            BatmanMethod::ProfileRegister => self.profile_register(params).await,
             _ => Err(ServiceError::internal(
                 "method is not routed through OrchestrationService",
             )),
@@ -215,19 +220,87 @@ impl OrchestrationService {
     // ----------------------------------------------------------- worker
 
     async fn worker_create(&self, params: &Value) -> Result<Value, ServiceError> {
-        let fingerprint = str_field(params, "fingerprint")?;
-        let adapter = str_field(params, "adapter")?;
-        let model = str_field(params, "model")?;
-        let permission_envelope = params
-            .get("permissionEnvelope")
-            .cloned()
-            .unwrap_or(json!({}));
         let parent_worker_id = params
             .get("parentWorkerId")
             .and_then(Value::as_str)
             .map(WorkerId::parse)
             .transpose()
             .map_err(|_| ServiceError::invalid_params("parentWorkerId is not a valid id"))?;
+
+        let legacy_fields_present = ["fingerprint", "adapter", "model", "permissionEnvelope"]
+            .iter()
+            .any(|field| params.get(*field).is_some());
+
+        let (fingerprint, adapter, model, permission_envelope, resolved_profile_json) =
+            if let Some(profile_id_value) = params.get("profileId") {
+                if legacy_fields_present {
+                    return Err(ServiceError::invalid_params(
+                        "profileId and fingerprint/adapter/model/permissionEnvelope are mutually exclusive",
+                    ));
+                }
+                let profile_id_str = profile_id_value
+                    .as_str()
+                    .ok_or_else(|| ServiceError::invalid_params("profileId must be a string"))?;
+                let profile_id = crate::adapter::ProfileId::parse(profile_id_str)
+                    .map_err(|_| ServiceError::invalid_params("profileId is not a valid id"))?;
+                let resolved = self
+                    .db
+                    .run_domain_op(Box::new(move |conn| {
+                        crate::adapter::ProfileStore::get(&*conn, profile_id)
+                            .map(|(profile, fingerprint)| {
+                                json!({
+                                    "fingerprint": fingerprint,
+                                    "adapter": profile.adapter,
+                                    "model": profile.model,
+                                    "permissionEnvelope": profile.permission_envelope,
+                                    // The full resolved profile snapshot,
+                                    // copied verbatim into the worker row
+                                    // -- see `create_worker_with_snapshot`.
+                                    "fullProfile": profile,
+                                })
+                            })
+                            .map_err(|err| DomainError::NotFound {
+                                kind: "profile",
+                                id: err.to_string(),
+                            })
+                    }))
+                    .await
+                    .map_err(|_| {
+                        ServiceError::invalid_params(format!(
+                            "profileId {profile_id} was not found"
+                        ))
+                    })?;
+                (
+                    resolved["fingerprint"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    resolved["adapter"].as_str().unwrap_or_default().to_string(),
+                    resolved["model"].as_str().unwrap_or_default().to_string(),
+                    resolved["permissionEnvelope"].clone(),
+                    Some(
+                        serde_json::to_string(&resolved["fullProfile"])
+                            .expect("a resolved WorkerProfile always serializes"),
+                    ),
+                )
+            } else {
+                let fingerprint = str_field(params, "fingerprint")?;
+                let adapter = str_field(params, "adapter")?;
+                let model = str_field(params, "model")?;
+                let permission_envelope = params
+                    .get("permissionEnvelope")
+                    .cloned()
+                    .unwrap_or(json!({}));
+                if crate::adapter::AdapterKind::from_wire_name(&adapter).is_some() {
+                    return Err(ServiceError {
+                        code: error_code::PROFILE_REQUIRED,
+                        message: format!(
+                            "adapter {adapter:?} requires a resolved profileId; register one via profile/register"
+                        ),
+                    });
+                }
+                (fingerprint, adapter, model, permission_envelope, None)
+            };
 
         let worker_id = WorkerId::new();
         let profile = WorkerProfileRef {
@@ -249,7 +322,7 @@ impl OrchestrationService {
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.create_worker(&worker)
+                repo.create_worker_with_snapshot(&worker, resolved_profile_json)
                     .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
@@ -259,6 +332,45 @@ impl OrchestrationService {
         Ok(json!({
             "workerId": worker_id.to_string(),
             "sequence": sequence["sequence"],
+        }))
+    }
+
+    // ------------------------------------------------- adapter profiles
+
+    /// Validates and registers a [`crate::adapter::WorkerProfile`],
+    /// returning its freshly minted `profileId` and content fingerprint.
+    /// Deliberately outside the append-only `events` journal -- profile
+    /// registration is configuration, not an orchestration fact (see
+    /// `crate::adapter::profile_store`) -- so there is nothing to
+    /// broadcast here.
+    async fn profile_register(&self, params: &Value) -> Result<Value, ServiceError> {
+        let mut profile: crate::adapter::WorkerProfile = serde_json::from_value(params.clone())
+            .map_err(|err| {
+                ServiceError::invalid_params(format!("invalid worker profile: {err}"))
+            })?;
+        profile.id = crate::adapter::ProfileId::new();
+        let fingerprint = profile.fingerprint();
+        let policy = crate::adapter::EffectivePolicy::baseline();
+
+        self.db
+            .run_domain_op(Box::new({
+                let profile = profile.clone();
+                let fingerprint = fingerprint.clone();
+                move |conn| {
+                    crate::adapter::ProfileStore::register(&*conn, &profile, &policy, &fingerprint)
+                        .map(|()| Value::Null)
+                        .map_err(|err| DomainError::NotFound {
+                            kind: "profile registration rejected",
+                            id: err.to_string(),
+                        })
+                }
+            }))
+            .await
+            .map_err(|err| ServiceError::invalid_params(err.to_string()))?;
+
+        Ok(json!({
+            "profileId": profile.id.to_string(),
+            "fingerprint": fingerprint,
         }))
     }
 
@@ -333,10 +445,7 @@ impl OrchestrationService {
         };
         // Orchestration-test-scope: awaited synchronously so the caller
         // observes the final committed state deterministically.
-        driver
-            .start(ctx)
-            .await
-            .map_err(ServiceError::internal)?;
+        driver.start(ctx).await.map_err(ServiceError::internal)?;
 
         Ok(json!({
             "runId": run_id.to_string(),
@@ -717,10 +826,11 @@ fn str_field(params: &Value, field: &'static str) -> Result<String, ServiceError
 }
 
 fn u64_field(params: &Value, field: &'static str) -> Result<u64, ServiceError> {
-    params
-        .get(field)
-        .and_then(Value::as_u64)
-        .ok_or_else(|| ServiceError::invalid_params(format!("{field} is required and must be a non-negative integer")))
+    params.get(field).and_then(Value::as_u64).ok_or_else(|| {
+        ServiceError::invalid_params(format!(
+            "{field} is required and must be a non-negative integer"
+        ))
+    })
 }
 
 fn parse_task_id(value: Option<&Value>) -> Result<TaskId, ServiceError> {

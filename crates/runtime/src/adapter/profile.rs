@@ -1,0 +1,421 @@
+//! Worker profiles: the immutable, validated configuration a managed
+//! adapter's supervised process is launched from.
+//!
+//! A [`WorkerProfile`] is registered once (`profile/register`), validated
+//! against an [`EffectivePolicy`], fingerprinted, and stored under a fresh
+//! [`ProfileId`]. `worker/create` for a reserved [`AdapterKind`] resolves
+//! that `profileId` and copies the resolved fields into the worker's
+//! immutable `WorkerProfileRef` snapshot -- changing (or re-registering) the
+//! source profile afterward never mutates an already-created worker's
+//! snapshot, because nothing re-reads the profile store after that point.
+//!
+//! `environmentAllowlist` carries variable *names* only (`Vec<String>`):
+//! there is no field anywhere in this module that could hold an inherited
+//! variable's *value*, so a value can never reach the profile snapshot,
+//! the durable journal, or a log line through this type, structurally --
+//! not by convention.
+
+use std::collections::HashSet;
+use std::fmt;
+use std::str::FromStr;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use crate::security::redaction::Redactor;
+
+/// Identifies a registered [`WorkerProfile`]. Runtime-internal only: it
+/// never crosses the wire as a typed, schema-generated value (the
+/// `profile/register`/`worker/create` RPC methods parse it as a plain
+/// string field, exactly like every other orchestration method's
+/// hand-parsed JSON params -- see `crate::service::OrchestrationService`).
+/// Deserializing a caller-supplied `id` is tolerated (defaulting to a
+/// fresh, throwaway value) but never trusted: `profile/register` always
+/// overwrites it with a server-generated id, exactly like `worker/create`
+/// never trusts a caller-supplied `WorkerId`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProfileId(Uuid);
+
+impl ProfileId {
+    /// Generates a fresh, time-ordered (UUIDv7) profile identifier.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::now_v7())
+    }
+
+    /// Parses a profile identifier from its canonical string form.
+    ///
+    /// # Errors
+    /// Returns [`uuid::Error`] if `value` is not a valid UUID.
+    pub fn parse(value: &str) -> Result<Self, uuid::Error> {
+        Uuid::parse_str(value).map(Self)
+    }
+}
+
+impl Default for ProfileId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for ProfileId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl FromStr for ProfileId {
+    type Err = uuid::Error;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
+impl Serialize for ProfileId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProfileId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
+fn fresh_profile_id() -> ProfileId {
+    ProfileId::new()
+}
+
+/// The four managed adapter kinds this milestone implements. Distinct from
+/// `WorkerProfileRef.adapter` (a plain, unvalidated `String` retained for
+/// backward compatibility with pre-adapter workers such as `"fake"` or
+/// `"ompNative"`, which never require a profile): these four wire names are
+/// exactly the ones `worker/create` requires a resolved `profileId` for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AdapterKind {
+    Claude,
+    Codex,
+    Copilot,
+    OmpRpc,
+}
+
+impl AdapterKind {
+    /// The exact reserved wire strings that require a validated profile.
+    pub const RESERVED_NAMES: [&'static str; 4] = ["claude", "codex", "copilot", "ompRpc"];
+
+    #[must_use]
+    pub fn wire_name(&self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Copilot => "copilot",
+            Self::OmpRpc => "ompRpc",
+        }
+    }
+
+    #[must_use]
+    pub fn from_wire_name(value: &str) -> Option<Self> {
+        match value {
+            "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            "copilot" => Some(Self::Copilot),
+            "ompRpc" => Some(Self::OmpRpc),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for AdapterKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.wire_name())
+    }
+}
+
+/// Strict, per-adapter startup options. Externally tagged by adapter name
+/// (`{"codex": {...}}`), matching every other adapter-facing wire shape's
+/// camelCase convention. Each inner struct is `deny_unknown_fields`, so an
+/// unrecognized option key is a hard validation failure at deserialize
+/// time -- never a silently-ignored field. `TerminalDegraded` is the
+/// fallback identity used when a structured adapter's protocol becomes
+/// unhealthy and control falls back to terminal-screen automation (Herdr
+/// or tmux, wired by a later milestone); it does not correspond to one of
+/// the four reserved [`AdapterKind`] values because it wraps *any*
+/// underlying harness rather than replacing it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum StartupOptions {
+    #[serde(rename = "claude")]
+    Claude(ClaudeStartupOptions),
+    #[serde(rename = "codex")]
+    Codex(CodexStartupOptions),
+    #[serde(rename = "copilot")]
+    Copilot(CopilotStartupOptions),
+    #[serde(rename = "ompRpc")]
+    OmpRpc(OmpRpcStartupOptions),
+    #[serde(rename = "terminalDegraded")]
+    TerminalDegraded(TerminalDegradedStartupOptions),
+}
+
+impl StartupOptions {
+    /// The reserved [`AdapterKind`] this variant maps to, or `None` for
+    /// `TerminalDegraded` (which wraps an arbitrary underlying harness
+    /// named in its own `underlyingAdapter` field instead).
+    #[must_use]
+    pub fn adapter_kind(&self) -> Option<AdapterKind> {
+        match self {
+            Self::Claude(_) => Some(AdapterKind::Claude),
+            Self::Codex(_) => Some(AdapterKind::Codex),
+            Self::Copilot(_) => Some(AdapterKind::Copilot),
+            Self::OmpRpc(_) => Some(AdapterKind::OmpRpc),
+            Self::TerminalDegraded(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClaudeStartupOptions {
+    pub allowed_tools: Option<Vec<String>>,
+    pub permission_mode: Option<String>,
+    pub max_turns: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CodexStartupOptions {
+    pub sandbox_mode: Option<String>,
+    pub approval_policy: Option<String>,
+    pub config_overrides: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CopilotStartupOptions {
+    pub allow_tool: Option<Vec<String>>,
+    pub deny_tool: Option<Vec<String>>,
+    pub log_level: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OmpRpcStartupOptions {
+    pub profile: Option<String>,
+    pub host_tools: Option<Vec<String>>,
+}
+
+/// Startup options for the terminal-controlled degraded fallback mode.
+/// `underlying_adapter` names the harness actually running underneath
+/// (e.g. `"claude"`); this milestone defines the shape so it round-trips
+/// and validates, but no adapter implements it yet -- see the Workspaces
+/// and Displays plan for the Herdr/tmux backends that will.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TerminalDegradedStartupOptions {
+    pub backend: String,
+    pub underlying_adapter: Option<String>,
+}
+
+/// A validated, immutable snapshot of one adapter worker's configuration.
+///
+/// `id` is assigned once, at registration, and never changes; a caller-
+/// supplied value (or its absence) in a `profile/register` request is
+/// ignored -- the server always overwrites it with a freshly generated
+/// [`ProfileId`], exactly like `worker/create` never trusts a caller-
+/// supplied `WorkerId`. `adapter` mirrors `startup_options`'s reserved
+/// [`AdapterKind`] wire name when one applies, or names the underlying
+/// harness for `TerminalDegraded`; [`WorkerProfile::validate`] enforces the
+/// two stay consistent. `environmentAllowlist` is a plain list of variable
+/// *names* the supervised process may inherit from the runtime's own
+/// environment at spawn time -- never values. `permissionEnvelope` is
+/// caller-supplied policy JSON; [`WorkerProfile::validate`] rejects it
+/// outright if it contains a secret-shaped string (matched by the same
+/// built-in rules `crate::security::redaction::Redactor` applies to every
+/// other durable string) rather than silently persisting or redacting a
+/// credential a caller mistakenly placed there.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerProfile {
+    #[serde(default = "fresh_profile_id")]
+    pub id: ProfileId,
+    pub adapter: String,
+    pub model: String,
+    #[serde(default)]
+    pub permission_envelope: serde_json::Value,
+    pub startup_options: StartupOptions,
+    #[serde(default)]
+    pub environment_allowlist: Vec<String>,
+    pub source: String,
+}
+
+/// Why a [`WorkerProfile`] failed validation.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ProfileError {
+    #[error("model must not be empty")]
+    EmptyModel,
+    #[error("adapter {declared:?} does not match startup options for {from_options:?}")]
+    AdapterMismatch {
+        declared: String,
+        from_options: &'static str,
+    },
+    #[error("environment variable {0} is not in the effective policy allowlist")]
+    EnvironmentNotAllowed(String),
+    #[error(
+        "permissionEnvelope contains a secret-shaped value; use environmentAllowlist for credentials instead"
+    )]
+    SecretShapedPermissionEnvelope,
+}
+
+impl WorkerProfile {
+    /// The reserved [`AdapterKind`] this profile's startup options declare,
+    /// or `None` for `TerminalDegraded`.
+    #[must_use]
+    pub fn adapter_kind(&self) -> Option<AdapterKind> {
+        self.startup_options.adapter_kind()
+    }
+
+    #[must_use]
+    pub fn startup_options(&self) -> &StartupOptions {
+        &self.startup_options
+    }
+
+    #[must_use]
+    pub fn environment_allowlist(&self) -> &[String] {
+        &self.environment_allowlist
+    }
+
+    /// Validates this profile against `policy`: the model must be
+    /// non-empty, `adapter` must agree with `startup_options`, and every
+    /// allowlisted environment variable *name* must be permitted by the
+    /// effective policy.
+    ///
+    /// # Errors
+    /// Returns [`ProfileError`] on the first violation found.
+    pub fn validate(&self, policy: &EffectivePolicy) -> Result<(), ProfileError> {
+        if self.model.trim().is_empty() {
+            return Err(ProfileError::EmptyModel);
+        }
+        if let Some(kind) = self.startup_options.adapter_kind()
+            && self.adapter != kind.wire_name()
+        {
+            return Err(ProfileError::AdapterMismatch {
+                declared: self.adapter.clone(),
+                from_options: kind.wire_name(),
+            });
+        }
+        for name in &self.environment_allowlist {
+            if !policy.is_env_name_allowed(name) {
+                return Err(ProfileError::EnvironmentNotAllowed(name.clone()));
+            }
+        }
+        if permission_envelope_contains_secret_shape(&self.permission_envelope) {
+            return Err(ProfileError::SecretShapedPermissionEnvelope);
+        }
+        Ok(())
+    }
+
+    /// A deterministic `sha256:<hex>` fingerprint over this profile's
+    /// content -- everything except `id`, so two registrations of
+    /// identical content share one fingerprint but always mint distinct
+    /// ids. `serde_json::Value`'s default map (this workspace enables no
+    /// `preserve_order` feature) orders object keys lexicographically, so
+    /// this is stable regardless of source field order. Content is
+    /// name-only/never-secret by construction (see module docs), so the
+    /// fingerprint itself can never encode a secret value.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        let redactor = Redactor::new();
+        let mut canonical =
+            serde_json::to_value(self).expect("WorkerProfile is a plain, always-serializable type");
+        if let Some(map) = canonical.as_object_mut() {
+            map.remove("id");
+            // Defense in depth: `validate` already rejects a secret-shaped
+            // `permissionEnvelope` outright, but the fingerprint itself
+            // must never be able to encode raw secret-shaped text even if
+            // `validate` was bypassed by a future call site.
+            let sanitized = redactor.sanitize_json(&self.permission_envelope);
+            map.insert(
+                "permissionEnvelope".to_string(),
+                serde_json::from_str(sanitized.as_str())
+                    .expect("Redactor::sanitize_json always produces valid JSON text"),
+            );
+        }
+        let bytes = serde_json::to_vec(&canonical)
+            .expect("a canonicalized serde_json::Value always serializes");
+        let digest = Sha256::digest(&bytes);
+        format!("sha256:{digest:x}")
+    }
+}
+
+/// Whether `value` contains any string (key or value, at any nesting
+/// depth) matching a built-in secret-shaped pattern -- reuses exactly the
+/// regex rules `crate::security::redaction::Redactor` applies to every
+/// other durable string, by round-tripping through
+/// [`Redactor::sanitize_json`] and comparing before/after text. A caller
+/// that wants to persist a credential must use `environmentAllowlist`
+/// (names only, resolved at spawn time, never stored) instead.
+fn permission_envelope_contains_secret_shape(value: &serde_json::Value) -> bool {
+    let redactor = Redactor::new();
+    let raw = serde_json::to_string(value).unwrap_or_default();
+    let sanitized = redactor.sanitize_json(value);
+    raw != sanitized.as_str()
+}
+
+/// The effective policy a [`WorkerProfile`] is validated against: which
+/// environment variable *names* may be inherited by a supervised vendor
+/// process. Organization/repository/engineer-local policy layering (per
+/// the design spec's "Configuration precedence") is a later milestone's
+/// concern; this is the seam that later policy resolution plugs into.
+#[derive(Debug, Clone)]
+pub struct EffectivePolicy {
+    allowed_env_names: HashSet<String>,
+}
+
+impl EffectivePolicy {
+    /// A conservative baseline: only variables needed for a process to run
+    /// at all (never a secret-shaped name) are pre-allowed.
+    #[must_use]
+    pub fn baseline() -> Self {
+        let mut allowed_env_names = HashSet::new();
+        for name in [
+            "HOME", "PATH", "LANG", "LC_ALL", "TERM", "TZ", "SHELL", "USER", "LOGNAME",
+        ] {
+            allowed_env_names.insert(name.to_string());
+        }
+        Self { allowed_env_names }
+    }
+
+    /// An empty policy: nothing is allowed until explicitly permitted.
+    /// Useful for tests that want to prove the denial path precisely.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            allowed_env_names: HashSet::new(),
+        }
+    }
+
+    /// Explicitly permits a variable name (e.g. an org-approved secret
+    /// like `ANTHROPIC_API_KEY`) to be inherited by a supervised process.
+    /// Never stores or accepts a *value* -- there is no such parameter.
+    pub fn allow_env_name(&mut self, name: impl Into<String>) {
+        self.allowed_env_names.insert(name.into());
+    }
+
+    #[must_use]
+    pub fn is_env_name_allowed(&self, name: &str) -> bool {
+        self.allowed_env_names.contains(name)
+    }
+}
+
+impl Default for EffectivePolicy {
+    fn default() -> Self {
+        Self::baseline()
+    }
+}

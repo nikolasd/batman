@@ -5,12 +5,12 @@
 //! during the `initialize` handshake.
 
 use crate::BatmanMethod;
+use crate::ids::ProjectId;
+use crate::version::{ProtocolVersion, VersionRange};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use ts_rs::TS;
-use crate::ids::ProjectId;
-use crate::version::{ProtocolVersion, VersionRange};
 
 /// Identifies a repository on disk, independent of any particular runtime
 /// instance.
@@ -188,6 +188,7 @@ pub mod error_code {
     pub const NOT_INITIALIZED: i32 = -32001;
     pub const INCOMPATIBLE_VERSION: i32 = -32002;
     pub const CAPABILITY_UNSUPPORTED: i32 = -32003;
+    pub const PROFILE_REQUIRED: i32 = -32007;
     pub const SEQUENCE_GONE: i32 = -32004;
     pub const ADAPTER_UNAVAILABLE: i32 = -32005;
     pub const RATE_LIMITED: i32 = -32006;

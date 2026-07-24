@@ -511,7 +511,8 @@ async fn omp_extension_receives_all_mutation_methods() {
             "approval/decide",
             "coordination/child/list",
             "coordination/child/decide",
-            "reconcile/omp"
+            "reconcile/omp",
+            "profile/register"
         ]
     );
 }

@@ -221,6 +221,23 @@ impl Redactor {
         SanitizedJson(text)
     }
 
+    /// Sanitizes a single classified text fragment for a wire-shape field
+    /// (as opposed to a whole [`RawRuntimeEvent`]): `Thinking`/`Secret`
+    /// fragments are dropped (returned as `None`), and `Visible` text has
+    /// the same built-in regex rules applied as [`Redactor::sanitize`].
+    /// Used by adapter event normalization
+    /// (`crate::adapter::event_sink`), which carries free-text vendor
+    /// output (message chunks, tool details, diagnostics) as
+    /// `Classified<String>` fields that must cross this exact boundary
+    /// before becoming part of a durable `RuntimeEvent`.
+    #[must_use]
+    pub fn sanitize_fragment(&self, fragment: &Classified<String>) -> Option<String> {
+        match fragment.class {
+            ContentClass::Visible => Some(self.redact_visible_text(&fragment.value)),
+            ContentClass::Thinking | ContentClass::Secret => None,
+        }
+    }
+
     /// Recursively rebuilds `value`, applying [`Redactor::redact_visible_text`]
     /// to every string it contains (both object keys and string values).
     fn redact_json_value(&self, value: &serde_json::Value) -> serde_json::Value {
@@ -246,6 +263,18 @@ impl Redactor {
                 value.clone()
             }
         }
+    }
+
+    /// Applies the same built-in regex rules used for `Visible` text to an
+    /// always-visible, non-classified string -- a short vendor-assigned
+    /// label (tool name, vendor session/child/parent identifier, role,
+    /// artifact kind, ...) that carries no `ContentClass` because it is
+    /// never dropped for being `Thinking`/`Secret`, but is still
+    /// vendor-sourced and must not be trusted to never accidentally
+    /// contain a secret-shaped value.
+    #[must_use]
+    pub fn redact_text(&self, text: &str) -> String {
+        self.redact_visible_text(text)
     }
 
     /// Applies every built-in rule to `text`, replacing each match with

@@ -48,6 +48,10 @@
       "description": "Identifies an approval request raised by the runtime.",
       "type": "string"
     },
+    "ArtifactId": {
+      "description": "Identifies an artifact produced by a run.",
+      "type": "string"
+    },
     "BatmanMethod": {
       "description": "All JSON-RPC methods implemented by the BATMAN runtime, including\norchestration extension methods.\n\nSerialized as the literal method name string used on the wire.",
       "type": "string",
@@ -80,7 +84,8 @@
         "coordination/publishArtifact",
         "coordination/reportBlocked",
         "coordination/askPolicy",
-        "reconcile/omp"
+        "reconcile/omp",
+        "profile/register"
       ]
     },
     "BinarySource": {
@@ -1019,36 +1024,492 @@
             "type",
             "payload"
           ]
+        },
+        {
+          "description": "A supervised adapter process started or exited.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "exitCode": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32"
+                },
+                "kind": {
+                  "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "pid": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "signal": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "runId",
+                "taskId",
+                "workerId"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "adapterProcessEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "A worker adapter established (or re-established) its vendor\nsession/thread identifier.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "vendorSessionId": {
+                  "type": "string"
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "runId",
+                "taskId",
+                "workerId",
+                "vendorSessionId"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "adapterVendorSessionEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "A visible message chunk or final message from a worker adapter.\n`text` has already crossed the redaction boundary; `None` means\nthe entire fragment was `Thinking`/`Secret`-classified and was\ndropped, not that the message was empty.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "text": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "runId",
+                "taskId",
+                "workerId",
+                "role"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "adapterMessageEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "A tool call lifecycle event from a worker adapter. `detail` has\nalready crossed the redaction boundary; `None` means the detail\nfragment was `Thinking`/`Secret`-classified and was dropped, not\nthat it was empty.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "ok": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "toolCallId": {
+                  "type": "string"
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "runId",
+                "taskId",
+                "workerId",
+                "toolCallId",
+                "name"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "adapterToolEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "Usage/cost reported by a worker adapter.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "costUsd": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "double"
+                },
+                "inputTokens": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                },
+                "outputTokens": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "runId",
+                "taskId",
+                "workerId",
+                "inputTokens",
+                "outputTokens"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "adapterUsageEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "An artifact produced by a worker adapter.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "artifactId": {
+                  "$ref": "#/$defs/ArtifactId"
+                },
+                "artifactKind": {
+                  "type": "string"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "runId",
+                "taskId",
+                "workerId",
+                "artifactId",
+                "artifactKind"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "adapterArtifactEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "A worker adapter's protocol health changed. `detail` has already\ncrossed the redaction boundary; `None` means the detail fragment\nwas `Thinking`/`Secret`-classified and was dropped, not that it\nwas empty.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "healthy": {
+                  "type": "boolean"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "runId",
+                "taskId",
+                "workerId",
+                "healthy"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "adapterProtocolHealthEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "A worker adapter observed a vendor-created child worker, emitted\neven when the adapter declares `nested: none` -- emission alone\nnever upgrades a declared capability; conformance/policy decide\nwhat an unexpected observation means.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "vendorChildId": {
+                  "type": "string"
+                },
+                "vendorParentRef": {
+                  "type": "string"
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "runId",
+                "taskId",
+                "workerId",
+                "vendorChildId",
+                "vendorParentRef"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "adapterNestedWorkerEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
         }
       ]
     },
     "RuntimeEventKind": {
       "description": "The semantic kind of an orchestration event stored in the durable journal.\n\nEvery record creation, lifecycle transition, flag change, message delivery\nchange, and approval request/decision produces one of these variants.",
-      "type": "string",
-      "enum": [
-        "taskCreated",
-        "taskUpdated",
-        "workerCreated",
-        "runQueued",
-        "runStarting",
-        "runWorking",
-        "runWaitingUser",
-        "runWaitingPeer",
-        "runPaused",
-        "runSucceeded",
-        "runFailed",
-        "runCancelled",
-        "runLost",
-        "runFlagsChanged",
-        "messageRecorded",
-        "messageSent",
-        "messageAcknowledged",
-        "messageFailed",
-        "approvalRequested",
-        "approvalDecided",
-        "childWorkerRequested",
-        "childWorkerRequestDenied",
-        "reconcileOwnershipChanged"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "taskCreated",
+            "taskUpdated",
+            "workerCreated",
+            "runQueued",
+            "runStarting",
+            "runWorking",
+            "runWaitingUser",
+            "runWaitingPeer",
+            "runPaused",
+            "runSucceeded",
+            "runFailed",
+            "runCancelled",
+            "runLost",
+            "runFlagsChanged",
+            "messageRecorded",
+            "messageSent",
+            "messageAcknowledged",
+            "messageFailed",
+            "approvalRequested",
+            "approvalDecided",
+            "childWorkerRequested",
+            "childWorkerRequestDenied",
+            "reconcileOwnershipChanged"
+          ]
+        },
+        {
+          "description": "A worker adapter's supervised process started.",
+          "type": "string",
+          "const": "adapterProcessStarted"
+        },
+        {
+          "description": "A worker adapter's supervised process exited.",
+          "type": "string",
+          "const": "adapterProcessExited"
+        },
+        {
+          "description": "A worker adapter established (or re-established) its vendor\nsession/thread identifier.",
+          "type": "string",
+          "const": "adapterVendorSessionEstablished"
+        },
+        {
+          "description": "A worker adapter streamed a partial visible-message chunk.",
+          "type": "string",
+          "const": "adapterMessageChunk"
+        },
+        {
+          "description": "A worker adapter completed a visible message.",
+          "type": "string",
+          "const": "adapterMessageFinal"
+        },
+        {
+          "description": "A worker adapter's tool call started.",
+          "type": "string",
+          "const": "adapterToolStarted"
+        },
+        {
+          "description": "A worker adapter's tool call reported progress.",
+          "type": "string",
+          "const": "adapterToolProgress"
+        },
+        {
+          "description": "A worker adapter's tool call finished.",
+          "type": "string",
+          "const": "adapterToolResult"
+        },
+        {
+          "description": "A worker adapter reported usage/cost.",
+          "type": "string",
+          "const": "adapterUsageReported"
+        },
+        {
+          "description": "A worker adapter produced an artifact.",
+          "type": "string",
+          "const": "adapterArtifactProduced"
+        },
+        {
+          "description": "A worker adapter's protocol health changed.",
+          "type": "string",
+          "const": "adapterProtocolHealthChanged"
+        },
+        {
+          "description": "A worker adapter observed a vendor-created child, regardless of its\ndeclared `nested` capability.",
+          "type": "string",
+          "const": "adapterNestedWorkerObserved"
+        }
       ]
     },
     "RuntimeInfo": {

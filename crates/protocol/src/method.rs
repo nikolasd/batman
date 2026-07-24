@@ -91,4 +91,8 @@ pub enum BatmanMethod {
     // Orchestration: reconcile OMP-native agents
     #[serde(rename = "reconcile/omp")]
     ReconcileOmp,
+
+    // Orchestration: adapter worker profiles (Worker Adapters milestone)
+    #[serde(rename = "profile/register")]
+    ProfileRegister,
 }
