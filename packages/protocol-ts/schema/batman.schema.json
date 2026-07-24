@@ -206,6 +206,39 @@
         },
         "role": {
           "$ref": "#/$defs/ClientRole"
+        },
+        "scopedRunId": {
+          "description": "The run this connection is scoped to. `None` for every role except\n`workerMcp`, whose scope-token binding determines it -- never a\nvalue the client can request or override.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scopedTaskId": {
+          "description": "The task this connection is scoped to, alongside `scopedRunId`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scopedWorkerId": {
+          "description": "The worker this connection is scoped to, alongside `scopedRunId`.\nA `workerMcp` client uses this (never a self-declared value) as\nthe authoritative sender identity for `coordination/send`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkerId"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,

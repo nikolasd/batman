@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use batman_protocol::Timestamp;
-use batman_protocol::{ProjectId, RunId, error_code};
+use batman_protocol::{ProjectId, RunId, TaskId, WorkerId, error_code};
 use batman_runtime::db::DatabaseHandle;
 use batman_runtime::ipc::{
     PeerCredentialReader, PeerCredentials, ScopedRun, Server, ServerConfig, VerifyError,
@@ -51,6 +51,8 @@ struct FakeVerifier {
     token: String,
     allowed_pids: Vec<i32>,
     run_id: RunId,
+    task_id: TaskId,
+    worker_id: WorkerId,
 }
 
 impl WorkerCredentialVerifier for FakeVerifier {
@@ -61,6 +63,8 @@ impl WorkerCredentialVerifier for FakeVerifier {
         match peer_pid {
             Some(pid) if self.allowed_pids.contains(&pid) => Ok(ScopedRun {
                 run_id: self.run_id,
+                task_id: self.task_id,
+                worker_id: self.worker_id,
             }),
             _ => Err(VerifyError::OutsideAncestry),
         }
@@ -594,6 +598,8 @@ async fn worker_mcp_rejected_by_default_verifier() {
 #[tokio::test]
 async fn worker_mcp_accepted_with_valid_credential_and_ancestry() {
     let run_id = RunId::new();
+    let task_id = TaskId::new();
+    let worker_id = WorkerId::new();
     let harness = Harness::start(move |c| {
         c.credential_reader = Arc::new(FakeReader {
             uid: Some(current_uid()),
@@ -603,6 +609,8 @@ async fn worker_mcp_accepted_with_valid_credential_and_ancestry() {
             token: "good-token".to_string(),
             allowed_pids: vec![9001],
             run_id,
+            task_id,
+            worker_id,
         });
     })
     .await;
@@ -612,6 +620,19 @@ async fn worker_mcp_accepted_with_valid_credential_and_ancestry() {
     client.send(&worker_init("good-token")).await;
     let response = client.recv().await.unwrap();
     assert_eq!(response["result"]["principal"]["role"], "workerMcp");
+    assert_eq!(
+        response["result"]["principal"]["scopedRunId"],
+        run_id.to_string(),
+        "the runtime echoes back the token-bound scope, never a client-supplied one"
+    );
+    assert_eq!(
+        response["result"]["principal"]["scopedTaskId"],
+        task_id.to_string()
+    );
+    assert_eq!(
+        response["result"]["principal"]["scopedWorkerId"],
+        worker_id.to_string()
+    );
     let methods = response["result"]["allowedMethods"].as_array().unwrap();
     let names: Vec<&str> = methods.iter().map(|m| m.as_str().unwrap()).collect();
     assert_eq!(
@@ -648,6 +669,8 @@ async fn worker_mcp_outside_ancestry_is_rejected() {
             token: "good-token".to_string(),
             allowed_pids: vec![9001],
             run_id,
+            task_id: TaskId::new(),
+            worker_id: WorkerId::new(),
         });
     })
     .await;

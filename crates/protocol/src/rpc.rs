@@ -5,7 +5,7 @@
 //! during the `initialize` handshake.
 
 use crate::BatmanMethod;
-use crate::ids::ProjectId;
+use crate::ids::{ProjectId, RunId, TaskId, WorkerId};
 use crate::version::{ProtocolVersion, VersionRange};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -119,6 +119,16 @@ pub struct RuntimeCapabilities {
 pub struct ClientPrincipalSummary {
     pub role: ClientRole,
     pub instance_id: String,
+    /// The run this connection is scoped to. `None` for every role except
+    /// `workerMcp`, whose scope-token binding determines it -- never a
+    /// value the client can request or override.
+    pub scoped_run_id: Option<RunId>,
+    /// The task this connection is scoped to, alongside `scopedRunId`.
+    pub scoped_task_id: Option<TaskId>,
+    /// The worker this connection is scoped to, alongside `scopedRunId`.
+    /// A `workerMcp` client uses this (never a self-declared value) as
+    /// the authoritative sender identity for `coordination/send`.
+    pub scoped_worker_id: Option<WorkerId>,
 }
 
 // BatmanMethod is re-exported from method.rs.
@@ -393,10 +403,32 @@ mod tests {
         let summary = ClientPrincipalSummary {
             role: ClientRole::OmpExtension,
             instance_id: "omp-1".into(),
+            scoped_run_id: None,
+            scoped_task_id: None,
+            scoped_worker_id: None,
         };
         let value = serde_json::to_value(&summary).unwrap();
         assert_eq!(value["role"], "ompExtension");
         assert_eq!(value["instanceId"], "omp-1");
+        assert!(value["scopedRunId"].is_null());
+    }
+
+    #[test]
+    fn client_principal_summary_carries_the_worker_mcp_scope() {
+        let run_id = RunId::new();
+        let task_id = TaskId::new();
+        let worker_id = WorkerId::new();
+        let summary = ClientPrincipalSummary {
+            role: ClientRole::WorkerMcp,
+            instance_id: "worker-1".into(),
+            scoped_run_id: Some(run_id),
+            scoped_task_id: Some(task_id),
+            scoped_worker_id: Some(worker_id),
+        };
+        let value = serde_json::to_value(&summary).unwrap();
+        assert_eq!(value["scopedRunId"], run_id.to_string());
+        assert_eq!(value["scopedTaskId"], task_id.to_string());
+        assert_eq!(value["scopedWorkerId"], worker_id.to_string());
     }
 
     #[test]

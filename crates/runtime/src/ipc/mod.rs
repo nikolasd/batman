@@ -18,7 +18,9 @@ mod server;
 
 use std::sync::Arc;
 
-use batman_protocol::{BatmanMethod, ClientRole, ProtocolVersion, RunId, VersionRange};
+use batman_protocol::{
+    BatmanMethod, ClientRole, ProtocolVersion, RunId, TaskId, VersionRange, WorkerId,
+};
 use tokio::net::UnixStream;
 
 pub use server::{Server, should_idle_shutdown, socket_path_within_limit};
@@ -82,6 +84,12 @@ impl PeerCredentialReader for SystemPeerCredentialReader {
 pub struct ScopedRun {
     /// The supervised run the credential is scoped to.
     pub run_id: RunId,
+    /// The task that run belongs to, from the same scope-token record.
+    pub task_id: TaskId,
+    /// The worker that run belongs to, from the same scope-token record --
+    /// the authoritative sender identity for anything this connection
+    /// sends, never a value the client supplies itself.
+    pub worker_id: WorkerId,
 }
 
 /// Why a worker-MCP reconnect credential was rejected.
@@ -186,6 +194,13 @@ pub struct ClientPrincipal {
     pub instance_id: String,
     /// The supervised run this principal is bound to, for `workerMcp`.
     pub scoped_run_id: Option<RunId>,
+    /// The task bound alongside `scoped_run_id`, for `workerMcp`.
+    pub scoped_task_id: Option<TaskId>,
+    /// The worker bound alongside `scoped_run_id`, for `workerMcp` -- the
+    /// only sender identity `coordination/send` trusts for this
+    /// connection, regardless of what a request's `senderWorkerId`
+    /// parameter claims.
+    pub scoped_worker_id: Option<WorkerId>,
 }
 
 impl ClientPrincipal {

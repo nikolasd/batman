@@ -238,6 +238,9 @@ async fn handle_bootstrap(line: &str, ctx: &ConnContext, shared: &Arc<Shared>) -
         principal: ClientPrincipalSummary {
             role: principal.role,
             instance_id: principal.instance_id.clone(),
+            scoped_run_id: principal.scoped_run_id,
+            scoped_task_id: principal.scoped_task_id,
+            scoped_worker_id: principal.scoped_worker_id,
         },
         allowed_methods: principal.allowed_methods(),
         capabilities: RuntimeCapabilities {
@@ -277,12 +280,16 @@ fn authenticate(
                 role: batman_protocol::ClientRole::OmpExtension,
                 instance_id: instance_id.clone(),
                 scoped_run_id: None,
+                scoped_task_id: None,
+                scoped_worker_id: None,
             })
         }
         ClientAuth::Display { instance_id } => Ok(ClientPrincipal {
             role: batman_protocol::ClientRole::Display,
             instance_id: instance_id.clone(),
             scoped_run_id: None,
+            scoped_task_id: None,
+            scoped_worker_id: None,
         }),
         ClientAuth::WorkerMcp {
             instance_id,
@@ -297,6 +304,8 @@ fn authenticate(
                 role: batman_protocol::ClientRole::WorkerMcp,
                 instance_id: instance_id.clone(),
                 scoped_run_id: Some(scoped.run_id),
+                scoped_task_id: Some(scoped.task_id),
+                scoped_worker_id: Some(scoped.worker_id),
             })
         }
     }
@@ -473,6 +482,16 @@ async fn dispatch_coordination(
         BatmanMethod::CoordinationSend => {
             let sender_worker_id = parse_worker_field(params, "senderWorkerId")?;
             let task_id = parse_task_field(params, "taskId")?;
+            if principal.scoped_worker_id != Some(sender_worker_id) {
+                return Err(invalid_params(
+                    "senderWorkerId does not match this connection's authenticated scope",
+                ));
+            }
+            if principal.scoped_task_id != Some(task_id) {
+                return Err(invalid_params(
+                    "a run cannot address a task other than its own",
+                ));
+            }
             let kind = parse_message_kind_field(params)?;
             let payload = params
                 .get("payload")

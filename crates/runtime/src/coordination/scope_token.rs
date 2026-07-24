@@ -22,9 +22,34 @@ use crate::ipc::{ScopedRun, VerifyError, WorkerCredentialVerifier};
 
 /// The vendor process a scope token is bound to: its PID at mint time. Used
 /// only to walk the connecting peer's ancestry; never persisted.
+///
+/// # Residual risk: PID reuse
+/// Ancestry is checked by numeric pid alone (see [`PidAncestryChecker`]),
+/// not a non-reusable process identity (e.g. start time) -- after this
+/// pid is recycled by the OS, an unrelated later process could in
+/// principle satisfy the same ancestry check. The primary defense is
+/// promptness, not the ancestry check itself: every adapter that binds a
+/// token here must call [`ScopeTokenStore::revoke_for_run`] as soon as it
+/// observes its supervised vendor process exit (its background session
+/// task's `wait()` completing), collapsing the exploitable window to the
+/// gap between that exit and the adapter noticing it -- not the token's
+/// full `expires_at` lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VendorProcessIdentity {
     pub pid: i32,
+}
+
+/// The scope a token binds to: everything [`ScopeTokenStore::mint`]/
+/// [`ScopeTokenStore::bind`] need to activate one, bundled so neither
+/// exceeds a reasonable argument count.
+#[derive(Debug, Clone)]
+pub struct ScopeBinding {
+    pub project_id: ProjectId,
+    pub task_id: TaskId,
+    pub worker_id: WorkerId,
+    pub run_id: RunId,
+    pub vendor_process: VendorProcessIdentity,
+    pub expires_at: Timestamp,
 }
 
 /// The record a live scope token is bound to.
@@ -47,6 +72,16 @@ pub trait PidAncestryChecker: Send + Sync {
     /// finding `ancestor`, or `Err` if this platform cannot report
     /// trustworthy process ancestry.
     fn is_descendant(&self, candidate: i32, ancestor: i32) -> Result<bool, AncestryError>;
+}
+
+/// Why [`ScopeTokenStore::bind`] could not activate a reserved token.
+#[derive(Debug, thiserror::Error)]
+pub enum BindError {
+    /// The token is already bound to a live record. [`ScopeTokenStore::bind`]
+    /// never overwrites an existing binding -- doing so could silently
+    /// rebind (and thus hijack) another live run's credential.
+    #[error("token is already bound to a live scope")]
+    AlreadyBound,
 }
 
 /// Why a process-ancestry check could not be completed.
@@ -133,30 +168,56 @@ impl ScopeTokenStore {
     }
 
     /// Mints a fresh token bound to the given scope, returning its bearer
-    /// string. Call immediately before launching the supervised vendor
-    /// process.
-    pub fn mint(
-        &self,
-        project_id: ProjectId,
-        task_id: TaskId,
-        worker_id: WorkerId,
-        run_id: RunId,
-        vendor_process: VendorProcessIdentity,
-        expires_at: Timestamp,
-    ) -> String {
-        let token = uuid::Uuid::now_v7().to_string();
-        self.tokens.lock().expect("scope token mutex is never poisoned").insert(
-            token.clone(),
+    /// string. Convenience for callers that already know the vendor
+    /// process's pid before minting (chiefly tests); a real adapter spawn
+    /// cannot know that pid until after the process is already running,
+    /// so it uses [`Self::reserve_token`] then [`Self::bind`] instead --
+    /// see their docs.
+    pub fn mint(&self, binding: ScopeBinding) -> String {
+        let token = self.reserve_token();
+        self.bind(token.clone(), binding)
+            .expect("a freshly reserved token is never already bound");
+        token
+    }
+
+    /// Generates a fresh bearer token string, deliberately *not* inserted
+    /// into the live table yet -- [`Self::verify`] rejects it as
+    /// [`VerifyError::InvalidToken`] (unknown) until [`Self::bind`] makes
+    /// it live. Callers put the reserved value into the vendor process's
+    /// environment before spawning it (the only way it can be present at
+    /// `execve` time), then bind it to that process's real pid once
+    /// spawn returns one -- never the reverse, and never a guessed pid.
+    #[must_use]
+    pub fn reserve_token(&self) -> String {
+        uuid::Uuid::now_v7().to_string()
+    }
+
+    /// Activates a token already handed to [`Self::reserve_token`]'s
+    /// caller, binding it to the real, now-known vendor process pid. Call
+    /// immediately after the supervised vendor process's spawn returns a
+    /// pid, before any interaction with it.
+    ///
+    /// # Errors
+    /// Returns [`BindError::AlreadyBound`] if `token` is already bound to
+    /// a live record -- never overwrites one, since that would silently
+    /// rebind (and thus hijack) whatever run currently owns it.
+    pub fn bind(&self, token: String, binding: ScopeBinding) -> Result<(), BindError> {
+        let mut tokens = self.tokens.lock().expect("scope token mutex is never poisoned");
+        if tokens.contains_key(&token) {
+            return Err(BindError::AlreadyBound);
+        }
+        tokens.insert(
+            token,
             ScopeTokenRecord {
-                project_id,
-                task_id,
-                worker_id,
-                run_id,
-                vendor_process,
-                expires_at,
+                project_id: binding.project_id,
+                task_id: binding.task_id,
+                worker_id: binding.worker_id,
+                run_id: binding.run_id,
+                vendor_process: binding.vendor_process,
+                expires_at: binding.expires_at,
             },
         );
-        token
+        Ok(())
     }
 
     /// Revokes the token bound to `run_id`, if any (e.g. when the run
@@ -199,6 +260,8 @@ impl ScopeTokenStore {
 
         Ok(ScopedRun {
             run_id: record.run_id,
+            task_id: record.task_id,
+            worker_id: record.worker_id,
         })
     }
 
@@ -260,18 +323,22 @@ mod tests {
         }))
     }
 
+    fn binding(run_id: RunId, pid: i32, expires_at: Timestamp) -> ScopeBinding {
+        ScopeBinding {
+            project_id: ProjectId::new(),
+            task_id: TaskId::new(),
+            worker_id: WorkerId::new(),
+            run_id,
+            vendor_process: VendorProcessIdentity { pid },
+            expires_at,
+        }
+    }
+
     #[test]
     fn verifies_a_descendant_of_the_vendor_process() {
         let store = store_with(vec![(200, 100)]);
         let run_id = RunId::new();
-        let token = store.mint(
-            ProjectId::new(),
-            TaskId::new(),
-            WorkerId::new(),
-            run_id,
-            VendorProcessIdentity { pid: 100 },
-            Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
-        );
+        let token = store.mint(binding(run_id, 100, Timestamp::parse("2099-01-01T00:00:00Z").unwrap()));
 
         let scoped = store.verify(&token, Some(200)).expect("descendant verifies");
         assert_eq!(scoped.run_id, run_id);
@@ -280,14 +347,11 @@ mod tests {
     #[test]
     fn rejects_a_peer_outside_ancestry() {
         let store = store_with(vec![]);
-        let token = store.mint(
-            ProjectId::new(),
-            TaskId::new(),
-            WorkerId::new(),
+        let token = store.mint(binding(
             RunId::new(),
-            VendorProcessIdentity { pid: 100 },
+            100,
             Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
-        );
+        ));
 
         let err = store.verify(&token, Some(999)).unwrap_err();
         assert!(matches!(err, VerifyError::OutsideAncestry));
@@ -296,14 +360,11 @@ mod tests {
     #[test]
     fn rejects_after_expiry() {
         let store = store_with(vec![]);
-        let token = store.mint(
-            ProjectId::new(),
-            TaskId::new(),
-            WorkerId::new(),
+        let token = store.mint(binding(
             RunId::new(),
-            VendorProcessIdentity { pid: 100 },
+            100,
             Timestamp::parse("2000-01-01T00:00:00Z").unwrap(),
-        );
+        ));
 
         let err = store.verify(&token, Some(100)).unwrap_err();
         assert!(matches!(err, VerifyError::InvalidToken));
@@ -320,20 +381,15 @@ mod tests {
     fn a_restarted_descendant_may_reverify_the_same_token_while_the_run_is_live() {
         let store = store_with(vec![(201, 100), (202, 100)]);
         let run_id = RunId::new();
-        let token = store.mint(
-            ProjectId::new(),
-            TaskId::new(),
-            WorkerId::new(),
-            run_id,
-            VendorProcessIdentity { pid: 100 },
-            Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
-        );
+        let token = store.mint(binding(run_id, 100, Timestamp::parse("2099-01-01T00:00:00Z").unwrap()));
 
         // First MCP subprocess initializes.
         assert!(store.verify(&token, Some(201)).is_ok());
         // It restarts under a new PID, still a descendant of the same
         // supervised vendor process, and reinitializes with the same token.
-        let scoped = store.verify(&token, Some(202)).expect("restarted descendant reverifies");
+        let scoped = store
+            .verify(&token, Some(202))
+            .expect("restarted descendant reverifies");
         assert_eq!(scoped.run_id, run_id);
     }
 
@@ -341,14 +397,7 @@ mod tests {
     fn revoking_a_run_invalidates_its_token() {
         let store = store_with(vec![(100, 100)]);
         let run_id = RunId::new();
-        let token = store.mint(
-            ProjectId::new(),
-            TaskId::new(),
-            WorkerId::new(),
-            run_id,
-            VendorProcessIdentity { pid: 100 },
-            Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
-        );
+        let token = store.mint(binding(run_id, 100, Timestamp::parse("2099-01-01T00:00:00Z").unwrap()));
         assert!(store.verify(&token, Some(100)).is_ok());
 
         store.revoke_for_run(run_id);
@@ -360,15 +409,41 @@ mod tests {
     #[test]
     fn rejects_when_the_platform_reports_no_peer_pid() {
         let store = store_with(vec![]);
-        let token = store.mint(
-            ProjectId::new(),
-            TaskId::new(),
-            WorkerId::new(),
-            RunId::new(),
-            VendorProcessIdentity { pid: 100 },
-            Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
-        );
+        let token = store.mint(binding(RunId::new(), 100, Timestamp::parse("2099-01-01T00:00:00Z").unwrap()));
         let err = store.verify(&token, None).unwrap_err();
         assert!(matches!(err, VerifyError::OutsideAncestry));
+    }
+
+    #[test]
+    fn a_reserved_token_is_rejected_until_bound() {
+        let store = store_with(vec![(100, 100)]);
+        let token = store.reserve_token();
+
+        let err = store.verify(&token, Some(100)).unwrap_err();
+        assert!(matches!(err, VerifyError::InvalidToken));
+
+        store
+            .bind(token.clone(), binding(RunId::new(), 100, Timestamp::parse("2099-01-01T00:00:00Z").unwrap()))
+            .expect("first bind of a fresh reservation succeeds");
+        assert!(store.verify(&token, Some(100)).is_ok());
+    }
+
+    #[test]
+    fn binding_an_already_bound_token_is_rejected_without_disturbing_the_first_scope() {
+        let store = store_with(vec![(100, 100)]);
+        let token = store.reserve_token();
+        let first_run = RunId::new();
+        store
+            .bind(token.clone(), binding(first_run, 100, Timestamp::parse("2099-01-01T00:00:00Z").unwrap()))
+            .expect("first bind succeeds");
+
+        let err = store
+            .bind(token.clone(), binding(RunId::new(), 100, Timestamp::parse("2099-01-01T00:00:00Z").unwrap()))
+            .expect_err("re-binding a live token must never succeed");
+        assert!(matches!(err, BindError::AlreadyBound));
+
+        // The original scope is untouched by the rejected re-bind attempt.
+        let scoped = store.verify(&token, Some(100)).expect("original binding still verifies");
+        assert_eq!(scoped.run_id, first_run);
     }
 }

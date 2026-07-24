@@ -9,6 +9,6 @@ mod scope_token;
 pub use broker::{CoordinationBroker, CoordinationError};
 pub use rate_limit::{RateLimitError, RateLimiter};
 pub use scope_token::{
-    AncestryError, PidAncestryChecker, ScopeTokenStore, ScopeTokenVerifier, SystemPidAncestryChecker,
-    VendorProcessIdentity,
+    AncestryError, BindError, PidAncestryChecker, ScopeBinding, ScopeTokenStore, ScopeTokenVerifier,
+    SystemPidAncestryChecker, VendorProcessIdentity,
 };

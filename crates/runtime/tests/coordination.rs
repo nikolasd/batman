@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use batman_protocol::{ProjectId, RunId, TaskId, Timestamp, WorkerId};
-use batman_runtime::coordination::{CoordinationBroker, ScopeTokenStore, ScopeTokenVerifier, VendorProcessIdentity};
+use batman_runtime::coordination::{
+    CoordinationBroker, ScopeBinding, ScopeTokenStore, ScopeTokenVerifier, VendorProcessIdentity,
+};
 use batman_runtime::db::DatabaseHandle;
 use batman_runtime::ipc::{PeerCredentialReader, PeerCredentials, Server, ServerConfig};
 use batman_runtime::paths::RuntimePaths;
@@ -231,14 +233,14 @@ async fn seed_scoped_run(harness: &Harness, omp: &mut Client) -> (String, RunId,
         .await;
     let run_id = RunId::parse(submit["result"]["runId"].as_str().unwrap()).unwrap();
 
-    let token = harness.scope_token_store.mint(
-        ProjectId::new(),
+    let token = harness.scope_token_store.mint(ScopeBinding {
+        project_id: ProjectId::new(),
         task_id,
         worker_id,
         run_id,
-        VendorProcessIdentity { pid: self_pid() },
-        Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
-    );
+        vendor_process: VendorProcessIdentity { pid: self_pid() },
+        expires_at: Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
+    });
 
     (token, run_id, task_id, worker_id)
 }
@@ -256,6 +258,55 @@ async fn coordination_send_requires_sender_task_and_payload() {
         .call(2, "coordination/send", json!({ "runId": run_id.to_string(), "taskId": "x", "kind": "question", "payload": "hi" }))
         .await;
     assert_eq!(missing_sender["error"]["code"], -32602, "{missing_sender:?}");
+}
+
+#[tokio::test]
+async fn coordination_send_rejects_a_sender_worker_id_outside_the_authenticated_scope() {
+    let harness = Harness::start().await;
+    let mut omp = omp_client(&harness, "omp-1").await;
+    let (token, run_id, task_id, _worker_id) = seed_scoped_run(&harness, &mut omp).await;
+    let mut worker = worker_client(&harness, &token).await;
+
+    // A worker connection authenticated for this run's real worker must
+    // never be able to claim a *different* worker's identity when it
+    // sends -- that would let a scoped connection impersonate a peer.
+    let spoofed_sender = WorkerId::new();
+    let result = worker
+        .call(
+            2,
+            "coordination/send",
+            json!({
+                "runId": run_id.to_string(),
+                "senderWorkerId": spoofed_sender.to_string(),
+                "taskId": task_id.to_string(),
+                "kind": "question",
+                "payload": "hi",
+            }),
+        )
+        .await;
+    assert_eq!(result["error"]["code"], -32602, "{result:?}");
+    assert!(
+        result["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("authenticated scope"),
+        "{result:?}"
+    );
+
+    // The rejected send must never have been journaled: replaying every
+    // event since the beginning finds no message from the spoofed sender.
+    let replay = omp
+        .call(5, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    let events = replay["result"]
+        .as_array()
+        .expect("events/replay returns an array");
+    assert!(
+        !events
+            .iter()
+            .any(|e| e["event"]["payload"]["senderWorkerId"] == spoofed_sender.to_string()),
+        "a rejected spoofed send must never reach the journal: {events:?}"
+    );
 }
 
 #[tokio::test]
