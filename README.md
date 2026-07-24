@@ -99,14 +99,16 @@ OMP_BATMAN_BINARY="$PWD/target/debug/batcave" \
 
 Without a wired adapter (this repository never implements one), `run/submit` reports
 `adapter_unavailable` and the run stays `queued` — the monitor still shows it, live, via the same
-durable event stream. See docs/getting-started.md ("Smoke-testing the orchestration extension")
-for the full smoke-test walkthrough, including approvals and messages.
+durable event stream. See [docs/manual-testing.md](docs/manual-testing.md) for the full
+walkthrough, including messages and the two properties ("live broadcast" and "replay after
+restart") that walkthrough actually proves.
 
 ## Documentation
 
 | Document | Read it when you want to… |
 |---|---|
-| [docs/getting-started.md](docs/getting-started.md) | build, test, and run the codebase; smoke-test the orchestration extension; environment variables; common workflows |
+| [docs/getting-started.md](docs/getting-started.md) | build and run automated tests; environment variables; common workflows |
+| [docs/manual-testing.md](docs/manual-testing.md) | run the daemon, the extension, and OMP tools by hand — the checks nothing in CI performs |
 | [docs/journal.md](docs/journal.md) | read the story of how this got built, commit by commit — the decisions, the whys, and the hows |
 | [docs/adr/](docs/adr/) | look up a specific architectural decision (MADR format) — what was decided, what was considered, and why |
 | [docs/architecture.md](docs/architecture.md) | understand the design: protocol, codegen, journal, redaction, IPC, lifecycle, domain persistence, orchestration RPC, coordination, approvals, the monitor |
