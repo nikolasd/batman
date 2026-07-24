@@ -38,7 +38,6 @@ impl RunState {
     /// according to the authoritative lifecycle table.
     #[must_use]
     pub fn can_transition_to(&self, target: &RunState) -> bool {
-        use RunState as S;
         let from = self.0.as_str();
         let to = target.0.as_str();
 

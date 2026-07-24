@@ -185,7 +185,7 @@ impl ClientPrincipal {
     pub fn allowed_methods(&self) -> Vec<BatmanMethod> {
         use BatmanMethod::{
             ApprovalDecide, ApprovalList, CoordinationChildDecide, CoordinationChildList,
-            EventsReplay, EventsSubscribe, Initialize, MessageList, MessageSend, ReconcileOmp,
+            EventsReplay, EventsSubscribe, MessageList, MessageSend, ReconcileOmp,
             RuntimeShutdown, RuntimeStatus, RunCancel, RunGet, RunList, RunRetry, RunSubmit,
             TaskGet, TaskUpsert, WorkerCreate, WorkerGet, WorkerList,
         };

@@ -1,6 +1,7 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod db;
+pub mod domain;
 pub mod ipc;
 pub mod lifecycle;
 pub mod paths;
@@ -11,3 +12,4 @@ pub use ipc::{IpcError, Server, ServerConfig};
 pub use lifecycle::should_idle_shutdown;
 pub use paths::{PathError, RuntimePaths, repository_id_from_canonical_root};
 pub use security::{SecurityError, StateRoot};
+pub use domain::{Committed, DomainError, DomainRepository, TransitionError};

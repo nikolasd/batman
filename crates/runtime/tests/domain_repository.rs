@@ -79,6 +79,7 @@ fn open_test_db() -> Connection {
             flags_workspace_dirty INTEGER NOT NULL DEFAULT 0,
             flags_children_active INTEGER NOT NULL DEFAULT 0,
             vendor_session_id TEXT,
+            created_at TEXT NOT NULL,
             started_at TEXT,
             completed_at TEXT,
             FOREIGN KEY (task_id) REFERENCES tasks(task_id),

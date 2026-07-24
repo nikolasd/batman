@@ -27,6 +27,78 @@ CREATE TABLE operations (
 );
 ";
 
+/// Migration 2: orchestration projections (tasks, workers, worker
+/// profiles, runs, messages, approvals). Kept in a normalized shape
+/// alongside the append-only `events` journal; every mutation goes
+/// through one transaction that appends an event and updates the
+/// relevant projection row(s).
+const MIGRATION_2: &str = "
+CREATE TABLE worker_profiles (
+  id TEXT PRIMARY KEY,
+  fingerprint TEXT NOT NULL,
+  adapter TEXT NOT NULL,
+  model TEXT NOT NULL,
+  permission_envelope TEXT NOT NULL
+);
+CREATE TABLE tasks (
+  task_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  owner_client_instance_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE workers (
+  worker_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  profile_id TEXT NOT NULL REFERENCES worker_profiles(id),
+  parent_worker_id TEXT REFERENCES workers(worker_id),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE runs (
+  run_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(task_id),
+  worker_id TEXT NOT NULL REFERENCES workers(worker_id),
+  state TEXT NOT NULL,
+  flags_degraded_control INTEGER NOT NULL DEFAULT 0,
+  flags_needs_reconciliation INTEGER NOT NULL DEFAULT 0,
+  flags_protocol_unhealthy INTEGER NOT NULL DEFAULT 0,
+  flags_policy_quarantined INTEGER NOT NULL DEFAULT 0,
+  flags_workspace_dirty INTEGER NOT NULL DEFAULT 0,
+  flags_children_active INTEGER NOT NULL DEFAULT 0,
+  vendor_session_id TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT
+);
+CREATE TABLE messages (
+  message_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES runs(run_id),
+  sender_worker_id TEXT NOT NULL,
+  recipient_worker_id TEXT,
+  task_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  delivery_state TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  sent_at TEXT,
+  acknowledged_at TEXT,
+  reply_to TEXT
+);
+CREATE TABLE approvals (
+  approval_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES runs(run_id),
+  task_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  arguments TEXT NOT NULL,
+  human_required INTEGER NOT NULL DEFAULT 0,
+  policy_reason TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  decided_at TEXT,
+  decision TEXT
+);
+";
+
 /// Opens `path` as a private (mode `0600`) SQLite database, configures its
 /// PRAGMAs (`journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`,
 /// `synchronous=FULL`), and migrates it to the latest schema. Migrations
@@ -45,7 +117,7 @@ pub(super) fn open_and_migrate(path: &Path) -> Result<Connection, DbError> {
     conn.pragma_update(None, "busy_timeout", 5000_i64)?;
     conn.pragma_update(None, "synchronous", "FULL")?;
 
-    let migrations = Migrations::new(vec![M::up(MIGRATION_1)]);
+    let migrations = Migrations::new(vec![M::up(MIGRATION_1), M::up(MIGRATION_2)]);
     migrations.to_latest(&mut conn)?;
 
     Ok(conn)

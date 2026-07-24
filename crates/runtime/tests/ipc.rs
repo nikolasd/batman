@@ -494,7 +494,22 @@ async fn omp_extension_receives_all_mutation_methods() {
             "runtime/status",
             "events/subscribe",
             "events/replay",
-            "runtime/shutdown"
+            "runtime/shutdown",
+            "task/upsert",
+            "task/get",
+            "worker/create",
+            "worker/list",
+            "worker/get",
+            "run/submit",
+            "run/list",
+            "run/get",
+            "run/retry",
+            "run/cancel",
+            "message/send",
+            "message/list",
+            "approval/list",
+            "approval/decide",
+            "reconcile/omp"
         ]
     );
 }
@@ -523,7 +538,19 @@ async fn display_receives_only_status_and_event_methods() {
     let names: Vec<&str> = methods.iter().map(|m| m.as_str().unwrap()).collect();
     assert_eq!(
         names,
-        vec!["runtime/status", "events/subscribe", "events/replay"]
+        vec![
+            "runtime/status",
+            "events/subscribe",
+            "events/replay",
+            "task/get",
+            "worker/list",
+            "worker/get",
+            "run/list",
+            "run/get",
+            "message/list",
+            "approval/list",
+            "coordination/child/list"
+        ]
     );
 
     // A method outside the display role's table is hidden: METHOD_NOT_FOUND.
@@ -584,7 +611,15 @@ async fn worker_mcp_accepted_with_valid_credential_and_ancestry() {
     assert_eq!(response["result"]["principal"]["role"], "workerMcp");
     let methods = response["result"]["allowedMethods"].as_array().unwrap();
     let names: Vec<&str> = methods.iter().map(|m| m.as_str().unwrap()).collect();
-    assert_eq!(names, vec!["runtime/status"]);
+    assert_eq!(
+        names,
+        vec![
+            "runtime/status",
+            "message/send",
+            "coordination/child/list",
+            "coordination/child/decide"
+        ]
+    );
 
     // A restarted MCP descendant reinitializes while the run is live.
     let mut restarted = Client::connect(&harness.socket).await;
