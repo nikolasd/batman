@@ -138,29 +138,84 @@ EXT="$OLDPWD/packages/extension/dist/index.js"
 omp --extension "$EXT" --print \
   'Use batman_task to upsert a task with ownerClientInstanceId "smoke" and revision 1. Then use
    batman_worker to create a worker with fingerprint "sha256:smoke" and adapter "fake". Then use
-   batman_run to submit a run for that task against that worker. Report the taskId, workerId, and
-   runId plainly.'
+   batman_run to submit a run for that task against that worker. Report the taskId and workerId
+   plainly.'
 ```
 
-Expected: `run/submit` reports `adapter_unavailable` (no adapter is wired in this milestone) but
-the run is preserved `queued` — it never pretends a run started that it can't back. Open
-`/batman` in an interactive session (`omp --extension "$EXT"`, no `--print`) to watch it live:
+Expect the model to say `run/submit` failed with `adapter_unavailable` and that it can't report a
+`runId` — that's correct, not a bug in the model: `run/submit`'s error response is
+`ServiceError { code, message }`, with no `data` field at all, so the caller genuinely has no way
+to learn the run's id from that one call. The run was still committed as `queued` underneath —
+look it up with a second call, using the `taskId` from the first response:
+
+```bash
+omp --extension "$EXT" --print \
+  'Use batman_run with op "list" and taskId "<taskId from above>" to find the run that was just
+   submitted. Report the runId and state plainly.'
+```
+
+Expect `state: queued` — the run is preserved even though nothing could start it; `run/submit`
+never pretends a run started that it can't back, and it never drops the run just because no
+adapter exists to run it.
+
+### Watching it live (two processes, on purpose)
+
+Open an **interactive** session and leave it running — this is a different invocation from every
+`--print` call above, and it matters that it stays open for what comes next:
+
+```bash
+omp --extension "$EXT"          # no --print: stays open, interactive
+```
+
+Type `/batman`. You should see one line, replayed from the daemon's journal the instant this
+session started (it never touched the task/worker/run above — this is a brand-new session):
 
 ```
 <runId-prefix> · queued · run queued
 ```
 
-Send a message and confirm the widget updates without reconnecting:
+Now, **without closing that session**, open a *second* terminal and run the message-send call
+there — a separate, short-lived process that connects to the same daemon and exits on its own:
 
 ```bash
 omp --extension "$EXT" --print \
-  'Use batman_message to send a "question" from your worker on that run with payload
-   "should I proceed?".'
+  'Use batman_message to send a "question" on runId "<runId from above>" from workerId
+   "<workerId from earlier>", taskId "<taskId from earlier>", payload "should I proceed?".'
 ```
 
-`/batman` now reads `... · queued · messageRecorded recorded`. Restarting `omp` against the same
-repository (a fresh daemon, since the detached daemon exits after its idle timeout) replays the
-identical state from the durable journal — nothing is lost, nothing duplicates.
+Go back to the **first** terminal — the one you never touched during that second call — and look
+at it again. It should have updated on its own, with zero input from you:
+
+```
+<runId-prefix> · queued · messageRecorded recorded
+```
+
+That's the live-broadcast path: the first session was already subscribed to the daemon's event
+stream, and the message-send (from a *different* process) got pushed to it over the socket it
+already had open — no reconnect, no re-typed `/batman`, no polling.
+
+Only the trailing "latest activity" field changes here; the run's own `state` stays `queued`
+throughout, because nothing in this scenario ever starts a real adapter. A `starting`/`working`
+transition needs `FakeRunDriver` or a real adapter, neither of which is reachable from a live
+`omp` session — only from `cargo test -p batman-runtime --test orchestration_rpc`.
+
+Now close that first session entirely (`Ctrl+C` or `/exit`) and start a **third**, completely
+fresh one:
+
+```bash
+omp --extension "$EXT"
+```
+
+Type `/batman` again. You should see the *same* final line, replayed cold by a session that has
+never seen any of this before:
+
+```
+<runId-prefix> · queued · messageRecorded recorded
+```
+
+Nothing is lost, nothing duplicates — this is replay-from-restart, a different property from the
+live-broadcast case above (that one required the watching session to *stay open*; this one
+requires it to be fully torn down and restarted).
 
 Approval creation (`ApprovalService::request`) is only ever invoked by an adapter reporting it
 needs human sign-off, and there is no `approval/request` RPC method — adapters are out of scope
