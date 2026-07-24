@@ -16,6 +16,7 @@ use batman_protocol::{
     Worker, WorkerId,
 };
 use rusqlite::Connection;
+use serde_json::Value;
 
 use super::transitions::{check_transition, TransitionError};
 
@@ -40,10 +41,35 @@ pub enum DomainError {
 }
 
 /// The committed result of a mutation: the durable event sequence number the
-/// mutation produced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// mutation produced, and the exact envelope callers should broadcast to
+/// live subscribers.
+#[derive(Debug, Clone)]
 pub struct Committed {
     pub sequence: u64,
+    pub envelope: EventEnvelope,
+}
+
+/// Embeds `envelope` into `value` under a reserved key so it survives the
+/// `run_domain_op` boundary -- whose closures are constrained to return a
+/// plain [`Value`] -- back out to the async service layer, which broadcasts
+/// it to live subscribers via [`take_envelope`] before the key is stripped.
+#[must_use]
+pub fn embed_envelope(mut value: Value, envelope: &EventEnvelope) -> Value {
+    if let Some(map) = value.as_object_mut() {
+        map.insert(
+            "__envelope".to_string(),
+            serde_json::to_value(envelope).expect("EventEnvelope is a plain, serializable wire type"),
+        );
+    }
+    value
+}
+
+/// Removes and deserializes the envelope embedded by [`embed_envelope`], if
+/// present. A read-only lookup that never embedded one returns `None`.
+#[must_use]
+pub fn take_envelope(value: &mut Value) -> Option<EventEnvelope> {
+    let raw = value.as_object_mut()?.remove("__envelope")?;
+    serde_json::from_value(raw).ok()
 }
 
 /// A repository over the orchestration projection tables and the durable
@@ -79,9 +105,14 @@ impl<'c> DomainRepository<'c> {
         let timestamp = Timestamp::now();
 
         // Build the envelope with a provisional sequence of 0; the real
-        // sequence is the rowid assigned on insert. The stored JSON carries
-        // the assigned sequence so replay is self-describing.
-        let envelope_json = {
+        // sequence is the rowid assigned on insert. Only the bare
+        // `RuntimeEvent` is persisted in `event_json` -- `sequence`,
+        // `timestamp`, `project_id`, and `run_id` are already durable in
+        // their own columns, and `replay()` (`ipc/connection.rs`)
+        // reconstructs the envelope from those columns plus this bare
+        // event. The full envelope is still returned here so callers can
+        // broadcast it to live subscribers.
+        let envelope = {
             // Insert with a placeholder, then rewrite with the real sequence.
             tx.execute(
                 "INSERT INTO events (timestamp, project_id, run_id, event_json) VALUES (?1, ?2, ?3, ?4)",
@@ -93,7 +124,12 @@ impl<'c> DomainRepository<'c> {
                 ],
             )?;
             let sequence = tx.last_insert_rowid() as u64;
-            let envelope = EventEnvelope {
+            let event_json = serde_json::to_string(event)?;
+            tx.execute(
+                "UPDATE events SET event_json = ?1 WHERE sequence = ?2",
+                rusqlite::params![event_json, sequence],
+            )?;
+            EventEnvelope {
                 sequence,
                 timestamp: timestamp.clone(),
                 project_id,
@@ -104,19 +140,13 @@ impl<'c> DomainRepository<'c> {
                 source: EventSource::Runtime,
                 event: event.clone(),
                 vendor_event_ref: None,
-            };
-            let json = serde_json::to_string(&envelope)?;
-            tx.execute(
-                "UPDATE events SET event_json = ?1 WHERE sequence = ?2",
-                rusqlite::params![json, sequence],
-            )?;
-            (sequence, json)
+            }
         };
-        let (sequence, _json) = envelope_json;
+        let sequence = envelope.sequence;
 
         apply(&tx)?;
         tx.commit()?;
-        Ok(Committed { sequence })
+        Ok(Committed { sequence, envelope })
     }
 
     /// Upserts an OMP-owned task. Idempotent for an identical revision; a

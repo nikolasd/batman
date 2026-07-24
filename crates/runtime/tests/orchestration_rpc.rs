@@ -211,6 +211,62 @@ async fn task_upsert_then_get_round_trips() {
 }
 
 #[tokio::test]
+async fn events_replay_round_trips_committed_mutation_events() {
+    // Regression test: `events/replay` must deserialize every stored event.
+    // The domain repository previously persisted the full `EventEnvelope`
+    // (embedding `sequence`, `timestamp`, ...) under `event_json`, but
+    // `replay()` expects that column to hold only the bare `RuntimeEvent`
+    // -- reconstructing the envelope from the `events` table's own
+    // `sequence`/`timestamp`/`project_id`/`run_id` columns. The mismatch
+    // made every replay fail once any mutation had committed.
+    let harness = Harness::start(|_| {}).await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let upsert = client
+        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }))
+        .await;
+    assert!(upsert.get("error").is_none(), "upsert failed: {upsert:?}");
+    let task_id = upsert["result"]["taskId"].as_str().unwrap().to_string();
+
+    let replay = client.call(3, "events/replay", json!({ "afterSequence": 0 })).await;
+    assert!(replay.get("error").is_none(), "events/replay failed: {replay:?}");
+    let events = replay["result"].as_array().expect("events/replay returns an array");
+    assert!(!events.is_empty(), "the committed task/upsert event must be replayable");
+    let task_event = events
+        .iter()
+        .find(|e| e["event"]["type"] == "taskEvent")
+        .expect("a taskEvent must be present in the replayed events");
+    assert_eq!(task_event["event"]["payload"]["taskId"], task_id);
+    assert_eq!(task_event["event"]["payload"]["ownerClientInstanceId"], "omp-1");
+}
+
+#[tokio::test]
+async fn events_subscribe_delivers_live_notifications_for_orchestration_mutations() {
+    // Regression test: every orchestration/coordination mutation must
+    // broadcast its committed envelope to live `events/subscribe`
+    // listeners. The broadcast channel previously had no publisher at
+    // all, so a monitor connected before a mutation never observed it
+    // without reconnecting (which re-triggers `events/replay`).
+    let harness = Harness::start(|_| {}).await;
+    let mut subscriber = omp_client(&harness, "omp-sub").await;
+    let sub = subscriber.call(2, "events/subscribe", json!({})).await;
+    assert!(sub.get("error").is_none(), "events/subscribe failed: {sub:?}");
+    assert_eq!(sub["result"]["active"], true);
+
+    let mut mutator = omp_client(&harness, "omp-mut").await;
+    let upsert = mutator
+        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-mut", "revision": 1 }))
+        .await;
+    assert!(upsert.get("error").is_none(), "upsert failed: {upsert:?}");
+    let task_id = upsert["result"]["taskId"].as_str().unwrap().to_string();
+
+    let notification = subscriber.recv().await;
+    assert_eq!(notification["method"], "events/event");
+    assert_eq!(notification["params"]["event"]["type"], "taskEvent");
+    assert_eq!(notification["params"]["event"]["payload"]["taskId"], task_id);
+}
+
+#[tokio::test]
 async fn task_upsert_is_idempotent_for_same_revision() {
     let harness = Harness::start(|_| {}).await;
     let mut client = omp_client(&harness, "omp-1").await;

@@ -13,13 +13,14 @@
 use std::sync::Arc;
 
 use batman_protocol::{
-    error_code, DeliveryState, MessageId, MessageKind, ProjectId, RunId, RunMessage, TaskId,
+    error_code, DeliveryState, EventEnvelope, MessageId, MessageKind, ProjectId, RunId, RunMessage, TaskId,
     Timestamp, WorkerId, COORDINATION_PAYLOAD_MAX_BYTES,
 };
 use serde_json::{json, Value};
+use tokio::sync::broadcast;
 
 use crate::db::DatabaseHandle;
-use crate::domain::DomainRepository;
+use crate::domain::{embed_envelope, take_envelope, DomainRepository};
 
 use super::rate_limit::RateLimiter;
 
@@ -56,15 +57,30 @@ pub struct CoordinationBroker {
     db: Arc<DatabaseHandle>,
     project_id: ProjectId,
     rate_limiter: RateLimiter,
+    events_tx: broadcast::Sender<EventEnvelope>,
 }
 
 impl CoordinationBroker {
     #[must_use]
-    pub fn new(db: Arc<DatabaseHandle>, project_id: ProjectId) -> Self {
+    pub fn new(
+        db: Arc<DatabaseHandle>,
+        project_id: ProjectId,
+        events_tx: broadcast::Sender<EventEnvelope>,
+    ) -> Self {
         Self {
             db,
             project_id,
             rate_limiter: RateLimiter::default(),
+            events_tx,
+        }
+    }
+
+    /// Broadcasts the envelope embedded by a mutation's `run_domain_op`
+    /// closure to live subscribers, if present, then strips it so the
+    /// caller's JSON-RPC response never carries the internal key.
+    fn broadcast(&self, value: &mut Value) {
+        if let Some(envelope) = take_envelope(value) {
+            let _ = self.events_tx.send(envelope);
         }
     }
 
@@ -163,22 +179,25 @@ impl CoordinationBroker {
         };
 
         let project_id = self.project_id;
-        let recorded_sequence = self
+        let mut recorded_sequence = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.record_message(&message).map(|c| json!({ "sequence": c.sequence }))
+                repo.record_message(&message)
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await?;
+        self.broadcast(&mut recorded_sequence);
 
-        let sent_sequence = self
+        let mut sent_sequence = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
                 repo.update_delivery(message_id, &DeliveryState::Sent)
-                    .map(|c| json!({ "sequence": c.sequence }))
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await?;
+        self.broadcast(&mut sent_sequence);
 
         Ok(json!({
             "messageId": message_id.to_string(),
@@ -255,14 +274,17 @@ impl CoordinationBroker {
     /// event journal OMP already replays). Never creates a task or worker.
     pub async fn request_child(&self, run_id: RunId, reason: String) -> Result<Value, CoordinationError> {
         let project_id = self.project_id;
-        self.db
+        let mut result = self
+            .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
                 repo.request_child(run_id, &reason)
-                    .map(|c| json!({ "sequence": c.sequence }))
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
-            .map_err(Into::into)
+            .map_err(CoordinationError::from)?;
+        self.broadcast(&mut result);
+        Ok(result)
     }
 
     /// `coordination/publishArtifact`: journals an artifact reference for
@@ -279,7 +301,8 @@ impl CoordinationBroker {
         let (task_id, worker_id) = sender_and_task;
         let kind = MessageKind::PeerMessage;
         let payload = description.unwrap_or_else(|| artifact_ref.clone());
-        self.db
+        let mut result = self
+            .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
                 let message = RunMessage {
@@ -296,10 +319,17 @@ impl CoordinationBroker {
                     acknowledged_at: None,
                     reply_to: None,
                 };
-                repo.record_message(&message).map(|c| json!({ "sequence": c.sequence, "artifactRef": artifact_ref }))
+                repo.record_message(&message).map(|c| {
+                    embed_envelope(
+                        json!({ "sequence": c.sequence, "artifactRef": artifact_ref }),
+                        &c.envelope,
+                    )
+                })
             }))
             .await
-            .map_err(Into::into)
+            .map_err(CoordinationError::from)?;
+        self.broadcast(&mut result);
+        Ok(result)
     }
 
     /// `coordination/reportBlocked`: reports the scoped run is blocked, as
@@ -367,7 +397,7 @@ impl CoordinationBroker {
     /// reclassifies the outcome as unknown.
     pub async fn sweep_unacknowledged_as_unknown(&self) -> Result<u64, CoordinationError> {
         let project_id = self.project_id;
-        let swept = self
+        let mut result = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let ids: Vec<String> = {
@@ -379,14 +409,24 @@ impl CoordinationBroker {
                 };
                 let mut repo = DomainRepository::new(conn, project_id);
                 let mut count = 0u64;
+                let mut envelopes = Vec::new();
                 for id in ids {
                     let Ok(message_id) = MessageId::parse(&id) else { continue };
-                    repo.update_delivery(message_id, &DeliveryState::Unknown)?;
+                    let committed = repo.update_delivery(message_id, &DeliveryState::Unknown)?;
+                    envelopes.push(committed.envelope);
                     count += 1;
                 }
-                Ok(json!({ "swept": count }))
+                Ok(json!({ "swept": count, "__envelopes": envelopes }))
             }))
             .await?;
-        Ok(swept["swept"].as_u64().unwrap_or(0))
+        let swept = result["swept"].as_u64().unwrap_or(0);
+        if let Some(envelopes) = result.as_object_mut().and_then(|m| m.remove("__envelopes")) {
+            if let Ok(envelopes) = serde_json::from_value::<Vec<EventEnvelope>>(envelopes) {
+                for envelope in envelopes {
+                    let _ = self.events_tx.send(envelope);
+                }
+            }
+        }
+        Ok(swept)
     }
 }

@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::UnixStream;
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 
 // ------------------------------------------------------------------ fakes
@@ -205,7 +205,8 @@ async fn seed_pending_approval(
     let run_id = RunId::parse(submit["result"]["runId"].as_str().unwrap()).unwrap();
 
     let db = Arc::new(DatabaseHandle::start(harness.database.clone()).await.unwrap());
-    let service = ApprovalService::new(db, harness.project_id, Arc::new(NoopApprovalCallback));
+    let (events_tx, _events_rx) = broadcast::channel(64);
+    let service = ApprovalService::new(db, harness.project_id, Arc::new(NoopApprovalCallback), events_tx);
     let approval_id = ApprovalId::new();
     service
         .request(ApprovalRequest {
@@ -388,7 +389,8 @@ async fn identical_repeat_decision_never_re_invokes_the_adapter_callback() {
     // counting callback, bypassing the RPC layer's own Noop-configured
     // service, to isolate the "no re-invocation" assertion.
     let db = Arc::new(DatabaseHandle::start(harness.database.clone()).await.unwrap());
-    let service = ApprovalService::new(db, harness.project_id, counting);
+    let (events_tx, _events_rx) = broadcast::channel(64);
+    let service = ApprovalService::new(db, harness.project_id, counting, events_tx);
     let first = service.decide(approval_id, "omp-owner", "approve", "ok").await.unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(matches!(first, batman_runtime::approval::DecideOutcome::Decided));

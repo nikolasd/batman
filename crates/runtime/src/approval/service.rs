@@ -7,11 +7,12 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use batman_protocol::{ApprovalId, ApprovalRequest, ProjectId, RunFlags, RunId, RunState};
+use batman_protocol::{ApprovalId, ApprovalRequest, EventEnvelope, ProjectId, RunFlags, RunId, RunState};
 use serde_json::Value;
+use tokio::sync::broadcast;
 
 use crate::db::DatabaseHandle;
-use crate::domain::{DomainError, DomainRepository};
+use crate::domain::{embed_envelope, take_envelope, DomainError, DomainRepository};
 
 /// A boxed future returned by [`ApprovalCallback::acknowledge`].
 pub type CallbackFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
@@ -82,6 +83,7 @@ pub struct ApprovalService {
     db: Arc<DatabaseHandle>,
     project_id: ProjectId,
     callback: Arc<dyn ApprovalCallback>,
+    events_tx: broadcast::Sender<EventEnvelope>,
 }
 
 impl ApprovalService {
@@ -90,11 +92,13 @@ impl ApprovalService {
         db: Arc<DatabaseHandle>,
         project_id: ProjectId,
         callback: Arc<dyn ApprovalCallback>,
+        events_tx: broadcast::Sender<EventEnvelope>,
     ) -> Self {
         Self {
             db,
             project_id,
             callback,
+            events_tx,
         }
     }
 
@@ -107,14 +111,16 @@ impl ApprovalService {
     /// not in `working` state.
     pub async fn request(&self, approval: ApprovalRequest) -> Result<(), ApprovalError> {
         let project_id = self.project_id;
-        self.db
+        let mut result = self
+            .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
                 repo.create_approval(&approval)
-                    .map(|c| serde_json::json!({ "sequence": c.sequence }))
+                    .map(|c| embed_envelope(serde_json::json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
             .map_err(ApprovalError::Domain)?;
+        self.broadcast(&mut result);
         Ok(())
     }
 
@@ -166,43 +172,58 @@ impl ApprovalService {
         let project_id = self.project_id;
         let decision_owned = decision.to_string();
         let reason_owned = reason.to_string();
-        self.db
+        let mut decide_result = self
+            .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
                 repo.decide_approval(approval_id, &decision_owned, &reason_owned)
-                    .map(|c| serde_json::json!({ "sequence": c.sequence }))
+                    .map(|c| embed_envelope(serde_json::json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
             .map_err(ApprovalError::Domain)?;
+        self.broadcast(&mut decide_result);
 
         match self.callback.acknowledge(approval_id, decision).await {
             Ok(()) => {
                 let run_id = snapshot.run_id;
                 let working = RunState::try_from("working").expect("working is valid");
-                self.db
+                let mut result = self
+                    .db
                     .run_domain_op(Box::new(move |conn| {
                         let mut repo = DomainRepository::new(conn, project_id);
                         repo.transition_run(run_id, &working)
-                            .map(|c| serde_json::json!({ "sequence": c.sequence }))
+                            .map(|c| embed_envelope(serde_json::json!({ "sequence": c.sequence }), &c.envelope))
                     }))
                     .await
                     .map_err(ApprovalError::Domain)?;
+                self.broadcast(&mut result);
                 Ok(DecideOutcome::Decided)
             }
             Err(_) => {
                 let run_id = snapshot.run_id;
                 let mut flags = snapshot.run_flags;
                 flags.protocol_unhealthy = true;
-                self.db
+                let mut result = self
+                    .db
                     .run_domain_op(Box::new(move |conn| {
                         let mut repo = DomainRepository::new(conn, project_id);
                         repo.set_run_flags(run_id, &flags)
-                            .map(|c| serde_json::json!({ "sequence": c.sequence }))
+                            .map(|c| embed_envelope(serde_json::json!({ "sequence": c.sequence }), &c.envelope))
                     }))
                     .await
                     .map_err(ApprovalError::Domain)?;
+                self.broadcast(&mut result);
                 Ok(DecideOutcome::DecidedCallbackFailed)
             }
+        }
+    }
+
+    /// Broadcasts the envelope embedded by a mutation's `run_domain_op`
+    /// closure to live subscribers, if present, then strips it so the
+    /// caller's JSON-RPC response never carries the internal key.
+    fn broadcast(&self, value: &mut Value) {
+        if let Some(envelope) = take_envelope(value) {
+            let _ = self.events_tx.send(envelope);
         }
     }
 

@@ -11,13 +11,14 @@ use std::sync::Arc;
 
 use batman_protocol::{
     ApprovalId, ApprovalRequest, BatmanMethod,
-    DeliveryState, MessageId, MessageKind, ProjectId, Run, RunFlags, RunId, RunMessage, RunSpec,
+    DeliveryState, EventEnvelope, MessageId, MessageKind, ProjectId, Run, RunFlags, RunId, RunMessage, RunSpec,
     RunState, TaskId, TaskRef, Timestamp, Worker, WorkerId, WorkerProfileRef, error_code,
 };
 use serde_json::{Value, json};
+use tokio::sync::broadcast;
 
 use crate::db::DatabaseHandle;
-use crate::domain::{DomainError, DomainRepository, TransitionError};
+use crate::domain::{embed_envelope, take_envelope, DomainError, DomainRepository, TransitionError};
 use crate::ipc::ClientPrincipal;
 
 use super::query;
@@ -92,6 +93,7 @@ pub struct OrchestrationService {
     project_id: ProjectId,
     run_driver: Option<Arc<dyn RunDriver>>,
     approval: Arc<crate::approval::ApprovalService>,
+    events_tx: broadcast::Sender<EventEnvelope>,
 }
 
 impl OrchestrationService {
@@ -101,17 +103,29 @@ impl OrchestrationService {
         project_id: ProjectId,
         run_driver: Option<Arc<dyn RunDriver>>,
         approval_callback: Arc<dyn crate::approval::ApprovalCallback>,
+        events_tx: broadcast::Sender<EventEnvelope>,
     ) -> Self {
         let approval = Arc::new(crate::approval::ApprovalService::new(
             db.clone(),
             project_id,
             approval_callback,
+            events_tx.clone(),
         ));
         Self {
             db,
             project_id,
             run_driver,
             approval,
+            events_tx,
+        }
+    }
+
+    /// Broadcasts the envelope embedded by a mutation's `run_domain_op`
+    /// closure to live subscribers, if present, then strips it so the
+    /// caller's JSON-RPC response never carries the internal key.
+    fn broadcast(&self, value: &mut Value) {
+        if let Some(envelope) = take_envelope(value) {
+            let _ = self.events_tx.send(envelope);
         }
     }
 
@@ -173,15 +187,16 @@ impl OrchestrationService {
             revision,
         };
         let project_id = self.project_id;
-        let sequence = self
+        let mut sequence = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
                 repo.upsert_task(task_id, &task_ref)
-                    .map(|c| json!({ "sequence": c.sequence }))
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
             .map_err(ServiceError::from)?;
+        self.broadcast(&mut sequence);
 
         Ok(json!({
             "taskId": task_id.to_string(),
@@ -230,15 +245,16 @@ impl OrchestrationService {
         };
 
         let project_id = self.project_id;
-        let sequence = self
+        let mut sequence = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
                 repo.create_worker(&worker)
-                    .map(|c| json!({ "sequence": c.sequence }))
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
             .map_err(ServiceError::from)?;
+        self.broadcast(&mut sequence);
 
         Ok(json!({
             "workerId": worker_id.to_string(),
@@ -287,15 +303,16 @@ impl OrchestrationService {
         };
 
         let project_id = self.project_id;
-        let submit_result = self
+        let mut submit_result = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
                 repo.submit_run(&run)
-                    .map(|c| json!({ "sequence": c.sequence }))
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
             .map_err(ServiceError::from)?;
+        self.broadcast(&mut submit_result);
 
         let Some(driver) = self.run_driver.clone() else {
             // The queued run is preserved; the caller learns the adapter
@@ -312,6 +329,7 @@ impl OrchestrationService {
             run_id,
             task_id,
             worker_id,
+            events_tx: self.events_tx.clone(),
         };
         // Orchestration-test-scope: awaited synchronously so the caller
         // observes the final committed state deterministically.
@@ -384,15 +402,16 @@ impl OrchestrationService {
             completed_at: None,
         };
         let project_id = self.project_id;
-        let sequence = self
+        let mut sequence = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
                 repo.submit_run(&run)
-                    .map(|c| json!({ "sequence": c.sequence }))
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
             .map_err(ServiceError::from)?;
+        self.broadcast(&mut sequence);
 
         Ok(json!({
             "runId": new_run_id.to_string(),
@@ -410,14 +429,17 @@ impl OrchestrationService {
         let run_id = parse_run_id(params.get("runId"))?;
         let project_id = self.project_id;
         let to = RunState::try_from("cancelled").expect("cancelled is valid");
-        self.db
+        let mut result = self
+            .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
                 repo.transition_run(run_id, &to)
-                    .map(|c| json!({ "sequence": c.sequence }))
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
-            .map_err(ServiceError::from)
+            .map_err(ServiceError::from)?;
+        self.broadcast(&mut result);
+        Ok(result)
     }
 
     // ---------------------------------------------------------- message
@@ -457,15 +479,16 @@ impl OrchestrationService {
             reply_to,
         };
         let project_id = self.project_id;
-        let sequence = self
+        let mut sequence = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
                 repo.record_message(&message)
-                    .map(|c| json!({ "sequence": c.sequence }))
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
             .map_err(ServiceError::from)?;
+        self.broadcast(&mut sequence);
 
         Ok(json!({
             "messageId": message_id.to_string(),
@@ -560,15 +583,16 @@ impl OrchestrationService {
 
         let new_owner = principal.instance_id.clone();
         let project_id = self.project_id;
-        let sequence = self
+        let mut sequence = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
                 repo.reconcile_ownership(task_id, &new_owner, revision)
-                    .map(|c| json!({ "sequence": c.sequence }))
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
             .map_err(ServiceError::from)?;
+        self.broadcast(&mut sequence);
 
         Ok(json!({
             "taskId": task_id.to_string(),
@@ -642,7 +666,8 @@ impl OrchestrationService {
                 let child_task_id = parse_task_id(params.get("childTaskId"))?;
                 let child_worker_id = parse_worker_id(params.get("childWorkerId"))?;
                 let child_run_id = parse_run_id(params.get("childRunId"))?;
-                self.db
+                let mut result = self
+                    .db
                     .run_domain_op(Box::new(move |conn| {
                         let mut repo = DomainRepository::new(conn, project_id);
                         repo.decide_child(
@@ -653,21 +678,26 @@ impl OrchestrationService {
                             Some(child_run_id),
                             None,
                         )
-                        .map(|c| json!({ "sequence": c.sequence }))
+                        .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
                     }))
                     .await
-                    .map_err(ServiceError::from)
+                    .map_err(ServiceError::from)?;
+                self.broadcast(&mut result);
+                Ok(result)
             }
             "deny" => {
                 let reason = str_field(params, "reason")?;
-                self.db
+                let mut result = self
+                    .db
                     .run_domain_op(Box::new(move |conn| {
                         let mut repo = DomainRepository::new(conn, project_id);
                         repo.decide_child(parent_run_id, false, None, None, None, Some(&reason))
-                            .map(|c| json!({ "sequence": c.sequence }))
+                            .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
                     }))
                     .await
-                    .map_err(ServiceError::from)
+                    .map_err(ServiceError::from)?;
+                self.broadcast(&mut result);
+                Ok(result)
             }
             other => Err(ServiceError::invalid_params(format!(
                 "decision must be \"accept\" or \"deny\", got {other:?}"

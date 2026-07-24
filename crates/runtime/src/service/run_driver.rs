@@ -9,10 +9,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use batman_protocol::{ProjectId, RunId, RunState, TaskId, WorkerId};
+use batman_protocol::{EventEnvelope, ProjectId, RunId, RunState, TaskId, WorkerId};
+use tokio::sync::broadcast;
 
 use crate::db::DatabaseHandle;
-use crate::domain::DomainRepository;
+use crate::domain::{take_envelope, DomainRepository};
 
 /// A boxed future returned by [`RunDriver::start`].
 pub type AdapterFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -26,6 +27,7 @@ pub struct RunDriverContext {
     pub run_id: RunId,
     pub task_id: TaskId,
     pub worker_id: WorkerId,
+    pub events_tx: broadcast::Sender<EventEnvelope>,
 }
 
 /// Seam for starting an adapter-backed run. The (later) adapter registry
@@ -56,13 +58,21 @@ async fn transition(ctx: &RunDriverContext, to: &str) -> Result<(), String> {
     let to_state = RunState::try_from(to).map_err(|e| e.to_string())?;
     let project_id = ctx.project_id;
     let run_id = ctx.run_id;
-    ctx.db
+    let mut result = ctx
+        .db
         .run_domain_op(Box::new(move |conn| {
             let mut repo = DomainRepository::new(conn, project_id);
-            repo.transition_run(run_id, &to_state)
-                .map(|committed| serde_json::json!({ "sequence": committed.sequence }))
+            repo.transition_run(run_id, &to_state).map(|committed| {
+                crate::domain::embed_envelope(
+                    serde_json::json!({ "sequence": committed.sequence }),
+                    &committed.envelope,
+                )
+            })
         }))
         .await
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if let Some(envelope) = take_envelope(&mut result) {
+        let _ = ctx.events_tx.send(envelope);
+    }
+    Ok(())
 }

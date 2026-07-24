@@ -9,5 +9,5 @@
 mod repository;
 mod transitions;
 
-pub use repository::{Committed, DomainError, DomainRepository};
+pub use repository::{embed_envelope, take_envelope, Committed, DomainError, DomainRepository};
 pub use transitions::{check_transition, TransitionError};

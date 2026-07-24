@@ -129,10 +129,12 @@ impl Server {
             project_id,
             config.run_driver.clone(),
             config.approval_callback.clone(),
+            events_tx.clone(),
         ));
         let coordination = Arc::new(crate::coordination::CoordinationBroker::new(
             db.clone(),
             project_id,
+            events_tx.clone(),
         ));
 
         let shared = Arc::new(Shared {

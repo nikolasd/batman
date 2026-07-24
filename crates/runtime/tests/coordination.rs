@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::UnixStream;
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 
 // ------------------------------------------------------------------ fakes
@@ -531,7 +531,8 @@ async fn sweep_unacknowledged_as_unknown_settles_recorded_and_sent_messages() {
     // Simulate crash recovery: a fresh broker over the same database sweeps
     // every non-terminal delivery state to `unknown`, never resending.
     let db = Arc::new(DatabaseHandle::start(harness.database.clone()).await.unwrap());
-    let broker = CoordinationBroker::new(db, ProjectId::new());
+    let (events_tx, _events_rx) = broadcast::channel(64);
+    let broker = CoordinationBroker::new(db, ProjectId::new(), events_tx);
     let swept = broker.sweep_unacknowledged_as_unknown().await.unwrap();
     assert_eq!(swept, 1);
 

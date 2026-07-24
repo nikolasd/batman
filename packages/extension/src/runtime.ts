@@ -271,14 +271,20 @@ function selectBinary(
   );
 }
 
-/** Builds Display-role initialize params for a launcher connection. */
+/**
+ * Builds ompExtension-role initialize params. This is the extension's own
+ * connection to its repository-scoped daemon -- the same client is shared
+ * by every orchestration tool and the embedded monitor, so it must carry
+ * the write-capable `ompExtension` role rather than the read-only
+ * `display` role a separate, external viewer would use.
+ */
 function initParams(repository: string): InitializeParams {
   const canonical = realpathSync(repository);
   return {
     client: { name: "@satori/batman", version: "0.1.0" },
     supported: { min: { major: 1, minor: 0 }, max: { major: 1, minor: 0 } },
     repository: { canonicalPath: canonical, vcsRoot: canonical },
-    auth: { role: "display", instanceId: "ensure-runtime" },
+    auth: { role: "ompExtension", instanceId: "batman-extension", agentDirectory: canonical },
     capabilities: { eventReplay: false, maxFrameBytes: CONNECT_MAX_FRAME_BYTES },
     lastSequence: null,
   } as InitializeParams;
