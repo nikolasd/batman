@@ -21,11 +21,19 @@
 //!   switch, e.g. `case "prompt": { const H = await kI1(A, E.message,
 //!   E.streamingBehavior) ... }`, `case "steer": { await A.steer(E.message,
 //!   ...) }`, `case "follow_up": { await A.followUp(E.message, ...) }`,
-//!   `case "set_model": { ... E.provider ... E.modelId ... }`, and `case
-//!   "set_subagent_subscription": { ... uNw(E.level) ...
-//!   z.setSubscriptionLevel(E.level) ... }` -- confirming the real
-//!   parameter names are `message`, `provider`/`modelId`, and `level`
-//!   respectively, not the plan text's unqualified prose.
+//!   `case "set_model": { ... E.provider ... E.modelId ... }`,
+//!   `case "set_subagent_subscription": { ... uNw(E.level) ...
+//!   z.setSubscriptionLevel(E.level) ... }`, `case "set_host_tools": {
+//!   const H = fNw(E.tools); ... return u(m, "set_host_tools", {
+//!   toolNames: H.map((T) => T.name) }) }` (where `fNw` requires each
+//!   tool to carry a non-empty `name`/`description` and a JSON-Schema
+//!   object `parameters`), and `case "set_host_uri_schemes": { ...
+//!   W.setSchemes(E.schemes) ... return u(m, "set_host_uri_schemes", {
+//!   schemes: H }) }` (where each scheme entry is `{scheme, description?,
+//!   writable?, immutable?}`, `scheme` matching `^[a-z][a-z0-9+.-]*$`) --
+//!   confirming the real parameter names are `message`, `provider`/
+//!   `modelId`, `level`, `tools`, and `schemes` respectively, not the
+//!   plan text's unqualified prose.
 //!
 //! Real, unsolicited event frames (e.g. `extension_ui_request`,
 //! `available_commands_update`) can arrive interleaved with a pending
@@ -332,14 +340,106 @@ pub fn set_subagent_subscription_command(level: &str) -> Map<String, Value> {
     params
 }
 
+/// One host tool definition registered with OMP so the vendor's own
+/// model can invoke it without a second MCP subprocess, preserving
+/// identical schemas/authorization (plan Task 6 Interfaces: "host
+/// tools"). Grounded against the installed binary's own `fNw`
+/// tool-normalization function: `name`/`description` must be non-empty,
+/// `parameters` must be a JSON Schema object (never an array); `label`
+/// defaults to `name` and `hidden` defaults to `false` when omitted.
+#[derive(Debug, Clone)]
+pub struct HostToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: Value,
+    pub label: Option<String>,
+    pub hidden: bool,
+}
+
+impl HostToolDefinition {
+    fn to_wire(&self) -> Value {
+        let mut tool = Map::new();
+        tool.insert("name".to_string(), Value::String(self.name.clone()));
+        tool.insert(
+            "description".to_string(),
+            Value::String(self.description.clone()),
+        );
+        tool.insert("parameters".to_string(), self.parameters.clone());
+        if let Some(label) = &self.label {
+            tool.insert("label".to_string(), Value::String(label.clone()));
+        }
+        tool.insert("hidden".to_string(), Value::Bool(self.hidden));
+        Value::Object(tool)
+    }
+}
+
+/// `case "set_host_tools": { const H = fNw(E.tools); const D =
+/// h.setTools(H); await A.refreshRpcHostTools(D); return u(m,
+/// "set_host_tools", { toolNames: H.map((T) => T.name) }) }`.
+#[must_use]
+pub fn set_host_tools_command(tools: &[HostToolDefinition]) -> Map<String, Value> {
+    let mut params = Map::new();
+    params.insert(
+        "tools".to_string(),
+        Value::Array(tools.iter().map(HostToolDefinition::to_wire).collect()),
+    );
+    params
+}
+
+/// One host URI scheme registered so `read`'s internal-URI resolution
+/// recognizes it (plan Task 6 Interfaces: "host URI schemes"). Grounded
+/// against the installed binary's own `setSchemes`: `scheme` must match
+/// `^[a-z][a-z0-9+.-]*$` (lowercased); `description`/`writable`/
+/// `immutable` are optional and default to unset/`false`.
+#[derive(Debug, Clone)]
+pub struct HostUriScheme {
+    pub scheme: String,
+    pub description: Option<String>,
+    pub writable: bool,
+    pub immutable: bool,
+}
+
+impl HostUriScheme {
+    fn to_wire(&self) -> Value {
+        let mut scheme = Map::new();
+        scheme.insert("scheme".to_string(), Value::String(self.scheme.clone()));
+        if let Some(description) = &self.description {
+            scheme.insert(
+                "description".to_string(),
+                Value::String(description.clone()),
+            );
+        }
+        scheme.insert("writable".to_string(), Value::Bool(self.writable));
+        scheme.insert("immutable".to_string(), Value::Bool(self.immutable));
+        Value::Object(scheme)
+    }
+}
+
+/// `case "set_host_uri_schemes": { try { const H = W.setSchemes(E.schemes);
+/// return u(m, "set_host_uri_schemes", { schemes: H }) } catch (H) { ... }
+/// }`.
+#[must_use]
+pub fn set_host_uri_schemes_command(schemes: &[HostUriScheme]) -> Map<String, Value> {
+    let mut params = Map::new();
+    params.insert(
+        "schemes".to_string(),
+        Value::Array(schemes.iter().map(HostUriScheme::to_wire).collect()),
+    );
+    params
+}
+
 /// The ordered list of `(command, params)` pairs [`super::OmpRpcAdapter`]
-/// sends to start one run: `set_subagent_subscription` first, but only
-/// when `subscribe_subagents` is true (nested visibility was requested),
-/// then `prompt` -- proving subagent subscription is established before
-/// work begins without depending on a live process.
+/// sends to start one run, all established before work begins:
+/// `set_subagent_subscription` (only if `subscribe_subagents` is true),
+/// then `set_host_tools` (only if `host_tools` is non-empty), then
+/// `set_host_uri_schemes` (only if `host_uri_schemes` is non-empty), and
+/// finally `prompt` -- proving every startup command precedes the prompt
+/// without depending on a live process.
 #[must_use]
 pub fn build_startup_commands(
     subscribe_subagents: bool,
+    host_tools: &[HostToolDefinition],
+    host_uri_schemes: &[HostUriScheme],
     prompt: &str,
 ) -> Vec<(String, Map<String, Value>)> {
     let mut commands = Vec::new();
@@ -347,6 +447,18 @@ pub fn build_startup_commands(
         commands.push((
             "set_subagent_subscription".to_string(),
             set_subagent_subscription_command("full"),
+        ));
+    }
+    if !host_tools.is_empty() {
+        commands.push((
+            "set_host_tools".to_string(),
+            set_host_tools_command(host_tools),
+        ));
+    }
+    if !host_uri_schemes.is_empty() {
+        commands.push((
+            "set_host_uri_schemes".to_string(),
+            set_host_uri_schemes_command(host_uri_schemes),
         ));
     }
     commands.push(("prompt".to_string(), prompt_command(prompt)));

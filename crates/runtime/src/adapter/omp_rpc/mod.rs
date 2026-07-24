@@ -48,13 +48,24 @@ use batman_runtime::supervisor::{EnvironmentPolicy, SpawnSpec, Supervisor};
 /// supersede that same file's own doc comment inviting additive fields),
 /// so nested-visibility opt-in is threaded through this adapter's own
 /// construction instead of a new `WorkerProfile` field.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct OmpRpcAdapterOptions {
     /// Whether to establish a subagent subscription (`set_subagent_
     /// subscription`) before sending the initial prompt, so vendor-spawned
     /// subagents are observable via `NestedWorkerObserved` even though
     /// this adapter always declares `nested: none`.
     pub subscribe_subagents: bool,
+    /// Host tools to register via `set_host_tools` before the prompt is
+    /// sent (plan Task 6 Interfaces: "host tools"). The frozen
+    /// `OmpRpcStartupOptions.host_tools: Option<Vec<String>>` only carries
+    /// tool *names*, but the real `set_host_tools` command requires each
+    /// tool's full description and JSON-Schema `parameters` -- those come
+    /// from the runtime's coordination-MCP tool registry, not from
+    /// `WorkerProfile`, hence this adapter-owned field.
+    pub host_tools: Vec<client::HostToolDefinition>,
+    /// Host URI schemes to register via `set_host_uri_schemes` before the
+    /// prompt is sent (plan Task 6 Interfaces: "host URI schemes").
+    pub host_uri_schemes: Vec<client::HostUriScheme>,
 }
 
 enum Inner {
@@ -338,9 +349,12 @@ impl Adapter for OmpRpcAdapter {
             let mut rpc_client = OmpRpcClient::new(process);
             rpc_client.wait_for_ready().await?;
 
-            for (command, params) in
-                client::build_startup_commands(self.options.subscribe_subagents, &spec.prompt)
-            {
+            for (command, params) in client::build_startup_commands(
+                self.options.subscribe_subagents,
+                &self.options.host_tools,
+                &self.options.host_uri_schemes,
+                &spec.prompt,
+            ) {
                 let id = rpc_client.send_command(&command, params).await?;
                 let response = rpc_client.read_response(&id).await?;
                 let frame = serde_json::json!({
