@@ -1,0 +1,2 @@
+{"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{"sessionId":"sess-1","toolCall":{"toolCallId":"call-2","title":"Apply patch to adapter.rs","kind":"edit"},"options":[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"reject-once","name":"Reject","kind":"reject_once"}]}}
+{"jsonrpc":"2.0","id":42,"result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}}
