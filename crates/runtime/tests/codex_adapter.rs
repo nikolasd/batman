@@ -480,3 +480,60 @@ fn spawn_spec_with_mcp_config_leaves_native_discovery_flags_untouched() {
         );
     }
 }
+
+// --------------------------------------------------------------- Task 8 (conformance)
+
+#[tokio::test]
+async fn fixture_conformance_report_covers_every_canonical_scenario_exactly_once() {
+    use batman_runtime::conformance::scenario;
+    use std::collections::HashSet;
+
+    let report = batman_runtime::adapter::codex::conformance::fixture_report().await;
+    assert_eq!(report.scenarios.len(), 14);
+    let mut seen = HashSet::new();
+    for result in &report.scenarios {
+        assert!(
+            scenario::ALL.contains(&result.name),
+            "unexpected scenario name: {}",
+            result.name
+        );
+        assert!(
+            seen.insert(result.name),
+            "duplicate scenario name: {}",
+            result.name
+        );
+    }
+    for name in scenario::ALL {
+        assert!(seen.contains(name), "missing scenario: {name}");
+    }
+
+    // Every scenario genuinely provable without a model call must pass;
+    // FOLLOW_UP/CANCELLATION_SCOPE/SESSION_RESUME/RUNTIME_RESTART are the
+    // legitimate exceptions -- codex only persists a thread's resumable
+    // rollout once a turn actually runs, and turn/start is what invokes
+    // the model, so none of these four are provable here; each is
+    // honestly reported `passed: false` (proven instead under
+    // live_report, gated on BATMAN_LIVE_CODEX=1).
+    let requires_live_turn = [
+        scenario::FOLLOW_UP,
+        scenario::CANCELLATION_SCOPE,
+        scenario::SESSION_RESUME,
+        scenario::RUNTIME_RESTART,
+    ];
+    for result in &report.scenarios {
+        if requires_live_turn.contains(&result.name) {
+            assert!(
+                !result.passed,
+                "{} is not provable without a model call in fixture_report; it must be an \
+                 honest passed: false, not a fabricated pass",
+                result.name
+            );
+            continue;
+        }
+        assert!(
+            result.passed,
+            "expected scenario {} to pass, got: {}",
+            result.name, result.detail
+        );
+    }
+}
