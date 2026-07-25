@@ -67,7 +67,7 @@ impl LeaseService {
         &self,
         run_id: RunId,
         mode: LeaseMode,
-        _requested_isolation: Option<IsolationKind>,
+        requested_isolation: Option<IsolationKind>,
     ) -> Result<CreatedLease, LeaseError> {
         let conn = rusqlite::Connection::open(&self.db_path).map_err(|e| LeaseError::Db(e.to_string()))?;
 
@@ -127,7 +127,7 @@ impl LeaseService {
             run_id,
             mode,
             path: ws_path,
-            isolation_kind: IsolationKind::Shared,
+            isolation_kind: requested_isolation.unwrap_or(IsolationKind::Shared),
             base_revision: "HEAD".to_string(),
             state: WorkspaceState::Active,
             acquisition_sequence: 1,
