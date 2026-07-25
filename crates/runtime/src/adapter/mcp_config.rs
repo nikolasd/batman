@@ -26,9 +26,12 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use batman_protocol::RunId;
+use batman_protocol::{ProjectId, RunId, TaskId, Timestamp, WorkerId};
 use serde_json::{Value, json};
+
+use crate::coordination::{BindError, ScopeBinding, ScopeTokenStore, VendorProcessIdentity};
 
 /// Everything a supervised vendor process's command builder needs to
 /// wire up the coordination MCP server: where the verified `batcave`
@@ -40,6 +43,98 @@ pub struct McpLaunchContext {
     pub state_dir: PathBuf,
     pub repository: PathBuf,
     pub run_id: RunId,
+}
+
+/// Everything an adapter needs to mint a worker-MCP scope token and
+/// inject the coordination MCP server into its supervised vendor
+/// process's launch, bundled once per adapter instance rather than
+/// threaded through every method individually. An adapter holds this
+/// as `Option<AdapterMcpConfig>` -- `None` for a caller (chiefly
+/// existing tests) that never asked for worker MCP tools at all; every
+/// existing constructor keeps working unchanged.
+#[derive(Clone)]
+pub struct AdapterMcpConfig {
+    pub scope_tokens: Arc<ScopeTokenStore>,
+    pub project_id: ProjectId,
+    pub batcave_path: PathBuf,
+    pub state_dir: PathBuf,
+    pub repository: PathBuf,
+}
+
+impl AdapterMcpConfig {
+    /// The launch context for one run, for
+    /// [`coordination_mcp_argv`]/[`coordination_mcp_config_document`]/
+    /// [`codex_mcp_overrides`].
+    #[must_use]
+    pub fn launch_context(&self, run_id: RunId) -> McpLaunchContext {
+        McpLaunchContext {
+            batcave_path: self.batcave_path.clone(),
+            state_dir: self.state_dir.clone(),
+            repository: self.repository.clone(),
+            run_id,
+        }
+    }
+
+    /// Step 1 of 2: reserves a bearer token, safe to put in the vendor
+    /// process's own environment (via [`coordination_mcp_env`]) *before*
+    /// spawning it -- [`Self::activate`] is what actually makes it live.
+    #[must_use]
+    pub fn reserve(&self) -> String {
+        self.scope_tokens.reserve_token()
+    }
+
+    /// Step 2 of 2: activates a token [`Self::reserve`] returned, once
+    /// (and only once) the vendor process has actually spawned and its
+    /// real pid is known. Call this immediately after spawn returns,
+    /// before any interaction with the process.
+    ///
+    /// # Errors
+    /// Returns [`BindError`] if `token` is already bound (should never
+    /// happen for a freshly reserved token; treat any `Err` here as
+    /// fatal). **The caller must terminate the just-spawned vendor
+    /// process and report an error rather than proceed** -- a vendor
+    /// process running with a token that never activated has no way to
+    /// authenticate its own coordination MCP subprocess, and letting it
+    /// keep running would leave that failure silent until the vendor
+    /// itself tries to use a worker tool.
+    pub fn activate(
+        &self,
+        token: String,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        vendor_pid: i32,
+        expires_at: Timestamp,
+    ) -> Result<(), BindError> {
+        self.scope_tokens.bind(
+            token,
+            ScopeBinding {
+                project_id: self.project_id,
+                task_id,
+                worker_id,
+                run_id,
+                vendor_process: VendorProcessIdentity { pid: vendor_pid },
+                expires_at,
+            },
+        )
+    }
+
+    /// A sensible default expiry for [`Self::activate`]: 24 hours from
+    /// now. Generous relative to any single run's expected lifetime,
+    /// but never unbounded -- the real defense against a vendor process
+    /// that outlives its usefulness is prompt [`ScopeTokenStore::revoke_for_run`]
+    /// on observed vendor exit (see `crate::coordination::scope_token`'s
+    /// module doc), not this expiry.
+    #[must_use]
+    pub fn default_expiry() -> Timestamp {
+        let later = time::OffsetDateTime::now_utc() + time::Duration::hours(24);
+        Timestamp::parse(
+            &later
+                .format(&time::format_description::well_known::Rfc3339)
+                .expect("formatting a computed UTC time as RFC 3339 cannot fail"),
+        )
+        .expect("a freshly formatted RFC 3339 string always parses")
+    }
 }
 
 /// The `coordination-mcp` subcommand argv, as separate arguments --
@@ -162,6 +257,16 @@ mod tests {
         }
     }
 
+    fn adapter_mcp_config() -> AdapterMcpConfig {
+        AdapterMcpConfig {
+            scope_tokens: Arc::new(ScopeTokenStore::new()),
+            project_id: ProjectId::new(),
+            batcave_path: PathBuf::from("/opt/batman/bin/batcave"),
+            state_dir: PathBuf::from("/tmp/batman-state"),
+            repository: PathBuf::from("/tmp/my-repo"),
+        }
+    }
+
     #[test]
     fn argv_is_separate_arguments_never_shell_joined() {
         let context = context();
@@ -256,5 +361,88 @@ mod tests {
         // every byte from here on is a printable TOML basic-string body.
         assert!(!overrides[1].contains('\n'));
         assert!(!overrides[1].contains('\t'));
+    }
+
+    #[test]
+    fn reserve_then_activate_makes_the_token_verifiable() {
+        let config = adapter_mcp_config();
+        let run_id = RunId::new();
+        let task_id = TaskId::new();
+        let worker_id = WorkerId::new();
+
+        let token = config.reserve();
+        // Not yet live: this is exactly the pre-spawn window a real
+        // vendor process's env carries the reserved token through.
+        assert!(
+            config
+                .scope_tokens
+                .verify(&token, Some(std::process::id() as i32))
+                .is_err()
+        );
+
+        let vendor_pid = std::process::id() as i32;
+        config
+            .activate(
+                token.clone(),
+                run_id,
+                task_id,
+                worker_id,
+                vendor_pid,
+                AdapterMcpConfig::default_expiry(),
+            )
+            .expect("activating a freshly reserved token succeeds");
+
+        let scoped = config
+            .scope_tokens
+            .verify(&token, Some(vendor_pid))
+            .expect("now live and verifiable");
+        assert_eq!(scoped.run_id, run_id);
+        assert_eq!(scoped.task_id, task_id);
+        assert_eq!(scoped.worker_id, worker_id);
+    }
+
+    #[test]
+    fn activating_an_already_bound_token_fails_so_the_caller_can_kill_the_vendor() {
+        let config = adapter_mcp_config();
+        let token = config.reserve();
+        config
+            .activate(
+                token.clone(),
+                RunId::new(),
+                TaskId::new(),
+                WorkerId::new(),
+                std::process::id() as i32,
+                AdapterMcpConfig::default_expiry(),
+            )
+            .unwrap();
+
+        let err = config.activate(
+            token,
+            RunId::new(),
+            TaskId::new(),
+            WorkerId::new(),
+            std::process::id() as i32,
+            AdapterMcpConfig::default_expiry(),
+        );
+        assert!(
+            err.is_err(),
+            "re-activating a live token must never succeed"
+        );
+    }
+
+    #[test]
+    fn launch_context_carries_the_adapter_configs_paths_for_one_run() {
+        let config = adapter_mcp_config();
+        let run_id = RunId::new();
+        let context = config.launch_context(run_id);
+        assert_eq!(context.batcave_path, config.batcave_path);
+        assert_eq!(context.state_dir, config.state_dir);
+        assert_eq!(context.repository, config.repository);
+        assert_eq!(context.run_id, run_id);
+    }
+
+    #[test]
+    fn default_expiry_is_in_the_future() {
+        assert!(AdapterMcpConfig::default_expiry() > Timestamp::now());
     }
 }
