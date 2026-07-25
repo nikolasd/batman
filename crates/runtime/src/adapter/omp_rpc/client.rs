@@ -40,6 +40,21 @@
 //! response; [`OmpRpcClient::read_response`] queues anything that is not
 //! the awaited response into `pending_events` rather than discarding it,
 //! and a malformed (non-JSON) stdout line is always skipped, never fatal.
+//!
+//! `set_host_tools`' *invocation* callback (as opposed to registration,
+//! which is the ordinary command/response above) is a separate,
+//! unsolicited frame pair read directly out of the installed binary's own
+//! bundled `packages/coding-agent/src/modes/rpc/host-tools.ts` (via
+//! `strings` on the compiled binary -- this file ships enough of its own
+//! original source, not just minified identifiers, to read directly):
+//! `{"type":"host_tool_call","id":<string>,"toolCallId":<string>,
+//! "toolName":<string>,"arguments":<object>}` on stdout, answered with
+//! `{"type":"host_tool_result","id":<same id>,"result":{"content":[...],
+//! "details":{}},"isError":true}` on failure or
+//! `{"type":"host_tool_result","id":<same id>,"result":{"content":[...]}}`
+//! (no `isError` key at all) on success, written to stdin. See
+//! `super::run_pump`'s interception of this frame *before*
+//! `normalize::normalize_frame` ever sees it.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -145,6 +160,32 @@ impl OmpRpcClient {
                 )
             })?;
         Ok(id)
+    }
+
+    /// Writes an arbitrary already-shaped frame verbatim (one JSON value
+    /// per line) -- for a reply this client did not itself originate an
+    /// id for, e.g. a `host_tool_result`/`host_tool_update` frame
+    /// echoing back the `id` a `host_tool_call` the vendor sent arrived
+    /// with (see the module doc's `host_tool_call`/`host_tool_result`
+    /// wire shapes, empirically grounded against the installed binary's
+    /// own bundled source).
+    ///
+    /// # Errors
+    /// Returns [`AdapterError::process`] if the write fails (e.g. stdin
+    /// already closed).
+    pub async fn write_frame(&mut self, value: &Value) -> Result<(), AdapterError> {
+        let mut line = value.to_string();
+        line.push('\n');
+        self.process
+            .write_stdin(line.as_bytes())
+            .await
+            .map_err(|e| {
+                AdapterError::process(
+                    "ompRpc",
+                    "writeFrame",
+                    format!("failed to write frame: {e}"),
+                )
+            })
     }
 
     /// Reads frames until the `{"type":"response","id":<id>,...}` frame

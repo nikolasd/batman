@@ -14,7 +14,18 @@
 //!   design spec documents).
 //! - `omp-rpc`: emits the `{"type":"ready"}` handshake frame before
 //!   reading anything, then distinguishes prompt acknowledgement from
-//!   prompt completion.
+//!   prompt completion. Predates `batman-runtime`'s real OMP-RPC
+//!   wire-shape grounding and intentionally does not match it -- kept
+//!   only for whatever already depends on its own invented shape.
+//! - `omp-rpc-host-tool`: the real, grounded OMP-RPC wire shape (see
+//!   `batman_runtime::adapter::omp_rpc::client`'s module doc): a
+//!   `{"type":"ready",...}` handshake, `{"type":"response","id",
+//!   "command","success","data"}` for every command except `prompt`,
+//!   and for `prompt` specifically, a `{"type":"host_tool_call",...}`
+//!   frame written *before* that response, whose `host_tool_result`
+//!   reply must arrive before the prompt's own response is ever sent --
+//!   reproducing the real vendor's `await kI1(...)`-before-responding
+//!   ordering this crate's host-tool bridge must never deadlock against.
 //! - `flood`: writes one stdout line far larger than any adapter's
 //!   bounded frame limit, then floods stderr well past any rotating
 //!   capture cap, to prove both bounds hold. Self-terminates after a
@@ -33,6 +44,19 @@ use clap::Parser;
 struct Args {
     #[arg(long)]
     mode: Mode,
+    // Accepted and ignored: `OmpRpcAdapter::start`'s own argv (real
+    // `omp` CLI shape) is what a test redirects at this binary via
+    // `OmpRpcAdapter::with_binary`, and that argv always includes these
+    // -- this fixture has no use for their values, only for not
+    // rejecting the request outright because of them.
+    #[arg(long)]
+    model: Option<String>,
+    #[arg(long)]
+    allow_home: bool,
+    #[arg(long)]
+    resume: Option<String>,
+    #[arg(long)]
+    profile: Option<String>,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -41,6 +65,12 @@ enum Mode {
     Jsonrpc,
     Acp,
     OmpRpc,
+    /// Aliased to `rpc` so `OmpRpcAdapter::start`'s literal
+    /// `--mode rpc` argv (it always says `rpc`, the real omp binary's
+    /// own mode name, never `omp-rpc-host-tool`) reaches this variant
+    /// when a test redirects the adapter at this binary.
+    #[value(alias = "rpc")]
+    OmpRpcHostTool,
     Flood,
     IgnoreTerm,
     CrashAfterAck,
@@ -59,6 +89,7 @@ fn main() {
         Mode::Jsonrpc => run_jsonrpc(),
         Mode::Acp => run_acp(),
         Mode::OmpRpc => run_omp_rpc(),
+        Mode::OmpRpcHostTool => run_omp_rpc_host_tool(),
         Mode::Flood => run_flood(),
         Mode::IgnoreTerm => run_ignore_term(),
         Mode::CrashAfterAck => run_crash_after_ack(),
@@ -203,6 +234,87 @@ fn run_omp_rpc() {
                     &serde_json::json!({ "type": "result", "id": id, "data": { "command": other } }),
                 );
             }
+        }
+    }
+}
+
+/// The real, grounded OMP-RPC wire shape. Requests carry `type` as the
+/// command name directly (`{"type":"prompt","id":..,"message":..}`), not
+/// under a `command` field -- unlike `run_omp_rpc` above, this mirrors
+/// `client.rs::send_command`'s actual frame shape.
+fn run_omp_rpc_host_tool() {
+    let mut stdout = std::io::stdout();
+    write_line(&mut stdout, &serde_json::json!({ "type": "ready" }));
+
+    let stdin = std::io::stdin();
+    let mut lines = stdin.lock().lines();
+    while let Some(Ok(line)) = lines.next() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let id = request
+            .get("id")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let command = request.get("type").and_then(|c| c.as_str()).unwrap_or("");
+        if command == "prompt" {
+            // The real vendor awaits the *entire* model turn -- including
+            // any host tool call it makes -- before ever responding to
+            // this command. Reproduce exactly that: write the call, then
+            // block reading stdin until its reply arrives, before this
+            // command's own response is sent.
+            write_line(
+                &mut stdout,
+                &serde_json::json!({
+                    "type": "host_tool_call",
+                    "id": "htc-1",
+                    "toolCallId": "tc-1",
+                    "toolName": "batman_task",
+                    "arguments": {},
+                }),
+            );
+            loop {
+                let Some(Ok(reply_line)) = lines.next() else {
+                    return;
+                };
+                if reply_line.trim().is_empty() {
+                    continue;
+                }
+                let Ok(reply) = serde_json::from_str::<serde_json::Value>(&reply_line) else {
+                    continue;
+                };
+                if reply.get("type").and_then(|t| t.as_str()) == Some("host_tool_result")
+                    && reply.get("id").and_then(|i| i.as_str()) == Some("htc-1")
+                {
+                    break;
+                }
+            }
+            write_line(
+                &mut stdout,
+                &serde_json::json!({
+                    "type": "response",
+                    "id": id,
+                    "command": "prompt",
+                    "success": true,
+                    "data": { "agentInvoked": false },
+                    "error": null,
+                }),
+            );
+        } else {
+            write_line(
+                &mut stdout,
+                &serde_json::json!({
+                    "type": "response",
+                    "id": id,
+                    "command": command,
+                    "success": true,
+                    "data": {},
+                    "error": null,
+                }),
+            );
         }
     }
 }

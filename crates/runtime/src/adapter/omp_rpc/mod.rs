@@ -39,6 +39,8 @@ use batman_runtime::adapter::{
     ProtocolKind, ResumeCapability, StartSpec, StartupOptions, SteeringCapability, UsageCapability,
     VendorSessionRef, WorkerProfile, WorkspaceControlCapability,
 };
+use batman_runtime::coordination::mcp_protocol::BoundScope;
+use batman_runtime::coordination::{CoordinationBroker, mcp_protocol};
 use batman_runtime::supervisor::{EnvironmentPolicy, SpawnSpec, Supervisor};
 
 /// Adapter-owned startup toggles this milestone's frozen
@@ -129,20 +131,152 @@ fn record_shared_state(shared: &SharedRunState, payload: &AdapterEventPayload) {
     }
 }
 
+/// The coordination-MCP tool registry's tools, converted into the wire
+/// shape `set_host_tools` requires (plan Task 6 Interfaces: "host
+/// tools"). Kept next to [`handle_host_tool_call`] -- the two must never
+/// drift: whatever is registered here must be exactly what that function
+/// can answer.
+fn coordination_host_tool_definitions() -> Vec<client::HostToolDefinition> {
+    mcp_protocol::tool_specs()
+        .into_iter()
+        .map(|spec| client::HostToolDefinition {
+            name: spec.name.to_string(),
+            description: spec.description.to_string(),
+            parameters: spec.input_schema,
+            label: None,
+            hidden: false,
+        })
+        .collect()
+}
+
+/// Translates [`mcp_protocol::tool_result_from_success`]/
+/// [`mcp_protocol::tool_result_from_error`]'s MCP `tools/call` result
+/// shape (`{"content", "structuredContent"?, "isError"}`, all inside one
+/// object) into OMP's own, differently-shaped `host_tool_result` wire
+/// convention (`isError` a *sibling* of `result`, not nested inside it;
+/// `result` itself carrying only `content` on success, or `content`
+/// plus an empty `details` object on failure) -- see `client.rs`'s
+/// module doc for exactly where that shape was read out of the
+/// installed binary's own bundled source. Pure and synchronous so the
+/// exact wire shape is unit-testable without a broker or a process.
+fn mcp_result_to_host_tool_result_frame(id: &str, mcp_result: &Value) -> Value {
+    let content = mcp_result
+        .get("content")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    if mcp_result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        serde_json::json!({
+            "type": "host_tool_result",
+            "id": id,
+            "result": { "content": content, "details": {} },
+            "isError": true,
+        })
+    } else {
+        serde_json::json!({
+            "type": "host_tool_result",
+            "id": id,
+            "result": { "content": content },
+        })
+    }
+}
+
+/// Answers one `host_tool_call` frame in-process against `broker`,
+/// returning the `host_tool_result` frame to write back verbatim, or
+/// `None` if `frame` is not a `host_tool_call` at all (the ordinary
+/// case, when the caller should fall through to
+/// [`normalize::normalize_frame`] instead).
+async fn handle_host_tool_call(
+    frame: &Value,
+    broker: Option<&CoordinationBroker>,
+    scope: BoundScope,
+) -> Option<Value> {
+    if frame.get("type").and_then(Value::as_str) != Some("host_tool_call") {
+        return None;
+    }
+    let id = frame.get("id").and_then(Value::as_str).unwrap_or_default();
+    let tool_name = frame
+        .get("toolName")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let arguments = frame
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mcp_result = match broker {
+        Some(broker) => broker.execute_tool_call(tool_name, &arguments, scope).await,
+        None => mcp_protocol::tool_result_from_error(
+            "this worker was not started with worker-coordination tools available",
+        ),
+    };
+    Some(mcp_result_to_host_tool_result_frame(id, &mcp_result))
+}
+
 /// The `omp --mode rpc` / local-model worker adapter.
 pub struct OmpRpcAdapter {
+    omp_bin: String,
     profile: WorkerProfile,
     options: OmpRpcAdapterOptions,
+    broker: Option<Arc<CoordinationBroker>>,
     inner: AsyncMutex<Inner>,
 }
 
 impl OmpRpcAdapter {
+    /// `broker` is `Some` to give this adapter's supervised `omp`
+    /// process access to the worker coordination tools via `set_host_tools`
+    /// -- OMP-RPC has no separate MCP subprocess of its own to inject a
+    /// scope-token-authenticated socket connection into (see
+    /// `batman_runtime::adapter::mcp_config`'s module doc for why), so
+    /// this adapter fulfills `host_tool_call` frames directly, in-process,
+    /// against `broker` (see `run_pump`'s interception of that frame,
+    /// before `normalize::normalize_frame` ever sees it). When `Some`,
+    /// [`Self::new`] appends the [`crate::coordination::mcp_protocol`]
+    /// tool registry's definitions to `options.host_tools`, first
+    /// dropping any caller-supplied entry whose `name` collides with one
+    /// -- registration and invocation-handling can never drift out of
+    /// sync with each other since both derive from this one input, and a
+    /// name collision can never silently register two tools OMP would
+    /// dispatch ambiguously between.
     #[must_use]
-    pub fn new(profile: WorkerProfile, options: OmpRpcAdapterOptions) -> Self {
+    pub fn new(
+        profile: WorkerProfile,
+        mut options: OmpRpcAdapterOptions,
+        broker: Option<Arc<CoordinationBroker>>,
+    ) -> Self {
+        if broker.is_some() {
+            let coordination_tools = coordination_host_tool_definitions();
+            let coordination_names: std::collections::HashSet<&str> =
+                coordination_tools.iter().map(|t| t.name.as_str()).collect();
+            options
+                .host_tools
+                .retain(|t| !coordination_names.contains(t.name.as_str()));
+            options.host_tools.extend(coordination_tools);
+        }
         Self {
+            omp_bin: "omp".to_string(),
             profile,
             options,
+            broker,
             inner: AsyncMutex::new(Inner::Idle),
+        }
+    }
+
+    /// As [`Self::new`], but resolves `omp` from `omp_bin` instead of a
+    /// bare `PATH` lookup (used by tests to pin an exact binary, e.g. a
+    /// `fake-worker --mode omp-rpc-host-tool` stand-in).
+    #[must_use]
+    pub fn with_binary(
+        omp_bin: impl Into<String>,
+        profile: WorkerProfile,
+        options: OmpRpcAdapterOptions,
+        broker: Option<Arc<CoordinationBroker>>,
+    ) -> Self {
+        Self {
+            omp_bin: omp_bin.into(),
+            ..Self::new(profile, options, broker)
         }
     }
 
@@ -216,7 +350,7 @@ impl Adapter for OmpRpcAdapter {
 
     fn probe(&self) -> AdapterFuture<'_, ProbeResult> {
         Box::pin(async move {
-            let version_output = tokio::process::Command::new("omp")
+            let version_output = tokio::process::Command::new(&self.omp_bin)
                 .arg("--version")
                 .output()
                 .await
@@ -238,7 +372,7 @@ impl Adapter for OmpRpcAdapter {
                 .trim()
                 .to_string();
 
-            let models_output = tokio::process::Command::new("omp")
+            let models_output = tokio::process::Command::new(&self.omp_bin)
                 .args(["models", "--json"])
                 .output()
                 .await
@@ -325,7 +459,7 @@ impl Adapter for OmpRpcAdapter {
             let env = EnvironmentPolicy::baseline()
                 .build(&current_env, &self.profile.environment_allowlist);
             let spawn_spec = SpawnSpec {
-                program: "omp".into(),
+                program: self.omp_bin.clone().into(),
                 args,
                 env,
                 ..SpawnSpec::minimal()
@@ -349,12 +483,36 @@ impl Adapter for OmpRpcAdapter {
             let mut rpc_client = OmpRpcClient::new(process);
             rpc_client.wait_for_ready().await?;
 
-            for (command, params) in client::build_startup_commands(
+            // The `prompt` command is handled separately, deliberately
+            // *not* `read_response`'d here: the installed binary's own
+            // dispatch source awaits the full model turn before ever
+            // responding to it (`case "prompt": { const H = await
+            // kI1(A, E.message, E.streamingBehavior) }`), and that turn
+            // can itself emit a `host_tool_call` frame this process must
+            // answer before OMP will ever send that response. This
+            // adapter's own `read_response` wait-loop only queues
+            // anything that is not the awaited response -- it can never
+            // answer one -- so blocking on it here would deadlock the
+            // moment a model turn invokes one of `self.options.host_
+            // tools`. Only `run_pump`'s frame loop answers `host_tool_
+            // call` (see `handle_host_tool_call`), so every command that
+            // can trigger one must be observed there instead. The
+            // config commands above it are provably tool-call-free (each
+            // one's real dispatch handler -- `fNw`/`setTools`/
+            // `refreshRpcHostTools`/`setSchemes` -- never awaits a model
+            // turn), so they keep the original synchronous, error-
+            // propagating, before-the-prompt-is-sent sequencing.
+            let mut commands = client::build_startup_commands(
                 self.options.subscribe_subagents,
                 &self.options.host_tools,
                 &self.options.host_uri_schemes,
                 &spec.prompt,
-            ) {
+            );
+            let (prompt_command, prompt_params) = commands
+                .pop()
+                .expect("build_startup_commands always pushes the prompt command last");
+            debug_assert_eq!(prompt_command, "prompt");
+            for (command, params) in commands {
                 let id = rpc_client.send_command(&command, params).await?;
                 let response = rpc_client.read_response(&id).await?;
                 let frame = serde_json::json!({
@@ -376,6 +534,9 @@ impl Adapter for OmpRpcAdapter {
                         .await;
                 }
             }
+            rpc_client
+                .send_command(&prompt_command, prompt_params)
+                .await?;
 
             let shared = Arc::new(SharedRunState::default());
             let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
@@ -387,6 +548,7 @@ impl Adapter for OmpRpcAdapter {
                 spec.worker_id,
                 Arc::clone(&shared),
                 outbound_rx,
+                self.broker.clone(),
             ));
 
             *guard = Inner::Running(RunHandle {
@@ -549,7 +711,13 @@ async fn run_pump(
     worker_id: WorkerId,
     shared: Arc<SharedRunState>,
     mut outbound_rx: mpsc::UnboundedReceiver<Outbound>,
+    broker: Option<Arc<CoordinationBroker>>,
 ) {
+    let scope = BoundScope {
+        run_id,
+        task_id,
+        worker_id,
+    };
     loop {
         tokio::select! {
             outbound = outbound_rx.recv() => {
@@ -572,6 +740,12 @@ async fn run_pump(
             frame = client.next_frame() => {
                 match frame {
                     Some(value) => {
+                        if let Some(reply) =
+                            handle_host_tool_call(&value, broker.as_deref(), scope).await
+                        {
+                            let _ = client.write_frame(&reply).await;
+                            continue;
+                        }
                         for payload in normalize_frame(&value) {
                             record_shared_state(&shared, &payload);
                             let _ = sink
@@ -595,5 +769,160 @@ async fn run_pump(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod host_tool_bridge_tests {
+    use super::{
+        BoundScope, CoordinationBroker, RunId, TaskId, WorkerId, handle_host_tool_call,
+        mcp_result_to_host_tool_result_frame,
+    };
+    use batman_protocol::ProjectId;
+    use batman_runtime::coordination::mcp_protocol;
+    use batman_runtime::db::DatabaseHandle;
+
+    fn scope() -> BoundScope {
+        BoundScope {
+            run_id: RunId::new(),
+            task_id: TaskId::new(),
+            worker_id: WorkerId::new(),
+        }
+    }
+
+    #[test]
+    fn success_result_carries_only_content_with_no_top_level_is_error() {
+        let mcp_result = mcp_protocol::tool_result_from_success(
+            "batman_peers",
+            &serde_json::json!({ "peers": [] }),
+        )
+        .expect("a valid batman_peers result must match its own output schema");
+        let frame = mcp_result_to_host_tool_result_frame("req-1", &mcp_result);
+        assert_eq!(frame["type"], "host_tool_result");
+        assert_eq!(frame["id"], "req-1");
+        assert!(
+            frame.get("isError").is_none(),
+            "success frame must omit isError entirely"
+        );
+        assert!(frame["result"].get("details").is_none());
+        assert_eq!(frame["result"]["content"], mcp_result["content"]);
+    }
+
+    #[test]
+    fn error_result_moves_is_error_out_to_a_sibling_of_result_and_adds_empty_details() {
+        let mcp_result = mcp_protocol::tool_result_from_error("boom");
+        let frame = mcp_result_to_host_tool_result_frame("req-2", &mcp_result);
+        assert_eq!(frame["isError"], true);
+        assert!(
+            frame["result"].get("isError").is_none(),
+            "isError must not remain nested"
+        );
+        assert_eq!(frame["result"]["details"], serde_json::json!({}));
+        assert_eq!(frame["result"]["content"], mcp_result["content"]);
+    }
+
+    #[tokio::test]
+    async fn non_host_tool_call_frames_pass_through_as_none() {
+        let frame = serde_json::json!({ "type": "agent_end", "id": "x" });
+        assert!(handle_host_tool_call(&frame, None, scope()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_host_tool_call_is_always_answered_even_without_a_broker() {
+        // The specific property that prevents the startup deadlock: this
+        // must return `Some` (a frame to write back) for every
+        // `host_tool_call`, never leaving one unanswered, regardless of
+        // whether worker-coordination tools are actually available.
+        let frame = serde_json::json!({
+            "type": "host_tool_call",
+            "id": "htc-1",
+            "toolCallId": "tc-1",
+            "toolName": "batman_task",
+            "arguments": {},
+        });
+        let reply = handle_host_tool_call(&frame, None, scope())
+            .await
+            .expect("a host_tool_call without a broker must still be answered, never dropped");
+        assert_eq!(reply["type"], "host_tool_result");
+        assert_eq!(reply["id"], "htc-1");
+        assert_eq!(reply["isError"], true);
+    }
+
+    /// Proves the `Some(broker)` branch of [`handle_host_tool_call`]
+    /// actually calls through to a real [`CoordinationBroker`] and
+    /// returns its genuine success result -- the pure-translation tests
+    /// above only ever exercise a hand-built [`mcp_protocol`] result or
+    /// the no-broker error path, never this call itself.
+    #[tokio::test]
+    async fn a_host_tool_call_against_a_real_broker_returns_its_genuine_success_result() {
+        let db_file = tempfile::NamedTempFile::new().expect("temp db file");
+        let db = std::sync::Arc::new(
+            DatabaseHandle::start(db_file.path().to_path_buf())
+                .await
+                .expect("database must start"),
+        );
+        let project_id = ProjectId::new();
+        let run_id = RunId::new();
+        let task_id = TaskId::new();
+        let worker_id = WorkerId::new();
+        db.run_domain_op(Box::new({
+            let (run_id, task_id, worker_id, project_id) =
+                (run_id, task_id, worker_id, project_id);
+            move |conn| {
+                conn.execute(
+                    "INSERT INTO tasks (task_id, project_id, owner_client_instance_id, revision, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                    rusqlite::params![task_id.to_string(), project_id.to_string(), "test-owner", 1, "2026-01-01T00:00:00Z"],
+                )?;
+                conn.execute(
+                    "INSERT INTO worker_profiles (id, fingerprint, adapter, model, permission_envelope)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![worker_id.to_string(), "sha256:x", "ompRpc", "m", "{}"],
+                )?;
+                conn.execute(
+                    "INSERT INTO workers (worker_id, project_id, profile_id, created_at) VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![worker_id.to_string(), project_id.to_string(), worker_id.to_string(), "2026-01-01T00:00:00Z"],
+                )?;
+                conn.execute(
+                    "INSERT INTO runs (run_id, task_id, worker_id, state, created_at) VALUES (?1, ?2, ?3, 'working', ?4)",
+                    rusqlite::params![run_id.to_string(), task_id.to_string(), worker_id.to_string(), "2026-01-01T00:00:00Z"],
+                )?;
+                Ok::<_, batman_runtime::domain::DomainError>(serde_json::json!({}))
+            }
+        }))
+        .await
+        .expect("seeding a task/worker/run must succeed");
+
+        let (events_tx, _events_rx) = tokio::sync::broadcast::channel(16);
+        let broker = CoordinationBroker::new(db, project_id, events_tx);
+        let scope = BoundScope {
+            run_id,
+            task_id,
+            worker_id,
+        };
+        let frame = serde_json::json!({
+            "type": "host_tool_call",
+            "id": "htc-real",
+            "toolCallId": "tc-real",
+            "toolName": "batman_task",
+            "arguments": {},
+        });
+
+        let reply = handle_host_tool_call(&frame, Some(&broker), scope)
+            .await
+            .expect("a host_tool_call must always be answered");
+        assert_eq!(reply["type"], "host_tool_result");
+        assert_eq!(reply["id"], "htc-real");
+        assert!(
+            reply.get("isError").is_none(),
+            "a real, successful batman_task call must not be reported as an error: {reply}"
+        );
+        let content = reply["result"]["content"]
+            .as_array()
+            .expect("a successful result always carries a content array");
+        assert!(
+            !content.is_empty(),
+            "batman_task's real success content must not be empty"
+        );
     }
 }

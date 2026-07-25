@@ -16,14 +16,22 @@
 //! than spawning `fake-worker` (whose `omp-rpc` mode predates this
 //! adapter's real wire-shape grounding and does not attempt to match it).
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
-use batman_runtime::adapter::AdapterEventPayload;
+use batman_protocol::{RunId, TaskId, WorkerId};
+use batman_runtime::adapter::omp_rpc::OmpRpcAdapter;
 use batman_runtime::adapter::omp_rpc::client::{
     self, OmpRpcClient, abort_command, follow_up_command, get_session_stats_command,
     get_state_command, prompt_command, set_subagent_subscription_command, steer_command,
 };
 use batman_runtime::adapter::omp_rpc::normalize::{
     PROMPT_ACCEPTED_MARKER, PROMPT_COMPLETED_MARKER, normalize_frame,
+};
+use batman_runtime::adapter::{
+    Adapter, AdapterEvent, AdapterEventPayload, AdapterEventSink, AdapterFuture,
+    OmpRpcAdapterOptions, OmpRpcStartupOptions, ProfileId, StartSpec, StartupOptions,
+    WorkerProfile,
 };
 use batman_runtime::supervisor::{EnvironmentPolicy, SpawnSpec, Supervisor};
 use serde_json::Value;
@@ -584,4 +592,159 @@ async fn resolve_first_local_selector() -> Option<String> {
         .and_then(|m| m.get("selector"))
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+// ------------------------------------------- host-tool-call bridge (fake)
+
+/// Locates the `fake-worker` binary, building it if necessary. Mirrors
+/// `tests/supervisor.rs`'s own copy of this helper -- each `tests/*.rs`
+/// file is a separate compilation unit, so it cannot be shared directly.
+fn fake_worker_path() -> PathBuf {
+    static PATH: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(build_fake_worker_once);
+    PATH.clone()
+}
+
+fn build_fake_worker_once() -> PathBuf {
+    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("crates/runtime/../.. is the workspace root")
+        .to_path_buf();
+    let status = std::process::Command::new(env!("CARGO"))
+        .args(["build", "--quiet", "-p", "fake-worker"])
+        .current_dir(&workspace_root)
+        .status()
+        .expect("cargo build -p fake-worker must be runnable");
+    assert!(status.success(), "cargo build -p fake-worker failed");
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root.join("target"));
+    let profile_dir = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let binary = target_dir.join(profile_dir).join("fake-worker");
+    assert!(
+        binary.is_file(),
+        "expected fake-worker binary at {}",
+        binary.display()
+    );
+    binary
+}
+
+/// An in-memory [`AdapterEventSink`] that records every emitted event.
+#[derive(Default)]
+struct RecordingSink {
+    events: std::sync::Mutex<Vec<AdapterEvent>>,
+}
+
+impl AdapterEventSink for RecordingSink {
+    fn emit(&self, event: AdapterEvent) -> AdapterFuture<'_, u64> {
+        Box::pin(async move {
+            let mut events = self
+                .events
+                .lock()
+                .expect("recording sink mutex never poisoned");
+            events.push(event);
+            Ok(events.len() as u64)
+        })
+    }
+}
+
+fn omp_rpc_test_profile() -> WorkerProfile {
+    WorkerProfile {
+        id: ProfileId::new(),
+        adapter: "ompRpc".to_string(),
+        model: "lm-studio/x".to_string(),
+        permission_envelope: serde_json::json!({}),
+        startup_options: StartupOptions::OmpRpc(OmpRpcStartupOptions {
+            profile: None,
+            host_tools: None,
+        }),
+        environment_allowlist: Vec::new(),
+        source: "test".to_string(),
+    }
+}
+
+/// Reproduces, against a real (fake) child process, the exact deadlock
+/// this adapter's host-tool bridge must never hit: the real vendor's own
+/// dispatch source awaits the *entire* model turn -- including any host
+/// tool call it makes -- before ever responding to the `prompt` command
+/// (`case "prompt": { const H = await kI1(...) }`). `fake-worker --mode
+/// omp-rpc-host-tool` reproduces exactly that ordering: it emits a
+/// `host_tool_call` frame and withholds the `prompt` command's own
+/// response until a `host_tool_result` reply arrives on stdin.
+///
+/// Before this adapter's fix, `start()` called `read_response` on the
+/// `prompt` command's id inline -- a wait-loop that only *queues*
+/// anything that is not the awaited response, never answers it -- so
+/// this exact exchange would hang forever. `start()` now hands the
+/// `prompt` command off to `run_pump` without waiting for its response,
+/// and `run_pump`'s own frame loop answers `host_tool_call` before
+/// `normalize::normalize_frame` ever sees it, so this test proves both:
+/// `start()` itself returns promptly (would time out under the old
+/// code), and the full exchange still completes end to end (proven by
+/// polling for the eventual prompt-acceptance *and* prompt-completion
+/// events, which can only be emitted after the vendor's response to
+/// `prompt` arrives -- which the fake vendor withholds until its
+/// `host_tool_call` is answered).
+#[tokio::test]
+async fn a_host_tool_call_during_the_prompt_turn_never_deadlocks_start() {
+    let adapter = OmpRpcAdapter::with_binary(
+        fake_worker_path().to_string_lossy().into_owned(),
+        omp_rpc_test_profile(),
+        OmpRpcAdapterOptions::default(),
+        None,
+    );
+    let recording = Arc::new(RecordingSink::default());
+    let sink: Arc<dyn AdapterEventSink> = Arc::clone(&recording) as Arc<dyn AdapterEventSink>;
+    let spec = StartSpec {
+        run_id: RunId::new(),
+        task_id: TaskId::new(),
+        worker_id: WorkerId::new(),
+        prompt: "hello".to_string(),
+        resume: None,
+    };
+
+    let start_result =
+        tokio::time::timeout(Duration::from_secs(5), adapter.start(spec, sink)).await;
+    assert!(
+        matches!(start_result, Ok(Ok(()))),
+        "start() must return promptly instead of deadlocking on the vendor's host_tool_call: \
+         {start_result:?}"
+    );
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let (accepted, completed) = {
+            let events = recording
+                .events
+                .lock()
+                .expect("recording sink mutex never poisoned");
+            let accepted = events.iter().any(|e| {
+                matches!(&e.payload, AdapterEventPayload::MessageChunk { text, .. } if text.value == PROMPT_ACCEPTED_MARKER)
+            });
+            let completed = events.iter().any(|e| {
+                matches!(&e.payload, AdapterEventPayload::MessageFinal { text, .. } if text.value == PROMPT_COMPLETED_MARKER)
+            });
+            (accepted, completed)
+        };
+        if accepted && completed {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the host_tool_call must have been answered and the prompt's response observed \
+             by run_pump within the deadline; it never was"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // Never leak the fake child process or its `run_pump` task: dispose
+    // terminates the supervised process and awaits the pump task's exit.
+    adapter
+        .dispose()
+        .await
+        .expect("disposing a running OmpRpcAdapter must succeed");
 }
