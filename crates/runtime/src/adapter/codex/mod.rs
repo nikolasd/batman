@@ -23,6 +23,9 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
+use crate::adapter::mcp_config::{
+    AdapterMcpConfig, McpLaunchContext, codex_mcp_overrides, coordination_mcp_env,
+};
 use crate::adapter::{
     Adapter, AdapterCapabilities, AdapterError, AdapterEvent, AdapterEventSink, AdapterFuture,
     AdapterMessage, AdapterSnapshot, ApprovalsCapability, CancelScope, CodexStartupOptions,
@@ -30,6 +33,7 @@ use crate::adapter::{
     ResumeCapability, StartSpec, SteeringCapability, UsageCapability, VendorSessionRef,
     WorkspaceControlCapability,
 };
+use crate::coordination::ScopeTokenStore;
 use crate::supervisor::{EnvironmentPolicy, SpawnSpec, Supervisor};
 
 use client::{ClientError, CodexRpcClient, InboundMessage};
@@ -57,6 +61,7 @@ fn declared_capabilities() -> AdapterCapabilities {
 /// Mutable per-run state, guarded by one `tokio::sync::Mutex` so every
 /// `Adapter` method can `await` while holding it.
 struct RunState {
+    run_id: batman_protocol::RunId,
     client: Arc<CodexRpcClient>,
     thread_id: String,
     current_turn_id: Option<String>,
@@ -71,6 +76,7 @@ pub struct CodexAdapter {
     environment_allowlist: Vec<String>,
     startup_options: CodexStartupOptions,
     supervisor: Supervisor,
+    mcp: Option<AdapterMcpConfig>,
     run: Mutex<Option<RunState>>,
 }
 
@@ -85,6 +91,7 @@ impl CodexAdapter {
         cwd: PathBuf,
         startup_options: CodexStartupOptions,
         environment_allowlist: Vec<String>,
+        mcp: Option<AdapterMcpConfig>,
     ) -> Self {
         Self {
             codex_bin: "codex".to_string(),
@@ -92,6 +99,7 @@ impl CodexAdapter {
             environment_allowlist,
             startup_options,
             supervisor: Supervisor::new(),
+            mcp,
             run: Mutex::new(None),
         }
     }
@@ -104,20 +112,34 @@ impl CodexAdapter {
         cwd: PathBuf,
         startup_options: CodexStartupOptions,
         environment_allowlist: Vec<String>,
+        mcp: Option<AdapterMcpConfig>,
     ) -> Self {
         Self {
             codex_bin: codex_bin.into(),
-            ..Self::new(cwd, startup_options, environment_allowlist)
+            ..Self::new(cwd, startup_options, environment_allowlist, mcp)
         }
     }
 
-    fn spawn_spec(&self) -> SpawnSpec {
+    /// Builds this run's `app-server` command line and environment.
+    /// `mcp_injection`, when `Some`, is `(launch context, reserved scope
+    /// token)` -- appends the two `-c mcp_servers.batman.*` overrides to
+    /// `args` (alongside, never replacing, any `config_overrides`-derived
+    /// `-c` pairs already present) and merges `BATMAN_WORKER_SCOPE_TOKEN`
+    /// into `env`. Exposed `pub` so this adapter's own tests can assert
+    /// on the exact injected shape without spawning a process.
+    #[must_use]
+    pub fn spawn_spec(&self, mcp_injection: Option<(&McpLaunchContext, &str)>) -> SpawnSpec {
         let current_env: HashMap<String, String> = std::env::vars().collect();
-        let env = EnvironmentPolicy::baseline().build(&current_env, &self.environment_allowlist);
+        let mut env =
+            EnvironmentPolicy::baseline().build(&current_env, &self.environment_allowlist);
         let mut args = vec!["app-server".to_string()];
         for override_kv in self.startup_options.config_overrides.iter().flatten() {
             args.push("-c".to_string());
             args.push(override_kv.clone());
+        }
+        if let Some((context, token)) = mcp_injection {
+            args.extend(codex_mcp_overrides(context));
+            env.extend(coordination_mcp_env(token));
         }
         SpawnSpec {
             program: PathBuf::from(&self.codex_bin),
@@ -153,22 +175,36 @@ impl CodexAdapter {
     /// and `resume`'s thread-resume path.
     async fn spawn_and_handshake(
         &self,
-    ) -> Result<(Arc<CodexRpcClient>, mpsc::UnboundedReceiver<InboundMessage>), AdapterError> {
+        mcp_injection: Option<(&McpLaunchContext, &str)>,
+    ) -> Result<
+        (
+            Arc<CodexRpcClient>,
+            mpsc::UnboundedReceiver<InboundMessage>,
+            i32,
+        ),
+        AdapterError,
+    > {
         let process = self
             .supervisor
-            .spawn(self.spawn_spec())
+            .spawn(self.spawn_spec(mcp_injection))
             .await
             .map_err(|e| AdapterError::process(KIND, "start", e.to_string()))?;
+        let pid = process.pid();
         let (client, inbound_rx) = CodexRpcClient::spawn(process);
         let client = Arc::new(client);
         Self::handshake(&client).await?;
-        Ok((client, inbound_rx))
+        Ok((client, inbound_rx, pid))
     }
 
     /// Drains `inbound_rx` for the life of the run: normalizes server
     /// notifications into `sink` events and files server-request
     /// approvals into `pending_approvals` (never emitted through `sink`
-    /// -- see `normalize::PendingApproval`'s own doc comment).
+    /// -- see `normalize::PendingApproval`'s own doc comment). Once
+    /// `inbound_rx` closes (the vendor process exited, for any reason --
+    /// normal completion, cancellation, or crash), revokes
+    /// `scope_tokens`'s binding for `run_id` if a coordination MCP token
+    /// was bound for this run -- this is this adapter's one vendor-exit
+    /// hook.
     fn spawn_pump(
         mut inbound_rx: mpsc::UnboundedReceiver<InboundMessage>,
         run_id: batman_protocol::RunId,
@@ -176,6 +212,7 @@ impl CodexAdapter {
         worker_id: batman_protocol::WorkerId,
         sink: Arc<dyn AdapterEventSink>,
         pending_approvals: Arc<std::sync::Mutex<HashMap<String, PendingApproval>>>,
+        scope_tokens: Option<Arc<ScopeTokenStore>>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             while let Some(message) = inbound_rx.recv().await {
@@ -203,6 +240,9 @@ impl CodexAdapter {
                         }
                     }
                 }
+            }
+            if let Some(scope_tokens) = scope_tokens {
+                scope_tokens.revoke_for_run(run_id);
             }
         })
     }
@@ -274,7 +314,39 @@ impl Adapter for CodexAdapter {
                 ));
             }
 
-            let (client, inbound_rx) = self.spawn_and_handshake().await?;
+            let mcp_launch = self
+                .mcp
+                .as_ref()
+                .map(|mcp| (mcp.launch_context(spec.run_id), mcp.reserve()));
+
+            let (client, inbound_rx, pid) = self
+                .spawn_and_handshake(
+                    mcp_launch
+                        .as_ref()
+                        .map(|(context, token)| (context, token.as_str())),
+                )
+                .await?;
+
+            if let Some(mcp) = &self.mcp {
+                let (context, token) = mcp_launch
+                    .as_ref()
+                    .expect("mcp_launch is Some whenever self.mcp is Some");
+                if let Err(err) = mcp.activate(
+                    token.clone(),
+                    context.run_id,
+                    spec.task_id,
+                    spec.worker_id,
+                    pid,
+                    AdapterMcpConfig::default_expiry(),
+                ) {
+                    let _ = client.terminate().await;
+                    return Err(AdapterError::process(
+                        KIND,
+                        "start",
+                        format!("failed to activate coordination MCP scope token: {err}"),
+                    ));
+                }
+            }
 
             let thread_id = if let Some(resume) = &spec.resume {
                 client
@@ -313,6 +385,7 @@ impl Adapter for CodexAdapter {
                 spec.worker_id,
                 sink,
                 Arc::clone(&pending_approvals),
+                self.mcp.as_ref().map(|mcp| Arc::clone(&mcp.scope_tokens)),
             );
 
             let turn_response = client
@@ -329,6 +402,7 @@ impl Adapter for CodexAdapter {
                 .map(str::to_string);
 
             *run_guard = Some(RunState {
+                run_id: spec.run_id,
                 client,
                 thread_id,
                 current_turn_id,
@@ -362,7 +436,40 @@ impl Adapter for CodexAdapter {
             let placeholder_run = batman_protocol::RunId::new();
             let placeholder_task = batman_protocol::TaskId::new();
             let placeholder_worker = batman_protocol::WorkerId::new();
-            let (client, inbound_rx) = self.spawn_and_handshake().await?;
+
+            let mcp_launch = self
+                .mcp
+                .as_ref()
+                .map(|mcp| (mcp.launch_context(placeholder_run), mcp.reserve()));
+
+            let (client, inbound_rx, pid) = self
+                .spawn_and_handshake(
+                    mcp_launch
+                        .as_ref()
+                        .map(|(context, token)| (context, token.as_str())),
+                )
+                .await?;
+
+            if let Some(mcp) = &self.mcp {
+                let (context, token) = mcp_launch
+                    .as_ref()
+                    .expect("mcp_launch is Some whenever self.mcp is Some");
+                if let Err(err) = mcp.activate(
+                    token.clone(),
+                    context.run_id,
+                    placeholder_task,
+                    placeholder_worker,
+                    pid,
+                    AdapterMcpConfig::default_expiry(),
+                ) {
+                    let _ = client.terminate().await;
+                    return Err(AdapterError::process(
+                        KIND,
+                        "resume",
+                        format!("failed to activate coordination MCP scope token: {err}"),
+                    ));
+                }
+            }
 
             client
                 .call("thread/resume", json!({"threadId": session.0.clone()}))
@@ -377,9 +484,11 @@ impl Adapter for CodexAdapter {
                 placeholder_worker,
                 sink,
                 Arc::clone(&pending_approvals),
+                self.mcp.as_ref().map(|mcp| Arc::clone(&mcp.scope_tokens)),
             );
 
             *run_guard = Some(RunState {
+                run_id: placeholder_run,
                 client,
                 thread_id: session.0,
                 current_turn_id: None,
@@ -502,7 +611,11 @@ impl Adapter for CodexAdapter {
                         .await
                         .map_err(|e| client_error(e, "cancel"))?;
                     run.pump.abort();
+                    let run_id = run.run_id;
                     *run_guard = None;
+                    if let Some(mcp) = &self.mcp {
+                        mcp.scope_tokens.revoke_for_run(run_id);
+                    }
                     Ok(())
                 }
             }
@@ -535,6 +648,9 @@ impl Adapter for CodexAdapter {
             if let Some(run) = run_guard.take() {
                 let _ = run.client.terminate().await;
                 run.pump.abort();
+                if let Some(mcp) = &self.mcp {
+                    mcp.scope_tokens.revoke_for_run(run.run_id);
+                }
             }
             Ok(())
         })

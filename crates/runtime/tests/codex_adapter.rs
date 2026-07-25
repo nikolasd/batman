@@ -20,6 +20,7 @@ use batman_runtime::adapter::codex::CodexAdapter;
 use batman_runtime::adapter::codex::client::CodexRpcClient;
 use batman_runtime::adapter::codex::normalize;
 use batman_runtime::adapter::codex::schema::{SchemaManifest, verify_against_installed_binary};
+use batman_runtime::adapter::mcp_config::McpLaunchContext;
 
 // --------------------------------------------------------------- fixtures
 
@@ -207,6 +208,7 @@ async fn capabilities_match_the_verified_protocol_surface() {
         std::env::temp_dir(),
         CodexStartupOptions::default(),
         Vec::new(),
+        None,
     );
     let caps = adapter.capabilities();
     assert_eq!(
@@ -247,6 +249,7 @@ async fn probe_reports_the_installed_codex_version_without_a_model_call() {
         std::env::temp_dir(),
         CodexStartupOptions::default(),
         Vec::new(),
+        None,
     );
     let probe = adapter
         .probe()
@@ -353,6 +356,7 @@ async fn live_start_actually_runs_a_turn_against_a_real_model() {
         std::env::temp_dir(),
         CodexStartupOptions::default(),
         Vec::new(),
+        None,
     );
     let sink: Arc<dyn AdapterEventSink> = Arc::new(RecordingSink::default());
     let spec = batman_runtime::adapter::StartSpec {
@@ -367,4 +371,112 @@ async fn live_start_actually_runs_a_turn_against_a_real_model() {
         .await
         .expect("live start must succeed");
     adapter.dispose().await.expect("dispose must succeed");
+}
+
+// --------------------------------------------------------------- Task 7 (MCP)
+
+#[test]
+fn spawn_spec_with_no_mcp_config_injects_nothing() {
+    let adapter = CodexAdapter::with_binary(
+        "codex",
+        std::env::temp_dir(),
+        CodexStartupOptions::default(),
+        Vec::new(),
+        None,
+    );
+    let spec = adapter.spawn_spec(None);
+    assert_eq!(spec.args, vec!["app-server".to_string()]);
+    assert!(
+        !spec.env.contains_key("BATMAN_WORKER_SCOPE_TOKEN"),
+        "no scope token env without an AdapterMcpConfig"
+    );
+    assert!(
+        spec.args.iter().all(|a| !a.contains("mcp_servers.batman")),
+        "no batman MCP override without an AdapterMcpConfig"
+    );
+}
+
+#[test]
+fn spawn_spec_injects_batman_mcp_overrides_alongside_existing_config_overrides() {
+    let startup_options = CodexStartupOptions {
+        config_overrides: Some(vec!["model=\"o3\"".to_string()]),
+        ..CodexStartupOptions::default()
+    };
+    let adapter = CodexAdapter::with_binary(
+        "codex",
+        std::env::temp_dir(),
+        startup_options,
+        Vec::new(),
+        None,
+    );
+    let context = McpLaunchContext {
+        batcave_path: PathBuf::from("/opt/batman/bin/batcave"),
+        state_dir: std::env::temp_dir(),
+        repository: std::env::temp_dir(),
+        run_id: RunId::new(),
+    };
+    let token = "super-secret-scope-token";
+    let spec = adapter.spawn_spec(Some((&context, token)));
+
+    // The pre-existing `-c` override from `config_overrides` survives,
+    // never replaced by the batman MCP injection.
+    let model_idx = spec
+        .args
+        .iter()
+        .position(|a| a == "model=\"o3\"")
+        .expect("pre-existing config override must survive MCP injection");
+    assert_eq!(spec.args[model_idx - 1], "-c");
+
+    // The batman MCP server override is additive.
+    let command_idx = spec
+        .args
+        .iter()
+        .position(|a| a == "mcp_servers.batman.command=\"/opt/batman/bin/batcave\"")
+        .expect("batman command override must be present");
+    assert_eq!(spec.args[command_idx - 1], "-c");
+    assert!(
+        spec.args
+            .iter()
+            .any(|a| a.starts_with("mcp_servers.batman.args=[\"coordination-mcp\", ")),
+        "batman args override must be present"
+    );
+
+    // The scope token lives only in the vendor process's own env, never
+    // in argv (checkable via `ps` on a real spawned process).
+    assert_eq!(
+        spec.env.get("BATMAN_WORKER_SCOPE_TOKEN"),
+        Some(&token.to_string())
+    );
+    assert!(
+        spec.args.iter().all(|a| !a.contains(token)),
+        "the scope token must never appear in argv"
+    );
+}
+
+#[test]
+fn spawn_spec_with_mcp_config_leaves_native_discovery_flags_untouched() {
+    let adapter = CodexAdapter::with_binary(
+        "codex",
+        std::env::temp_dir(),
+        CodexStartupOptions::default(),
+        Vec::new(),
+        None,
+    );
+    let context = McpLaunchContext {
+        batcave_path: PathBuf::from("/opt/batman/bin/batcave"),
+        state_dir: std::env::temp_dir(),
+        repository: std::env::temp_dir(),
+        run_id: RunId::new(),
+    };
+    let spec = adapter.spawn_spec(Some((&context, "a-token")));
+    // The batman MCP server is additive alongside the base `app-server`
+    // invocation -- no flag suppressing or replacing Codex's own native
+    // MCP/config discovery is ever introduced.
+    assert_eq!(spec.args[0], "app-server");
+    for disallowed in ["--bare", "--strict-mcp-config", "--disable-builtin-mcps"] {
+        assert!(
+            !spec.args.iter().any(|a| a == disallowed),
+            "must never add {disallowed}"
+        );
+    }
 }
