@@ -203,6 +203,211 @@ which drives `ApprovalService` directly, the same way this walkthrough can't.
 rm -rf /tmp/batman-smoke
 ```
 
+## 4. Worker adapters
+
+Everything above this line predates the Worker Adapters milestone and never spawns a real Claude/
+Codex/Copilot/OMP-RPC process. This section covers the four supervised adapters, their conformance
+runner, and the worker coordination MCP surface.
+
+### 4a. Prerequisites
+
+Four vendor CLIs, plus everything from the top-level [Prerequisites](#prerequisites) above:
+
+```bash
+claude --version   # this milestone's baseline: Claude Code 2.1.217 (2.1.220 verified to work)
+codex --version    # this milestone's baseline: codex-cli 0.145.0 (exact match required for the
+                    # schema-compatibility check — see 4b)
+copilot --version  # this milestone's baseline: GitHub Copilot CLI 1.0.73 (1.0.75 verified to work)
+omp --version       # this milestone's baseline: omp/17.0.7 (17.1.1 verified to work)
+```
+
+None of these baselines are a hard requirement — `batcave adapters --json`/`batcave conformance`
+*measure* what the installed CLI actually supports rather than trusting the version string; a
+newer patch version that still passes every fixture scenario is fine. Codex is the one exception:
+its adapter checks the installed binary's own generated JSON-RPC schema against a committed
+compatibility manifest, so an incompatible **schema** change (not just a version bump) fails that
+one check specifically, independent of everything else.
+
+`OMP_BATMAN_BINARY` (the same override from the top-level Prerequisites) is how you point a real
+`omp` session at your dev build rather than a packaged release — set it once per shell:
+
+```bash
+export OMP_BATMAN_BINARY="$PWD/target/debug/batcave"
+```
+
+Build the daemon (the extension isn't involved in 4b/4c below, only in 4e):
+
+```bash
+cargo build -p batman-runtime
+```
+
+### 4b. Per-adapter smoke, fixture mode (no model call, no vendor CLI required to *pass* — but
+### each adapter's own PROBE scenario needs its CLI installed to report a real version)
+
+```bash
+./target/debug/batcave conformance --adapter claude  --fixture --output /tmp/batman-conformance-claude.json
+./target/debug/batcave conformance --adapter codex   --fixture --output /tmp/batman-conformance-codex.json
+./target/debug/batcave conformance --adapter copilot --fixture --output /tmp/batman-conformance-copilot.json
+./target/debug/batcave conformance --adapter ompRpc  --fixture --output /tmp/batman-conformance-omprpc.json
+
+# Or all four in one call, output as a single JSON array:
+./target/debug/batcave conformance --adapter all --fixture --output /tmp/batman-conformance.json
+```
+
+Each command also prints its report to stdout. Expected shape (one array element per adapter for
+the `--adapter all` form; a single-element array otherwise):
+
+```json
+[
+  {
+    "adapter": "claude",
+    "mode": "fixture",
+    "version": "2.1.220",
+    "declaredCapabilities": { "protocol": "structured", "resume": "session", ... },
+    "effectiveCapabilities": { "protocol": "structured", "resume": "session", ... },
+    "scenarios": [
+      { "name": "probe", "passed": true, "detail": "claude --version reported ...; authReady=true" },
+      { "name": "read_only_start_and_progress", "passed": true, "detail": "..." },
+      ...
+    ],
+    "passed": true
+  }
+]
+```
+
+"Pass" for one adapter means top-level `"passed": true` — every entry in `scenarios` has its own
+`"passed": true`. `effectiveCapabilities` only ever narrows `declaredCapabilities`, never widens
+it: a scenario failure downgrades exactly the capability it disproves (e.g. a failed `approval`
+scenario forces `approvals` to `"none"`) and leaves everything else untouched. If `"passed": false`
+anywhere, read that scenario's own `detail` first — it names concretely what failed, not just that
+something did.
+
+Every adapter's `--fixture` report should show `"passed": true` throughout, with these documented,
+intentional exceptions — genuine gaps or environment dependencies this milestone reports honestly
+rather than papering over with a fabricated pass:
+
+| Adapter | Scenario(s) | Why |
+|---|---|---|
+| `ompRpc` | `probe`, `cancellation_scope`, `follow_up` | Depend on `omp models --json` currently listing a local `lm-studio`/`omlx` selector — the model server itself need not be *running*, just listed. If none is listed right now, expect these three `"passed": false` with a detail saying so. |
+| `ompRpc` | `approval` | This adapter's `normalize_frame` has no case for the real vendor's `extension_ui_request` frame at all; `ApprovalsCapability::Observable` is declared but not yet actually backed by any observable event. |
+| `codex` | `follow_up`, `cancellation_scope`, `session_resume`, `runtime_restart` | The installed `codex-cli` does not write a thread's rollout file to disk until a turn actually runs — resuming/following up/cancelling a turn on a never-turned thread needs a real (billed) turn, which `--fixture` mode must never make. `--live` mode (4c) proves all four for real when its gate is set. |
+| `copilot` | `session_resume`, `runtime_restart` | The installed CLI (1.0.75) does not persist a never-prompted session across a process boundary — proving full persistence needs a real turn. |
+| `copilot` | `unexpected_child_observation` | ACP protocol v1 has no `session/update` variant this adapter maps to a nested-worker observation — a genuine, currently-unimplemented gap. |
+
+`batcave adapters --json` runs the same fixture suite for all four adapters and always emits a
+four-element array — it takes no `--adapter`/`--fixture`/`--output`, it *is* the "all adapters,
+fixture mode, to stdout" shortcut:
+
+```bash
+./target/debug/batcave adapters --json
+```
+
+### 4c. Per-adapter smoke, live mode (requires a real API key/session; makes a real, billed model
+### call for the adapters that reach one)
+
+Each adapter's live suite is gated on its own environment variable, checked internally — the CLI
+command is identical to 4b with `--live` instead of `--fixture`; nothing here ever needs a secret
+*in* the command itself:
+
+```bash
+mkdir -p /tmp/batman-conformance-live && cd /tmp/batman-conformance-live && git init -q && git commit -q --allow-empty -m init
+
+# Claude — needs an authenticated `claude` CLI session (run `claude auth status` first if unsure)
+BATMAN_LIVE_CLAUDE=1 /path/to/target/debug/batcave conformance --adapter claude --live \
+  --output /tmp/batman-conformance-live-claude.json
+
+# Codex — needs $OPENAI_API_KEY (or an authenticated `codex` CLI session) in the environment
+BATMAN_LIVE_CODEX=1 /path/to/target/debug/batcave conformance --adapter codex --live \
+  --output /tmp/batman-conformance-live-codex.json
+
+# Copilot — needs an authenticated `copilot` CLI session (`copilot` itself manages this, not an
+# env var this adapter reads directly)
+BATMAN_LIVE_COPILOT=1 /path/to/target/debug/batcave conformance --adapter copilot --live \
+  --output /tmp/batman-conformance-live-copilot.json
+
+# OMP-RPC — needs a local model server (LM Studio/oMLX) actually running; no cloud API key at all
+BATMAN_LIVE_OMP=1 /path/to/target/debug/batcave conformance --adapter ompRpc --live \
+  --output /tmp/batman-conformance-live-omprpc.json
+```
+
+Run each from inside `/tmp/batman-conformance-live` (a disposable repo — some live scenarios spawn
+a real vendor process with that directory as its `cwd`), and reference credentials only as the
+environment variable name, never the value, exactly as shown above.
+
+If you run WITHOUT the matching `BATMAN_LIVE_<ADAPTER>=1` gate set, the command still exits `0` and
+still writes a report — just one reporting the gate is unset, never a hard failure:
+
+```json
+[
+  {
+    "adapter": "claude",
+    "mode": "live",
+    "passed": false,
+    "error": "live Claude conformance requires BATMAN_LIVE_CLAUDE=1"
+  }
+]
+```
+
+**What "no paid model call" means here, precisely:** every 4b (`--fixture`) command above is
+*guaranteed* zero model calls — that is this milestone's own design invariant, proven by
+`cargo test -p batman-runtime --test <adapter>_adapter` never invoking a model either. A 4c
+(`--live`) command, once its gate is actually set, is the opposite: it deliberately makes a real,
+billed call for whichever scenarios that adapter's own live suite defines as needing one (this
+milestone's default posture is to prove as much as possible in fixture mode and reserve live mode
+for the few properties — a real vendor process schema/handshake, mostly — that only a live process
+can prove at all). Never set a `BATMAN_LIVE_<ADAPTER>` variable in a CI job or an unattended run.
+
+### 4d. End-to-end orchestration with an adapter: still `adapter_unavailable`, and that's expected
+
+`AdapterRegistry` (the `RunDriver` implementation this section's conformance suites feed into) is
+built and independently tested (`cargo test -p batman-runtime --test adapter_registry`), but it is
+**not yet wired into the running daemon** — `lifecycle::serve()`'s `ServerConfig::default()` still
+leaves `run_driver: None`. This is a deliberate, documented scope boundary (see
+`crates/runtime/src/adapter/registry.rs`'s own module doc for the two reasons: `run/submit` carries
+no prompt/message content for a started adapter to act on yet, and adapters constructed by the
+registry today receive no worker-coordination MCP config), not an oversight.
+
+Practically: **section 3 above, unchanged, is still the correct end-to-end walkthrough.** Submitting
+a run through a live `omp` session still reports `adapter_unavailable`, exactly as documented there
+— that has not changed and will not change until a future milestone wires `AdapterRegistry` into
+`ServerConfig.run_driver` inside `lifecycle::serve()`. To exercise the registry's own start/reject/
+authorize/construct logic directly (the actual new behavior this milestone adds), use its test
+suite rather than a live `omp` session:
+
+```bash
+cargo test -p batman-runtime --test adapter_registry
+```
+
+### 4e. Worker MCP coordination tools
+
+Like 4d, the *supervised* path (a real adapter's vendor process calling `batman_task`/`batman_send`
+through its injected MCP config) is not reachable from a live `omp` session yet, for the same
+reason: no adapter is wired into the running daemon to supervise a vendor process in the first
+place. The MCP server side (`batcave coordination-mcp`) and the scope-token-authenticated
+in-process/subprocess plumbing behind it are fully built and independently tested against a real
+compiled `batcave` binary, driven as a genuine MCP client would:
+
+```bash
+cargo test -p batman-runtime --test coordination_mcp
+```
+
+That suite spawns the real `batcave coordination-mcp --state-dir ... --repo ... --run-id ...`
+subprocess, drives it over real stdio exactly as a supervised vendor CLI's own MCP client would,
+and verifies `batman_task`/`batman_peers`/`batman_send`/`batman_request_child`/
+`batman_publish_artifact`/`batman_report_blocked`/`batman_ask_policy` all land in a real
+`CoordinationBroker` behind a real `Server` — including the scope/authorization negative cases
+(missing, expired, wrong-run, post-vendor-exit, or unrelated-process credentials all fail; a
+verified descendant of the same live vendor process may reconnect).
+
+### 4f. Cleanup
+
+```bash
+pgrep -fl batcave                                            # confirm what's actually running
+./target/debug/batcave stop --repo /tmp/batman-conformance-live  # or wherever you ran 4c from
+rm -rf /tmp/batman-conformance-live /tmp/batman-conformance*.json
+pgrep -fl batcave || echo "no batcave processes remain"
+```
+
 ## Reading the widget line
 
 Every `/batman` row (`monitor/render.ts::renderRowLine`) is:
