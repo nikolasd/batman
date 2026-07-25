@@ -1,0 +1,219 @@
+//! Integration tests for the `batcave adapters`/`batcave conformance`
+//! CLI subcommands (`crates/runtime/src/cli.rs`), driven against the
+//! real compiled binary as a genuine subprocess -- not the library's
+//! own unit-level `conformance::run_fixture_conformance` dispatcher
+//! (that seam is covered by `crates/runtime/src/conformance/mod.rs`'s
+//! own `#[cfg(test)]` module instead).
+//!
+//! Never invokes a model: `--fixture` is this milestone's own zero-
+//! model-call design invariant, and every `--live` case here is
+//! deliberately run with no `BATMAN_LIVE_<ADAPTER>` gate set, proving
+//! the CLI degrades to an honest per-adapter error rather than ever
+//! making a real call.
+
+use std::process::Command;
+
+fn batcave() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_batcave"))
+}
+
+#[test]
+fn adapters_json_reports_all_four_adapters_with_effective_capabilities() {
+    let output = batcave()
+        .arg("adapters")
+        .arg("--json")
+        .output()
+        .expect("batcave adapters --json must be runnable");
+    assert!(
+        output.status.success(),
+        "batcave adapters --json exited non-zero: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reports: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    let reports = reports
+        .as_array()
+        .expect("adapters --json prints a JSON array");
+    assert_eq!(
+        reports.len(),
+        4,
+        "expected exactly one entry per reserved adapter kind"
+    );
+
+    let mut seen_kinds: Vec<&str> = Vec::new();
+    for report in reports {
+        let adapter = report["adapter"]
+            .as_str()
+            .expect("every entry names its adapter");
+        seen_kinds.push(adapter);
+        assert_eq!(report["mode"], "fixture");
+        assert!(
+            report["declaredCapabilities"].is_object(),
+            "{adapter}: declaredCapabilities must be present"
+        );
+        assert!(
+            report["effectiveCapabilities"].is_object(),
+            "{adapter}: effectiveCapabilities must be present"
+        );
+        let scenarios = report["scenarios"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{adapter}: scenarios must be a JSON array"));
+        assert_eq!(
+            scenarios.len(),
+            14,
+            "{adapter}: every effective capability must point to a passing fixture scenario, \
+             which requires every one of the 14 canonical scenarios to have actually run: {scenarios:?}"
+        );
+    }
+    for expected in ["claude", "codex", "copilot", "ompRpc"] {
+        assert!(
+            seen_kinds.contains(&expected),
+            "adapters --json is missing the {expected} entry: {seen_kinds:?}"
+        );
+    }
+}
+
+#[test]
+fn conformance_fixture_all_writes_four_reports_matching_stdout() {
+    let output_path = std::env::temp_dir().join(format!(
+        "batman-conformance-test-{}.json",
+        std::process::id()
+    ));
+    let output = batcave()
+        .args(["conformance", "--adapter", "all", "--fixture", "--output"])
+        .arg(&output_path)
+        .output()
+        .expect("batcave conformance --adapter all --fixture must be runnable");
+    assert!(
+        output.status.success(),
+        "conformance --adapter all --fixture exited non-zero: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout_json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    let file_contents =
+        std::fs::read_to_string(&output_path).expect("--output file must have been written");
+    let file_json: serde_json::Value =
+        serde_json::from_str(&file_contents).expect("--output file must be valid JSON");
+    assert_eq!(
+        stdout_json, file_json,
+        "stdout and the --output file must carry the exact same report"
+    );
+    assert_eq!(file_json.as_array().expect("a JSON array").len(), 4);
+
+    let _ = std::fs::remove_file(&output_path);
+}
+
+#[test]
+fn conformance_fixture_one_adapter_writes_a_single_element_array() {
+    let output_path = std::env::temp_dir().join(format!(
+        "batman-conformance-test-single-{}.json",
+        std::process::id()
+    ));
+    let output = batcave()
+        .args(["conformance", "--adapter", "codex", "--fixture", "--output"])
+        .arg(&output_path)
+        .output()
+        .expect("must be runnable");
+    assert!(output.status.success());
+    let file_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&output_path).unwrap()).unwrap();
+    let reports = file_json.as_array().unwrap();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0]["adapter"], "codex");
+    let _ = std::fs::remove_file(&output_path);
+}
+
+#[test]
+fn conformance_rejects_an_unknown_adapter_kind() {
+    let output_path = std::env::temp_dir().join("batman-conformance-test-unknown.json");
+    let output = batcave()
+        .args(["conformance", "--adapter", "bogus", "--fixture", "--output"])
+        .arg(&output_path)
+        .output()
+        .expect("must be runnable");
+    assert!(
+        !output.status.success(),
+        "an unknown --adapter value must be rejected, not silently accepted"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("bogus"),
+        "the rejection message should name the bad value"
+    );
+    assert!(
+        !output_path.exists(),
+        "no report file should be written on rejection"
+    );
+}
+
+#[test]
+fn conformance_requires_exactly_one_of_fixture_or_live() {
+    let output_path = std::env::temp_dir().join("batman-conformance-test-both.json");
+
+    // Neither flag.
+    let neither = batcave()
+        .args(["conformance", "--adapter", "claude", "--output"])
+        .arg(&output_path)
+        .output()
+        .expect("must be runnable");
+    assert!(
+        !neither.status.success(),
+        "requiring neither --fixture nor --live must be rejected"
+    );
+
+    // Both flags.
+    let both = batcave()
+        .args([
+            "conformance",
+            "--adapter",
+            "claude",
+            "--fixture",
+            "--live",
+            "--output",
+        ])
+        .arg(&output_path)
+        .output()
+        .expect("must be runnable");
+    assert!(
+        !both.status.success(),
+        "supplying both --fixture and --live must be rejected"
+    );
+
+    assert!(!output_path.exists());
+}
+
+#[test]
+fn conformance_live_without_the_gate_reports_an_honest_error_not_a_hard_failure() {
+    let output_path = std::env::temp_dir().join(format!(
+        "batman-conformance-test-live-{}.json",
+        std::process::id()
+    ));
+    let output = batcave()
+        .args(["conformance", "--adapter", "claude", "--live", "--output"])
+        .arg(&output_path)
+        // Explicitly clear the gate so this test is deterministic
+        // regardless of the ambient environment it runs in.
+        .env_remove("BATMAN_LIVE_CLAUDE")
+        .output()
+        .expect("must be runnable");
+    assert!(
+        output.status.success(),
+        "an unset live gate must not hard-fail the whole command: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reports: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let reports = reports.as_array().unwrap();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0]["adapter"], "claude");
+    assert_eq!(reports[0]["mode"], "live");
+    assert_eq!(reports[0]["passed"], false);
+    assert!(
+        reports[0]["error"]
+            .as_str()
+            .expect("an unset-gate report carries an error string")
+            .contains("BATMAN_LIVE_CLAUDE"),
+        "the error must name the specific gate that was unset: {reports:?}"
+    );
+    let _ = std::fs::remove_file(&output_path);
+}
