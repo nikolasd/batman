@@ -3,6 +3,7 @@
 //! reconnect-capable [`scope_token::ScopeTokenStore`] credential.
 
 mod broker;
+pub mod mcp_protocol;
 mod rate_limit;
 mod scope_token;
 

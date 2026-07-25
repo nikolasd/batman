@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use batman_protocol::{ProjectId, RunId, TaskId, Timestamp, WorkerId};
 use batman_runtime::coordination::{
-    CoordinationBroker, ScopeBinding, ScopeTokenStore, ScopeTokenVerifier, VendorProcessIdentity,
+    mcp_protocol, CoordinationBroker, ScopeBinding, ScopeTokenStore, ScopeTokenVerifier,
+    VendorProcessIdentity,
 };
 use batman_runtime::db::DatabaseHandle;
 use batman_runtime::ipc::{PeerCredentialReader, PeerCredentials, Server, ServerConfig};
@@ -66,6 +67,7 @@ struct Harness {
     socket: PathBuf,
     owned_dir: PathBuf,
     database: PathBuf,
+    project_id: ProjectId,
     scope_token_store: Arc<ScopeTokenStore>,
     _state: tempfile::TempDir,
     _repo: tempfile::TempDir,
@@ -114,12 +116,24 @@ impl Harness {
             socket,
             owned_dir,
             database: paths.database.clone(),
+            project_id: paths.project_id,
             scope_token_store,
             _state: state,
             _repo: repo,
             shutdown: Some(shutdown_tx),
             join: Some(join),
         }
+    }
+
+    /// A fresh, standalone [`CoordinationBroker`] against this harness's
+    /// own database file -- for tests that call broker methods (here,
+    /// [`CoordinationBroker::execute_tool_call`]) directly, in-process,
+    /// with no socket connection at all. SQLite's WAL mode makes a
+    /// second handle onto the same file safe alongside the server's own.
+    async fn broker(&self) -> CoordinationBroker {
+        let db = Arc::new(DatabaseHandle::start(self.database.clone()).await.unwrap());
+        let (events_tx, _events_rx) = broadcast::channel(16);
+        CoordinationBroker::new(db, self.project_id, events_tx)
     }
 }
 
@@ -243,6 +257,126 @@ async fn seed_scoped_run(harness: &Harness, omp: &mut Client) -> (String, RunId,
     });
 
     (token, run_id, task_id, worker_id)
+}
+
+// ------------------------------------------------------- execute_tool_call
+
+fn bound_scope(run_id: RunId, task_id: TaskId, worker_id: WorkerId) -> mcp_protocol::BoundScope {
+    mcp_protocol::BoundScope {
+        run_id,
+        task_id,
+        worker_id,
+    }
+}
+
+#[tokio::test]
+async fn execute_tool_call_fulfills_every_tool_against_the_real_broker() {
+    let harness = Harness::start().await;
+    let mut omp = omp_client(&harness, "omp-1").await;
+    let (_token, run_id, task_id, worker_id) = seed_scoped_run(&harness, &mut omp).await;
+    // A second worker on the same task, so batman_peers has someone to see.
+    let peer_worker = omp
+        .call(6, "worker/create", json!({ "fingerprint": "sha256:g", "adapter": "fake", "model": "m" }))
+        .await;
+    let peer_worker_id = peer_worker["result"]["workerId"].as_str().unwrap().to_string();
+    omp.call(
+        7,
+        "run/submit",
+        json!({ "taskId": task_id.to_string(), "workerId": peer_worker_id }),
+    )
+    .await;
+
+    let broker = harness.broker().await;
+    let scope = bound_scope(run_id, task_id, worker_id);
+
+    let task = broker.execute_tool_call("batman_task", &json!({}), scope).await;
+    assert_eq!(task["isError"], false, "{task:?}");
+    assert_eq!(task["structuredContent"]["taskId"], task_id.to_string());
+
+    let peers = broker.execute_tool_call("batman_peers", &json!({}), scope).await;
+    assert_eq!(peers["isError"], false, "{peers:?}");
+    assert_eq!(peers["structuredContent"]["peers"].as_array().unwrap().len(), 1);
+
+    let send = broker
+        .execute_tool_call(
+            "batman_send",
+            &json!({ "kind": "peerMessage", "payload": "hi peer" }),
+            scope,
+        )
+        .await;
+    assert_eq!(send["isError"], false, "{send:?}");
+    assert_eq!(send["structuredContent"]["deliveryState"], "sent");
+
+    let request_child = broker
+        .execute_tool_call("batman_request_child", &json!({ "reason": "need help" }), scope)
+        .await;
+    assert_eq!(request_child["isError"], false, "{request_child:?}");
+    assert!(request_child["structuredContent"]["sequence"].is_number());
+
+    let publish = broker
+        .execute_tool_call(
+            "batman_publish_artifact",
+            &json!({ "artifactRef": "artifact://abc", "description": "the diff" }),
+            scope,
+        )
+        .await;
+    assert_eq!(publish["isError"], false, "{publish:?}");
+    assert_eq!(publish["structuredContent"]["artifactRef"], "artifact://abc");
+
+    let blocked = broker
+        .execute_tool_call("batman_report_blocked", &json!({ "reason": "waiting" }), scope)
+        .await;
+    assert_eq!(blocked["isError"], false, "{blocked:?}");
+    assert_eq!(blocked["structuredContent"]["deliveryState"], "sent");
+
+    let policy = broker
+        .execute_tool_call("batman_ask_policy", &json!({ "question": "may I write here?" }), scope)
+        .await;
+    assert_eq!(policy["isError"], false, "{policy:?}");
+    assert_eq!(policy["structuredContent"]["deliveryState"], "sent");
+}
+
+#[tokio::test]
+async fn execute_tool_call_rejects_a_smuggled_sender_worker_id_and_journals_nothing() {
+    let harness = Harness::start().await;
+    let mut omp = omp_client(&harness, "omp-1").await;
+    let (_token, run_id, task_id, worker_id) = seed_scoped_run(&harness, &mut omp).await;
+    let broker = harness.broker().await;
+    let scope = bound_scope(run_id, task_id, worker_id);
+
+    let spoofed = WorkerId::new();
+    let result = broker
+        .execute_tool_call(
+            "batman_send",
+            &json!({
+                "kind": "peerMessage",
+                "payload": "hi",
+                "senderWorkerId": spoofed.to_string(),
+            }),
+            scope,
+        )
+        .await;
+    assert_eq!(result["isError"], true, "{result:?}");
+
+    let replay = omp.call(5, "events/replay", json!({ "afterSequence": 0 })).await;
+    let events = replay["result"].as_array().expect("events/replay returns an array");
+    assert!(
+        !events.iter().any(|e| e["event"]["type"] == "messageEvent"),
+        "a rejected call must never journal any message at all: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn execute_tool_call_reports_an_unknown_tool_as_a_tool_error_not_a_panic() {
+    let harness = Harness::start().await;
+    let mut omp = omp_client(&harness, "omp-1").await;
+    let (_token, run_id, task_id, worker_id) = seed_scoped_run(&harness, &mut omp).await;
+    let broker = harness.broker().await;
+    let scope = bound_scope(run_id, task_id, worker_id);
+
+    let result = broker.execute_tool_call("not_a_real_tool", &json!({}), scope).await;
+    assert_eq!(result["isError"], true, "{result:?}");
+    assert!(result["content"][0]["text"].as_str().unwrap().contains("unknown tool"));
 }
 
 // ------------------------------------------------------------- send bounds

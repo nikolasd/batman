@@ -429,4 +429,104 @@ impl CoordinationBroker {
         }
         Ok(swept)
     }
+
+    /// Executes one MCP-shaped coordination tool call in-process,
+    /// against `scope` -- the caller's own already-bound, immutable
+    /// run/task/worker identity, never anything read out of
+    /// `arguments`. For a caller with a real authenticated socket
+    /// connection (an external MCP subprocess), that connection's own
+    /// `dispatch_coordination` in `crate::ipc::connection` is the right
+    /// path instead; this method exists for a caller that *is* the
+    /// trusted runtime itself and has no such connection to make (see
+    /// `OmpRpcAdapter`'s host-tool bridge, which owns its `run_id`/
+    /// `task_id`/`worker_id` from construction, exactly as every other
+    /// adapter does).
+    ///
+    /// Always returns a value shaped by
+    /// [`super::mcp_protocol::tool_result_from_success`]/
+    /// [`super::mcp_protocol::tool_result_from_error`] -- never a raw
+    /// [`CoordinationError`] -- because a host-tool-call reply is
+    /// itself a normal (if `isError: true`) result, not a transport
+    /// failure.
+    pub async fn execute_tool_call(
+        &self,
+        name: &str,
+        arguments: &Value,
+        scope: super::mcp_protocol::BoundScope,
+    ) -> Value {
+        let (method, params) = match super::mcp_protocol::translate_tool_call(name, arguments, scope) {
+            Ok(translated) => translated,
+            Err(err) => return super::mcp_protocol::tool_result_from_error(&err.to_string()),
+        };
+
+        let result = match method {
+            "coordination/task" => self.task(scope.run_id).await,
+            "coordination/peers" => self.peers(scope.run_id).await,
+            "coordination/send" => {
+                let kind: MessageKind = match serde_json::from_value(params["kind"].clone()) {
+                    Ok(kind) => kind,
+                    Err(err) => {
+                        return super::mcp_protocol::tool_result_from_error(&format!(
+                            "invalid kind: {err}"
+                        ));
+                    }
+                };
+                let payload = params["payload"].as_str().unwrap_or_default().to_string();
+                let recipient_worker_id = params
+                    .get("recipientWorkerId")
+                    .and_then(Value::as_str)
+                    .map(WorkerId::parse)
+                    .transpose();
+                let reply_to = params
+                    .get("replyTo")
+                    .and_then(Value::as_str)
+                    .map(MessageId::parse)
+                    .transpose();
+                match (recipient_worker_id, reply_to) {
+                    (Ok(recipient_worker_id), Ok(reply_to)) => {
+                        self.send(
+                            scope.run_id,
+                            scope.worker_id,
+                            scope.task_id,
+                            kind,
+                            payload,
+                            recipient_worker_id,
+                            reply_to,
+                        )
+                        .await
+                    }
+                    _ => Err(CoordinationError::invalid_params(
+                        "recipientWorkerId/replyTo is not a valid id",
+                    )),
+                }
+            }
+            "coordination/requestChild" => {
+                let reason = params["reason"].as_str().unwrap_or_default().to_string();
+                self.request_child(scope.run_id, reason).await
+            }
+            "coordination/publishArtifact" => {
+                let artifact_ref = params["artifactRef"].as_str().unwrap_or_default().to_string();
+                let description = params.get("description").and_then(Value::as_str).map(str::to_string);
+                self.publish_artifact(scope.run_id, artifact_ref, description).await
+            }
+            "coordination/reportBlocked" => {
+                let reason = params["reason"].as_str().unwrap_or_default().to_string();
+                self.report_blocked(scope.run_id, reason).await
+            }
+            "coordination/askPolicy" => {
+                let question = params["question"].as_str().unwrap_or_default().to_string();
+                self.ask_policy(scope.run_id, question).await
+            }
+            other => Err(CoordinationError {
+                code: error_code::METHOD_NOT_FOUND,
+                message: format!("{other} is not routed through CoordinationBroker"),
+            }),
+        };
+
+        match result {
+            Ok(value) => super::mcp_protocol::tool_result_from_success(name, &value)
+                .unwrap_or_else(|err| super::mcp_protocol::tool_result_from_error(&err.to_string())),
+            Err(err) => super::mcp_protocol::tool_result_from_error(&err.message),
+        }
+    }
 }
