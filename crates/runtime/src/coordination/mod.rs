@@ -3,11 +3,13 @@
 //! reconnect-capable [`scope_token::ScopeTokenStore`] credential.
 
 mod broker;
+pub mod mcp;
 pub mod mcp_protocol;
 mod rate_limit;
 mod scope_token;
 
 pub use broker::{CoordinationBroker, CoordinationError};
+pub use mcp::{McpProxyError, ProcessEnvironment, SCOPE_TOKEN_ENV_VAR, ScopeTokenSource};
 pub use rate_limit::{RateLimitError, RateLimiter};
 pub use scope_token::{
     AncestryError, BindError, PidAncestryChecker, ScopeBinding, ScopeTokenStore, ScopeTokenVerifier,

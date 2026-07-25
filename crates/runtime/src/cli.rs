@@ -69,6 +69,21 @@ enum Command {
     Version,
     /// Print the canonical JSON Schema document to stdout.
     Schema,
+    /// Serve the coordination MCP tools over stdio for one supervised run.
+    CoordinationMcp {
+        /// The exact BATMAN state root the launching adapter resolved --
+        /// required, never defaulted: this subprocess must reach its
+        /// launching runtime's own socket, not whatever ambient state
+        /// root this process's own environment happens to resolve to.
+        #[arg(long)]
+        state_dir: PathBuf,
+        /// The repository this run belongs to.
+        #[arg(long)]
+        repo: PathBuf,
+        /// The run this MCP server is scoped to.
+        #[arg(long)]
+        run_id: String,
+    },
 }
 
 /// The canonical protocol JSON Schema, embedded at compile time so the binary
@@ -100,6 +115,11 @@ pub async fn run() -> ExitCode {
             print!("{SCHEMA}");
             ExitCode::SUCCESS
         }
+        Command::CoordinationMcp {
+            state_dir,
+            repo,
+            run_id,
+        } => run_coordination_mcp(state_dir, repo, run_id).await,
     }
 }
 
@@ -185,6 +205,24 @@ async fn run_stop(state_dir: Option<PathBuf>, repo: PathBuf) -> ExitCode {
             );
             ExitCode::SUCCESS
         }
+        Err(err) => fail(&err),
+    }
+}
+
+async fn run_coordination_mcp(state_dir: PathBuf, repo: PathBuf, run_id: String) -> ExitCode {
+    let run_id = match batman_protocol::RunId::parse(&run_id) {
+        Ok(run_id) => run_id,
+        Err(err) => return fail(format!("--run-id {run_id:?} is not a valid run id: {err}")),
+    };
+    match batman_runtime::coordination::mcp::run(
+        &state_dir,
+        &repo,
+        run_id,
+        &batman_runtime::coordination::mcp::ProcessEnvironment,
+    )
+    .await
+    {
+        Ok(()) => ExitCode::SUCCESS,
         Err(err) => fail(&err),
     }
 }

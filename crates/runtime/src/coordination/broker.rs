@@ -454,10 +454,11 @@ impl CoordinationBroker {
         arguments: &Value,
         scope: super::mcp_protocol::BoundScope,
     ) -> Value {
-        let (method, params) = match super::mcp_protocol::translate_tool_call(name, arguments, scope) {
-            Ok(translated) => translated,
-            Err(err) => return super::mcp_protocol::tool_result_from_error(&err.to_string()),
-        };
+        let (method, params) =
+            match super::mcp_protocol::translate_tool_call(name, arguments, scope) {
+                Ok(translated) => translated,
+                Err(err) => return super::mcp_protocol::tool_result_from_error(&err.to_string()),
+            };
 
         let result = match method {
             "coordination/task" => self.task(scope.run_id).await,
@@ -505,9 +506,16 @@ impl CoordinationBroker {
                 self.request_child(scope.run_id, reason).await
             }
             "coordination/publishArtifact" => {
-                let artifact_ref = params["artifactRef"].as_str().unwrap_or_default().to_string();
-                let description = params.get("description").and_then(Value::as_str).map(str::to_string);
-                self.publish_artifact(scope.run_id, artifact_ref, description).await
+                let artifact_ref = params["artifactRef"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let description = params
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                self.publish_artifact(scope.run_id, artifact_ref, description)
+                    .await
             }
             "coordination/reportBlocked" => {
                 let reason = params["reason"].as_str().unwrap_or_default().to_string();
@@ -525,7 +533,9 @@ impl CoordinationBroker {
 
         match result {
             Ok(value) => super::mcp_protocol::tool_result_from_success(name, &value)
-                .unwrap_or_else(|err| super::mcp_protocol::tool_result_from_error(&err.to_string())),
+                .unwrap_or_else(|err| {
+                    super::mcp_protocol::tool_result_from_error(&err.to_string())
+                }),
             Err(err) => super::mcp_protocol::tool_result_from_error(&err.message),
         }
     }

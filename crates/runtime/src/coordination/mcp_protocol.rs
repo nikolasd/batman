@@ -368,7 +368,9 @@ pub fn translate_tool_call(
 /// believe such a field took effect when it never does.
 fn reject_unknown_properties(name: &str, arguments: &Value) -> Result<(), ToolCallError> {
     let Some(object) = arguments.as_object() else {
-        return Err(ToolCallError::InvalidArguments("arguments must be an object".to_string()));
+        return Err(ToolCallError::InvalidArguments(
+            "arguments must be an object".to_string(),
+        ));
     };
     let Some(spec) = tool_specs().into_iter().find(|spec| spec.name == name) else {
         // An unknown tool name is `ToolCallError::UnknownTool`, decided
@@ -380,7 +382,12 @@ fn reject_unknown_properties(name: &str, arguments: &Value) -> Result<(), ToolCa
         .input_schema
         .get("properties")
         .and_then(Value::as_object)
-        .map(|props| props.keys().cloned().collect::<std::collections::HashSet<_>>())
+        .map(|props| {
+            props
+                .keys()
+                .cloned()
+                .collect::<std::collections::HashSet<_>>()
+        })
         .unwrap_or_default();
     for key in object.keys() {
         if !allowed.contains(key) {
@@ -568,7 +575,10 @@ mod tests {
         for (name, mut arguments) in [
             ("batman_task", json!({})),
             ("batman_peers", json!({})),
-            ("batman_send", json!({ "kind": "question", "payload": "hi" })),
+            (
+                "batman_send",
+                json!({ "kind": "question", "payload": "hi" }),
+            ),
             ("batman_request_child", json!({ "reason": "x" })),
             ("batman_publish_artifact", json!({ "artifactRef": "x" })),
             ("batman_report_blocked", json!({ "reason": "x" })),
@@ -598,8 +608,8 @@ mod tests {
     #[test]
     fn batman_send_missing_payload_is_invalid_arguments_not_a_panic() {
         let scope = scope();
-        let err = translate_tool_call("batman_send", &json!({ "kind": "question" }), scope)
-            .unwrap_err();
+        let err =
+            translate_tool_call("batman_send", &json!({ "kind": "question" }), scope).unwrap_err();
         assert!(matches!(err, ToolCallError::InvalidArguments(_)));
     }
 
@@ -634,9 +644,12 @@ mod tests {
     fn batman_request_child_report_blocked_and_ask_policy_map_their_one_field() {
         let scope = scope();
 
-        let (method, params) =
-            translate_tool_call("batman_request_child", &json!({ "reason": "need help" }), scope)
-                .unwrap();
+        let (method, params) = translate_tool_call(
+            "batman_request_child",
+            &json!({ "reason": "need help" }),
+            scope,
+        )
+        .unwrap();
         assert_eq!(method, "coordination/requestChild");
         assert_eq!(params["reason"], "need help");
         assert_eq!(params["runId"], scope.run_id.to_string());
@@ -685,7 +698,10 @@ mod tests {
     #[test]
     fn unknown_tool_name_is_rejected() {
         let err = translate_tool_call("not_a_real_tool", &json!({}), scope()).unwrap_err();
-        assert_eq!(err, ToolCallError::UnknownTool("not_a_real_tool".to_string()));
+        assert_eq!(
+            err,
+            ToolCallError::UnknownTool("not_a_real_tool".to_string())
+        );
     }
 
     #[test]
@@ -694,7 +710,12 @@ mod tests {
         let success = tool_result_from_success("batman_task", &result).unwrap();
         assert_eq!(success["isError"], false);
         assert_eq!(success["content"][0]["type"], "text");
-        assert!(success["content"][0]["text"].as_str().unwrap().contains("t-1"));
+        assert!(
+            success["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("t-1")
+        );
         assert_eq!(success["structuredContent"], result);
 
         let failure = tool_result_from_error("boom");
