@@ -13,14 +13,14 @@
 use std::sync::Arc;
 
 use batman_protocol::{
-    error_code, DeliveryState, EventEnvelope, MessageId, MessageKind, ProjectId, RunId, RunMessage, RunState,
-    TaskId, Timestamp, WorkerId, COORDINATION_PAYLOAD_MAX_BYTES,
+    COORDINATION_PAYLOAD_MAX_BYTES, DeliveryState, EventEnvelope, MessageId, MessageKind,
+    ProjectId, RunId, RunMessage, RunState, TaskId, Timestamp, WorkerId, error_code,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
 use crate::db::DatabaseHandle;
-use crate::domain::{embed_envelope, take_envelope, DomainRepository};
+use crate::domain::{DomainRepository, embed_envelope, take_envelope};
 
 use super::rate_limit::RateLimiter;
 
@@ -321,7 +321,11 @@ impl CoordinationBroker {
     /// `coordination/requestChild`: records intent only, transitions the
     /// requesting run to `waitingPeer`, and notifies OMP (via the durable
     /// event journal OMP already replays). Never creates a task or worker.
-    pub async fn request_child(&self, run_id: RunId, reason: String) -> Result<Value, CoordinationError> {
+    pub async fn request_child(
+        &self,
+        run_id: RunId,
+        reason: String,
+    ) -> Result<Value, CoordinationError> {
         self.require_live_run(run_id).await?;
         let project_id = self.project_id;
         let mut result = self
@@ -385,23 +389,50 @@ impl CoordinationBroker {
 
     /// `coordination/reportBlocked`: reports the scoped run is blocked, as
     /// a journaled message OMP can observe, without changing ownership.
-    pub async fn report_blocked(&self, run_id: RunId, reason: String) -> Result<Value, CoordinationError> {
+    pub async fn report_blocked(
+        &self,
+        run_id: RunId,
+        reason: String,
+    ) -> Result<Value, CoordinationError> {
         self.require_live_run(run_id).await?;
         let (task_id, worker_id) = self.run_participants(run_id).await?;
-        self.send_internal(run_id, worker_id, task_id, MessageKind::PeerMessage, reason, None, None)
-            .await
+        self.send_internal(
+            run_id,
+            worker_id,
+            task_id,
+            MessageKind::PeerMessage,
+            reason,
+            None,
+            None,
+        )
+        .await
     }
 
     /// `coordination/askPolicy`: asks OMP a policy question, as a
     /// journaled message OMP can observe, without deciding it locally.
-    pub async fn ask_policy(&self, run_id: RunId, question: String) -> Result<Value, CoordinationError> {
+    pub async fn ask_policy(
+        &self,
+        run_id: RunId,
+        question: String,
+    ) -> Result<Value, CoordinationError> {
         self.require_live_run(run_id).await?;
         let (task_id, worker_id) = self.run_participants(run_id).await?;
-        self.send_internal(run_id, worker_id, task_id, MessageKind::Question, question, None, None)
-            .await
+        self.send_internal(
+            run_id,
+            worker_id,
+            task_id,
+            MessageKind::Question,
+            question,
+            None,
+            None,
+        )
+        .await
     }
 
-    async fn run_participants(&self, run_id: RunId) -> Result<(TaskId, WorkerId), CoordinationError> {
+    async fn run_participants(
+        &self,
+        run_id: RunId,
+    ) -> Result<(TaskId, WorkerId), CoordinationError> {
         let value = self
             .db
             .run_domain_op(Box::new(move |conn| {
@@ -438,8 +469,16 @@ impl CoordinationBroker {
         recipient_worker_id: Option<WorkerId>,
         reply_to: Option<MessageId>,
     ) -> Result<Value, CoordinationError> {
-        self.send(run_id, sender_worker_id, task_id, kind, payload, recipient_worker_id, reply_to)
-            .await
+        self.send(
+            run_id,
+            sender_worker_id,
+            task_id,
+            kind,
+            payload,
+            recipient_worker_id,
+            reply_to,
+        )
+        .await
     }
 
     /// Settles any message left in a non-terminal delivery state

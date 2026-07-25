@@ -7,12 +7,14 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use batman_protocol::{ApprovalId, ApprovalRequest, EventEnvelope, ProjectId, RunFlags, RunId, RunState};
+use batman_protocol::{
+    ApprovalId, ApprovalRequest, EventEnvelope, ProjectId, RunFlags, RunId, RunState,
+};
 use serde_json::Value;
 use tokio::sync::broadcast;
 
 use crate::db::DatabaseHandle;
-use crate::domain::{embed_envelope, take_envelope, DomainError, DomainRepository};
+use crate::domain::{DomainError, DomainRepository, embed_envelope, take_envelope};
 
 /// A boxed future returned by [`ApprovalCallback::acknowledge`].
 pub type CallbackFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
@@ -53,7 +55,10 @@ pub enum ApprovalError {
     /// The run this approval belongs to has already settled (reached a
     /// terminal state); a decision cannot target it.
     #[error("run {run_id} has already settled; cannot decide approval {approval_id}")]
-    RunSettled { approval_id: ApprovalId, run_id: RunId },
+    RunSettled {
+        approval_id: ApprovalId,
+        run_id: RunId,
+    },
     /// A referenced record was not found.
     #[error("{kind} {id} not found")]
     NotFound { kind: &'static str, id: String },
@@ -115,8 +120,9 @@ impl ApprovalService {
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.create_approval(&approval)
-                    .map(|c| embed_envelope(serde_json::json!({ "sequence": c.sequence }), &c.envelope))
+                repo.create_approval(&approval).map(|c| {
+                    embed_envelope(serde_json::json!({ "sequence": c.sequence }), &c.envelope)
+                })
             }))
             .await
             .map_err(ApprovalError::Domain)?;
@@ -160,8 +166,12 @@ impl ApprovalService {
             };
         }
 
-        let run_state = RunState::try_from(snapshot.run_state.as_str())
-            .map_err(|_| ApprovalError::NotFound { kind: "run-state", id: snapshot.run_state.clone() })?;
+        let run_state = RunState::try_from(snapshot.run_state.as_str()).map_err(|_| {
+            ApprovalError::NotFound {
+                kind: "run-state",
+                id: snapshot.run_state.clone(),
+            }
+        })?;
         if run_state.is_terminal() {
             return Err(ApprovalError::RunSettled {
                 approval_id,
@@ -177,7 +187,9 @@ impl ApprovalService {
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
                 repo.decide_approval(approval_id, &decision_owned, &reason_owned)
-                    .map(|c| embed_envelope(serde_json::json!({ "sequence": c.sequence }), &c.envelope))
+                    .map(|c| {
+                        embed_envelope(serde_json::json!({ "sequence": c.sequence }), &c.envelope)
+                    })
             }))
             .await
             .map_err(ApprovalError::Domain)?;
@@ -191,8 +203,12 @@ impl ApprovalService {
                     .db
                     .run_domain_op(Box::new(move |conn| {
                         let mut repo = DomainRepository::new(conn, project_id);
-                        repo.transition_run(run_id, &working)
-                            .map(|c| embed_envelope(serde_json::json!({ "sequence": c.sequence }), &c.envelope))
+                        repo.transition_run(run_id, &working).map(|c| {
+                            embed_envelope(
+                                serde_json::json!({ "sequence": c.sequence }),
+                                &c.envelope,
+                            )
+                        })
                     }))
                     .await
                     .map_err(ApprovalError::Domain)?;
@@ -207,8 +223,12 @@ impl ApprovalService {
                     .db
                     .run_domain_op(Box::new(move |conn| {
                         let mut repo = DomainRepository::new(conn, project_id);
-                        repo.set_run_flags(run_id, &flags)
-                            .map(|c| embed_envelope(serde_json::json!({ "sequence": c.sequence }), &c.envelope))
+                        repo.set_run_flags(run_id, &flags).map(|c| {
+                            embed_envelope(
+                                serde_json::json!({ "sequence": c.sequence }),
+                                &c.envelope,
+                            )
+                        })
                     }))
                     .await
                     .map_err(ApprovalError::Domain)?;
@@ -227,7 +247,10 @@ impl ApprovalService {
         }
     }
 
-    async fn load_snapshot(&self, approval_id: ApprovalId) -> Result<ApprovalSnapshot, ApprovalError> {
+    async fn load_snapshot(
+        &self,
+        approval_id: ApprovalId,
+    ) -> Result<ApprovalSnapshot, ApprovalError> {
         let value: Value = self
             .db
             .run_domain_op(Box::new(move |conn| {
@@ -263,16 +286,29 @@ impl ApprovalService {
             .map_err(ApprovalError::Domain)?;
 
         Ok(ApprovalSnapshot {
-            run_id: RunId::parse(value["runId"].as_str().unwrap_or_default())
-                .map_err(|_| ApprovalError::NotFound { kind: "run", id: "invalid".to_string() })?,
+            run_id: RunId::parse(value["runId"].as_str().unwrap_or_default()).map_err(|_| {
+                ApprovalError::NotFound {
+                    kind: "run",
+                    id: "invalid".to_string(),
+                }
+            })?,
             decision: value["decision"].as_str().map(str::to_string),
-            owner_client_instance_id: value["ownerClientInstanceId"].as_str().unwrap_or_default().to_string(),
+            owner_client_instance_id: value["ownerClientInstanceId"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
             run_state: value["runState"].as_str().unwrap_or_default().to_string(),
             run_flags: RunFlags {
                 degraded_control: value["flags"]["degradedControl"].as_bool().unwrap_or(false),
-                needs_reconciliation: value["flags"]["needsReconciliation"].as_bool().unwrap_or(false),
-                protocol_unhealthy: value["flags"]["protocolUnhealthy"].as_bool().unwrap_or(false),
-                policy_quarantined: value["flags"]["policyQuarantined"].as_bool().unwrap_or(false),
+                needs_reconciliation: value["flags"]["needsReconciliation"]
+                    .as_bool()
+                    .unwrap_or(false),
+                protocol_unhealthy: value["flags"]["protocolUnhealthy"]
+                    .as_bool()
+                    .unwrap_or(false),
+                policy_quarantined: value["flags"]["policyQuarantined"]
+                    .as_bool()
+                    .unwrap_or(false),
                 workspace_dirty: value["flags"]["workspaceDirty"].as_bool().unwrap_or(false),
                 children_active: value["flags"]["childrenActive"].as_bool().unwrap_or(false),
             },

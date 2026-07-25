@@ -12,6 +12,6 @@ pub use broker::{CoordinationBroker, CoordinationError};
 pub use mcp::{McpProxyError, ProcessEnvironment, SCOPE_TOKEN_ENV_VAR, ScopeTokenSource};
 pub use rate_limit::{RateLimitError, RateLimiter};
 pub use scope_token::{
-    AncestryError, BindError, PidAncestryChecker, ScopeBinding, ScopeTokenStore, ScopeTokenVerifier,
-    SystemPidAncestryChecker, VendorProcessIdentity,
+    AncestryError, BindError, PidAncestryChecker, ScopeBinding, ScopeTokenStore,
+    ScopeTokenVerifier, SystemPidAncestryChecker, VendorProcessIdentity,
 };

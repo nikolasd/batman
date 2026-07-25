@@ -40,7 +40,10 @@ impl RateLimiter {
     /// Returns [`RateLimitError`] when the sender has already sent `limit`
     /// messages within the trailing one-minute window.
     pub fn check(&self, sender: WorkerId, now: Instant) -> Result<(), RateLimitError> {
-        let mut sent_at = self.sent_at.lock().expect("rate limiter mutex is never poisoned");
+        let mut sent_at = self
+            .sent_at
+            .lock()
+            .expect("rate limiter mutex is never poisoned");
         let timestamps = sent_at.entry(sender).or_default();
         timestamps.retain(|t| now.duration_since(*t) < WINDOW);
 

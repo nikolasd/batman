@@ -13,7 +13,7 @@ use batman_protocol::{EventEnvelope, ProjectId, RunId, RunState, TaskId, WorkerI
 use tokio::sync::broadcast;
 
 use crate::db::DatabaseHandle;
-use crate::domain::{take_envelope, DomainRepository};
+use crate::domain::{DomainRepository, take_envelope};
 
 /// A boxed future returned by [`RunDriver::start`].
 pub type AdapterFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

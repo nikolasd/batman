@@ -202,7 +202,10 @@ impl ScopeTokenStore {
     /// a live record -- never overwrites one, since that would silently
     /// rebind (and thus hijack) whatever run currently owns it.
     pub fn bind(&self, token: String, binding: ScopeBinding) -> Result<(), BindError> {
-        let mut tokens = self.tokens.lock().expect("scope token mutex is never poisoned");
+        let mut tokens = self
+            .tokens
+            .lock()
+            .expect("scope token mutex is never poisoned");
         if tokens.contains_key(&token) {
             return Err(BindError::AlreadyBound);
         }
@@ -223,7 +226,10 @@ impl ScopeTokenStore {
     /// Revokes the token bound to `run_id`, if any (e.g. when the run
     /// settles). Idempotent.
     pub fn revoke_for_run(&self, run_id: RunId) {
-        let mut tokens = self.tokens.lock().expect("scope token mutex is never poisoned");
+        let mut tokens = self
+            .tokens
+            .lock()
+            .expect("scope token mutex is never poisoned");
         tokens.retain(|_, record| record.run_id != run_id);
     }
 
@@ -237,7 +243,10 @@ impl ScopeTokenStore {
     /// platform cannot report trustworthy ancestry at all).
     pub fn verify(&self, token: &str, peer_pid: Option<i32>) -> Result<ScopedRun, VerifyError> {
         let record = {
-            let tokens = self.tokens.lock().expect("scope token mutex is never poisoned");
+            let tokens = self
+                .tokens
+                .lock()
+                .expect("scope token mutex is never poisoned");
             tokens.get(token).cloned()
         };
         let record = record.ok_or(VerifyError::InvalidToken)?;
@@ -270,7 +279,10 @@ impl ScopeTokenStore {
     /// broker after the connection has already been admitted.
     #[must_use]
     pub fn scope_for_run(&self, run_id: RunId) -> Option<(ProjectId, TaskId, WorkerId)> {
-        let tokens = self.tokens.lock().expect("scope token mutex is never poisoned");
+        let tokens = self
+            .tokens
+            .lock()
+            .expect("scope token mutex is never poisoned");
         tokens
             .values()
             .find(|record| record.run_id == run_id)
@@ -338,9 +350,15 @@ mod tests {
     fn verifies_a_descendant_of_the_vendor_process() {
         let store = store_with(vec![(200, 100)]);
         let run_id = RunId::new();
-        let token = store.mint(binding(run_id, 100, Timestamp::parse("2099-01-01T00:00:00Z").unwrap()));
+        let token = store.mint(binding(
+            run_id,
+            100,
+            Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
+        ));
 
-        let scoped = store.verify(&token, Some(200)).expect("descendant verifies");
+        let scoped = store
+            .verify(&token, Some(200))
+            .expect("descendant verifies");
         assert_eq!(scoped.run_id, run_id);
     }
 
@@ -381,7 +399,11 @@ mod tests {
     fn a_restarted_descendant_may_reverify_the_same_token_while_the_run_is_live() {
         let store = store_with(vec![(201, 100), (202, 100)]);
         let run_id = RunId::new();
-        let token = store.mint(binding(run_id, 100, Timestamp::parse("2099-01-01T00:00:00Z").unwrap()));
+        let token = store.mint(binding(
+            run_id,
+            100,
+            Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
+        ));
 
         // First MCP subprocess initializes.
         assert!(store.verify(&token, Some(201)).is_ok());
@@ -397,7 +419,11 @@ mod tests {
     fn revoking_a_run_invalidates_its_token() {
         let store = store_with(vec![(100, 100)]);
         let run_id = RunId::new();
-        let token = store.mint(binding(run_id, 100, Timestamp::parse("2099-01-01T00:00:00Z").unwrap()));
+        let token = store.mint(binding(
+            run_id,
+            100,
+            Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
+        ));
         assert!(store.verify(&token, Some(100)).is_ok());
 
         store.revoke_for_run(run_id);
@@ -409,7 +435,11 @@ mod tests {
     #[test]
     fn rejects_when_the_platform_reports_no_peer_pid() {
         let store = store_with(vec![]);
-        let token = store.mint(binding(RunId::new(), 100, Timestamp::parse("2099-01-01T00:00:00Z").unwrap()));
+        let token = store.mint(binding(
+            RunId::new(),
+            100,
+            Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
+        ));
         let err = store.verify(&token, None).unwrap_err();
         assert!(matches!(err, VerifyError::OutsideAncestry));
     }
@@ -423,7 +453,14 @@ mod tests {
         assert!(matches!(err, VerifyError::InvalidToken));
 
         store
-            .bind(token.clone(), binding(RunId::new(), 100, Timestamp::parse("2099-01-01T00:00:00Z").unwrap()))
+            .bind(
+                token.clone(),
+                binding(
+                    RunId::new(),
+                    100,
+                    Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
+                ),
+            )
             .expect("first bind of a fresh reservation succeeds");
         assert!(store.verify(&token, Some(100)).is_ok());
     }
@@ -434,16 +471,32 @@ mod tests {
         let token = store.reserve_token();
         let first_run = RunId::new();
         store
-            .bind(token.clone(), binding(first_run, 100, Timestamp::parse("2099-01-01T00:00:00Z").unwrap()))
+            .bind(
+                token.clone(),
+                binding(
+                    first_run,
+                    100,
+                    Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
+                ),
+            )
             .expect("first bind succeeds");
 
         let err = store
-            .bind(token.clone(), binding(RunId::new(), 100, Timestamp::parse("2099-01-01T00:00:00Z").unwrap()))
+            .bind(
+                token.clone(),
+                binding(
+                    RunId::new(),
+                    100,
+                    Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
+                ),
+            )
             .expect_err("re-binding a live token must never succeed");
         assert!(matches!(err, BindError::AlreadyBound));
 
         // The original scope is untouched by the rejected re-bind attempt.
-        let scoped = store.verify(&token, Some(100)).expect("original binding still verifies");
+        let scoped = store
+            .verify(&token, Some(100))
+            .expect("original binding still verifies");
         assert_eq!(scoped.run_id, first_run);
     }
 }
