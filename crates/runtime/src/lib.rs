@@ -13,6 +13,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod adapter;
 pub mod approval;
+pub mod conformance;
 pub mod coordination;
 pub mod db;
 pub mod domain;

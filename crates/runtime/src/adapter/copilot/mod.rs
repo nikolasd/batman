@@ -13,6 +13,7 @@
 
 pub mod client;
 pub mod compatibility;
+pub mod conformance;
 pub mod normalize;
 
 pub use client::{

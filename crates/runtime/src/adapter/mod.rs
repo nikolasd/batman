@@ -14,6 +14,7 @@ pub mod mcp_config;
 pub mod omp_rpc;
 mod profile;
 mod profile_store;
+pub mod registry;
 #[path = "trait.rs"]
 mod r#trait;
 
@@ -37,6 +38,7 @@ pub use profile::{
     WorkerProfile,
 };
 pub use profile_store::{ProfileStore, ProfileStoreError};
+pub use registry::{AdapterAuthorization, AdapterRegistry, FixtureAuthorization, RegistryError};
 pub use r#trait::{
     Adapter, AdapterMessage, AdapterSnapshot, CancelScope, ProbeResult, StartSpec, VendorSessionRef,
 };

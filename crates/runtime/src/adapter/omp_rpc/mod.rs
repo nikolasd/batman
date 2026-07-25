@@ -19,6 +19,7 @@
 //! `lm-studio/bonsai`).
 
 pub mod client;
+pub mod conformance;
 pub mod normalize;
 
 use std::collections::HashMap;

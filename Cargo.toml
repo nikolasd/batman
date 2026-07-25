@@ -13,8 +13,9 @@ clap = { version = "4", features = ["derive"] }
 futures-util = { version = "0.3", features = ["sink"] }
 hex = "0.4"
 nix = { version = "0.30", features = ["fs", "process", "signal", "socket", "user"] }
-rusqlite = { version = "0.37", features = ["bundled"] }
+parking_lot = "0.12"
 regex = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
 rusqlite_migration = "2"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }

@@ -28,6 +28,7 @@
 //! what actually exercises the spawn+stdin+reader-task path.
 
 pub mod command;
+pub mod conformance;
 pub mod normalize;
 pub mod protocol;
 

@@ -12,6 +12,7 @@
 //! documentation alone.
 
 pub mod client;
+pub mod conformance;
 pub mod normalize;
 pub mod schema;
 

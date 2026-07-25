@@ -705,8 +705,9 @@ async fn probe_reports_the_real_installed_version_and_auth_readiness_with_no_mod
 
     let version = result.version.expect("probe must report a version string");
     assert!(
-        version.contains("2.1.219"),
-        "expected the installed 2.1.219 Claude Code version, got {version:?}"
+        version.starts_with("2."),
+        "expected a Claude Code 2.x version string (this adapter's baseline is 2.1.217; \
+         installed CLIs drift by patch version over time), got {version:?}"
     );
     // Grounded against this machine's real `claude auth status` output
     // (loggedIn: true) -- see the shared adapter context.
