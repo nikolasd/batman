@@ -10,16 +10,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use batman_protocol::{RunId, TaskId, WorkerId};
+use batman_protocol::{ProjectId, RunId, TaskId, WorkerId};
+use batman_runtime::adapter::mcp_config::AdapterMcpConfig;
 use batman_runtime::adapter::{
     Adapter, AdapterMessage, ApprovalsCapability, CancelScope, ClaudeStartupOptions,
     DurabilityCapability, NativeViewCapability, NestedCapability, ProtocolKind, ResumeCapability,
     StartSpec, SteeringCapability, UsageCapability, VendorSessionRef, WorkspaceControlCapability,
 };
+use batman_runtime::coordination::{ScopeBinding, ScopeTokenStore, VendorProcessIdentity};
 
 use batman_runtime::adapter::claude::ClaudeAdapter;
 use batman_runtime::adapter::claude::command;
 use batman_runtime::adapter::claude::normalize::{ClaudeEvent, ClaudeNormalizer};
+use batman_runtime::adapter::claude::{McpInjection, build_mcp_injection};
 
 fn new_adapter() -> ClaudeAdapter {
     ClaudeAdapter::new(
@@ -29,7 +32,28 @@ fn new_adapter() -> ClaudeAdapter {
         RunId::new(),
         TaskId::new(),
         WorkerId::new(),
+        None,
     )
+}
+
+/// A worker-MCP config pointing at a fake `batcave_path` -- fine for
+/// every test that only inspects the argv/env/file this module builds
+/// and never actually spawns the resulting `coordination-mcp` command.
+fn mcp_config() -> AdapterMcpConfig {
+    AdapterMcpConfig {
+        scope_tokens: Arc::new(ScopeTokenStore::new()),
+        project_id: ProjectId::new(),
+        batcave_path: PathBuf::from("/opt/batman/bin/batcave"),
+        state_dir: std::env::temp_dir(),
+        repository: std::env::temp_dir(),
+    }
+}
+
+/// The exact temp-file naming convention `build_mcp_injection` uses,
+/// duplicated here only so live-process tests can assert on the file's
+/// existence/absence without a way to read the adapter's private state.
+fn expected_mcp_config_path(run_id: RunId) -> PathBuf {
+    std::env::temp_dir().join(format!("batman-mcp-{run_id}.json"))
 }
 
 fn fixture(name: &str) -> Vec<Vec<u8>> {
@@ -163,6 +187,172 @@ fn stdin_user_message_is_newline_delimited_stream_json() {
     assert_eq!(value["message"]["role"], "user");
     assert_eq!(value["message"]["content"][0]["type"], "text");
     assert_eq!(value["message"]["content"][0]["text"], "do the thing");
+}
+
+// ---------------------------------------------------- worker mcp tools
+
+#[test]
+fn mcp_injection_appends_mcp_config_after_native_discovery_args_and_never_leaks_the_token_into_argv()
+ {
+    let options = ClaudeStartupOptions::default();
+    let spec = StartSpec {
+        run_id: RunId::new(),
+        task_id: TaskId::new(),
+        worker_id: WorkerId::new(),
+        prompt: "go".to_string(),
+        resume: None,
+    };
+    let mut args = command::build_args(&options, &spec, &uuid::Uuid::now_v7());
+
+    let mcp = mcp_config();
+    let injection: McpInjection =
+        build_mcp_injection(&mcp, spec.run_id).expect("writing the mcp config file must succeed");
+    args.extend(injection.extra_args.clone());
+
+    let config_idx = args
+        .iter()
+        .position(|a| a == "--mcp-config")
+        .expect("expected --mcp-config appended after build_args's own argv");
+    assert_eq!(
+        args[config_idx + 1],
+        injection.config_path.display().to_string()
+    );
+
+    // Worker MCP injection is additive: every native discovery flag
+    // this adapter already omits must remain omitted, and the strict
+    // flag that would suppress every *other* configured MCP server
+    // must never be added either.
+    for forbidden in [
+        "--bare",
+        "--disable-slash-commands",
+        "--safe-mode",
+        "--strict-mcp-config",
+        "--disable-builtin-mcps",
+    ] {
+        assert!(
+            !args.iter().any(|a| a == forbidden),
+            "must never pass {forbidden:?}: {args:?}"
+        );
+    }
+
+    // The scope token must never appear anywhere in argv.
+    assert!(
+        !args.iter().any(|a| a.contains(&injection.token)),
+        "the scope token must never appear in argv: {args:?}"
+    );
+
+    std::fs::remove_file(&injection.config_path).ok();
+}
+
+#[test]
+fn mcp_injection_env_carries_only_the_scope_token() {
+    let mcp = mcp_config();
+    let injection = build_mcp_injection(&mcp, RunId::new()).expect("mcp injection must succeed");
+
+    assert_eq!(injection.extra_env.len(), 1);
+    assert_eq!(
+        injection.extra_env.get("BATMAN_WORKER_SCOPE_TOKEN"),
+        Some(&injection.token)
+    );
+
+    std::fs::remove_file(&injection.config_path).ok();
+}
+
+#[test]
+fn mcp_injection_config_file_has_owner_only_permissions_and_never_contains_the_token() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mcp = mcp_config();
+    let injection = build_mcp_injection(&mcp, RunId::new()).expect("mcp injection must succeed");
+
+    let contents = std::fs::read_to_string(&injection.config_path)
+        .expect("the --mcp-config file must have been written");
+    assert!(
+        !contents.contains(&injection.token),
+        "the mcp config file must never contain the scope token"
+    );
+
+    let document: serde_json::Value = serde_json::from_str(&contents).unwrap();
+    assert_eq!(
+        document["mcpServers"]["batman"]["args"][0],
+        "coordination-mcp"
+    );
+    assert_eq!(document["mcpServers"].as_object().unwrap().len(), 1);
+
+    let mode = std::fs::metadata(&injection.config_path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "the mcp config file must be owner-only readable"
+    );
+
+    std::fs::remove_file(&injection.config_path).ok();
+}
+
+#[tokio::test]
+async fn dispose_revokes_every_scope_token_bound_to_this_adapters_run_when_mcp_is_configured() {
+    let mcp = mcp_config();
+    let scope_tokens = mcp.scope_tokens.clone();
+    let run_id = RunId::new();
+    let task_id = TaskId::new();
+    let worker_id = WorkerId::new();
+
+    // Bind a token to this adapter's run directly, as if a prior spawn
+    // had already reserved+activated one -- this lets the revoke be
+    // observed without needing a real vendor process, and also proves
+    // `revoke_for_run` (not some narrower per-token check) is what
+    // fires: it wipes every token bound to the run, however it got
+    // there.
+    let token = scope_tokens.reserve_token();
+    scope_tokens
+        .bind(
+            token,
+            ScopeBinding {
+                project_id: mcp.project_id,
+                task_id,
+                worker_id,
+                run_id,
+                vendor_process: VendorProcessIdentity {
+                    pid: std::process::id() as i32,
+                },
+                expires_at: AdapterMcpConfig::default_expiry(),
+            },
+        )
+        .expect("binding a freshly reserved token must succeed");
+    assert!(scope_tokens.scope_for_run(run_id).is_some());
+
+    let adapter = ClaudeAdapter::new(
+        ClaudeStartupOptions::default(),
+        std::env::temp_dir(),
+        Vec::new(),
+        run_id,
+        task_id,
+        worker_id,
+        Some(mcp),
+    );
+
+    adapter
+        .dispose()
+        .await
+        .expect("dispose must succeed even though no session was ever started");
+
+    assert!(
+        scope_tokens.scope_for_run(run_id).is_none(),
+        "dispose must revoke every scope token bound to this adapter's run"
+    );
+}
+
+#[test]
+fn constructing_with_mcp_none_behaves_identically_to_every_pre_existing_test() {
+    // `new_adapter()` already passes `None`; every pre-existing test in
+    // this file continuing to pass unchanged is the real proof. This
+    // test only pins down that a `None`-configured adapter's `kind()`
+    // (a cheap, always-available probe) still works, guarding against a
+    // future edit accidentally making `mcp` non-optional.
+    assert_eq!(new_adapter().kind(), "claude");
 }
 
 // ------------------------------------------------------------- normalize
@@ -651,6 +841,7 @@ async fn resume_from_a_fresh_instance_uses_constructor_bound_ids_and_reaches_the
         run_id,
         task_id,
         worker_id,
+        None,
     );
     let sink = Arc::new(CollectingSink::default());
 
@@ -676,4 +867,71 @@ async fn resume_from_a_fresh_instance_uses_constructor_bound_ids_and_reaches_the
         .dispose()
         .await
         .expect("dispose must be safe even after the process already exited on its own");
+}
+
+/// Proves the end-to-end lifecycle, not just the pure argv/env
+/// helper: with worker MCP tools configured, `resume()` writes the
+/// `--mcp-config` file and activates a live scope token *before* ever
+/// touching the vendor's stdin, and by the time the session has
+/// ended (observed here via the real `claude --resume` process
+/// exiting on its own, exactly as in the test above) and `dispose()`
+/// has run, both the token and the temp file are gone -- whichever of
+/// `run_session`'s vendor-exit hook or `dispose()`'s own cleanup got
+/// there first.
+#[tokio::test]
+async fn resume_with_worker_mcp_configured_activates_a_token_and_cleans_up_on_exit() {
+    let mcp = mcp_config();
+    let scope_tokens = mcp.scope_tokens.clone();
+    let run_id = RunId::new();
+    let task_id = TaskId::new();
+    let worker_id = WorkerId::new();
+    let adapter = ClaudeAdapter::new(
+        ClaudeStartupOptions::default(),
+        std::env::temp_dir(),
+        Vec::new(),
+        run_id,
+        task_id,
+        worker_id,
+        Some(mcp),
+    );
+    let sink = Arc::new(CollectingSink::default());
+    let config_path = expected_mcp_config_path(run_id);
+
+    adapter
+        .resume(
+            VendorSessionRef("00000000-0000-0000-0000-000000000000".to_string()),
+            sink.clone(),
+        )
+        .await
+        .expect("resume must reach the real spawn path with worker MCP tools configured");
+
+    // Activation happens before the vendor's stdin is ever touched, so
+    // both are already true the moment `resume()` returns.
+    assert!(
+        config_path.exists(),
+        "the --mcp-config file must exist once resume() has returned"
+    );
+    assert!(
+        scope_tokens.scope_for_run(run_id).is_some(),
+        "the scope token must be activated before resume() returns"
+    );
+
+    let usage_event = tokio::time::timeout(Duration::from_secs(20), sink.wait_for_usage())
+        .await
+        .expect("expected the real `claude --resume` process to exit and report usage within 20s");
+    assert_eq!(usage_event.run_id, run_id);
+
+    adapter
+        .dispose()
+        .await
+        .expect("dispose must be safe even after the process already exited on its own");
+
+    assert!(
+        scope_tokens.scope_for_run(run_id).is_none(),
+        "the scope token must be revoked once the session has ended"
+    );
+    assert!(
+        !config_path.exists(),
+        "the --mcp-config temp file must be deleted once the session has ended"
+    );
 }

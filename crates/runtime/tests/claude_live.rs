@@ -61,6 +61,7 @@ async fn start_a_real_claude_session_and_observe_its_result() {
         run_id,
         task_id,
         worker_id,
+        None,
     );
     let sink = Arc::new(CollectingSink {
         events: Mutex::new(Vec::new()),
