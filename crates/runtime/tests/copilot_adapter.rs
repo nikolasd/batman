@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use batman_runtime::adapter::copilot::CopilotAdapter;
+use batman_runtime::adapter::copilot::{CopilotAdapter, CopilotSpawnPlan};
 use batman_runtime::adapter::copilot::client::{
     CopilotAcpClient, CopilotClientEvent, parse_initialize_response,
 };
@@ -19,6 +19,10 @@ use batman_runtime::adapter::copilot::compatibility::{
     copilot_acp_protocol_version_supported, copilot_cli_version_known,
 };
 use batman_runtime::adapter::copilot::normalize::copilot_normalize_session_update;
+use batman_runtime::adapter::mcp_config::{
+    AdapterMcpConfig, McpLaunchContext, coordination_mcp_config_document,
+};
+use batman_runtime::ScopeTokenStore;
 use batman_runtime::adapter::{
     Adapter, AdapterCapabilities, AdapterErrorCode, ApprovalsCapability, DurabilityCapability,
     NativeViewCapability, NestedCapability, ProtocolKind, ResumeCapability, SteeringCapability,
@@ -315,6 +319,7 @@ fn declared_capabilities_match_exactly_what_this_adapter_tests() {
         batman_protocol::RunId::new(),
         batman_protocol::TaskId::new(),
         batman_protocol::WorkerId::new(),
+        None,
     );
     let capabilities: AdapterCapabilities = adapter.capabilities();
     assert_eq!(capabilities.protocol, ProtocolKind::Structured);
@@ -484,4 +489,124 @@ async fn respond_permission_answers_a_real_pending_request_over_the_wire() {
     assert_eq!(actual, expected_response);
 
     let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+// -------------------------------------------- worker MCP config injection
+
+fn mcp_config_for_test() -> AdapterMcpConfig {
+    AdapterMcpConfig {
+        scope_tokens: std::sync::Arc::new(ScopeTokenStore::new()),
+        project_id: batman_protocol::ProjectId::new(),
+        batcave_path: PathBuf::from("/opt/batman/bin/batcave"),
+        state_dir: PathBuf::from("/tmp/batman-state"),
+        repository: PathBuf::from("/tmp/my-repo"),
+    }
+}
+
+fn adapter_with_mcp(mcp: Option<AdapterMcpConfig>) -> (CopilotAdapter, batman_protocol::RunId) {
+    let run_id = batman_protocol::RunId::new();
+    let adapter = CopilotAdapter::new(
+        PathBuf::from("copilot"),
+        std::env::temp_dir(),
+        batman_runtime::adapter::CopilotStartupOptions::default(),
+        Vec::new(),
+        run_id,
+        batman_protocol::TaskId::new(),
+        batman_protocol::WorkerId::new(),
+        mcp,
+    );
+    (adapter, run_id)
+}
+
+#[test]
+fn spawn_plan_injects_additional_mcp_config_matching_the_shared_document_shape() {
+    let (adapter, run_id) = adapter_with_mcp(Some(mcp_config_for_test()));
+    let plan: CopilotSpawnPlan = adapter.spawn_plan();
+
+    let flag_index = plan
+        .args
+        .iter()
+        .position(|arg| arg == "--additional-mcp-config")
+        .expect("--additional-mcp-config must be present when mcp is Some");
+    let value = plan
+        .args
+        .get(flag_index + 1)
+        .expect("--additional-mcp-config must carry a value argument");
+    let document: Value = serde_json::from_str(value)
+        .expect("--additional-mcp-config value must be well-formed JSON");
+
+    let context = McpLaunchContext {
+        batcave_path: PathBuf::from("/opt/batman/bin/batcave"),
+        state_dir: PathBuf::from("/tmp/batman-state"),
+        repository: PathBuf::from("/tmp/my-repo"),
+        run_id,
+    };
+    assert_eq!(document, coordination_mcp_config_document(&context));
+}
+
+#[test]
+fn spawn_plan_never_puts_the_scope_token_in_argv_only_in_env() {
+    let (adapter, _run_id) = adapter_with_mcp(Some(mcp_config_for_test()));
+    let plan = adapter.spawn_plan();
+
+    let token = plan
+        .reserved_token
+        .clone()
+        .expect("a reserved token is produced when mcp is Some");
+    assert!(!token.is_empty());
+    assert!(
+        plan.args.iter().all(|arg| !arg.contains(&token)),
+        "the scope token must never appear in argv, got: {:?}",
+        plan.args
+    );
+    assert_eq!(
+        plan.env.get("BATMAN_WORKER_SCOPE_TOKEN"),
+        Some(&token),
+        "the scope token must be present in env under BATMAN_WORKER_SCOPE_TOKEN"
+    );
+}
+
+#[test]
+fn disable_builtin_mcps_is_never_added_regardless_of_mcp_config() {
+    for mcp in [None, Some(mcp_config_for_test())] {
+        let (adapter, _run_id) = adapter_with_mcp(mcp);
+        let plan = adapter.spawn_plan();
+        assert!(
+            !plan.args.iter().any(|arg| arg == "--disable-builtin-mcps"),
+            "native MCP discovery must never be disabled, got: {:?}",
+            plan.args
+        );
+    }
+}
+
+#[test]
+fn spawn_plan_is_unchanged_when_mcp_is_none() {
+    let startup_options = batman_runtime::adapter::CopilotStartupOptions {
+        allow_tool: Some(vec!["fs_read".to_string()]),
+        deny_tool: Some(vec!["fs_write".to_string()]),
+        log_level: Some("debug".to_string()),
+    };
+    let adapter = CopilotAdapter::new(
+        PathBuf::from("copilot"),
+        std::env::temp_dir(),
+        startup_options,
+        Vec::new(),
+        batman_protocol::RunId::new(),
+        batman_protocol::TaskId::new(),
+        batman_protocol::WorkerId::new(),
+        None,
+    );
+    let plan = adapter.spawn_plan();
+
+    assert_eq!(
+        plan.args,
+        vec![
+            "--allow-tool=fs_read".to_string(),
+            "--deny-tool=fs_write".to_string(),
+            "--log-level".to_string(),
+            "debug".to_string(),
+        ]
+    );
+    assert!(plan.reserved_token.is_none());
+    assert!(!plan.env.contains_key("BATMAN_WORKER_SCOPE_TOKEN"));
 }

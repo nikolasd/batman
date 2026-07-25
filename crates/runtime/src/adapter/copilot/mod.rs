@@ -31,6 +31,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::task::JoinHandle;
 
+use batman_runtime::adapter::mcp_config::{
+    AdapterMcpConfig, coordination_mcp_config_document, coordination_mcp_env,
+};
 use batman_runtime::adapter::{
     Adapter, AdapterCapabilities, AdapterError, AdapterEvent, AdapterEventPayload,
     AdapterEventSink, AdapterFuture, AdapterMessage, AdapterSnapshot, ApprovalsCapability,
@@ -95,6 +98,23 @@ pub struct CopilotAdapter {
     task_id: batman_protocol::TaskId,
     worker_id: batman_protocol::WorkerId,
     state: TokioMutex<AdapterState>,
+    /// Worker-MCP coordination tool injection for this adapter's
+    /// supervised `copilot` process, or `None` for a caller that never
+    /// asked for worker MCP tools (see `crate::adapter::mcp_config`'s
+    /// module doc).
+    mcp: Option<AdapterMcpConfig>,
+}
+
+/// The argv/env/reserved-token plan [`CopilotAdapter::spawn_plan`]
+/// computes for a single `ensure_client` spawn. `#[doc(hidden)]`: an
+/// internal testing seam (mirroring `CopilotAcpClient::spawn_with_raw_args`'s
+/// test-only visibility), not part of this adapter's public contract.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct CopilotSpawnPlan {
+    pub args: Vec<String>,
+    pub env: std::collections::HashMap<String, String>,
+    pub reserved_token: Option<String>,
 }
 
 impl CopilotAdapter {
@@ -112,6 +132,7 @@ impl CopilotAdapter {
         run_id: batman_protocol::RunId,
         task_id: batman_protocol::TaskId,
         worker_id: batman_protocol::WorkerId,
+        mcp: Option<AdapterMcpConfig>,
     ) -> Self {
         Self {
             program,
@@ -122,6 +143,7 @@ impl CopilotAdapter {
             task_id,
             worker_id,
             state: TokioMutex::new(AdapterState::default()),
+            mcp,
         }
     }
 
@@ -149,27 +171,78 @@ impl CopilotAdapter {
         EnvironmentPolicy::baseline().build(&current, &self.environment_allowlist)
     }
 
+    /// The argv/env/reserved-token plan this adapter's single spawn path
+    /// (`ensure_client`) builds for [`CopilotAcpClient::spawn`], factored
+    /// out pure -- never spawns anything -- so this crate's own test
+    /// suite can assert on the injected `--additional-mcp-config`/
+    /// `BATMAN_WORKER_SCOPE_TOKEN` shape without spawning a real vendor
+    /// process. `reserved_token` is `Some` only when this adapter was
+    /// constructed with `mcp: Some(_)`; the caller must
+    /// [`AdapterMcpConfig::activate`] it once the real vendor pid is
+    /// known.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn spawn_plan(&self) -> CopilotSpawnPlan {
+        let mut args = self.startup_args();
+        let mut env = self.build_env();
+        let reserved_token = self.mcp.as_ref().map(|mcp| {
+            let context = mcp.launch_context(self.run_id);
+            let token = mcp.reserve();
+            args.push("--additional-mcp-config".to_string());
+            args.push(
+                serde_json::to_string(&coordination_mcp_config_document(&context))
+                    .expect("serializing a JSON value to a string never fails"),
+            );
+            env.extend(coordination_mcp_env(&token));
+            token
+        });
+        CopilotSpawnPlan {
+            args,
+            env,
+            reserved_token,
+        }
+    }
+
     /// Spawns and initializes a fresh [`CopilotAcpClient`] if this
     /// instance does not already own a live one. Refuses to proceed past
     /// `initialize` for a CLI version this adapter has not been
     /// empirically verified against (see `compatibility.rs`); there is
     /// currently no `CopilotStartupOptions` field to opt into an
-    /// unverified version, so this refusal is unconditional.
+    /// unverified version, so this refusal is unconditional. When
+    /// `self.mcp` is `Some`, also injects and activates the coordination
+    /// MCP scope token via [`Self::spawn_plan`] before returning.
     async fn ensure_client(&self) -> Result<Arc<CopilotAcpClient>, AdapterError> {
         let mut state = self.state.lock().await;
         if let Some(client) = &state.client {
             return Ok(client.clone());
         }
-        let client = CopilotAcpClient::spawn(
-            &self.program,
-            &self.cwd,
-            self.startup_args(),
-            self.build_env(),
-        )
-        .await
-        .map_err(|source| {
-            AdapterError::unavailable("copilot", "ensureClient", source.detail().to_string())
-        })?;
+        let plan = self.spawn_plan();
+        let client = CopilotAcpClient::spawn(&self.program, &self.cwd, plan.args, plan.env)
+            .await
+            .map_err(|source| {
+                AdapterError::unavailable("copilot", "ensureClient", source.detail().to_string())
+            })?;
+        if let Some(token) = plan.reserved_token {
+            let mcp = self
+                .mcp
+                .as_ref()
+                .expect("reserved_token is Some only when self.mcp is Some");
+            if let Err(err) = mcp.activate(
+                token,
+                self.run_id,
+                self.task_id,
+                self.worker_id,
+                client.pid(),
+                AdapterMcpConfig::default_expiry(),
+            ) {
+                client.shutdown().await;
+                return Err(AdapterError::process(
+                    "copilot",
+                    "ensureClient",
+                    format!("failed to activate coordination MCP scope token: {err}"),
+                ));
+            }
+        }
         let negotiated = client.initialize().await?;
         if let Some(version) = &negotiated.agent_version {
             if !copilot_cli_version_known(version) {
@@ -208,6 +281,7 @@ impl CopilotAdapter {
         let run_id = self.run_id;
         let task_id = self.task_id;
         let worker_id = self.worker_id;
+        let mcp = self.mcp.clone();
         tokio::spawn(async move {
             while let Some(event) = client.next_event().await {
                 match event {
@@ -244,6 +318,9 @@ impl CopilotAdapter {
                                 },
                             })
                             .await;
+                        if let Some(mcp) = &mcp {
+                            mcp.scope_tokens.revoke_for_run(run_id);
+                        }
                         break;
                     }
                 }
@@ -525,6 +602,9 @@ impl Adapter for CopilotAdapter {
                 client.shutdown().await;
             }
             state.vendor_session_id = None;
+            if let Some(mcp) = &self.mcp {
+                mcp.scope_tokens.revoke_for_run(self.run_id);
+            }
             Ok(())
         })
     }
