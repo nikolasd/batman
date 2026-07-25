@@ -10,6 +10,7 @@ pub mod codex;
 pub mod copilot;
 mod error;
 mod event_sink;
+pub mod mcp_config;
 pub mod omp_rpc;
 mod profile;
 mod profile_store;
