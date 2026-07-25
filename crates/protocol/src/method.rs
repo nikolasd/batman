@@ -95,4 +95,20 @@ pub enum BatmanMethod {
     // Orchestration: adapter worker profiles (Worker Adapters milestone)
     #[serde(rename = "profile/register")]
     ProfileRegister,
+
+    // Workspaces: lease and artifact operations
+    #[serde(rename = "workspace/acquire")]
+    WorkspaceAcquire,
+    #[serde(rename = "workspace/get")]
+    WorkspaceGet,
+    #[serde(rename = "workspace/release")]
+    WorkspaceRelease,
+    #[serde(rename = "workspace/inspect")]
+    WorkspaceInspect,
+    #[serde(rename = "workspace/apply")]
+    WorkspaceApply,
+    #[serde(rename = "artifact/list")]
+    ArtifactList,
+    #[serde(rename = "artifact/fetch")]
+    ArtifactFetch,
 }

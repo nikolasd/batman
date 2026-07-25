@@ -17,6 +17,8 @@ mod run;
 mod task;
 mod version;
 mod worker;
+mod workspace;
+mod artifact;
 
 pub use approval::{ApprovalDecision, ApprovalRequest};
 pub use coordination::{
@@ -43,6 +45,15 @@ pub use run::{Run, RunSpec, RunState};
 pub use task::TaskRef;
 pub use version::{ProtocolVersion, VersionRange};
 pub use worker::{Worker, WorkerProfileRef};
+pub use workspace::{
+    ApplyRequest, ApplyResult, ApplyStrategy, InspectRequest, InspectResult, IsolationKind,
+    LeaseMode, LeaseRequest, ReleaseRequest, WorkspaceEvent, WorkspaceInfo, WorkspaceLease,
+    WorkspaceState,
+};
+pub use artifact::{
+    Artifact, ArtifactFetchResult, ArtifactFetchRequest, ArtifactKind, ArtifactListRequest,
+    ArtifactListResult,
+};
 
 #[cfg(test)]
 mod tests {

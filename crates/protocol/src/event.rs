@@ -11,6 +11,7 @@ use time::format_description::well_known::Rfc3339;
 use ts_rs::TS;
 
 use crate::ids::{ApprovalId, ArtifactId, MessageId, ProjectId, RunId, TaskId, WorkerId};
+use crate::workspace::WorkspaceEvent;
 
 /// Canonical UTC RFC 3339 timestamp text, as carried on the wire.
 ///
@@ -446,6 +447,12 @@ pub enum RuntimeEvent {
         worker_id: WorkerId,
         healthy: bool,
         detail: Option<String>,
+    },
+    /// A workspace lease lifecycle event (lease acquire/release/inspect/apply/cleanup).
+    WorkspaceEvent {
+        kind: WorkspaceEvent,
+        run_id: RunId,
+        lease_id: String,
     },
     /// A worker adapter observed a vendor-created child worker, emitted
     /// even when the adapter declares `nested: none` -- emission alone
