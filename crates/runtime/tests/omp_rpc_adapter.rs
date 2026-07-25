@@ -25,6 +25,7 @@ use batman_runtime::adapter::omp_rpc::client::{
     self, OmpRpcClient, abort_command, follow_up_command, get_session_stats_command,
     get_state_command, prompt_command, set_subagent_subscription_command, steer_command,
 };
+use batman_runtime::adapter::omp_rpc::conformance;
 use batman_runtime::adapter::omp_rpc::normalize::{
     PROMPT_ACCEPTED_MARKER, PROMPT_COMPLETED_MARKER, normalize_frame,
 };
@@ -33,6 +34,7 @@ use batman_runtime::adapter::{
     OmpRpcAdapterOptions, OmpRpcStartupOptions, ProfileId, StartSpec, StartupOptions,
     WorkerProfile,
 };
+use batman_runtime::conformance::scenario;
 use batman_runtime::supervisor::{EnvironmentPolicy, SpawnSpec, Supervisor};
 use serde_json::Value;
 
@@ -747,4 +749,65 @@ async fn a_host_tool_call_during_the_prompt_turn_never_deadlocks_start() {
         .dispose()
         .await
         .expect("disposing a running OmpRpcAdapter must succeed");
+}
+
+// -------------------------------------------------------- conformance
+
+/// Every one of the 14 canonical scenario names must appear exactly
+/// once, and every scenario genuinely provable without a model call in
+/// this environment must report `passed: true` -- a real gap (e.g. no
+/// local model server reachable) is a legitimate `passed: false`, never
+/// papered over, exactly like PROBE's own honest failure mode.
+#[tokio::test]
+async fn fixture_report_covers_every_canonical_scenario_exactly_once_and_passes_what_it_can() {
+    let report = conformance::fixture_report().await;
+    assert_eq!(
+        report.scenarios.len(),
+        scenario::ALL.len(),
+        "fixture_report() must run every canonical scenario exactly once: {:?}",
+        report.scenarios.iter().map(|s| s.name).collect::<Vec<_>>()
+    );
+    let mut seen = std::collections::HashSet::new();
+    for name in scenario::ALL {
+        assert!(
+            seen.insert(name),
+            "duplicate name in scenario::ALL itself: {name}"
+        );
+        assert!(
+            report.scenarios.iter().any(|s| s.name == name),
+            "fixture_report() is missing canonical scenario {name:?}"
+        );
+    }
+    for result in &report.scenarios {
+        assert!(
+            scenario::ALL.contains(&result.name),
+            "fixture_report() reported a scenario name outside scenario::ALL: {:?}",
+            result.name
+        );
+    }
+
+    // PROBE, CANCELLATION_SCOPE, and FOLLOW_UP all genuinely depend on a
+    // local (lm-studio/omlx) model selector being listed by `omp models
+    // --json` on the machine running this test. APPROVAL is a genuine,
+    // documented implementation gap, not an environmental one: this
+    // adapter's normalize_frame has no case for extension_ui_request
+    // frames at all, so it honestly reports `passed: false` rather than
+    // fabricate a pass (see conformance.rs's own approval_scenario doc
+    // comment) -- every other scenario must pass unconditionally.
+    let allowed_to_fail = [
+        scenario::PROBE,
+        scenario::CANCELLATION_SCOPE,
+        scenario::FOLLOW_UP,
+        scenario::APPROVAL,
+    ];
+    for result in &report.scenarios {
+        if allowed_to_fail.contains(&result.name) {
+            continue;
+        }
+        assert!(
+            result.passed,
+            "scenario {:?} must pass without any local model server dependency, but failed: {}",
+            result.name, result.detail
+        );
+    }
 }
