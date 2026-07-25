@@ -517,6 +517,49 @@ async fn coordination_send_rejects_a_task_unrelated_to_the_run() {
     assert!(result["error"]["message"].as_str().unwrap().contains("cannot address"));
 }
 
+
+#[tokio::test]
+async fn coordination_methods_reject_a_run_that_has_already_settled() {
+    let harness = Harness::start().await;
+    let mut omp = omp_client(&harness, "omp-1").await;
+    let (token, run_id, task_id, worker_id) = seed_scoped_run(&harness, &mut omp).await;
+    let mut worker = worker_client(&harness, &token).await;
+
+    // Settle the run to a terminal state -- the scope token itself is
+    // still technically live (nothing has revoked it yet), but every
+    // worker-safe operation must reject it regardless: settlement, not
+    // revocation, is what actually ends this run's ability to act.
+    let cancel = omp.call(5, "run/cancel", json!({ "runId": run_id.to_string() })).await;
+    assert!(cancel.get("error").is_none(), "run/cancel failed: {cancel:?}");
+
+    let task_call = worker.call(6, "coordination/task", json!({ "runId": run_id.to_string() })).await;
+    assert_eq!(task_call["error"]["code"], -32602, "{task_call:?}");
+    assert!(task_call["error"]["message"].as_str().unwrap().contains("already settled"));
+
+    let send_call = worker
+        .call(
+            7,
+            "coordination/send",
+            json!({
+                "runId": run_id.to_string(),
+                "senderWorkerId": worker_id.to_string(),
+                "taskId": task_id.to_string(),
+                "kind": "peerMessage",
+                "payload": "too late",
+            }),
+        )
+        .await;
+    assert_eq!(send_call["error"]["code"], -32602, "{send_call:?}");
+
+    // Nothing from either rejected call reached the journal.
+    let replay = omp.call(8, "events/replay", json!({ "afterSequence": 0 })).await;
+    let events = replay["result"].as_array().expect("events/replay returns an array");
+    assert!(
+        !events.iter().any(|e| e["event"]["type"] == "messageEvent"),
+        "a call rejected for run settlement must never journal a message: {events:?}"
+    );
+}
+
 #[tokio::test]
 async fn coordination_send_reply_to_must_reference_a_visible_prior_message() {
     let harness = Harness::start().await;

@@ -13,8 +13,8 @@
 use std::sync::Arc;
 
 use batman_protocol::{
-    error_code, DeliveryState, EventEnvelope, MessageId, MessageKind, ProjectId, RunId, RunMessage, TaskId,
-    Timestamp, WorkerId, COORDINATION_PAYLOAD_MAX_BYTES,
+    error_code, DeliveryState, EventEnvelope, MessageId, MessageKind, ProjectId, RunId, RunMessage, RunState,
+    TaskId, Timestamp, WorkerId, COORDINATION_PAYLOAD_MAX_BYTES,
 };
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
@@ -37,6 +37,13 @@ impl CoordinationError {
         Self {
             code: error_code::INVALID_PARAMS,
             message: msg.into(),
+        }
+    }
+
+    fn run_settled(run_id: RunId) -> Self {
+        Self {
+            code: error_code::INVALID_PARAMS,
+            message: format!("run {run_id} has already settled; cannot address it"),
         }
     }
 }
@@ -84,6 +91,45 @@ impl CoordinationBroker {
         }
     }
 
+    /// Rejects any worker-safe operation against a run that has already
+    /// settled (reached a terminal state: `succeeded`, `failed`,
+    /// `cancelled`, or `lost`). A scope token is only revoked promptly
+    /// on observed vendor-process exit (see
+    /// `crate::coordination::scope_token`'s module doc) or explicit
+    /// adapter disposal -- neither is guaranteed to have happened yet
+    /// the instant a run settles, so this check is independent of (and
+    /// a stronger, immediate guarantee than) token revocation: a
+    /// connection whose token is technically still live must still
+    /// never be able to mutate or observe state for a run that is no
+    /// longer active.
+    async fn require_live_run(&self, run_id: RunId) -> Result<(), CoordinationError> {
+        let state: String = self
+            .db
+            .run_domain_op(Box::new(move |conn| {
+                conn.query_row(
+                    "SELECT state FROM runs WHERE run_id = ?1",
+                    [run_id.to_string()],
+                    |row| row.get(0),
+                )
+                .map(|state: String| json!({ "state": state }))
+                .map_err(|_| crate::domain::DomainError::NotFound {
+                    kind: "run",
+                    id: run_id.to_string(),
+                })
+            }))
+            .await?
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let run_state = RunState::try_from(state.as_str())
+            .map_err(|_| CoordinationError::invalid_params("stored run has an invalid state"))?;
+        if run_state.is_terminal() {
+            return Err(CoordinationError::run_settled(run_id));
+        }
+        Ok(())
+    }
+
     /// `coordination/send`: validates bounds, reply visibility, and task
     /// ownership, checks the rate limit, then records the message
     /// (`recorded`) and immediately marks it `sent` -- no adapter exists in
@@ -99,6 +145,7 @@ impl CoordinationBroker {
         recipient_worker_id: Option<WorkerId>,
         reply_to: Option<MessageId>,
     ) -> Result<Value, CoordinationError> {
+        self.require_live_run(run_id).await?;
         if payload.len() > COORDINATION_PAYLOAD_MAX_BYTES {
             return Err(CoordinationError::invalid_params(format!(
                 "payload of {} bytes exceeds the {}-byte maximum",
@@ -210,6 +257,7 @@ impl CoordinationBroker {
     /// `coordination/task`: the worker-safe view of the task bound to
     /// `run_id`'s scope.
     pub async fn task(&self, run_id: RunId) -> Result<Value, CoordinationError> {
+        self.require_live_run(run_id).await?;
         self.db
             .run_domain_op(Box::new(move |conn| {
                 conn.query_row(
@@ -236,6 +284,7 @@ impl CoordinationBroker {
 
     /// `coordination/peers`: sibling workers on the same task as `run_id`.
     pub async fn peers(&self, run_id: RunId) -> Result<Value, CoordinationError> {
+        self.require_live_run(run_id).await?;
         self.db
             .run_domain_op(Box::new(move |conn| {
                 let task_id: String = conn
@@ -273,6 +322,7 @@ impl CoordinationBroker {
     /// requesting run to `waitingPeer`, and notifies OMP (via the durable
     /// event journal OMP already replays). Never creates a task or worker.
     pub async fn request_child(&self, run_id: RunId, reason: String) -> Result<Value, CoordinationError> {
+        self.require_live_run(run_id).await?;
         let project_id = self.project_id;
         let mut result = self
             .db
@@ -296,6 +346,7 @@ impl CoordinationBroker {
         artifact_ref: String,
         description: Option<String>,
     ) -> Result<Value, CoordinationError> {
+        self.require_live_run(run_id).await?;
         let sender_and_task = self.run_participants(run_id).await?;
         let project_id = self.project_id;
         let (task_id, worker_id) = sender_and_task;
@@ -335,6 +386,7 @@ impl CoordinationBroker {
     /// `coordination/reportBlocked`: reports the scoped run is blocked, as
     /// a journaled message OMP can observe, without changing ownership.
     pub async fn report_blocked(&self, run_id: RunId, reason: String) -> Result<Value, CoordinationError> {
+        self.require_live_run(run_id).await?;
         let (task_id, worker_id) = self.run_participants(run_id).await?;
         self.send_internal(run_id, worker_id, task_id, MessageKind::PeerMessage, reason, None, None)
             .await
@@ -343,6 +395,7 @@ impl CoordinationBroker {
     /// `coordination/askPolicy`: asks OMP a policy question, as a
     /// journaled message OMP can observe, without deciding it locally.
     pub async fn ask_policy(&self, run_id: RunId, question: String) -> Result<Value, CoordinationError> {
+        self.require_live_run(run_id).await?;
         let (task_id, worker_id) = self.run_participants(run_id).await?;
         self.send_internal(run_id, worker_id, task_id, MessageKind::Question, question, None, None)
             .await
