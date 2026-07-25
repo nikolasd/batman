@@ -936,3 +936,48 @@ async fn resume_with_worker_mcp_configured_activates_a_token_and_cleans_up_on_ex
         "the --mcp-config temp file must be deleted once the session has ended"
     );
 }
+
+// ----------------------------------------------------------- conformance
+
+#[tokio::test]
+async fn conformance_fixture_report_covers_every_canonical_scenario_and_all_pass() {
+    use batman_runtime::conformance::scenario;
+
+    let report = batman_runtime::adapter::claude::conformance::fixture_report().await;
+
+    assert_eq!(
+        report.scenarios.len(),
+        14,
+        "expected exactly 14 scenarios, got {:?}",
+        report.scenarios.iter().map(|s| s.name).collect::<Vec<_>>()
+    );
+
+    let mut seen = std::collections::HashSet::new();
+    for scenario_result in &report.scenarios {
+        assert!(
+            scenario::ALL.contains(&scenario_result.name),
+            "unexpected scenario name: {}",
+            scenario_result.name
+        );
+        assert!(
+            seen.insert(scenario_result.name),
+            "duplicate scenario name: {}",
+            scenario_result.name
+        );
+    }
+    for name in scenario::ALL {
+        assert!(seen.contains(&name), "missing scenario: {name}");
+    }
+
+    // Every scenario this adapter's fixture suite runs is genuinely
+    // provable without a model call (see conformance.rs) -- a failing
+    // scenario here is a real regression, never a fabricated pass to
+    // paper over.
+    for scenario_result in &report.scenarios {
+        assert!(
+            scenario_result.passed,
+            "scenario {} failed: {}",
+            scenario_result.name, scenario_result.detail
+        );
+    }
+}
