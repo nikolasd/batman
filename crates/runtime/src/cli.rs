@@ -84,6 +84,37 @@ enum Command {
         #[arg(long)]
         run_id: String,
     },
+    /// Reports probe facts and conformance-effective capabilities for
+    /// every worker adapter kind (`claude`, `codex`, `copilot`,
+    /// `ompRpc`), never a raw declared claim.
+    Adapters {
+        /// Always emits JSON; accepted for the plan's own documented
+        /// invocation shape (`batcave adapters --json`).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Runs one adapter's (or every adapter's, with `--adapter all`)
+    /// fixture or live conformance suite and writes a machine-readable
+    /// report to `--output`.
+    Conformance {
+        /// `claude`, `codex`, `copilot`, `ompRpc`, or `all`.
+        #[arg(long)]
+        adapter: String,
+        /// Runs the zero-model-call fixture suite. Mutually exclusive
+        /// with `--live`; exactly one is required.
+        #[arg(long)]
+        fixture: bool,
+        /// Runs the live suite against the installed vendor CLI.
+        /// Mutually exclusive with `--fixture`; exactly one is required.
+        /// Each adapter's own suite still checks its own
+        /// `BATMAN_LIVE_<ADAPTER>` gate internally and reports (never
+        /// hard-fails the whole command for) an unset gate.
+        #[arg(long)]
+        live: bool,
+        /// Where to write the JSON report array.
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 /// The canonical protocol JSON Schema, embedded at compile time so the binary
@@ -120,6 +151,13 @@ pub async fn run() -> ExitCode {
             repo,
             run_id,
         } => run_coordination_mcp(state_dir, repo, run_id).await,
+        Command::Adapters { json: _ } => run_adapters().await,
+        Command::Conformance {
+            adapter,
+            fixture,
+            live,
+            output,
+        } => run_conformance(adapter, fixture, live, output).await,
     }
 }
 
@@ -225,6 +263,90 @@ async fn run_coordination_mcp(state_dir: PathBuf, repo: PathBuf, run_id: String)
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => fail(&err),
     }
+}
+
+const ALL_ADAPTER_KINDS: [batman_runtime::adapter::AdapterKind; 4] = [
+    batman_runtime::adapter::AdapterKind::Claude,
+    batman_runtime::adapter::AdapterKind::Codex,
+    batman_runtime::adapter::AdapterKind::Copilot,
+    batman_runtime::adapter::AdapterKind::OmpRpc,
+];
+
+async fn run_adapters() -> ExitCode {
+    let mut reports = Vec::with_capacity(ALL_ADAPTER_KINDS.len());
+    for kind in ALL_ADAPTER_KINDS {
+        reports.push(batman_runtime::conformance::run_fixture_conformance(kind).await);
+    }
+    match serde_json::to_string_pretty(&reports) {
+        Ok(json) => {
+            println!("{json}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail(err),
+    }
+}
+
+/// Parses `--adapter`'s raw value into the specific kinds to run:
+/// `"all"` means every reserved kind; anything else must be one of
+/// `AdapterKind::from_wire_name`'s exact wire names.
+fn parse_adapter_selection(
+    adapter: &str,
+) -> Result<Vec<batman_runtime::adapter::AdapterKind>, String> {
+    if adapter == "all" {
+        return Ok(ALL_ADAPTER_KINDS.to_vec());
+    }
+    batman_runtime::adapter::AdapterKind::from_wire_name(adapter)
+        .map(|kind| vec![kind])
+        .ok_or_else(|| {
+            format!(
+                "unknown --adapter {adapter:?}; expected one of claude, codex, copilot, ompRpc, or all"
+            )
+        })
+}
+
+async fn run_conformance(adapter: String, fixture: bool, live: bool, output: PathBuf) -> ExitCode {
+    if fixture == live {
+        return fail(if fixture {
+            "exactly one of --fixture or --live is required, not both"
+        } else {
+            "exactly one of --fixture or --live is required"
+        });
+    }
+    let kinds = match parse_adapter_selection(&adapter) {
+        Ok(kinds) => kinds,
+        Err(err) => return fail(err),
+    };
+
+    let mut reports = Vec::with_capacity(kinds.len());
+    for kind in kinds {
+        let report = if fixture {
+            serde_json::to_value(batman_runtime::conformance::run_fixture_conformance(kind).await)
+        } else {
+            match batman_runtime::conformance::run_live_conformance(kind).await {
+                Ok(report) => serde_json::to_value(report),
+                Err(err) => Ok(serde_json::json!({
+                    "adapter": kind.wire_name(),
+                    "mode": "live",
+                    "passed": false,
+                    "error": err,
+                })),
+            }
+        };
+        match report {
+            Ok(value) => reports.push(value),
+            Err(err) => return fail(err),
+        }
+    }
+
+    let json = match serde_json::to_string_pretty(&reports) {
+        Ok(json) => json,
+        Err(err) => return fail(err),
+    };
+    if let Err(err) = std::fs::write(&output, &json) {
+        return fail(format!("failed to write {}: {err}", output.display()));
+    }
+    println!("{json}");
+    ExitCode::SUCCESS
 }
 
 /// Resolves the state directory: the explicit `--state-dir`, or
