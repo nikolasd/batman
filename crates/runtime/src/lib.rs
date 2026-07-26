@@ -23,6 +23,7 @@ pub mod paths;
 pub mod security;
 pub mod service;
 pub mod supervisor;
+pub mod workspace;
 
 pub use approval::{
     ApprovalCallback, ApprovalError, ApprovalService, DecideOutcome, NoopApprovalCallback,
