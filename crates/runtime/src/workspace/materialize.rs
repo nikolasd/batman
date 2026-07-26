@@ -73,12 +73,8 @@ impl WorkspaceMaterializer {
         let candidate = self.root.join(path);
         let canonical_root = self.root.canonicalize().unwrap_or(self.root.clone());
         
-        // If the candidate exists, canonicalize it and check it's under the root
-        if candidate.exists() {
-            let canonical = candidate.canonicalize().map_err(|e| {
-                MaterializerError::PathValidation(format!("Failed to canonicalize path: {}", e))
-            })?;
-            
+        // Resolve the nearest existing ancestor and check it's under the root
+        if let Some(canonical) = Self::resolve_nearest_existing(&candidate) {
             if !canonical.starts_with(&canonical_root) {
                 return Err(MaterializerError::PathValidation(
                     "Path escapes lease root via symlink".to_string()
@@ -88,6 +84,23 @@ impl WorkspaceMaterializer {
         // For non-existent paths, lexical validation is sufficient
         
         Ok(())
+    }
+    
+    /// Resolves the nearest existing ancestor of a path.
+    /// Returns the canonical path of the nearest existing ancestor, or None if no ancestor exists.
+    fn resolve_nearest_existing(path: &Path) -> Option<PathBuf> {
+        let mut current = path.to_path_buf();
+        
+        // Walk up the path until we find an existing ancestor
+        loop {
+            if current.exists() {
+                return current.canonicalize().ok();
+            }
+            
+            if !current.pop() {
+                return None;
+            }
+        }
     }
 
     /// Materializes a workspace with the given isolation kind.

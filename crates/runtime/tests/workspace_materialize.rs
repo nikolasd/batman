@@ -125,6 +125,21 @@ fn git_worktree_creates_actual_worktree() {
     assert!(output.status.success(), "git rev-parse should succeed");
     let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
     assert!(!head.is_empty(), "worktree should have a HEAD commit");
+    
+    // Clean up worktrees using git worktree remove (proper cleanup)
+    let status1 = std::process::Command::new("git")
+        .current_dir(&fixture.repo)
+        .args(["worktree", "remove", path1.to_str().unwrap_or("")])
+        .status()
+        .expect("Failed to execute git");
+    assert!(status1.success(), "git worktree remove for path1 should succeed");
+    
+    let status2 = std::process::Command::new("git")
+        .current_dir(&fixture.repo)
+        .args(["worktree", "remove", path2.to_str().unwrap_or("")])
+        .status()
+        .expect("Failed to execute git");
+    assert!(status2.success(), "git worktree remove for path2 should succeed");
 }
 
 #[test]
@@ -170,6 +185,39 @@ fn path_guard_rejects_nested_escape() {
     // Nested `..` that escapes after normalization
     let result = fixture.materializer.validate_path("foo/../../etc/passwd");
     assert!(result.is_err(), "nested `..` escape should be rejected");
+}
+
+#[test]
+fn path_guard_rejects_symlink_escape() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::TempDir::new().unwrap();
+    let repo = temp.path().to_path_buf();
+
+    // Create the materializer first to get the computed root
+    let project_id = ProjectId::parse("01900000-0000-0000-0000-000000000009").unwrap();
+    let root = std::env::temp_dir().join(format!("batman-workspace-{}", project_id));
+    std::fs::create_dir_all(&root).unwrap();
+    let materializer = WorkspaceMaterializer::new(project_id, repo).unwrap();
+
+    // Create an external directory that the symlink will point to
+    let external_dir = std::env::temp_dir().join("escape-target-external");
+    std::fs::create_dir_all(&external_dir).unwrap();
+    std::fs::write(external_dir.join("secret.txt"), "secret\n").unwrap();
+
+    // Create a symlink under root that points outside
+    symlink(&external_dir, root.join("link-to-escape")).unwrap();
+
+    // Create a file inside the symlinked directory
+    std::fs::write(external_dir.join("new-file"), "escaped file\n").unwrap();
+
+    // Validate the symlink path - should be rejected because it escapes
+    let result = materializer.validate_path("link-to-escape/new-file");
+    assert!(result.is_err(), "symlink escaping root should be rejected: {:?}", result);
+
+    // Clean up
+    let _ = std::fs::remove_dir_all(&external_dir);
+    let _ = std::fs::remove_file(root.join("link-to-escape"));
 }
 
 #[test]
