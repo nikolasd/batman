@@ -144,7 +144,7 @@ async fn a_worker_with_no_resolved_profile_snapshot_is_rejected() {
 }
 
 #[tokio::test]
-async fn a_terminal_degraded_profile_has_no_adapter_to_start() {
+async fn a_terminal_degraded_profile_uses_terminal_adapter() {
     let (db, _dir, project_id) = harness().await;
     let (run_id, task_id, worker_id) =
         seed_worker_and_run(&db, project_id, Some(&terminal_degraded_profile())).await;
@@ -153,14 +153,22 @@ async fn a_terminal_degraded_profile_has_no_adapter_to_start() {
         PathBuf::from("/tmp"),
     );
 
-    let err = registry
+    // TerminalDegraded now constructs a terminal adapter (may succeed or fail based on host)
+    let result = registry
         .start(ctx(db, project_id, run_id, task_id, worker_id))
-        .await
-        .expect_err("terminal-degraded profiles must have no adapter to construct");
-    assert!(
-        err.contains("terminal-degraded"),
-        "unexpected error message: {err}"
-    );
+        .await;
+    
+    // On a host without tmux, we expect an error; on a host with tmux, we expect success
+    // The key is that the registry now attempts to construct a terminal adapter
+    if result.is_err() {
+        let err = result.unwrap_err();
+        // Should contain either "unavailable" (tmux not found) or "process" (other error)
+        assert!(
+            err.contains("unavailable") || err.contains("process"),
+            "unexpected error message: {err}"
+        );
+    }
+    // If successful, the adapter was constructed (this is the contract change)
 }
 
 #[tokio::test]

@@ -8,6 +8,7 @@ mod capability;
 pub mod claude;
 pub mod codex;
 pub mod copilot;
+pub mod terminal;
 mod error;
 mod event_sink;
 pub mod mcp_config;

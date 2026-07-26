@@ -89,8 +89,6 @@ pub enum RegistryError {
     NoResolvedProfile,
     #[error("failed to read the resolved worker profile: {0}")]
     ProfileUnreadable(String),
-    #[error("terminal-degraded worker profiles have no adapter to start")]
-    NoAdapterForTerminalDegraded,
     #[error("authorization denied: {0}")]
     AuthorizationDenied(String),
 }
@@ -245,12 +243,22 @@ async fn run_one(
     repo_root: &std::path::Path,
 ) -> Result<Arc<dyn Adapter>, String> {
     let profile = resolve_profile(ctx).await.map_err(String::from)?;
-    let Some(kind) = profile.adapter_kind() else {
-        return Err(RegistryError::NoAdapterForTerminalDegraded.into());
+    
+    // Handle TerminalDegraded specially (it has no adapter kind)
+    let effective_capabilities = if profile.adapter_kind().is_none() {
+        // TerminalDegraded uses the terminal adapter with degraded capabilities
+        // We need to extract the backend from the startup options
+        if let StartupOptions::TerminalDegraded(opts) = &profile.startup_options() {
+            super::terminal::TerminalAdapter::new(opts.backend.clone()).capabilities()
+        } else {
+            return Err("TerminalDegraded profile has no startup options".to_string());
+        }
+    } else {
+        let Some(kind) = profile.adapter_kind() else {
+            return Err("no adapter kind".to_string());
+        };
+        conformance::run_fixture_conformance(kind).await.effective_capabilities
     };
-    let effective_capabilities = conformance::run_fixture_conformance(kind)
-        .await
-        .effective_capabilities;
     authorization
         .authorize(&profile, &effective_capabilities)
         .map_err(RegistryError::AuthorizationDenied)
@@ -339,8 +347,8 @@ fn build_adapter(
             super::OmpRpcAdapterOptions::default(),
             None,
         )),
-        StartupOptions::TerminalDegraded(_) => {
-            return Err(RegistryError::NoAdapterForTerminalDegraded);
+        StartupOptions::TerminalDegraded(opts) => {
+            Arc::new(super::terminal::TerminalAdapter::new(opts.backend.clone())) as Arc<dyn super::r#trait::Adapter>
         }
     };
     Ok(adapter)
