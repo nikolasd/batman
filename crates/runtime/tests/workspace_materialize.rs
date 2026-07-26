@@ -221,6 +221,101 @@ fn path_guard_rejects_symlink_escape() {
 }
 
 #[test]
+fn copy_isolation_recreates_directory_symlinks() {
+    use std::os::unix::fs::symlink;
+    
+    let temp = tempfile::TempDir::new().unwrap();
+    let repo = temp.path().to_path_buf();
+    
+    // Create a directory symlink pointing outside the repo
+    let external_dir = std::env::temp_dir().join("external-dir-target");
+    std::fs::create_dir_all(external_dir.join("subdir")).unwrap();
+    std::fs::write(external_dir.join("subdir").join("file.txt"), "external file
+").unwrap();
+    symlink(&external_dir, repo.join("link-to-external-dir")).unwrap();
+    
+    // Create the materializer
+    let project_id = ProjectId::parse("01900000-0000-0000-0000-000000000021").unwrap();
+    let root = std::env::temp_dir().join(format!("batman-workspace-{}", project_id));
+    if root.exists() {
+        std::fs::remove_dir_all(&root).ok();
+    }
+    let materializer = WorkspaceMaterializer::new(project_id, repo).unwrap();
+    
+    // Materialize with Copy isolation
+    let run = test_run_id(1);
+    let path = materializer.materialize(run, IsolationKind::Copy).unwrap();
+    
+    // Verify the symlink was recreated as a directory symlink (not followed)
+    let link_path = path.join("link-to-external-dir");
+    let link_meta = link_path.symlink_metadata().unwrap();
+    assert!(link_meta.file_type().is_symlink(), "should be a symlink");
+    
+    // Delete the external directory to distinguish recreation from copying
+    let _ = std::fs::remove_dir_all(&external_dir);
+    
+    // Verify the destination entry remains a symlink (not a copied directory)
+    let link_meta_after = link_path.symlink_metadata().unwrap();
+    assert!(link_meta_after.file_type().is_symlink(), "should still be a symlink after external_dir removed");
+    
+    // Verify sub_file is now absent (proving it was a symlink, not a copy)
+    let sub_file = link_path.join("subdir").join("file.txt");
+    assert!(!sub_file.exists(), "external directory contents should not exist after external_dir removed");
+    
+    // Clean up the symlink itself
+    let _ = std::fs::remove_file(&link_path);
+}
+
+#[test]
+fn copy_isolation_recreates_symlinks() {
+    use std::os::unix::fs::symlink;
+    
+    let temp = tempfile::TempDir::new().unwrap();
+    let repo = temp.path().to_path_buf();
+    
+    // Create a regular file
+    std::fs::write(repo.join("regular.txt"), "regular content
+").unwrap();
+    
+    // Create a symlink pointing outside the repo
+    let external_file = std::env::temp_dir().join("external-target.txt");
+    std::fs::write(&external_file, "external content
+").unwrap();
+    symlink(&external_file, repo.join("link-to-external")).unwrap();
+    
+    // Create the materializer
+    let project_id = ProjectId::parse("01900000-0000-0000-0000-000000000020").unwrap();
+    let root = std::env::temp_dir().join(format!("batman-workspace-{}", project_id));
+    if root.exists() {
+        std::fs::remove_dir_all(&root).ok();
+    }
+    let materializer = WorkspaceMaterializer::new(project_id, repo).unwrap();
+    
+    // Materialize with Copy isolation
+    let run = test_run_id(1);
+    let path = materializer.materialize(run, IsolationKind::Copy).unwrap();
+    
+    // Verify regular file was copied
+    assert!(path.join("regular.txt").exists(), "regular file should be copied");
+    let content = std::fs::read_to_string(path.join("regular.txt")).unwrap();
+    assert_eq!(content, "regular content
+");
+    
+    // Verify symlink was recreated (not followed) - check BEFORE exists()
+    let link_meta = path.join("link-to-external").symlink_metadata().unwrap();
+    assert!(link_meta.file_type().is_symlink(), "should be a symlink, not a regular file");
+    // Now we can check exists (which follows the symlink)
+    assert!(path.join("link-to-external").exists(), "symlink target should exist");
+    
+    // Verify the symlink target is the external file (not the content copied)
+    let target = std::fs::read_link(path.join("link-to-external")).unwrap();
+    assert_eq!(target, external_file);
+    
+    // Clean up
+    let _ = std::fs::remove_file(&external_file);
+}
+
+#[test]
 fn path_guard_accepts_valid_relative_path() {
     let fixture = Fixture::new(test_project_id(6));
     
