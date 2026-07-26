@@ -18,6 +18,7 @@ mod task;
 mod version;
 mod worker;
 mod workspace;
+mod display;
 mod artifact;
 
 pub use approval::{ApprovalDecision, ApprovalRequest};
@@ -50,6 +51,8 @@ pub use workspace::{
     LeaseMode, LeaseRequest, ReleaseRequest, WorkspaceEvent, WorkspaceInfo, WorkspaceLease,
     WorkspaceState,
 };
+pub use display::{DisplayBackend, DisplayConfig, DisplayStatus};
+
 pub use artifact::{
     Artifact, ArtifactFetchResult, ArtifactFetchRequest, ArtifactKind, ArtifactListRequest,
     ArtifactListResult,

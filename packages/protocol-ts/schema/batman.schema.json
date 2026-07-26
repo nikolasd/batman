@@ -4,6 +4,15 @@
   "description": "Root schema document referencing every exported request/result/event\ntype, so that a single `schemars` invocation produces one JSON Schema\nwith everything reachable from the wire protocol in `$defs`.",
   "type": "object",
   "properties": {
+    "displayBackend": {
+      "$ref": "#/$defs/DisplayBackend"
+    },
+    "displayConfig": {
+      "$ref": "#/$defs/DisplayConfig"
+    },
+    "displayStatus": {
+      "$ref": "#/$defs/DisplayStatus"
+    },
     "eventEnvelope": {
       "$ref": "#/$defs/EventEnvelope"
     },
@@ -37,6 +46,9 @@
     "initializeResult",
     "eventEnvelope",
     "runtimeEvent",
+    "displayBackend",
+    "displayConfig",
+    "displayStatus",
     "jsonRpcRequest",
     "jsonRpcResponse",
     "jsonRpcErrorResponse",
@@ -44,6 +56,14 @@
     "runtimeStatus"
   ],
   "$defs": {
+    "ApplyStrategy": {
+      "description": "The mechanical strategy for applying a workspace change.",
+      "type": "string",
+      "enum": [
+        "applyPatch",
+        "cherryPick"
+      ]
+    },
     "ApprovalId": {
       "description": "Identifies an approval request raised by the runtime.",
       "type": "string"
@@ -85,7 +105,14 @@
         "coordination/reportBlocked",
         "coordination/askPolicy",
         "reconcile/omp",
-        "profile/register"
+        "profile/register",
+        "workspace/acquire",
+        "workspace/get",
+        "workspace/release",
+        "workspace/inspect",
+        "workspace/apply",
+        "artifact/list",
+        "artifact/fetch"
       ]
     },
     "BinarySource": {
@@ -265,6 +292,107 @@
         "error"
       ]
     },
+    "DisplayBackend": {
+      "description": "Supported display backends.",
+      "oneOf": [
+        {
+          "description": "Herdr terminal multiplexer backend.",
+          "type": "string",
+          "const": "herdr"
+        },
+        {
+          "description": "Tmux terminal multiplexer backend.",
+          "type": "string",
+          "const": "tmux"
+        },
+        {
+          "description": "Raw terminal backend (degraded capabilities).",
+          "type": "string",
+          "const": "terminal"
+        }
+      ]
+    },
+    "DisplayConfig": {
+      "description": "Display configuration.",
+      "type": "object",
+      "properties": {
+        "backend": {
+          "description": "The backend to use.",
+          "$ref": "#/$defs/DisplayBackend"
+        },
+        "height": {
+          "description": "Optional height override (None = auto-detect).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "width": {
+          "description": "Optional width override (None = auto-detect).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "backend"
+      ]
+    },
+    "DisplayStatus": {
+      "description": "Display status information.",
+      "type": "object",
+      "properties": {
+        "active": {
+          "description": "Whether the backend is currently active.",
+          "type": "boolean"
+        },
+        "available": {
+          "description": "Whether the backend is available.",
+          "type": "boolean"
+        },
+        "backend": {
+          "description": "The backend in use.",
+          "$ref": "#/$defs/DisplayBackend"
+        },
+        "dimensions": {
+          "description": "Terminal dimensions if known.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            },
+            {
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "backend",
+        "available",
+        "active"
+      ]
+    },
     "EventEnvelope": {
       "description": "The envelope wrapping every durable runtime event, carrying its sequence\nnumber and routing metadata.",
       "type": "object",
@@ -428,6 +556,15 @@
         "nextSequence"
       ]
     },
+    "IsolationKind": {
+      "description": "The isolation strategy used to materialize a workspace.\n\n`shared` means no isolation (single path shared by read-only workers);\n`gitWorktree` uses `git worktree add --detach`; `copy` copies the tree\nwithout following symlinks or copying `.git` administrative data.",
+      "type": "string",
+      "enum": [
+        "shared",
+        "gitWorktree",
+        "copy"
+      ]
+    },
     "JsonRpcError": {
       "description": "A JSON-RPC 2.0 error object. `data` carries optional, already-sanitized\ndiagnostic detail; it is omitted from the wire form when absent.",
       "type": "object",
@@ -531,6 +668,14 @@
         "jsonrpc",
         "id",
         "result"
+      ]
+    },
+    "LeaseMode": {
+      "description": "The isolation mode requested for a workspace lease.\n\n`shared` allows multiple read-only workers to share one path;\n`write` requires exclusive isolation (git-worktree or copy).",
+      "type": "string",
+      "enum": [
+        "readOnly",
+        "write"
       ]
     },
     "MessageId": {
@@ -1408,6 +1553,41 @@
           ]
         },
         {
+          "description": "A workspace lease lifecycle event (lease acquire/release/inspect/apply/cleanup).",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/WorkspaceEvent"
+                },
+                "leaseId": {
+                  "type": "string"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "runId",
+                "leaseId"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "workspaceEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
           "description": "A worker adapter observed a vendor-created child worker, emitted\neven when the adapter declares `nested: none` -- emission alone\nnever upgrades a declared capability; conformance/policy decide\nwhat an unexpected observation means.",
           "type": "object",
           "properties": {
@@ -1645,6 +1825,391 @@
     "WorkerId": {
       "description": "Identifies a worker process spawned by the runtime.",
       "type": "string"
+    },
+    "WorkspaceEvent": {
+      "description": "A workspace lease lifecycle event produced by `acquire`/`release`/`inspect`/`apply`.\n\nSerialized as an adjacently tagged enum: `{ \"type\": \"...\", \"payload\": { ... } }`.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "leaseId": {
+                  "type": "string"
+                },
+                "mode": {
+                  "$ref": "#/$defs/LeaseMode"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "leaseId",
+                "runId",
+                "mode"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "leaseRequested"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "baseRevision": {
+                  "type": "string"
+                },
+                "isolationKind": {
+                  "$ref": "#/$defs/IsolationKind"
+                },
+                "leaseId": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "leaseId",
+                "runId",
+                "path",
+                "isolationKind",
+                "baseRevision"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "leaseAcquired"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "dirtyFileCount": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                },
+                "leaseId": {
+                  "type": "string"
+                },
+                "untrackedFileCount": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "leaseId",
+                "dirtyFileCount",
+                "untrackedFileCount"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "workspaceDirty"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "commitCount": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                },
+                "dirtyFileCount": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                },
+                "leaseId": {
+                  "type": "string"
+                },
+                "patchArtifactId": {
+                  "$ref": "#/$defs/ArtifactId"
+                },
+                "untrackedFileCount": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "leaseId",
+                "patchArtifactId",
+                "commitCount",
+                "dirtyFileCount",
+                "untrackedFileCount"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "workspaceInspected"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "artifactId": {
+                  "$ref": "#/$defs/ArtifactId"
+                },
+                "expectedTargetRevision": {
+                  "type": "string"
+                },
+                "leaseId": {
+                  "type": "string"
+                },
+                "strategy": {
+                  "$ref": "#/$defs/ApplyStrategy"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "leaseId",
+                "strategy",
+                "artifactId",
+                "expectedTargetRevision"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "applyStarted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "conflictArtifactId": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ArtifactId"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "leaseId": {
+                  "type": "string"
+                },
+                "success": {
+                  "type": "boolean"
+                },
+                "targetRevisionAfter": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "leaseId",
+                "success"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "applyCompleted"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "leaseId": {
+                  "type": "string"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "leaseId",
+                "runId"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "leaseReleased"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "error": {
+                  "type": "string"
+                },
+                "leaseId": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "leaseId",
+                "error"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "cleanupFailed"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "An artifact was published for a workspace (inspect or apply produced one).",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "artifactId": {
+                  "$ref": "#/$defs/ArtifactId"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "leaseId": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "leaseId",
+                "artifactId",
+                "kind"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "artifactPublished"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "An apply attempt produced a conflict that OMP must resolve.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "conflictArtifactId": {
+                  "$ref": "#/$defs/ArtifactId"
+                },
+                "expectedTargetRevision": {
+                  "type": "string"
+                },
+                "leaseId": {
+                  "type": "string"
+                },
+                "strategy": {
+                  "$ref": "#/$defs/ApplyStrategy"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "leaseId",
+                "conflictArtifactId",
+                "strategy",
+                "expectedTargetRevision"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "applyConflict"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        }
+      ]
     }
   }
 }

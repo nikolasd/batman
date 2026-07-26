@@ -17,6 +17,7 @@ use batman_protocol::{
     JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, MessageId, OperationId, ProjectId,
     ProtocolVersion, RepositoryIdentity, RequestId, RunId, RuntimeCapabilities, RuntimeEvent,
     RuntimeInfo, RuntimeStatus, TaskId, Timestamp, VersionRange, WorkerId,
+    DisplayBackend, DisplayConfig, DisplayStatus,
 };
 use clap::Subcommand;
 use schemars::JsonSchema;
@@ -90,6 +91,9 @@ struct ProtocolDocument {
     initialize_result: InitializeResult,
     event_envelope: EventEnvelope,
     runtime_event: RuntimeEvent,
+    display_backend: DisplayBackend,
+    display_config: DisplayConfig,
+    display_status: DisplayStatus,
     json_rpc_request: JsonRpcRequest<serde_json::Value>,
     json_rpc_response: JsonRpcResponse<serde_json::Value>,
     json_rpc_error_response: JsonRpcErrorResponse,
@@ -177,6 +181,9 @@ fn export_bindings(dir: &Path) -> Result<()> {
         EventSource,
         RuntimeEvent,
         Timestamp,
+        DisplayBackend,
+        DisplayConfig,
+        DisplayStatus,
     );
 
     Ok(())
