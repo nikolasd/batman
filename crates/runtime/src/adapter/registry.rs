@@ -70,7 +70,53 @@ impl AdapterAuthorization for FixtureAuthorization {
         if self.allow {
             Ok(())
         } else {
-            Err("denied by fixture authorization".to_string())
+            Err(RegistryError::AuthorizationDenied(
+                "fixture authorization denied".to_string(),
+            )
+            .to_string())
+        }
+    }
+}
+
+/// The production [`AdapterAuthorization`]: denies every worker unless the
+/// development override is explicitly set. Replaced by the Hardening plan's
+/// `PolicyEvaluator`, which owns model/adapter allowlists and ceilings.
+pub struct DenyByDefaultAuthorization {
+    dev_override: bool,
+}
+
+impl DenyByDefaultAuthorization {
+    /// Reads `BATMAN_DEV_ALLOW_ALL_WORKERS` once, at construction.
+    #[must_use]
+    pub fn from_env() -> Self {
+        let dev_override = std::env::var("BATMAN_DEV_ALLOW_ALL_WORKERS").as_deref() == Ok("1");
+        if dev_override {
+            tracing::warn!(
+                code = "dev_authorization_override",
+                "BATMAN_DEV_ALLOW_ALL_WORKERS=1 is set; all workers are authorized. \
+                 This is a development override and must not be used in production."
+            );
+        }
+        Self { dev_override }
+    }
+}
+
+impl AdapterAuthorization for DenyByDefaultAuthorization {
+    fn authorize(
+        &self,
+        _profile: &WorkerProfile,
+        _effective_capabilities: &AdapterCapabilities,
+    ) -> Result<(), String> {
+        if self.dev_override {
+            Ok(())
+        } else {
+            Err(RegistryError::AuthorizationDenied(
+                "worker authorization denied: no production authorization policy is configured. \
+                 Set BATMAN_DEV_ALLOW_ALL_WORKERS=1 for local development, or wait for the \
+                 Hardening milestone's PolicyEvaluator."
+                    .to_string(),
+            )
+            .to_string())
         }
     }
 }

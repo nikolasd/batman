@@ -36,12 +36,13 @@ use tokio::net::UnixStream;
 use crate::VERSION;
 use crate::db::DatabaseHandle;
 use crate::ipc::{self, Server, ServerConfig};
-use crate::adapter::registry::{AdapterRegistry, FixtureAuthorization};
+use crate::adapter::registry::AdapterRegistry;
 use crate::paths::{PathError, RuntimePaths};
 use crate::security::redaction::{RawEventKind, RawRuntimeEvent, Redactor};
 use crate::security::{SecurityError, ensure_private_dir, ensure_private_file};
 
 pub use crate::ipc::should_idle_shutdown;
+use crate::adapter::DenyByDefaultAuthorization;
 
 // ------------------------------------------------------------------ serve
 
@@ -143,7 +144,7 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
     let config = ServerConfig {
         binary_source: opts.binary_source,
         run_driver: Some(Arc::new(AdapterRegistry::new(
-            Arc::new(FixtureAuthorization { allow: true }),
+            Arc::new(DenyByDefaultAuthorization::from_env()),
             std::fs::canonicalize(&opts.repo).unwrap_or(opts.repo.clone()),
         ))),
         ..ServerConfig::default()
