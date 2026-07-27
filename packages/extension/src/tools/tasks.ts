@@ -14,8 +14,8 @@ export function registerTaskTool(pi: ExtensionAPI, ctx: OrchestrationToolContext
   const params = pi.zod.object({
     op: pi.zod.enum(["upsert", "get"]).describe("Which task operation to perform."),
     taskId: pi.zod.string().optional().describe("Task id: required for get; optional for upsert (creates when omitted)."),
-    ownerClientInstanceId: pi.zod.string().optional().describe("Required for upsert: the OMP client instance id that owns this task."),
-    revision: pi.zod.number().int().nonnegative().optional().describe("Required for upsert: the monotonic OMP revision of this task."),
+    ownerClientInstanceId: pi.zod.string().optional().describe("Optional: OMP client instance ID. If omitted, uses the current session ID from OMP."),
+    revision: pi.zod.number().int().nonnegative().optional().describe("Optional: OMP revision. If omitted, defaults to 0."),
   });
 
   pi.registerTool({
@@ -30,8 +30,8 @@ export function registerTaskTool(pi: ExtensionAPI, ctx: OrchestrationToolContext
       if (input.op === "upsert") {
         return callOrchestration(client, "task/upsert", {
           taskId: input.taskId,
-          ownerClientInstanceId: input.ownerClientInstanceId,
-          revision: input.revision,
+          ownerClientInstanceId: input.ownerClientInstanceId ?? extCtx.sessionManager.getSessionId(),
+          revision: input.revision ?? 0,
         });
       }
       return callOrchestration(client, "task/get", { taskId: input.taskId });
