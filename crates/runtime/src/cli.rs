@@ -130,6 +130,27 @@ enum Command {
         #[arg(long)]
         run_id: Option<String>,
     },
+    /// Probes a display backend's availability without creating,
+    /// moving, or closing a pane, and without stopping a running
+    /// Herdr.
+    Display {
+        #[command(subcommand)]
+        action: DisplayAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum DisplayAction {
+    /// Probes one display backend (`herdr` or `tmux`).
+    Probe {
+        /// `herdr` or `tmux`.
+        #[arg(long)]
+        backend: String,
+        /// Emits the probe result as JSON instead of a human-readable
+        /// summary.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// The canonical protocol JSON Schema, embedded at compile time so the binary
@@ -178,6 +199,9 @@ pub async fn run() -> ExitCode {
             repo,
             run_id,
         } => run_monitor(state_dir, repo, run_id).await,
+        Command::Display {
+            action: DisplayAction::Probe { backend, json },
+        } => run_display_probe(&backend, json),
     }
 }
 
@@ -240,6 +264,71 @@ async fn run_status(
             ExitCode::SUCCESS
         }
         Err(err) => fail(&err),
+    }
+}
+
+fn run_display_probe(backend: &str, json: bool) -> ExitCode {
+    use batman_protocol::DisplayConfig;
+    use batman_runtime::display::{DisplayBackendTrait, HerdrDisplay, TmuxDisplay};
+
+    match backend {
+        "herdr" => {
+            let herdr = HerdrDisplay::new(DisplayConfig::default());
+            match herdr.probe() {
+                Ok(status) => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "backend": "herdr",
+                                "available": status.compatible,
+                                "clientVersion": status.client_version,
+                                "clientProtocol": status.client_protocol,
+                                "serverRunning": status.server_running,
+                                "serverVersion": status.server_version,
+                                "serverProtocol": status.server_protocol,
+                                "compatible": status.compatible,
+                            })
+                        );
+                    } else if status.compatible {
+                        println!(
+                            "herdr: compatible (client {} protocol {}, server {} protocol {})",
+                            status.client_version,
+                            status.client_protocol,
+                            status.server_version.as_deref().unwrap_or("unknown"),
+                            status.server_protocol.map_or("unknown".to_string(), |p| p.to_string()),
+                        );
+                    } else {
+                        println!("herdr: unavailable -- {}", status.remediation());
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    if json {
+                        println!("{}", serde_json::json!({ "backend": "herdr", "available": false, "error": err }));
+                    } else {
+                        println!("herdr: unavailable -- {err}");
+                    }
+                    ExitCode::SUCCESS
+                }
+            }
+        }
+        "tmux" => {
+            let tmux = TmuxDisplay::new(DisplayConfig::default());
+            let available = tmux.is_available();
+            if json {
+                println!("{}", serde_json::json!({ "backend": "tmux", "available": available }));
+            } else if available {
+                println!("tmux: available (binary present, inside an active session)");
+            } else {
+                println!(
+                    "tmux: unavailable -- tmux is not installed, its version is too old, or there \
+                     is no active session"
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        other => fail(&format!("unknown display backend {other:?}; expected \"herdr\" or \"tmux\"")),
     }
 }
 
