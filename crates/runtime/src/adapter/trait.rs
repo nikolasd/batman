@@ -83,7 +83,7 @@ pub struct AdapterSnapshot {
     pub state_summary: String,
     pub children: Vec<String>,
     pub usage: Option<serde_json::Value>,
-    pub artifacts: Vec<String>,
+    pub artifacts: Vec<serde_json::Value>,
 }
 
 /// The object-safe contract every worker adapter implements.

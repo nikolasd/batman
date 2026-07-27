@@ -95,8 +95,8 @@ struct SharedRunState {
     session_id: StdMutex<Option<String>>,
     subagents: StdMutex<Vec<String>>,
     last_usage: StdMutex<Option<Value>>,
+    artifacts: StdMutex<Vec<serde_json::Value>>,
 }
-
 fn record_shared_state(shared: &SharedRunState, payload: &AdapterEventPayload) {
     match payload {
         AdapterEventPayload::VendorSessionEstablished { vendor_session_id } => {
@@ -127,6 +127,19 @@ fn record_shared_state(shared: &SharedRunState, payload: &AdapterEventPayload) {
                 "outputTokens": output_tokens,
                 "costUsd": cost_usd,
             }));
+        }
+        AdapterEventPayload::ArtifactProduced {
+            artifact_id,
+            artifact_kind,
+        } => {
+            shared
+                .artifacts
+                .lock()
+                .expect("artifacts mutex is never poisoned")
+                .push(serde_json::json!({
+                    "artifactId": artifact_id.to_string(),
+                    "artifactKind": artifact_kind,
+                }));
         }
         _ => {}
     }
@@ -653,9 +666,9 @@ impl Adapter for OmpRpcAdapter {
     fn snapshot(&self) -> AdapterFuture<'_, AdapterSnapshot> {
         Box::pin(async move {
             let guard = self.inner.lock().await;
-            let (state_summary, children, usage) = match &*guard {
-                Inner::Idle => ("idle".to_string(), Vec::new(), None),
-                Inner::Disposed => ("disposed".to_string(), Vec::new(), None),
+            let (state_summary, children, usage, artifacts) = match &*guard {
+                Inner::Idle => ("idle".to_string(), Vec::new(), None, Vec::new()),
+                Inner::Disposed => ("disposed".to_string(), Vec::new(), None, Vec::new()),
                 Inner::Running(handle) => {
                     let session_id = handle
                         .shared
@@ -675,18 +688,24 @@ impl Adapter for OmpRpcAdapter {
                         .lock()
                         .expect("last_usage mutex is never poisoned")
                         .clone();
+                    let artifacts = handle
+                        .shared
+                        .artifacts
+                        .lock()
+                        .expect("artifacts mutex is never poisoned")
+                        .clone();
                     let summary = match session_id {
                         Some(id) => format!("running (session {id})"),
                         None => "running".to_string(),
                     };
-                    (summary, children, usage)
+                    (summary, children, usage, artifacts)
                 }
             };
             Ok(AdapterSnapshot {
                 state_summary,
                 children,
                 usage,
-                artifacts: Vec::new(),
+                artifacts,
             })
         })
     }

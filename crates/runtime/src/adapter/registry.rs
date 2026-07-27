@@ -35,12 +35,10 @@ use batman_protocol::{RunId, TaskId, WorkerId};
 use super::capability::AdapterCapabilities;
 use super::event_sink::DomainAdapterEventSink;
 use super::profile::{StartupOptions, WorkerProfile};
-use super::r#trait::{Adapter, StartSpec};
+use super::r#trait::{Adapter, AdapterMessage, StartSpec};
 use crate::conformance;
 use crate::domain::DomainRepository;
 use crate::service::{AdapterFuture as RunDriverFuture, RunDriver, RunDriverContext};
-
-/// Decides whether a run may actually be started against `profile`'s
 /// adapter, given `effective_capabilities` -- always the conformance-
 /// filtered set, never the adapter's raw declared claims. Production
 /// construction of [`AdapterRegistry`] requires a real implementation;
@@ -91,6 +89,8 @@ pub enum RegistryError {
     ProfileUnreadable(String),
     #[error("authorization denied: {0}")]
     AuthorizationDenied(String),
+    #[error("no adapter is currently running for run {0}")]
+    NoRunningAdapter(RunId),
 }
 
 impl From<RegistryError> for String {
@@ -202,6 +202,31 @@ impl RunDriver for AdapterRegistry {
                     Err(err)
                 }
             }
+        })
+    }
+
+    fn send_follow_up(
+        &self,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        prompt: String,
+    ) -> RunDriverFuture<'static, Result<(), String>> {
+        let running = Arc::clone(&self.running);
+
+        Box::pin(async move {
+            let adapter = running
+                .lock()
+                .get(&run_id)
+                .cloned()
+                .ok_or_else(|| <RegistryError as Into<String>>::into(RegistryError::NoRunningAdapter(run_id)))?;
+
+            adapter
+                .send(AdapterMessage::FollowUp {
+                    text: prompt,
+                })
+                .await
+                .map_err(|err| err.to_string())
         })
     }
 }

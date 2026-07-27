@@ -24,8 +24,7 @@ end to end:
 > live-updates task/run state — all backed by one durable event journal, with no task-graph,
 > retry, worker-selection, or merge decision made inside Rust.
 
-Worker adapters, workspaces, and displays are later milestones (see the roadmap in the project
-design documents). Nothing in this repository calls a model.
+Display backends (herdr, tmux, terminal) are implemented and wired into the daemon's lifecycle via `AdapterRegistry`. The registry is constructed with `FixtureAuthorization { allow: true }` at daemon startup, enabling supervised adapters to start runs, forward follow-up messages, and track artifacts as JSON values. Nothing in this repository calls a model.
 
 ## How it fits together
 

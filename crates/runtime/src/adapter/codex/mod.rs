@@ -629,10 +629,13 @@ impl Adapter for CodexAdapter {
             let Some(run) = run_guard.as_ref() else {
                 return Ok(AdapterSnapshot::default());
             };
-            let artifacts = run
+            let artifacts: Vec<serde_json::Value> = run
                 .pending_approvals
                 .values()
-                .map(|approval| format!("pending-approval:{}:{}", approval.kind, approval.summary))
+                .map(|approval| serde_json::json!({
+                    "kind": approval.kind,
+                    "summary": approval.summary,
+                }))
                 .collect();
             Ok(AdapterSnapshot {
                 state_summary: format!("thread {}", run.thread_id),

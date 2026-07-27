@@ -8,6 +8,54 @@
 use batman_protocol::{DisplayBackend, DisplayConfig, DisplayStatus};
 use std::path::Path;
 use std::process::Command;
+use std::io;
+use std::sync::Arc;
+
+/// Result of a command execution — platform-independent, fixture-friendly.
+#[derive(Debug, Clone)]
+pub struct CommandResult {
+    /// Whether the process exited successfully.
+    pub success: bool,
+    /// Captured stdout bytes.
+    pub stdout: Vec<u8>,
+    /// Captured stderr bytes.
+    pub stderr: Vec<u8>,
+}
+
+/// Abstracts process execution for display backends.
+///
+/// Real executor uses `std::process::Command`; test executors return
+/// preconfigured `CommandResult` values so tests never spawn real processes.
+pub trait CommandExecutor: Send + Sync {
+    /// Execute `program` with `args`, returning a platform-independent result.
+    fn execute(&self, program: &str, args: &[&str]) -> io::Result<CommandResult>;
+}
+
+/// Real process executor wrapping `std::process::Command`.
+pub struct RealCommandExecutor;
+
+impl RealCommandExecutor {
+    pub fn new() -> Self {
+        RealCommandExecutor
+    }
+}
+
+impl Default for RealCommandExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CommandExecutor for RealCommandExecutor {
+    fn execute(&self, program: &str, args: &[&str]) -> io::Result<CommandResult> {
+        let output = Command::new(program).args(args).output()?;
+        Ok(CommandResult {
+            success: output.status.success(),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
+    }
+}
 
 /// Trait for display backends.
 pub trait DisplayBackendTrait: Send + Sync {
@@ -32,14 +80,13 @@ pub trait DisplayBackendTrait: Send + Sync {
 /// Herdr display backend.
 ///
 /// Compatibility gate: checks herdr is installed and parses version.
-/// Minimum required version: 0.1.0
 pub struct HerdrDisplay {
     config: DisplayConfig,
     min_version: String,
     session_active: bool,
     session_name: Option<String>,
+    executor: Arc<dyn CommandExecutor>,
 }
-
 impl HerdrDisplay {
     pub fn new(config: DisplayConfig) -> Self {
         HerdrDisplay {
@@ -47,28 +94,34 @@ impl HerdrDisplay {
             min_version: "0.1.0".to_string(),
             session_active: false,
             session_name: None,
+            executor: Arc::new(RealCommandExecutor::new()),
         }
     }
 
-    /// Checks if Herdr is available and compatible.
-    pub fn check_herdr(min_version: &str) -> bool {
-        // First check if herdr exists
-        let output = match Command::new("herdr").arg("--version").output() {
-            Ok(o) if o.status.success() => o,
-            _ => return false,
-        };
-
-        let version_str = String::from_utf8_lossy(&output.stdout);
-        
-        // Parse version (expect format like "herdr 0.1.0" or "0.1.0")
-        let version = version_str
-            .split_whitespace()
-            .last()
-            .unwrap_or("")
-            .trim();
-
-        // Simple version comparison (major.minor.patch)
-        Self::version_gte(version, min_version)
+    /// Creates a HerdrDisplay with a custom command executor (for testing).
+    pub fn with_executor(config: DisplayConfig, executor: Arc<dyn CommandExecutor>) -> Self {
+        HerdrDisplay {
+            config,
+            min_version: "0.1.0".to_string(),
+            session_active: false,
+            session_name: None,
+            executor,
+        }
+    }
+    /// Checks if Herdr is available and compatible using the injected executor.
+    fn check_herdr(&self, min_version: &str) -> bool {
+        match self.executor.execute("herdr", &["--version"]) {
+            Ok(result) if result.success => {
+                let version_str = String::from_utf8_lossy(&result.stdout);
+                let version = version_str
+                    .split_whitespace()
+                    .last()
+                    .unwrap_or("")
+                    .trim();
+                Self::version_gte(version, min_version)
+            }
+            _ => false,
+        }
     }
 
     /// Simple version comparison: returns true if `current >= minimum`.
@@ -94,19 +147,15 @@ impl HerdrDisplay {
         }
         true
     }
-
-    /// Activates herdr by spawning a session.
-    pub fn activate_herdr(session_name: &str) -> Result<(), String> {
-        let output = Command::new("herdr")
-            .args(["new", session_name])
-            .output()
-            .map_err(|e| format!("failed to spawn herdr session: {e}"))?;
-        
-        if output.status.success() {
-            Ok(())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(format!("herdr exited with error: {stderr}"))
+    /// Activates herdr by spawning a session using the injected executor.
+    fn activate_herdr(&self, session_name: &str) -> Result<(), String> {
+        match self.executor.execute("herdr", &["new", session_name]) {
+            Ok(result) if result.success => Ok(()),
+            Ok(result) => {
+                let stderr = String::from_utf8_lossy(&result.stderr);
+                Err(format!("herdr exited with error: {stderr}"))
+            }
+            Err(e) => Err(format!("failed to spawn herdr session: {e}")),
         }
     }
 }
@@ -117,14 +166,14 @@ impl DisplayBackendTrait for HerdrDisplay {
     }
 
     fn is_available(&self) -> bool {
-        Self::check_herdr(&self.min_version)
+        self.check_herdr(&self.min_version)
     }
 
     fn activate(&mut self) -> Result<(), String> {
         if !self.is_available() {
             return Err("herdr not found or incompatible version".to_string());
         }
-        match Self::activate_herdr("batman-session") {
+        match self.activate_herdr("batman-session") {
             Ok(()) => {
                 self.mark_session_active("batman-session".to_string());
                 Ok(())
@@ -134,20 +183,9 @@ impl DisplayBackendTrait for HerdrDisplay {
     }
 
     fn status(&self) -> DisplayStatus {
-        let available = self.is_available();
-        let version = if available {
-            Command::new("herdr")
-                .arg("--version")
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .and_then(|v| v.split_whitespace().last().map(|s| s.to_string()))
-        } else {
-            None
-        };
         DisplayStatus {
             backend: DisplayBackend::Herdr,
-            available,
+            available: self.is_available(),
             active: self.session_active,
             dimensions: None,
         }
@@ -175,6 +213,7 @@ pub struct TmuxDisplay {
     min_version: String,
     session_active: bool,
     session_name: Option<String>,
+    executor: Arc<dyn CommandExecutor>,
 }
 
 impl TmuxDisplay {
@@ -184,29 +223,38 @@ impl TmuxDisplay {
             min_version: "3.0".to_string(),
             session_active: false,
             session_name: None,
+            executor: Arc::new(RealCommandExecutor::new()),
         }
     }
 
-    /// Checks if tmux is available and compatible.
-    pub fn check_tmux(min_version: &str) -> bool {
-        let output = match Command::new("tmux").arg("--version").output() {
-            Ok(o) if o.status.success() => o,
-            _ => return false,
-        };
+    /// Creates a TmuxDisplay with a custom command executor (for testing).
+    pub fn with_executor(config: DisplayConfig, executor: Arc<dyn CommandExecutor>) -> Self {
+        TmuxDisplay {
+            config,
+            min_version: "3.0".to_string(),
+            session_active: false,
+            session_name: None,
+            executor,
+        }
+    }
 
-        let version_str = String::from_utf8_lossy(&output.stdout);
-        
-        // Parse version (expect format like "tmux 3.3" or "tmux 3.3a")
-        let version = version_str
-            .split_whitespace()
-            .nth(1)
-            .unwrap_or("")
-            .trim()
-            .split(|c: char| !c.is_ascii_digit() && c != '.')
-            .next()
-            .unwrap_or("");
-
-        Self::version_gte(version, min_version)
+    /// Checks if tmux is available and compatible using the injected executor.
+    fn check_tmux(&self, min_version: &str) -> bool {
+        match self.executor.execute("tmux", &["--version"]) {
+            Ok(result) if result.success => {
+                let version_str = String::from_utf8_lossy(&result.stdout);
+                let version = version_str
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .trim()
+                    .split(|c: char| !c.is_ascii_digit() && c != '.')
+                    .next()
+                    .unwrap_or("");
+                Self::version_gte(version, min_version)
+            }
+            _ => false,
+        }
     }
 
     /// Simple version comparison: returns true if `current >= minimum`.
@@ -233,18 +281,15 @@ impl TmuxDisplay {
         true
     }
 
-    /// Activates tmux by attaching to a session.
-    pub fn activate_tmux(session_name: &str) -> Result<(), String> {
-        let output = Command::new("tmux")
-            .args(["new-session", "-d", "-s", session_name])
-            .output()
-            .map_err(|e| format!("failed to spawn tmux session: {e}"))?;
-        
-        if output.status.success() {
-            Ok(())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(format!("tmux exited with error: {stderr}"))
+    /// Activates tmux by attaching to a session using the injected executor.
+    fn activate_tmux(&self, session_name: &str) -> Result<(), String> {
+        match self.executor.execute("tmux", &["new-session", "-d", "-s", session_name]) {
+            Ok(result) if result.success => Ok(()),
+            Ok(result) => {
+                let stderr = String::from_utf8_lossy(&result.stderr);
+                Err(format!("tmux exited with error: {stderr}"))
+            }
+            Err(e) => Err(format!("failed to spawn tmux session: {e}")),
         }
     }
 }
@@ -255,14 +300,14 @@ impl DisplayBackendTrait for TmuxDisplay {
     }
 
     fn is_available(&self) -> bool {
-        Self::check_tmux(&self.min_version)
+        self.check_tmux(&self.min_version)
     }
 
     fn activate(&mut self) -> Result<(), String> {
         if !self.is_available() {
             return Err("tmux not found or incompatible version".to_string());
         }
-        match Self::activate_tmux("batman-session") {
+        match self.activate_tmux("batman-session") {
             Ok(()) => {
                 self.mark_session_active("batman-session".to_string());
                 Ok(())
@@ -272,20 +317,9 @@ impl DisplayBackendTrait for TmuxDisplay {
     }
 
     fn status(&self) -> DisplayStatus {
-        let available = self.is_available();
-        let version = if available {
-            Command::new("tmux")
-                .arg("--version")
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .and_then(|v| v.split_whitespace().nth(1).map(|s| s.to_string()))
-        } else {
-            None
-        };
         DisplayStatus {
             backend: DisplayBackend::Tmux,
-            available,
+            available: self.is_available(),
             active: self.session_active,
             dimensions: None,
         }
@@ -293,7 +327,6 @@ impl DisplayBackendTrait for TmuxDisplay {
 }
 
 impl TmuxDisplay {
-
     /// Marks a session as active.
     pub fn mark_session_active(&mut self, session_name: String) {
         self.session_active = true;

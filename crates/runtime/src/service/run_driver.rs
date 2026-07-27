@@ -38,6 +38,10 @@ pub trait RunDriver: Send + Sync {
     /// lifecycle transitions themselves (through the same domain repository
     /// commands), rather than returning a single terminal result.
     fn start(&self, ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>>;
+
+    /// Sends a follow-up message to an already-started run. Returns [`RegistryError::NoRunningAdapter`]
+    /// if no adapter is currently driving the run.
+    fn send_follow_up(&self, run_id: RunId, task_id: TaskId, worker_id: WorkerId, prompt: String) -> AdapterFuture<'static, Result<(), String>>;
 }
 
 /// A deterministic driver for orchestration tests and fixtures: acknowledges
@@ -50,6 +54,18 @@ impl RunDriver for FakeRunDriver {
             transition(&ctx, "starting").await?;
             transition(&ctx, "working").await?;
             Ok(())
+        })
+    }
+
+    fn send_follow_up(
+        &self,
+        run_id: RunId,
+        _task_id: TaskId,
+        _worker_id: WorkerId,
+        _prompt: String,
+    ) -> AdapterFuture<'static, Result<(), String>> {
+        Box::pin(async move {
+            Err(format!("fake driver does not support follow-up for run {run_id}"))
         })
     }
 }

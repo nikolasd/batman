@@ -80,27 +80,6 @@ that path yet.
   shape:** identify the real vendor frame(s) that carry artifact information (undetermined as of
   this writing — needs a live, artifact-producing session to observe) and add the corresponding
   `normalize_frame` case.
-- **`AdapterRegistry` is not wired into the running daemon** — `lifecycle::serve()`'s
-  `ServerConfig::default()` still leaves `run_driver: None` in production; `AdapterRegistry` exists
-  and is fully tested (`cargo test -p batman-runtime --test adapter_registry`) but nothing
-  constructs and installs one at daemon startup. Two sub-gaps block this, both documented in
-  `crates/runtime/src/adapter/registry.rs`'s own module doc:
-  - `RunDriverContext` (frozen, Task 1-era protocol) carries no prompt/message payload — by
-    design, `run/submit` only ever carries `taskId`/`workerId`, never task content (OMP owns task
-    content, this runtime never does). Delivering a run's actual instructions to an already-started
-    adapter needs a message-forwarding seam translating a journaled `message/send` into a live
-    `Adapter::send(AdapterMessage::FollowUp(..))` call — `RunDriver` has no method for this today.
-    **Fix shape:** either add a method to `RunDriver`, or have `AdapterRegistry::start` itself
-    subscribe to `events_tx` and forward matching message events to the adapter instance it's
-    holding (no protocol change needed for that second option — see the module doc's own reasoning
-    for why this is tractable without touching frozen types).
-  - Adapters `AdapterRegistry` constructs never receive worker-coordination MCP config (`mcp: None`
-    unconditionally) — wiring `crate::adapter::mcp_config::McpLaunchContext` needs a resolved
-    `batcave` binary path, state directory, and repository root the registry is not currently
-    constructed with. **Fix shape:** thread these three paths into `AdapterRegistry::new`
-    (available at `lifecycle::serve()`'s own call site via `RuntimePaths`) and build the per-adapter
-    `AdapterMcpConfig`/`Arc<CoordinationBroker>` (for OMP-RPC) before constructing each adapter in
-    `build_adapter`.
 
 ## Environment-dependent, not a real gap
 
