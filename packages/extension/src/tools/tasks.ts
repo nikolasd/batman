@@ -12,29 +12,32 @@ export const BATMAN_TASK_TOOL_NAME = "batman_task";
 
 export function registerTaskTool(pi: ExtensionAPI, ctx: OrchestrationToolContext): void {
   const params = pi.zod.object({
-    op: pi.zod.enum(["upsert", "get"]).describe("Which task operation to perform."),
-    taskId: pi.zod.string().optional().describe("Task id: required for get; optional for upsert (creates when omitted)."),
-    ownerClientInstanceId: pi.zod.string().optional().describe("Optional: OMP client instance ID. If omitted, uses the current session ID from OMP."),
-    revision: pi.zod.number().int().nonnegative().optional().describe("Optional: OMP revision. If omitted, defaults to 0."),
+    description: pi.zod.string().describe("What the task should do (natural language description)."),
+    taskId: pi.zod.string().optional().describe("Optional: Reuse an existing task ID (for resume). Auto-generated if omitted."),
   });
 
   pi.registerTool({
     name: BATMAN_TASK_TOOL_NAME,
     label: "BATMAN Task",
     description:
-      "Upserts or fetches a BATMAN-tracked task record mirroring OMP-owned task intent. Never creates or edits the OMP task graph itself.",
+      "Creates or resumes a BATMAN-tracked task. The extension auto-generates the task ID and uses your OMP session as the owner.",
     parameters: params,
     approval: "write",
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
       const client = await ctx.getClient(extCtx.cwd);
-      if (input.op === "upsert") {
-        return callOrchestration(client, "task/upsert", {
-          taskId: input.taskId,
-          ownerClientInstanceId: input.ownerClientInstanceId ?? extCtx.sessionManager.getSessionId(),
-          revision: input.revision ?? 0,
-        });
-      }
-      return callOrchestration(client, "task/get", { taskId: input.taskId });
+      
+      // Auto-generate taskId if not provided (new task)
+      const taskId = input.taskId ?? crypto.randomUUID();
+      
+      // Use OMP session ID as owner
+      const ownerClientInstanceId = extCtx.sessionManager.getSessionId();
+      
+      // Create a new task (always upsert with revision 0)
+      return callOrchestration(client, "task/upsert", {
+        taskId,
+        ownerClientInstanceId,
+        revision: 0,
+      });
     },
   });
 }

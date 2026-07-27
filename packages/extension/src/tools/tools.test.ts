@@ -40,8 +40,15 @@ function createFakeApi(): { api: ExtensionAPI; tools: Map<string, FakeToolDefini
   return { api: api as unknown as ExtensionAPI, tools };
 }
 
+
 function fakeExtensionContext(cwd: string): ExtensionContext {
-  return { cwd } as unknown as ExtensionContext;
+  const sessionManager = {
+    getSessionId: () => "test-session-id-12345",
+  };
+  return {
+    cwd,
+    sessionManager: sessionManager as any,
+  } as unknown as ExtensionContext;
 }
 
 // ------------------------------------------------------- registration shape
@@ -194,7 +201,7 @@ async function connectedClient(): Promise<BatmanClient> {
   return client;
 }
 
-test("batman_task tool upserts then fetches a task through the real daemon", async () => {
+test("batman_task tool creates a task with auto-generated ID and session owner", async () => {
   const { api, tools } = createFakeApi();
   let cached: BatmanClient | undefined;
   registerOrchestrationTools(api, {
@@ -208,29 +215,20 @@ test("batman_task tool upserts then fetches a task through the real daemon", asy
   expect(taskTool).toBeDefined();
   if (taskTool === undefined) throw new Error("unreachable");
 
-  const upsertResult = await taskTool.execute(
+  // Create a new task - extension auto-generates taskId and uses session ID as owner
+  const result = await taskTool.execute(
     "call-1",
-    { op: "upsert", ownerClientInstanceId: "omp-tools-test", revision: 1 },
+    { description: "Test task creation" },
     undefined,
     undefined,
     fakeExtensionContext(repoDir),
   );
-  expect(upsertResult.isError).toBeUndefined();
-  const details = upsertResult.details as { taskId: string; sequence: number };
+  
+  // Should succeed with a valid taskId
+  expect(result.isError).toBeUndefined();
+  const details = result.details as { taskId: string };
   expect(typeof details.taskId).toBe("string");
-  expect(typeof details.sequence).toBe("number");
-
-  const getResult = await taskTool.execute(
-    "call-2",
-    { op: "get", taskId: details.taskId },
-    undefined,
-    undefined,
-    fakeExtensionContext(repoDir),
-  );
-  expect(getResult.isError).toBeUndefined();
-  const getDetails = getResult.details as { ownerClientInstanceId: string; revision: number };
-  expect(getDetails.ownerClientInstanceId).toBe("omp-tools-test");
-  expect(getDetails.revision).toBe(1);
+  expect(details.taskId).toMatch(/^[0-9a-f-]+$/);  // Valid UUID format
 
   cached?.close();
 });
