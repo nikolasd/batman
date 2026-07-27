@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 
 use batman_runtime::VERSION;
 use batman_runtime::lifecycle::{
-    self, ServeError, ServeOptions, StatusOptions, StopOptions, StopOutcome,
+    self, MonitorOptions, ServeError, ServeOptions, StatusOptions, StopOptions, StopOutcome,
 };
 use batman_runtime::security::StateRoot;
 
@@ -115,6 +115,21 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Renders a replayable, live view of a repository's runs: replays
+    /// every event from sequence 0, then follows new events live until
+    /// interrupted (Ctrl-C).
+    Monitor {
+        /// The BATMAN state root. Defaults to the resolved state root.
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+        /// The repository whose runtime to monitor.
+        #[arg(long)]
+        repo: PathBuf,
+        /// Renders only this run. Omit to render every run in the
+        /// project.
+        #[arg(long)]
+        run_id: Option<String>,
+    },
 }
 
 /// The canonical protocol JSON Schema, embedded at compile time so the binary
@@ -158,6 +173,11 @@ pub async fn run() -> ExitCode {
             live,
             output,
         } => run_conformance(adapter, fixture, live, output).await,
+        Command::Monitor {
+            state_dir,
+            repo,
+            run_id,
+        } => run_monitor(state_dir, repo, run_id).await,
     }
 }
 
@@ -219,6 +239,24 @@ async fn run_status(
             );
             ExitCode::SUCCESS
         }
+        Err(err) => fail(&err),
+    }
+}
+
+async fn run_monitor(state_dir: Option<PathBuf>, repo: PathBuf, run_id: Option<String>) -> ExitCode {
+    let state_dir = match resolve_state_dir(state_dir) {
+        Ok(dir) => dir,
+        Err(err) => return fail(&err),
+    };
+
+    let options = MonitorOptions {
+        state_dir,
+        repo,
+        run_id,
+    };
+
+    match lifecycle::monitor(&options).await {
+        Ok(()) => ExitCode::SUCCESS,
         Err(err) => fail(&err),
     }
 }
