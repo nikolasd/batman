@@ -5,24 +5,23 @@
 //! owning it for the run's lifetime in a run-indexed table.
 //!
 //! # Scope boundary (documented, not silently omitted)
-//! [`RunDriverContext`] carries no prompt/message payload -- by design,
-//! per the design spec's "OMP owns scheduling... Batman never creates or
-//! edits the OMP task graph": `run/submit` only ever carries `taskId`/
-//! `workerId` (`OrchestrationService::run_submit`), never task content.
-//! This registry therefore starts every adapter with an empty initial
-//! [`StartSpec::prompt`]; delivering the task's actual content (and any
-//! later follow-up) as a live [`AdapterMessage`] to an already-running
-//! adapter instance requires a message-forwarding seam (e.g. an
-//! `events_tx` subscriber translating a journaled message event into
-//! `Adapter::send`) that is out of this milestone's Task 8 scope --
-//! [`RunDriver`] has no method for it today, and no Task 8 plan file
-//! names that change. This is a known, explicitly documented follow-up,
-//! not a silently dropped requirement. Likewise, adapters constructed
-//! here never receive worker-coordination MCP config (`mcp: None`
-//! throughout): wiring `crate::adapter::mcp_config::McpLaunchContext`
-//! (which needs a resolved `batcave` binary path, state dir, and
-//! repository root this registry is not constructed with) is the same
-//! kind of production-wiring follow-up, tracked alongside it.
+//! [`RunDriverContext::prompt`] carries the task's initial content (closed
+//! as part of the M2/M3 gap-closure milestone): `run_one` passes
+//! `ctx.prompt.clone().unwrap_or_default()` into [`StartSpec::prompt`], so
+//! `run/submit`'s optional `RunSpec::prompt` now reaches the adapter at
+//! start time. Delivering a *later* follow-up to an already-running
+//! adapter instance is a separate seam (`RunDriver::send_follow_up`,
+//! implemented below and invoked from `OrchestrationService::message_send`)
+//! rather than a second `start()` call. Claude/Codex/Copilot adapters
+//! constructed here now receive worker-coordination MCP config too
+//! (closed alongside the prompt gap): `AdapterRegistry::new` accepts an
+//! `Option<AdapterMcpConfig>`, built by `lifecycle::serve()` from a
+//! resolved `batcave` binary path, state dir, and repository root, and
+//! threaded into every Claude/Codex/Copilot adapter this registry
+//! constructs. OMP-RPC's in-process host-tool bridge instead needs a
+//! `CoordinationBroker`, supplied after construction via
+//! [`AdapterRegistry::set_broker`] (see that method's own doc comment
+//! for why it cannot be a constructor argument).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -34,9 +33,11 @@ use batman_protocol::{RunId, TaskId, WorkerId};
 
 use super::capability::AdapterCapabilities;
 use super::event_sink::DomainAdapterEventSink;
+use super::mcp_config::AdapterMcpConfig;
 use super::profile::{StartupOptions, WorkerProfile};
 use super::r#trait::{Adapter, AdapterMessage, StartSpec};
 use crate::conformance;
+use crate::coordination::CoordinationBroker;
 use crate::domain::DomainRepository;
 use crate::service::{AdapterFuture as RunDriverFuture, RunDriver, RunDriverContext};
 /// adapter, given `effective_capabilities` -- always the conformance-
@@ -70,10 +71,7 @@ impl AdapterAuthorization for FixtureAuthorization {
         if self.allow {
             Ok(())
         } else {
-            Err(RegistryError::AuthorizationDenied(
-                "fixture authorization denied".to_string(),
-            )
-            .to_string())
+            Err("denied by fixture authorization".to_string())
         }
     }
 }
@@ -110,13 +108,12 @@ impl AdapterAuthorization for DenyByDefaultAuthorization {
         if self.dev_override {
             Ok(())
         } else {
-            Err(RegistryError::AuthorizationDenied(
-                "worker authorization denied: no production authorization policy is configured. \
-                 Set BATMAN_DEV_ALLOW_ALL_WORKERS=1 for local development, or wait for the \
+            Err(
+                "no production authorization policy is configured. Set \
+                 BATMAN_DEV_ALLOW_ALL_WORKERS=1 for local development, or wait for the \
                  Hardening milestone's PolicyEvaluator."
                     .to_string(),
             )
-            .to_string())
         }
     }
 }
@@ -160,17 +157,47 @@ pub struct AdapterRegistry {
     /// in. One registry instance serves one repository, exactly like one
     /// `batcave` daemon does.
     repo_root: PathBuf,
+    /// Worker-coordination MCP launch config, given to every Claude/Codex/
+    /// Copilot adapter this registry constructs so their supervised vendor
+    /// processes can reach the `batman` coordination MCP server. `None`
+    /// for callers (chiefly tests) that never asked for worker MCP tools.
+    mcp: Option<AdapterMcpConfig>,
+    /// The [`CoordinationBroker`] OMP-RPC adapters answer their in-process
+    /// `host_tool_call` bridge against. Set once, after construction, via
+    /// [`Self::set_broker`] -- unlike `mcp`, the real broker instance is
+    /// owned by [`crate::ipc::Server`] and only exists after `Server::bind`
+    /// returns, which happens *after* this registry must already be handed
+    /// to [`crate::ipc::ServerConfig::run_driver`]. `None` until set (or
+    /// permanently, for callers that never call the setter): OMP-RPC
+    /// adapters constructed in that window get no broker, matching their
+    /// existing `broker: None` behavior exactly.
+    broker: Mutex<Option<Arc<CoordinationBroker>>>,
     running: Arc<Mutex<HashMap<RunId, Arc<dyn Adapter>>>>,
 }
 
 impl AdapterRegistry {
     #[must_use]
-    pub fn new(authorization: Arc<dyn AdapterAuthorization>, repo_root: PathBuf) -> Self {
+    pub fn new(
+        authorization: Arc<dyn AdapterAuthorization>,
+        repo_root: PathBuf,
+        mcp: Option<AdapterMcpConfig>,
+    ) -> Self {
         Self {
             authorization,
             repo_root,
+            mcp,
+            broker: Mutex::new(None),
             running: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Supplies the real [`CoordinationBroker`] for this registry's
+    /// OMP-RPC adapters' in-process host-tool bridge, once the caller
+    /// (necessarily, after `Server::bind`) has one. See the `broker`
+    /// field's own doc comment for why this cannot be a constructor
+    /// argument.
+    pub fn set_broker(&self, broker: Arc<CoordinationBroker>) {
+        *self.broker.lock() = Some(broker);
     }
 
     /// The adapter instance currently running for `run_id`, if any --
@@ -193,6 +220,8 @@ impl RunDriver for AdapterRegistry {
     fn start(&self, ctx: RunDriverContext) -> RunDriverFuture<'static, Result<(), String>> {
         let authorization = Arc::clone(&self.authorization);
         let repo_root = self.repo_root.clone();
+        let mcp = self.mcp.clone();
+        let broker = self.broker.lock().clone();
         let running = Arc::clone(&self.running);
 
         Box::pin(async move {
@@ -215,7 +244,7 @@ impl RunDriver for AdapterRegistry {
 
             let events_tx = ctx.events_tx.clone();
             let run_id = ctx.run_id;
-            match run_one(&ctx, &authorization, &repo_root).await {
+            match run_one(&ctx, &authorization, &repo_root, mcp, broker).await {
                 Ok(adapter) => {
                     running.lock().insert(run_id, adapter);
                     // Evicts and disposes this run's adapter once its
@@ -312,6 +341,8 @@ async fn run_one(
     ctx: &RunDriverContext,
     authorization: &Arc<dyn AdapterAuthorization>,
     repo_root: &std::path::Path,
+    mcp: Option<AdapterMcpConfig>,
+    broker: Option<Arc<CoordinationBroker>>,
 ) -> Result<Arc<dyn Adapter>, String> {
     let profile = resolve_profile(ctx).await.map_err(String::from)?;
     
@@ -335,7 +366,7 @@ async fn run_one(
         .map_err(RegistryError::AuthorizationDenied)
         .map_err(String::from)?;
 
-    let adapter = build_adapter(&profile, repo_root, ctx.run_id, ctx.task_id, ctx.worker_id)
+    let adapter = build_adapter(&profile, repo_root, ctx.run_id, ctx.task_id, ctx.worker_id, mcp, broker)
         .map_err(String::from)?;
     let sink = Arc::new(DomainAdapterEventSink::new(
         Arc::clone(&ctx.db),
@@ -348,7 +379,7 @@ async fn run_one(
                 run_id: ctx.run_id,
                 task_id: ctx.task_id,
                 worker_id: ctx.worker_id,
-                prompt: String::new(),
+                prompt: ctx.prompt.clone().unwrap_or_default(),
                 resume: None,
             },
             sink,
@@ -386,6 +417,8 @@ fn build_adapter(
     run_id: RunId,
     task_id: TaskId,
     worker_id: WorkerId,
+    mcp: Option<AdapterMcpConfig>,
+    broker: Option<Arc<CoordinationBroker>>,
 ) -> Result<Arc<dyn Adapter>, RegistryError> {
     let adapter: Arc<dyn Adapter> = match &profile.startup_options {
         StartupOptions::Claude(options) => Arc::new(super::ClaudeAdapter::new(
@@ -395,13 +428,13 @@ fn build_adapter(
             run_id,
             task_id,
             worker_id,
-            None,
+            mcp,
         )),
         StartupOptions::Codex(options) => Arc::new(super::CodexAdapter::new(
             repo_root.to_path_buf(),
             options.clone(),
             profile.environment_allowlist.clone(),
-            None,
+            mcp,
         )),
         StartupOptions::Copilot(options) => Arc::new(super::CopilotAdapter::new(
             PathBuf::from("copilot"),
@@ -411,16 +444,105 @@ fn build_adapter(
             run_id,
             task_id,
             worker_id,
-            None,
+            mcp,
         )),
         StartupOptions::OmpRpc(_) => Arc::new(super::OmpRpcAdapter::new(
             profile.clone(),
             super::OmpRpcAdapterOptions::default(),
-            None,
+            broker,
         )),
         StartupOptions::TerminalDegraded(opts) => {
             Arc::new(super::terminal::TerminalAdapter::new(opts.backend.clone())) as Arc<dyn super::r#trait::Adapter>
         }
     };
     Ok(adapter)
+}
+
+#[cfg(test)]
+mod build_adapter_tests {
+    //! Unit tests for the private [`build_adapter`] function, reachable
+    //! only from inside this crate (an external integration test crate
+    //! cannot call it). These deliberately never call `.start()` on the
+    //! returned adapter -- for Claude/Codex/Copilot that would spawn a
+    //! real vendor CLI and, for Claude specifically, immediately send a
+    //! real (billed) model turn (see `ClaudeAdapter::start`'s own
+    //! `build_stdin_user_message` call) -- so they can only prove that
+    //! `build_adapter` accepts and threads an `Option<AdapterMcpConfig>`/
+    //! `Option<Arc<CoordinationBroker>>` through to construction without
+    //! erroring, not that the constructed adapter's own `start()` later
+    //! *uses* it correctly. That mechanism is proven separately and
+    //! thoroughly, with zero process spawn, by each adapter's own
+    //! dedicated test suite (e.g. `tests/claude_adapter.rs`'s
+    //! `mcp_injection_appends_mcp_config_after_native_discovery_args...`
+    //! and `mcp_injection_env_carries_only_the_scope_token`).
+    use super::*;
+    use crate::adapter::profile::{ClaudeStartupOptions, CodexStartupOptions, CopilotStartupOptions};
+    use crate::coordination::ScopeTokenStore;
+
+    fn mcp_config() -> AdapterMcpConfig {
+        AdapterMcpConfig {
+            scope_tokens: Arc::new(ScopeTokenStore::new()),
+            project_id: batman_protocol::ProjectId::new(),
+            batcave_path: PathBuf::from("/opt/batman/bin/batcave"),
+            state_dir: std::env::temp_dir(),
+            repository: std::env::temp_dir(),
+        }
+    }
+
+    fn profile(startup_options: StartupOptions) -> WorkerProfile {
+        WorkerProfile {
+            id: super::super::profile::ProfileId::new(),
+            adapter: "test".to_string(),
+            model: "test-model".to_string(),
+            permission_envelope: serde_json::json!({}),
+            startup_options,
+            environment_allowlist: Vec::new(),
+            source: "test".to_string(),
+        }
+    }
+
+    #[test]
+    fn claude_branch_accepts_some_mcp_config() {
+        let profile = profile(StartupOptions::Claude(ClaudeStartupOptions::default()));
+        let result = build_adapter(
+            &profile,
+            std::path::Path::new("/tmp"),
+            RunId::new(),
+            TaskId::new(),
+            WorkerId::new(),
+            Some(mcp_config()),
+            None,
+        );
+        assert!(result.is_ok(), "Claude branch must accept Some(mcp): {}", result.err().map(|e| e.to_string()).unwrap_or_default());
+    }
+
+    #[test]
+    fn codex_branch_accepts_some_mcp_config() {
+        let profile = profile(StartupOptions::Codex(CodexStartupOptions::default()));
+        let result = build_adapter(
+            &profile,
+            std::path::Path::new("/tmp"),
+            RunId::new(),
+            TaskId::new(),
+            WorkerId::new(),
+            Some(mcp_config()),
+            None,
+        );
+        assert!(result.is_ok(), "Codex branch must accept Some(mcp): {}", result.err().map(|e| e.to_string()).unwrap_or_default());
+    }
+
+    #[test]
+    fn copilot_branch_accepts_some_mcp_config() {
+        let profile = profile(StartupOptions::Copilot(CopilotStartupOptions::default()));
+        let result = build_adapter(
+            &profile,
+            std::path::Path::new("/tmp"),
+            RunId::new(),
+            TaskId::new(),
+            WorkerId::new(),
+            Some(mcp_config()),
+            None,
+        );
+        assert!(result.is_ok(), "Copilot branch must accept Some(mcp): {}", result.err().map(|e| e.to_string()).unwrap_or_default());
+    }
 }

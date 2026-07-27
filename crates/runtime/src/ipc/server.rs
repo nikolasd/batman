@@ -181,6 +181,19 @@ impl Server {
         Arc::clone(&self.shared.shutdown)
     }
 
+    /// The [`crate::coordination::CoordinationBroker`] this server binds
+    /// `coordination/*` dispatch to, exposed so a caller that constructed
+    /// an [`crate::adapter::registry::AdapterRegistry`] before `bind`
+    /// (necessarily -- it is threaded in via [`ServerConfig::run_driver`])
+    /// can retrofit that registry's own OMP-RPC in-process host-tool
+    /// bridge with the SAME broker instance after the fact, rather than
+    /// each holding an independent (and independently rate-limited)
+    /// broker.
+    #[must_use]
+    pub fn coordination_broker(&self) -> Arc<crate::coordination::CoordinationBroker> {
+        Arc::clone(&self.shared.coordination)
+    }
+
     /// Accepts and serves connections until `shutdown` resolves.
     ///
     /// Each accepted connection has its peer credentials read *before* any

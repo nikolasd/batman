@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use batman_protocol::BinarySource;
+use batman_protocol::{BinarySource, Classified, ContentClass, DiagnosticLevel};
 use nix::errno::Errno;
 use nix::fcntl::{Flock, FlockArg};
 use nix::sys::signal::{self, Signal};
@@ -36,8 +36,10 @@ use tokio::net::UnixStream;
 use crate::VERSION;
 use crate::db::DatabaseHandle;
 use crate::ipc::{self, Server, ServerConfig};
+use crate::adapter::mcp_config::AdapterMcpConfig;
 use crate::adapter::registry::AdapterRegistry;
 use crate::paths::{PathError, RuntimePaths};
+use crate::coordination::{ScopeTokenStore, ScopeTokenVerifier};
 use crate::security::redaction::{RawEventKind, RawRuntimeEvent, Redactor};
 use crate::security::{SecurityError, ensure_private_dir, ensure_private_file};
 
@@ -141,12 +143,59 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
     });
     db.append_event(started).await?;
 
+    let repo_root = std::fs::canonicalize(&opts.repo).unwrap_or_else(|_| opts.repo.clone());
+
+    // The credential store every worker-MCP subprocess's scope token is
+    // verified against. Without this, `ServerConfig::default()`'s
+    // `RejectAllWorkerVerifier` would reject every worker-MCP reconnect
+    // even when an adapter below successfully embeds one via `mcp`.
+    let scope_tokens = Arc::new(ScopeTokenStore::new());
+
+    // `AdapterMcpConfig` needs this runtime's own verified binary path to
+    // tell a supervised vendor process which `batcave coordination-mcp`
+    // to spawn. `current_exe()` can fail (e.g. the executable was removed
+    // after this process started); when it does, workers still start --
+    // just without worker-coordination MCP tools -- rather than failing
+    // the whole daemon. Never guessed: only a real resolved path is used.
+    let mcp = match std::env::current_exe() {
+        Ok(batcave_path) => Some(AdapterMcpConfig {
+            scope_tokens: Arc::clone(&scope_tokens),
+            project_id: paths.project_id,
+            batcave_path,
+            state_dir: paths.root.clone(),
+            repository: repo_root.clone(),
+        }),
+        Err(err) => {
+            let unavailable = redactor.sanitize(RawRuntimeEvent {
+                timestamp: batman_protocol::Timestamp::now(),
+                project_id: paths.project_id,
+                run_id: None,
+                kind: RawEventKind::Diagnostic {
+                    level: DiagnosticLevel::Warning,
+                    code: "worker_mcp_unavailable".to_string(),
+                    fragments: vec![Classified {
+                        class: ContentClass::Visible,
+                        value: format!(
+                            "could not resolve the running batcave binary's own path ({err}); \
+                             workers will start without worker-coordination MCP tools"
+                        ),
+                    }],
+                },
+            });
+            db.append_event(unavailable).await?;
+            None
+        }
+    };
+
+    let registry = Arc::new(AdapterRegistry::new(
+        Arc::new(DenyByDefaultAuthorization::from_env()),
+        repo_root,
+        mcp,
+    ));
     let config = ServerConfig {
         binary_source: opts.binary_source,
-        run_driver: Some(Arc::new(AdapterRegistry::new(
-            Arc::new(DenyByDefaultAuthorization::from_env()),
-            std::fs::canonicalize(&opts.repo).unwrap_or(opts.repo.clone()),
-        ))),
+        run_driver: Some(Arc::clone(&registry) as Arc<dyn crate::service::RunDriver>),
+        worker_verifier: Arc::new(ScopeTokenVerifier::new(Arc::clone(&scope_tokens))),
         ..ServerConfig::default()
     };
     let server = Server::bind(
@@ -157,6 +206,15 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
     )
     .await?
     .with_idle(opts.idle_seconds.map(Duration::from_secs));
+
+    // Retrofit the real, server-owned `CoordinationBroker` into the
+    // registry constructed above -- necessarily before `Server::bind`,
+    // since it is threaded in via `ServerConfig::run_driver` -- so
+    // OMP-RPC adapters' in-process host-tool bridge answers against the
+    // same broker instance `coordination/*` RPC dispatch uses. See
+    // `AdapterRegistry::set_broker`'s own doc comment for why this is a
+    // post-construction setter rather than a constructor argument.
+    registry.set_broker(server.coordination_broker());
 
     server.serve(shutdown_signal()).await?;
 

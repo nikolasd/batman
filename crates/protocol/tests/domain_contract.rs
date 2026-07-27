@@ -260,6 +260,7 @@ fn run_spec_contains_task_and_worker() {
         worker_id: batman_protocol::WorkerId::new(),
         workspace_mode: Some("isolated".to_string()),
         priority: 5,
+        prompt: None,
     };
 
     let value = serde_json::to_value(&spec).unwrap();

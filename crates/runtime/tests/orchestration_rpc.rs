@@ -8,10 +8,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use batman_protocol::{RunId, TaskId, WorkerId};
 use batman_runtime::db::DatabaseHandle;
 use batman_runtime::ipc::{PeerCredentialReader, PeerCredentials, Server, ServerConfig};
 use batman_runtime::paths::RuntimePaths;
-use batman_runtime::service::FakeRunDriver;
+use batman_runtime::service::{AdapterFuture, FakeRunDriver, RunDriver, RunDriverContext};
 use nix::unistd::Uid;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -43,6 +44,33 @@ fn matching_reader() -> Arc<dyn PeerCredentialReader> {
     Arc::new(FakeReader {
         uid: Some(current_uid()),
     })
+}
+
+/// A [`RunDriver`] that records every `send_follow_up` call verbatim and
+/// always succeeds, so tests can assert exactly what a driver-backed run
+/// received without needing a real (or fake-but-opinionated) adapter.
+/// `start` never transitions run state -- these tests only exercise
+/// `message/send`, not run lifecycle.
+#[derive(Default)]
+struct RecordingRunDriver {
+    follow_ups: parking_lot::Mutex<Vec<(RunId, TaskId, WorkerId, String)>>,
+}
+
+impl RunDriver for RecordingRunDriver {
+    fn start(&self, _ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn send_follow_up(
+        &self,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        prompt: String,
+    ) -> AdapterFuture<'static, Result<(), String>> {
+        self.follow_ups.lock().push((run_id, task_id, worker_id, prompt));
+        Box::pin(async { Ok(()) })
+    }
 }
 
 // --------------------------------------------------------------- harness
@@ -494,6 +522,107 @@ async fn message_send_then_list() {
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["kind"], "question");
     assert_eq!(messages[0]["payload"], "what should I do next?");
+}
+
+#[tokio::test]
+async fn message_send_on_a_run_with_no_running_adapter_still_succeeds_and_journals_a_diagnostic() {
+    // FakeRunDriver's own `send_follow_up` always errors -- exactly the
+    // shape of the real AdapterRegistry's `RegistryError::NoRunningAdapter`
+    // for a `queued` run that has not reached a live adapter instance yet.
+    // The RPC must still succeed and the message must still be recorded.
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let task = client
+        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }))
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+    let worker = client
+        .call(3, "worker/create", json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }))
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+    let submit = client
+        .call(4, "run/submit", json!({ "taskId": task_id, "workerId": worker_id }))
+        .await;
+    let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
+
+    let send = client
+        .call(
+            5,
+            "message/send",
+            json!({
+                "runId": run_id,
+                "senderWorkerId": worker_id,
+                "taskId": task_id,
+                "kind": "question",
+                "payload": "should I proceed?"
+            }),
+        )
+        .await;
+    assert!(send.get("error").is_none(), "message/send must succeed despite delivery failure: {send:?}");
+
+    let list = client.call(6, "message/list", json!({ "runId": run_id })).await;
+    let messages = list["result"]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1, "the message must still be durably recorded");
+
+    let replay = client.call(7, "events/replay", json!({ "afterSequence": 0 })).await;
+    let events = replay["result"].as_array().expect("events/replay returns an array");
+    let diagnostic = events
+        .iter()
+        .find(|e| e["event"]["type"] == "diagnostic")
+        .expect("a diagnostic event must be journaled for the failed follow-up delivery");
+    assert_eq!(diagnostic["event"]["payload"]["code"], "follow_up_delivery_failed");
+    assert_eq!(diagnostic["event"]["payload"]["level"], "warning");
+    assert_eq!(diagnostic["runId"], run_id, "the diagnostic must be scoped to the run");
+}
+
+#[tokio::test]
+async fn message_send_on_a_driver_backed_run_reaches_send_follow_up_exactly_once() {
+    let driver = Arc::new(RecordingRunDriver::default());
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::clone(&driver) as Arc<dyn RunDriver>);
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let task = client
+        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }))
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+    let worker = client
+        .call(3, "worker/create", json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }))
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+    let submit = client
+        .call(4, "run/submit", json!({ "taskId": task_id, "workerId": worker_id }))
+        .await;
+    let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
+
+    let send = client
+        .call(
+            5,
+            "message/send",
+            json!({
+                "runId": run_id,
+                "senderWorkerId": worker_id,
+                "taskId": task_id,
+                "kind": "question",
+                "payload": "verbatim payload text"
+            }),
+        )
+        .await;
+    assert!(send.get("error").is_none(), "message/send failed: {send:?}");
+
+    let follow_ups = driver.follow_ups.lock();
+    assert_eq!(follow_ups.len(), 1, "send_follow_up must be called exactly once");
+    let (recorded_run, recorded_task, recorded_worker, recorded_payload) = &follow_ups[0];
+    assert_eq!(recorded_run.to_string(), run_id);
+    assert_eq!(recorded_task.to_string(), task_id);
+    assert_eq!(recorded_worker.to_string(), worker_id);
+    assert_eq!(recorded_payload, "verbatim payload text");
 }
 
 // --------------------------------------------------------------- sequence
