@@ -32,7 +32,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use batman_protocol::{RunId, TaskId, WorkerId};
 
 use self::client::{OmpRpcClient, abort_command, follow_up_command, steer_command};
-use self::normalize::normalize_frame;
+use self::normalize::{PendingApproval, extension_ui_request_to_pending_approval, normalize_frame};
 use batman_runtime::adapter::{
     Adapter, AdapterCapabilities, AdapterError, AdapterEvent, AdapterEventPayload,
     AdapterEventSink, AdapterFuture, AdapterMessage, AdapterSnapshot, ApprovalsCapability,
@@ -96,6 +96,12 @@ struct SharedRunState {
     subagents: StdMutex<Vec<String>>,
     last_usage: StdMutex<Option<Value>>,
     artifacts: StdMutex<Vec<serde_json::Value>>,
+    /// Approvals observed via `extension_ui_request` (`confirm`/`select`)
+    /// that have not yet been resolved by a matching
+    /// `extension_ui_response`, keyed by request id. Backs this
+    /// adapter's `ApprovalsCapability::Observable` declaration through
+    /// `snapshot()`'s `state_summary` (see that method).
+    pending_approvals: StdMutex<HashMap<String, PendingApproval>>,
 }
 fn record_shared_state(shared: &SharedRunState, payload: &AdapterEventPayload) {
     match payload {
@@ -313,10 +319,14 @@ impl OmpRpcAdapter {
             // report `"one-at-a-time"` by default on the installed
             // binary -- i.e. queued, not concurrent mid-turn steering.
             steering: SteeringCapability::Queued,
-            // Approval requests can be observed and reflected into
-            // `snapshot()` (see `respond_to_approval`'s doc comment for
-            // why full `ApprovalService` wiring is out of scope here),
-            // but not resolved through this adapter yet.
+            // Approval requests (`extension_ui_request` `confirm`/
+            // `select`) are observed and reflected into `snapshot()`'s
+            // `state_summary` (see `record_shared_state`/`snapshot`), but
+            // deliberately not resolved through this adapter:
+            // `respond_to_approval` stays `capability_unsupported` (see
+            // its own doc comment) since `omp://rpc.md`'s
+            // `extension_ui_response` wire path is a separate capability
+            // upgrade to `Controllable`, out of this milestone's scope.
             approvals: ApprovalsCapability::Observable,
             structured_result: true,
             // Proven by get_session_stats_response_normalizes_to_usage_reported
@@ -694,10 +704,25 @@ impl Adapter for OmpRpcAdapter {
                         .lock()
                         .expect("artifacts mutex is never poisoned")
                         .clone();
-                    let summary = match session_id {
+                    let pending_approvals = handle
+                        .shared
+                        .pending_approvals
+                        .lock()
+                        .expect("pending_approvals mutex is never poisoned")
+                        .values()
+                        .map(|approval| format!("{}:{}", approval.method, approval.title))
+                        .collect::<Vec<_>>();
+                    let mut summary = match session_id {
                         Some(id) => format!("running (session {id})"),
                         None => "running".to_string(),
                     };
+                    if !pending_approvals.is_empty() {
+                        summary.push_str(&format!(
+                            ", {} pending approval(s): {}",
+                            pending_approvals.len(),
+                            pending_approvals.join(", ")
+                        ));
+                    }
                     (summary, children, usage, artifacts)
                 }
             };
@@ -765,6 +790,13 @@ async fn run_pump(
                         {
                             let _ = client.write_frame(&reply).await;
                             continue;
+                        }
+                        if let Some(approval) = extension_ui_request_to_pending_approval(&value) {
+                            shared
+                                .pending_approvals
+                                .lock()
+                                .unwrap()
+                                .insert(approval.request_id.clone(), approval);
                         }
                         for payload in normalize_frame(&value) {
                             record_shared_state(&shared, &payload);

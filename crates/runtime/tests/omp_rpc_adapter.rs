@@ -27,7 +27,8 @@ use batman_runtime::adapter::omp_rpc::client::{
 };
 use batman_runtime::adapter::omp_rpc::conformance;
 use batman_runtime::adapter::omp_rpc::normalize::{
-    PROMPT_ACCEPTED_MARKER, PROMPT_COMPLETED_MARKER, normalize_frame,
+    PROMPT_ACCEPTED_MARKER, PROMPT_COMPLETED_MARKER, PendingApproval,
+    extension_ui_request_to_pending_approval, normalize_frame,
 };
 use batman_runtime::adapter::{
     Adapter, AdapterEvent, AdapterEventPayload, AdapterEventSink, AdapterFuture,
@@ -120,6 +121,85 @@ fn malformed_json_line_is_skipped_not_fatal() {
         !events.is_empty(),
         "valid frames after the malformed line must still normalize"
     );
+}
+
+#[test]
+fn confirm_and_select_extension_ui_requests_produce_pending_approvals_with_the_right_method_and_title()
+ {
+    let lines = load_fixture("turn.jsonl");
+    let confirm_frame: Value = lines
+        .iter()
+        .find(|l| l.contains("\"method\":\"confirm\""))
+        .map(|l| serde_json::from_str(l).expect("fixture line is valid JSON"))
+        .expect("turn.jsonl must contain a confirm extension_ui_request fixture line");
+    let select_frame: Value = lines
+        .iter()
+        .find(|l| l.contains("\"method\":\"select\""))
+        .map(|l| serde_json::from_str(l).expect("fixture line is valid JSON"))
+        .expect("turn.jsonl must contain a select extension_ui_request fixture line");
+
+    let confirm_approval = extension_ui_request_to_pending_approval(&confirm_frame)
+        .expect("a confirm extension_ui_request must produce a PendingApproval");
+    assert_eq!(
+        confirm_approval,
+        PendingApproval {
+            request_id: "ui_7".to_string(),
+            method: "confirm",
+            title: "Confirm".to_string(),
+        }
+    );
+
+    let select_approval = extension_ui_request_to_pending_approval(&select_frame)
+        .expect("a select extension_ui_request must produce a PendingApproval");
+    assert_eq!(
+        select_approval,
+        PendingApproval {
+            request_id: "ui_8".to_string(),
+            method: "select",
+            title: "Pick a branch".to_string(),
+        }
+    );
+
+    // Neither decision-shaped frame is upgraded into a normalized event --
+    // approvals are surfaced only through `snapshot()`'s `state_summary`.
+    assert!(normalize_frame(&confirm_frame).is_empty());
+    assert!(normalize_frame(&select_frame).is_empty());
+}
+
+#[test]
+fn set_widget_extension_ui_request_never_produces_a_pending_approval() {
+    let lines = load_fixture("turn.jsonl");
+    let set_widget_frame: Value = lines
+        .iter()
+        .find(|l| l.contains("\"method\":\"setWidget\""))
+        .map(|l| serde_json::from_str(l).expect("fixture line is valid JSON"))
+        .expect("turn.jsonl must contain a setWidget extension_ui_request fixture line");
+
+    assert_eq!(
+        extension_ui_request_to_pending_approval(&set_widget_frame),
+        None,
+        "setWidget is a display surface, never a decision -- it must never be treated as an \
+         approval"
+    );
+    assert!(normalize_frame(&set_widget_frame).is_empty());
+}
+
+#[test]
+fn non_extension_ui_request_frames_never_produce_a_pending_approval() {
+    let lines = load_fixture("turn.jsonl");
+    let non_ui_frames: Vec<Value> = lines
+        .iter()
+        .filter(|l| !l.contains("\"extension_ui_request\""))
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    assert!(!non_ui_frames.is_empty(), "turn.jsonl must contain non-extension_ui_request frames");
+    for frame in &non_ui_frames {
+        assert_eq!(
+            extension_ui_request_to_pending_approval(frame),
+            None,
+            "only extension_ui_request frames may produce a PendingApproval: {frame}"
+        );
+    }
 }
 
 #[test]

@@ -51,6 +51,54 @@ fn prompt_completed() -> AdapterEventPayload {
     }
 }
 
+/// A vendor UI request this adapter treats as an approval. Only the two
+/// decision-shaped `extension_ui_request` methods qualify --
+/// `select`/`confirm`; `input`, `editor`, `cancel`, `notify`,
+/// `setStatus`, `setWidget`, `setTitle`, `set_editor_text`, and
+/// `open_url` are display or free-text surfaces, never approvals (see
+/// `omp://rpc.md`'s complete `extension_ui_request` method list).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingApproval {
+    /// The `extension_ui_request` `id` an `extension_ui_response` must
+    /// echo back on stdin to resolve this request.
+    pub request_id: String,
+    /// `"confirm"` or `"select"`.
+    pub method: &'static str,
+    /// The request's `title` field, or an empty string when absent.
+    pub title: String,
+}
+
+/// Returns `Some` only for `method == "confirm" | "select"` on an
+/// `extension_ui_request` frame carrying a string `id`. Every other
+/// `extension_ui_request` (`setWidget`, `notify`, ...) -- and every
+/// non-`extension_ui_request` frame -- returns `None`: this function is
+/// never the sole gate on approval detection reaching a non-approval
+/// frame, since [`normalize_frame`] independently drops
+/// `extension_ui_request` to zero events regardless of what this
+/// function reports.
+#[must_use]
+pub fn extension_ui_request_to_pending_approval(frame: &Value) -> Option<PendingApproval> {
+    if frame.get("type").and_then(Value::as_str) != Some("extension_ui_request") {
+        return None;
+    }
+    let request_id = frame.get("id").and_then(Value::as_str)?.to_string();
+    let method = match frame.get("method").and_then(Value::as_str)? {
+        "confirm" => "confirm",
+        "select" => "select",
+        _ => return None,
+    };
+    let title = frame
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Some(PendingApproval {
+        request_id,
+        method,
+        title,
+    })
+}
+
 /// Normalizes one already-parsed OMP-RPC frame into zero or more
 /// [`AdapterEventPayload`]s, in emission order.
 ///
