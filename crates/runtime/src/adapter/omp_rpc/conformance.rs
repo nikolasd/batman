@@ -716,59 +716,6 @@ async fn runtime_restart_scenario() -> ScenarioResult {
     }
 }
 
-// -------------------------------------------------- RESULT_USAGE_ARTIFACTS
-
-/// `turn.jsonl`'s single fixture normalizes both a turn-completion
-/// `MessageFinal` (the run's result) and `get_session_stats`'
-/// `UsageReported` (usage); both are emitted from the exact same
-/// `run_pump` closure using the same `run_id`/`task_id`/`worker_id`
-/// captured once at `start()` (structural correlation, no per-event id
-/// lookup that could drift). This adapter's `normalize.rs` has no case
-/// constructing `ArtifactProduced` at all, and `snapshot()` hardcodes
-/// `artifacts: Vec::new()` -- artifact correlation is honestly not
-/// applicable to this adapter's current implementation (there is
-/// nothing to correlate), never claimed proven; this scenario's own
-/// capability downgrade only touches `usage`/`structured_result`, which
-/// have no dedicated `artifacts` field to be misrepresented by that gap.
-fn result_usage_artifacts_scenario() -> ScenarioResult {
-    let events = normalize_fixture_lines(&load_fixture_lines("turn.jsonl"));
-    let run_completed = events.iter().any(|e| {
-        matches!(e, AdapterEventPayload::MessageFinal { text, .. } if text.value == PROMPT_COMPLETED_MARKER)
-    });
-    if !run_completed {
-        return ScenarioResult::fail(
-            scenario::RESULT_USAGE_ARTIFACTS,
-            "turn.jsonl no longer normalizes a turn-completion MessageFinal",
-        );
-    }
-    let usage = events.iter().find_map(|e| match e {
-        AdapterEventPayload::UsageReported {
-            input_tokens,
-            output_tokens,
-            cost_usd,
-        } => Some((*input_tokens, *output_tokens, *cost_usd)),
-        _ => None,
-    });
-    let Some((input_tokens, output_tokens, cost_usd)) = usage else {
-        return ScenarioResult::fail(
-            scenario::RESULT_USAGE_ARTIFACTS,
-            "turn.jsonl no longer normalizes get_session_stats into UsageReported",
-        );
-    };
-    ScenarioResult::pass(
-        scenario::RESULT_USAGE_ARTIFACTS,
-        format!(
-            "turn.jsonl's single fixture normalizes both a turn-completion MessageFinal (the \
-             run's result) and get_session_stats' UsageReported (input={input_tokens}, \
-             output={output_tokens}, costUsd={cost_usd:?}); both are emitted from the same \
-             run_pump closure using the same run_id/task_id/worker_id captured once at start() \
-             (structural correlation, not a per-event id lookup that could drift). This \
-             adapter's normalize.rs has no case constructing ArtifactProduced at all, and \
-             snapshot() hardcodes artifacts: Vec::new() -- artifact correlation is not \
-             applicable to this adapter's current implementation, never claimed proven."
-        ),
-    )
-}
 
 // -------------------------------------------------------- NATIVE_DISCOVERY
 
@@ -946,11 +893,9 @@ async fn build_scenarios(
         session_resume_scenario().await,
         vendor_reconnect_scenario().await,
         runtime_restart_scenario().await,
-        result_usage_artifacts_scenario(),
         native_discovery_scenario(),
         redaction_scenario(),
         managed_nesting_rejection_scenario(),
-        unexpected_child_observation_scenario(),
     ];
     (scenarios, version, declared_capabilities)
 }

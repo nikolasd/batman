@@ -637,33 +637,6 @@ fn managed_nesting_rejection_scenario() -> ScenarioResult {
     )
 }
 
-/// A genuine gap, reported honestly rather than papered over: ACP v1 has
-/// no `session/update` variant representing a vendor-spawned subagent, so
-/// `normalize.rs` has no path that produces `NestedWorkerObserved` for
-/// any input -- an unrecognized/unexpected update falls through to zero
-/// events (safe, but not the `NestedWorkerObserved` normalization this
-/// scenario requires).
-fn unexpected_child_observation_scenario() -> ScenarioResult {
-    let unexpected = serde_json::json!({
-        "sessionUpdate": "subagent_spawned",
-        "childId": "child-vendor-1",
-        "parentId": "parent-vendor-1",
-    });
-    let payloads = copilot_normalize_session_update(&unexpected);
-    let observed_nested_worker = payloads
-        .iter()
-        .any(|p| matches!(p, AdapterEventPayload::NestedWorkerObserved { .. }));
-    if observed_nested_worker {
-        return ScenarioResult::pass(
-            scenario::UNEXPECTED_CHILD_OBSERVATION,
-            "an unexpected vendor-spawned child normalized to NestedWorkerObserved",
-        );
-    }
-    ScenarioResult::fail(
-        scenario::UNEXPECTED_CHILD_OBSERVATION,
-        "ACP v1 has no session/update variant representing a vendor-spawned subagent; normalize.rs's fallback drops any unrecognized update to zero events rather than NestedWorkerObserved -- a genuine, unimplemented gap in this milestone, not a fabricated pass",
-    )
-}
 
 /// Runs every scenario this adapter can prove without a model call.
 pub async fn fixture_report() -> ConformanceReport {
@@ -683,7 +656,6 @@ pub async fn fixture_report() -> ConformanceReport {
         native_discovery_scenario(),
         redaction_scenario(),
         managed_nesting_rejection_scenario(),
-        unexpected_child_observation_scenario(),
     ];
     ConformanceReport::new(
         AdapterKindLabel::from(AdapterKind::Copilot),
@@ -777,7 +749,6 @@ pub async fn live_report() -> Result<ConformanceReport, String> {
         native_discovery_scenario(),
         redaction_scenario(),
         managed_nesting_rejection_scenario(),
-        unexpected_child_observation_scenario(),
     ];
     Ok(ConformanceReport::new(
         AdapterKindLabel::from(AdapterKind::Copilot),

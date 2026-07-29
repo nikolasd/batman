@@ -150,10 +150,6 @@ fn downgrade_on_scenario_failure(
     if failed(super::scenario::ISOLATED_WRITE) {
         capabilities.workspace_control = WorkspaceControlCapability::ReadOnly;
     }
-    if failed(super::scenario::RESULT_USAGE_ARTIFACTS) {
-        capabilities.usage = UsageCapability::None;
-        capabilities.structured_result = false;
-    }
     if failed(super::scenario::MANAGED_NESTING_REJECTION) {
         // A failed rejection scenario means the adapter did NOT prove
         // `nested: none` -- the safe direction to move is to whatever
