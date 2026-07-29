@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 
 use batman_runtime::VERSION;
 use batman_runtime::lifecycle::{
-    self, ServeError, ServeOptions, StatusOptions, StopOptions, StopOutcome,
+    self, MonitorOptions, ServeError, ServeOptions, StatusOptions, StopOptions, StopOutcome,
 };
 use batman_runtime::security::StateRoot;
 
@@ -115,6 +115,42 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Renders a replayable, live view of a repository's runs: replays
+    /// every event from sequence 0, then follows new events live until
+    /// interrupted (Ctrl-C).
+    Monitor {
+        /// The BATMAN state root. Defaults to the resolved state root.
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+        /// The repository whose runtime to monitor.
+        #[arg(long)]
+        repo: PathBuf,
+        /// Renders only this run. Omit to render every run in the
+        /// project.
+        #[arg(long)]
+        run_id: Option<String>,
+    },
+    /// Probes a display backend's availability without creating,
+    /// moving, or closing a pane, and without stopping a running
+    /// Herdr.
+    Display {
+        #[command(subcommand)]
+        action: DisplayAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum DisplayAction {
+    /// Probes one display backend (`herdr` or `tmux`).
+    Probe {
+        /// `herdr` or `tmux`.
+        #[arg(long)]
+        backend: String,
+        /// Emits the probe result as JSON instead of a human-readable
+        /// summary.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// The canonical protocol JSON Schema, embedded at compile time so the binary
@@ -158,6 +194,14 @@ pub async fn run() -> ExitCode {
             live,
             output,
         } => run_conformance(adapter, fixture, live, output).await,
+        Command::Monitor {
+            state_dir,
+            repo,
+            run_id,
+        } => run_monitor(state_dir, repo, run_id).await,
+        Command::Display {
+            action: DisplayAction::Probe { backend, json },
+        } => run_display_probe(&backend, json),
     }
 }
 
@@ -219,6 +263,89 @@ async fn run_status(
             );
             ExitCode::SUCCESS
         }
+        Err(err) => fail(&err),
+    }
+}
+
+fn run_display_probe(backend: &str, json: bool) -> ExitCode {
+    use batman_protocol::DisplayConfig;
+    use batman_runtime::display::{DisplayBackendTrait, HerdrDisplay, TmuxDisplay};
+
+    match backend {
+        "herdr" => {
+            let herdr = HerdrDisplay::new(DisplayConfig::default());
+            match herdr.probe() {
+                Ok(status) => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "backend": "herdr",
+                                "available": status.compatible,
+                                "clientVersion": status.client_version,
+                                "clientProtocol": status.client_protocol,
+                                "serverRunning": status.server_running,
+                                "serverVersion": status.server_version,
+                                "serverProtocol": status.server_protocol,
+                                "compatible": status.compatible,
+                            })
+                        );
+                    } else if status.compatible {
+                        println!(
+                            "herdr: compatible (client {} protocol {}, server {} protocol {})",
+                            status.client_version,
+                            status.client_protocol,
+                            status.server_version.as_deref().unwrap_or("unknown"),
+                            status.server_protocol.map_or("unknown".to_string(), |p| p.to_string()),
+                        );
+                    } else {
+                        println!("herdr: unavailable -- {}", status.remediation());
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    if json {
+                        println!("{}", serde_json::json!({ "backend": "herdr", "available": false, "error": err }));
+                    } else {
+                        println!("herdr: unavailable -- {err}");
+                    }
+                    ExitCode::SUCCESS
+                }
+            }
+        }
+        "tmux" => {
+            let tmux = TmuxDisplay::new(DisplayConfig::default());
+            let available = tmux.is_available();
+            if json {
+                println!("{}", serde_json::json!({ "backend": "tmux", "available": available }));
+            } else if available {
+                println!("tmux: available (binary present, inside an active session)");
+            } else {
+                println!(
+                    "tmux: unavailable -- tmux is not installed, its version is too old, or there \
+                     is no active session"
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        other => fail(&format!("unknown display backend {other:?}; expected \"herdr\" or \"tmux\"")),
+    }
+}
+
+async fn run_monitor(state_dir: Option<PathBuf>, repo: PathBuf, run_id: Option<String>) -> ExitCode {
+    let state_dir = match resolve_state_dir(state_dir) {
+        Ok(dir) => dir,
+        Err(err) => return fail(&err),
+    };
+
+    let options = MonitorOptions {
+        state_dir,
+        repo,
+        run_id,
+    };
+
+    match lifecycle::monitor(&options).await {
+        Ok(()) => ExitCode::SUCCESS,
         Err(err) => fail(&err),
     }
 }

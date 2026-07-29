@@ -508,6 +508,26 @@ impl<'c> DomainRepository<'c> {
         )
     }
 
+    /// Appends a `Diagnostic` event scoped to `run_id`, with no projection
+    /// side effect. Used for runtime-observed conditions -- such as a
+    /// follow-up message that could not be delivered to a running adapter
+    /// -- that must be journaled and broadcast without failing the RPC
+    /// that triggered them or mutating any record.
+    pub fn record_diagnostic(
+        &mut self,
+        run_id: RunId,
+        level: batman_protocol::DiagnosticLevel,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Result<Committed, DomainError> {
+        let event = RuntimeEvent::Diagnostic {
+            level,
+            code: code.into(),
+            message: message.into(),
+        };
+        self.append_and_apply(&event, None, None, Some(run_id), |_tx| Ok(()))
+    }
+
     /// Updates a message's delivery state. Emits the matching `Message*`
     /// event.
     pub fn update_delivery(

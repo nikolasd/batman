@@ -346,6 +346,36 @@
         "backend"
       ]
     },
+    "DisplayPlacement": {
+      "description": "Where a display backend places a pane relative to the caller's own\nterminal. Changes presentation only; never run ownership.",
+      "oneOf": [
+        {
+          "description": "Rendered inside the caller's own OMP session, no separate pane.",
+          "type": "string",
+          "const": "embedded"
+        },
+        {
+          "description": "A new pane split to the right of the current one.",
+          "type": "string",
+          "const": "splitRight"
+        },
+        {
+          "description": "A new pane split below the current one.",
+          "type": "string",
+          "const": "splitDown"
+        },
+        {
+          "description": "A new tab.",
+          "type": "string",
+          "const": "tab"
+        },
+        {
+          "description": "A new workspace (Herdr only; unsupported by tmux).",
+          "type": "string",
+          "const": "workspace"
+        }
+      ]
+    },
     "DisplayStatus": {
       "description": "Display status information.",
       "type": "object",
@@ -1629,6 +1659,85 @@
             "type",
             "payload"
           ]
+        },
+        {
+          "description": "A display backend attached or detached a Batman-owned pane.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "backend": {
+                  "$ref": "#/$defs/DisplayBackend"
+                },
+                "kind": {
+                  "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "paneRef": {
+                  "description": "The vendor-assigned pane identifier only -- never terminal\ncontents, never an absolute socket or filesystem path.",
+                  "type": "string"
+                },
+                "placement": {
+                  "$ref": "#/$defs/DisplayPlacement"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "runId",
+                "backend",
+                "placement",
+                "paneRef"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "displayEvent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "description": "A human typed directly into a native pane, bypassing the\nadapter. Sets the run's `needsReconciliation` flag.",
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "backend": {
+                  "$ref": "#/$defs/DisplayBackend"
+                },
+                "paneRef": {
+                  "type": "string"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "runId",
+                "backend",
+                "paneRef"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "outOfBandInput"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
         }
       ]
     },
@@ -1722,6 +1831,16 @@
           "description": "A worker adapter observed a vendor-created child, regardless of its\ndeclared `nested` capability.",
           "type": "string",
           "const": "adapterNestedWorkerObserved"
+        },
+        {
+          "description": "A display backend attached a Batman-owned pane to a run.",
+          "type": "string",
+          "const": "displayPaneAttached"
+        },
+        {
+          "description": "A display backend detached (closed) a Batman-owned pane.",
+          "type": "string",
+          "const": "displayPaneDetached"
         }
       ]
     },

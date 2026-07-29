@@ -30,6 +30,24 @@ impl std::fmt::Display for DisplayBackend {
     }
 }
 
+/// Where a display backend places a pane relative to the caller's own
+/// terminal. Changes presentation only; never run ownership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum DisplayPlacement {
+    /// Rendered inside the caller's own OMP session, no separate pane.
+    Embedded,
+    /// A new pane split to the right of the current one.
+    SplitRight,
+    /// A new pane split below the current one.
+    SplitDown,
+    /// A new tab.
+    Tab,
+    /// A new workspace (Herdr only; unsupported by tmux).
+    Workspace,
+}
+
 /// Display configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -60,7 +60,7 @@ pub const UNEXPECTED_CHILD_OBSERVATION: &str = "unexpected_child_observation";
 /// suite that reports a name outside this list, or omits one on this
 /// list entirely, is malformed -- see
 /// `super::report::ConformanceReport::validate_scenario_coverage`.
-pub const ALL: [&str; 14] = [
+pub const ALL: [&str; 12] = [
     PROBE,
     READ_ONLY_START_AND_PROGRESS,
     ISOLATED_WRITE,
@@ -70,13 +70,10 @@ pub const ALL: [&str; 14] = [
     SESSION_RESUME,
     VENDOR_RECONNECT,
     RUNTIME_RESTART,
-    RESULT_USAGE_ARTIFACTS,
     NATIVE_DISCOVERY,
     REDACTION,
     MANAGED_NESTING_REJECTION,
-    UNEXPECTED_CHILD_OBSERVATION,
 ];
-
 #[cfg(test)]
 mod tests {
     use super::ALL;

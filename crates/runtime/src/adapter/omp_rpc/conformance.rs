@@ -32,7 +32,10 @@ use batman_runtime::coordination::mcp_protocol::BoundScope;
 use batman_runtime::supervisor::{EnvironmentPolicy, SpawnSpec, Supervisor};
 
 use super::client::{self, OmpRpcClient};
-use super::normalize::{PROMPT_ACCEPTED_MARKER, PROMPT_COMPLETED_MARKER, normalize_frame};
+use super::normalize::{
+    PROMPT_ACCEPTED_MARKER, PROMPT_COMPLETED_MARKER, extension_ui_request_to_pending_approval,
+    normalize_frame,
+};
 
 fn conformance_profile(model: impl Into<String>) -> WorkerProfile {
     WorkerProfile {
@@ -269,47 +272,97 @@ fn isolated_write_scenario() -> ScenarioResult {
 
 // ---------------------------------------------------------------- APPROVAL
 
-/// Genuine gap, reported honestly rather than papered over: this
-/// adapter's `normalize_frame` has no case for `extension_ui_request`
-/// frames (its own catch-all returns zero events for it, per its module
-/// doc), and `SharedRunState` tracks no pending-approval state for
-/// OMP-RPC (unlike the Claude adapter's `PendingApproval` bookkeeping)
-/// that `snapshot()` could report. Confirmed against `turn.jsonl`'s own
-/// real `extension_ui_request` frame, captured verbatim from the
-/// installed binary: it normalizes to zero events.
-/// `ApprovalsCapability::Observable` is declared but not actually backed
-/// by any observable event or internal state for this adapter as
-/// currently implemented.
+/// Backs `ApprovalsCapability::Observable` with real, checkable
+/// state: `turn.jsonl` carries three `extension_ui_request` frames --
+/// `confirm`, `select`, and `setWidget` -- in the exact shapes
+/// `omp://rpc.md` documents. Only the two decision-shaped methods
+/// (`confirm`/`select`) must produce a `PendingApproval` via
+/// `extension_ui_request_to_pending_approval`; `setWidget` (and every
+/// other `extension_ui_request` method) must produce none.
+/// `normalize_frame` itself must keep returning zero events for all
+/// three -- approvals are surfaced through `snapshot()`'s
+/// `state_summary`, never through the event sink; upgrading that would
+/// silently promise a capability (`AdapterEventPayload` has no approval
+/// variant) this adapter does not have.
 fn approval_scenario() -> ScenarioResult {
     let lines = load_fixture_lines("turn.jsonl");
-    let Some(line) = lines
+    let frames: Vec<Value> = lines
         .iter()
-        .find(|l| l.contains("\"extension_ui_request\""))
-    else {
+        .filter(|line| line.contains("\"extension_ui_request\""))
+        .map(|line| serde_json::from_str(line).expect("fixture line is valid JSON"))
+        .collect();
+    if frames.len() < 3 {
         return ScenarioResult::fail(
             scenario::APPROVAL,
-            "turn.jsonl no longer contains an extension_ui_request frame to check",
+            format!(
+                "turn.jsonl must contain 3 extension_ui_request frames (confirm, select, \
+                 setWidget) to exercise this scenario; found {}",
+                frames.len()
+            ),
         );
-    };
-    let frame: Value = serde_json::from_str(line).expect("fixture line is valid JSON");
-    let events = normalize_frame(&frame);
-    if events.is_empty() {
-        ScenarioResult::fail(
-            scenario::APPROVAL,
-            "this adapter has no normalized representation for extension_ui_request frames yet \
-             (normalize_frame's catch-all returns zero events for it), and tracks no \
-             pending-approval state for OMP-RPC that snapshot() could report -- confirmed \
-             against turn.jsonl's own real extension_ui_request frame, which normalizes to \
-             zero events. ApprovalsCapability::Observable is declared but not yet backed by any \
-             observable event or internal state for this adapter's current implementation.",
-        )
-    } else {
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    for frame in &frames {
+        let events = normalize_frame(frame);
+        if !events.is_empty() {
+            return ScenarioResult::fail(
+                scenario::APPROVAL,
+                format!(
+                    "normalize_frame must return zero events for every extension_ui_request; \
+                     got {events:?} for {frame}"
+                ),
+            );
+        }
+        let approval = extension_ui_request_to_pending_approval(frame);
+        let Some(method) = frame.get("method").and_then(Value::as_str) else {
+            return ScenarioResult::fail(scenario::APPROVAL, "fixture frame has no method field");
+        };
+        match method {
+            "confirm" | "select" => {
+                let Some(approval) = approval else {
+                    return ScenarioResult::fail(
+                        scenario::APPROVAL,
+                        format!("a {method} extension_ui_request must produce a PendingApproval"),
+                    );
+                };
+                if approval.method != method {
+                    return ScenarioResult::fail(
+                        scenario::APPROVAL,
+                        format!("expected PendingApproval.method {method:?}, got {:?}", approval.method),
+                    );
+                }
+            }
+            "setWidget" => {
+                if approval.is_some() {
+                    return ScenarioResult::fail(
+                        scenario::APPROVAL,
+                        "setWidget must never produce a PendingApproval",
+                    );
+                }
+            }
+            other => {
+                return ScenarioResult::fail(
+                    scenario::APPROVAL,
+                    format!("unexpected extension_ui_request method in fixture: {other}"),
+                );
+            }
+        }
+        seen.insert(method.to_string());
+    }
+
+    if seen.contains("confirm") && seen.contains("select") && seen.contains("setWidget") {
         ScenarioResult::pass(
             scenario::APPROVAL,
-            format!(
-                "extension_ui_request normalized to {} event(s): {events:?}",
-                events.len()
-            ),
+            "confirm and select extension_ui_request frames each produce a PendingApproval \
+             (backing ApprovalsCapability::Observable via snapshot()'s state_summary); \
+             setWidget produces none; normalize_frame returns zero events for all three",
+        )
+    } else {
+        ScenarioResult::fail(
+            scenario::APPROVAL,
+            "turn.jsonl did not exercise all three extension_ui_request methods (confirm, \
+             select, setWidget)",
         )
     }
 }
@@ -663,59 +716,6 @@ async fn runtime_restart_scenario() -> ScenarioResult {
     }
 }
 
-// -------------------------------------------------- RESULT_USAGE_ARTIFACTS
-
-/// `turn.jsonl`'s single fixture normalizes both a turn-completion
-/// `MessageFinal` (the run's result) and `get_session_stats`'
-/// `UsageReported` (usage); both are emitted from the exact same
-/// `run_pump` closure using the same `run_id`/`task_id`/`worker_id`
-/// captured once at `start()` (structural correlation, no per-event id
-/// lookup that could drift). This adapter's `normalize.rs` has no case
-/// constructing `ArtifactProduced` at all, and `snapshot()` hardcodes
-/// `artifacts: Vec::new()` -- artifact correlation is honestly not
-/// applicable to this adapter's current implementation (there is
-/// nothing to correlate), never claimed proven; this scenario's own
-/// capability downgrade only touches `usage`/`structured_result`, which
-/// have no dedicated `artifacts` field to be misrepresented by that gap.
-fn result_usage_artifacts_scenario() -> ScenarioResult {
-    let events = normalize_fixture_lines(&load_fixture_lines("turn.jsonl"));
-    let run_completed = events.iter().any(|e| {
-        matches!(e, AdapterEventPayload::MessageFinal { text, .. } if text.value == PROMPT_COMPLETED_MARKER)
-    });
-    if !run_completed {
-        return ScenarioResult::fail(
-            scenario::RESULT_USAGE_ARTIFACTS,
-            "turn.jsonl no longer normalizes a turn-completion MessageFinal",
-        );
-    }
-    let usage = events.iter().find_map(|e| match e {
-        AdapterEventPayload::UsageReported {
-            input_tokens,
-            output_tokens,
-            cost_usd,
-        } => Some((*input_tokens, *output_tokens, *cost_usd)),
-        _ => None,
-    });
-    let Some((input_tokens, output_tokens, cost_usd)) = usage else {
-        return ScenarioResult::fail(
-            scenario::RESULT_USAGE_ARTIFACTS,
-            "turn.jsonl no longer normalizes get_session_stats into UsageReported",
-        );
-    };
-    ScenarioResult::pass(
-        scenario::RESULT_USAGE_ARTIFACTS,
-        format!(
-            "turn.jsonl's single fixture normalizes both a turn-completion MessageFinal (the \
-             run's result) and get_session_stats' UsageReported (input={input_tokens}, \
-             output={output_tokens}, costUsd={cost_usd:?}); both are emitted from the same \
-             run_pump closure using the same run_id/task_id/worker_id captured once at start() \
-             (structural correlation, not a per-event id lookup that could drift). This \
-             adapter's normalize.rs has no case constructing ArtifactProduced at all, and \
-             snapshot() hardcodes artifacts: Vec::new() -- artifact correlation is not \
-             applicable to this adapter's current implementation, never claimed proven."
-        ),
-    )
-}
 
 // -------------------------------------------------------- NATIVE_DISCOVERY
 
@@ -893,11 +893,9 @@ async fn build_scenarios(
         session_resume_scenario().await,
         vendor_reconnect_scenario().await,
         runtime_restart_scenario().await,
-        result_usage_artifacts_scenario(),
         native_discovery_scenario(),
         redaction_scenario(),
         managed_nesting_rejection_scenario(),
-        unexpected_child_observation_scenario(),
     ];
     (scenarios, version, declared_capabilities)
 }

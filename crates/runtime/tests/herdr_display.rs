@@ -1,329 +1,134 @@
-//! Herdr display backend tests using injected command executors.
+//! Herdr display backend tests: real `herdr status --json` compatibility
+//! gating and pane-lifecycle operations, using injected command
+//! executors keyed off `fixtures/displays/herdr/*.txt` -- the exact
+//! `status --json` shape captured from the installed `herdr 0.7.5`
+//! binary (mismatch fixture's server side edited to the previously
+//! observed protocol-16 workstation state).
 
-use batman_protocol::{DisplayBackend, DisplayConfig};
+use batman_protocol::{DisplayConfig, DisplayPlacement};
 use batman_runtime::display::{CommandExecutor, CommandResult, DisplayBackendTrait, HerdrDisplay};
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
+use std::sync::Arc;
 
-/// Mock command executor for testing.
-struct MockCommandExecutor {
-    results: Vec<MockResult>,
-    calls: Mutex<Vec<(String, Vec<String>)>>,
-    call_count: std::sync::atomic::AtomicUsize,
+fn load_fixture(name: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/displays/herdr")
+        .join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading fixture {}: {e}", path.display()))
 }
 
-enum MockResult {
-    Success(Vec<u8>),
-    Failure(Vec<u8>),
-    SpawnError(String),
+/// A command executor keyed by exact `"program arg1 arg2..."` string,
+/// recording every invocation so tests can assert on exactly what (and
+/// how many times) this backend actually ran.
+struct FixtureExecutor {
+    responses: std::collections::HashMap<String, CommandResult>,
+    calls: std::sync::Mutex<Vec<String>>,
 }
 
-impl MockCommandExecutor {
+impl FixtureExecutor {
     fn new() -> Self {
-        MockCommandExecutor {
-            results: Vec::new(),
-            calls: Mutex::new(Vec::new()),
-            call_count: std::sync::atomic::AtomicUsize::new(0),
-        }
+        Self { responses: std::collections::HashMap::new(), calls: std::sync::Mutex::new(Vec::new()) }
     }
 
-    fn push_success(&mut self, stdout: Vec<u8>) {
-        self.results.push(MockResult::Success(stdout));
+    fn with(mut self, key: &str, result: CommandResult) -> Self {
+        self.responses.insert(key.to_string(), result);
+        self
     }
 
-    fn push_failure(&mut self, stderr: Vec<u8>) {
-        self.results.push(MockResult::Failure(stderr));
-    }
-
-    fn push_spawn_error(&mut self, msg: &str) {
-        self.results.push(MockResult::SpawnError(msg.to_string()));
-    }
-
-    fn recorded_calls(&self) -> Vec<(String, Vec<String>)> {
-        self.calls.lock().unwrap().clone()
-    }
-    fn assert_command_invoked(&self, program: &str, expected_args: &[&str]) {
-        let calls = self.recorded_calls();
-        let found = calls.iter().any(|(p, args)| {
-            p == program && args.len() == expected_args.len() &&
-                args.iter().zip(expected_args.iter()).all(|(a, e)| *a == **e)
-        });
-        assert!(
-            found,
-            "Expected command '{}' with args {:?}, but recorded calls were: {:?}",
-            program, expected_args, calls
-        );
-    }
-
-    fn assert_version_check_invoked(&self) {
-        self.assert_command_invoked("herdr", &["--version"]);
-    }
-
-    fn assert_session_creation_invoked(&self) {
-        self.assert_command_invoked("herdr", &["new", "batman-session"]);
+    fn call_count(&self) -> usize {
+        self.calls.lock().unwrap().len()
     }
 }
 
-impl CommandExecutor for MockCommandExecutor {
+fn ok(stdout: impl Into<String>) -> CommandResult {
+    CommandResult { success: true, stdout: stdout.into().into_bytes(), stderr: Vec::new() }
+}
+
+impl CommandExecutor for FixtureExecutor {
     fn execute(&self, program: &str, args: &[&str]) -> io::Result<CommandResult> {
-        let idx = self.call_count.load(std::sync::atomic::Ordering::Relaxed);
-        self.call_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        {
-            let mut calls = self.calls.lock().unwrap();
-            calls.push((
-                program.to_string(),
-                args.iter().map(|s| s.to_string()).collect(),
-            ));
-        }
-        match self.results.get(idx) {
-            Some(MockResult::Success(stdout)) => Ok(CommandResult {
-                success: true,
-                stdout: stdout.clone(),
-                stderr: Vec::new(),
-            }),
-            Some(MockResult::Failure(stderr)) => Ok(CommandResult {
-                success: false,
-                stdout: Vec::new(),
-                stderr: stderr.clone(),
-            }),
-            Some(MockResult::SpawnError(msg)) => {
-                Err(io::Error::new(io::ErrorKind::NotFound, msg.clone()))
-            }
-            None => Err(io::Error::new(io::ErrorKind::Other, "no more results")),
-        }
+        let key = format!("{program} {}", args.join(" "));
+        self.calls.lock().unwrap().push(key.clone());
+        self.responses
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| io::Error::other(format!("no fixture response for: {key}")))
     }
 }
 
 #[test]
-fn herdr_display_creates_with_config() {
-    let config = DisplayConfig::default();
-    let herdr = HerdrDisplay::new(config);
+fn creates_with_config() {
+    let herdr = HerdrDisplay::new(DisplayConfig::default());
     assert_eq!(herdr.backend_name(), "herdr");
 }
 
 #[test]
-fn herdr_display_with_mock_executor_available() {
-    let mut mock = MockCommandExecutor::new();
-    mock.push_success(b"herdr 0.1.0".to_vec());
-
-    let config = DisplayConfig::default();
-    let herdr = HerdrDisplay::with_executor(config, Arc::new(mock));
-
+fn the_compatible_fixture_makes_the_backend_available() {
+    let executor =
+        Arc::new(FixtureExecutor::new().with("herdr status --json", ok(load_fixture("status-compatible.txt"))));
+    let herdr = HerdrDisplay::with_executor(DisplayConfig::default(), executor);
     assert!(herdr.is_available());
-    assert_eq!(herdr.backend_name(), "herdr");
+    let status = herdr.probe().expect("probe must succeed against a well-formed fixture");
+    assert_eq!(status.client_protocol, 17);
+    assert_eq!(status.server_protocol, Some(17));
+    assert!(status.compatible);
 }
 
 #[test]
-fn herdr_display_with_mock_executor_unavailable_old_version() {
-    let mut mock = MockCommandExecutor::new();
-    mock.push_success(b"herdr 0.0.9".to_vec());
-
-    let config = DisplayConfig::default();
-    let herdr = HerdrDisplay::with_executor(config, Arc::new(mock));
-
+fn the_mismatch_fixture_makes_the_backend_unavailable_with_restart_guidance_and_issues_no_pane_command() {
+    let executor =
+        Arc::new(FixtureExecutor::new().with("herdr status --json", ok(load_fixture("status-mismatch.txt"))));
+    let herdr = HerdrDisplay::with_executor(DisplayConfig::default(), Arc::clone(&executor) as Arc<dyn CommandExecutor>);
     assert!(!herdr.is_available());
+
+    let result = herdr.create_pane(
+        &["batcave".to_string(), "monitor".to_string()],
+        DisplayPlacement::SplitRight,
+        "run-1",
+        "display-1",
+    );
+    let err = result.expect_err("an incompatible protocol must refuse to create a pane");
+    assert!(err.contains("restart"), "expected restart guidance in: {err}");
+    assert!(herdr.owned_pane_ids().is_empty());
+    // Only the status probe was ever invoked -- no `pane split`/`pane
+    // run`/`pane report-agent` command was issued once incompatibility
+    // was detected.
+    assert_eq!(executor.call_count(), 1);
 }
 
 #[test]
-fn herdr_display_with_mock_executor_unavailable_command_failure() {
-    let mut mock = MockCommandExecutor::new();
-    mock.push_failure(b"command not found".to_vec());
+fn a_created_pane_updates_state_three_times_and_close_only_touches_batman_tagged_panes() {
+    let split = ok(r#"{"id":"cli:pane:split","result":{"pane":{"pane_id":"w1:p9"}}}"#);
+    let executor = Arc::new(
+        FixtureExecutor::new()
+            .with("herdr status --json", ok(load_fixture("status-compatible.txt")))
+            .with("herdr pane split --current --direction right", split)
+            .with("herdr pane run w1:p9 batcave monitor --run-id run-1", ok("{}"))
+            .with(
+                "herdr pane report-agent --source batman --agent display-1 --state working w1:p9",
+                ok("{}"),
+            )
+            .with("herdr pane close w1:p9", ok("{}")),
+    );
+    let herdr = HerdrDisplay::with_executor(DisplayConfig::default(), Arc::clone(&executor) as Arc<dyn CommandExecutor>);
 
-    let config = DisplayConfig::default();
-    let herdr = HerdrDisplay::with_executor(config, Arc::new(mock));
+    let pane_id = herdr
+        .create_pane(
+            &["batcave".to_string(), "monitor".to_string(), "--run-id".to_string(), "run-1".to_string()],
+            DisplayPlacement::SplitRight,
+            "run-1",
+            "display-1",
+        )
+        .expect("a compatible backend must create the pane");
+    assert_eq!(pane_id, "w1:p9");
+    assert_eq!(herdr.owned_pane_ids(), vec!["w1:p9".to_string()]);
 
-    assert!(!herdr.is_available());
-}
+    // Closing an unrelated, never-created pane is refused outright.
+    let refused = herdr.close_owned_pane("some-other:p1");
+    assert!(refused.is_err());
 
-#[test]
-fn herdr_display_with_mock_executor_unavailable_spawn_error() {
-    let mut mock = MockCommandExecutor::new();
-    mock.push_spawn_error("herdr not installed");
-
-    let config = DisplayConfig::default();
-    let herdr = HerdrDisplay::with_executor(config, Arc::new(mock));
-
-    assert!(!herdr.is_available());
-}
-
-#[test]
-fn herdr_display_activate_success() {
-    let mut mock = MockCommandExecutor::new();
-    // 1st: is_available check
-    mock.push_success(b"herdr 0.1.0".to_vec());
-    // 2nd: activate -> is_available check
-    mock.push_success(b"herdr 0.1.0".to_vec());
-    // 3rd: activate -> activate_herdr
-    mock.push_success(Vec::new());
-
-    let config = DisplayConfig::default();
-    let mock = Arc::new(mock);
-    let mut herdr = HerdrDisplay::with_executor(config, mock.clone());
-
-    assert!(herdr.is_available());
-    assert!(herdr.activate().is_ok());
-    mock.assert_session_creation_invoked();
-}
-
-#[test]
-fn herdr_display_activate_failure_nonzero_exit() {
-    let mut mock = MockCommandExecutor::new();
-    // 1st: is_available check
-    mock.push_success(b"herdr 0.1.0".to_vec());
-    // 2nd: activate -> is_available check
-    mock.push_success(b"herdr 0.1.0".to_vec());
-    // 3rd: activate -> activate_herdr - fails
-    mock.push_failure(b"error: session creation failed".to_vec());
-
-    let config = DisplayConfig::default();
-    let mock = Arc::new(mock);
-    let mut herdr = HerdrDisplay::with_executor(config, mock.clone());
-
-    assert!(herdr.is_available());
-    let result = herdr.activate();
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("herdr exited with error"));
-}
-
-#[test]
-fn herdr_display_activate_failure_spawn_error() {
-    let mut mock = MockCommandExecutor::new();
-    // 1st: is_available check
-    mock.push_success(b"herdr 0.1.0".to_vec());
-    // 2nd: activate -> is_available check
-    mock.push_success(b"herdr 0.1.0".to_vec());
-    // 3rd: activate -> activate_herdr - spawn error
-    mock.push_spawn_error("herdr not found");
-
-    let config = DisplayConfig::default();
-    let mock = Arc::new(mock);
-    let mut herdr = HerdrDisplay::with_executor(config, mock.clone());
-
-    assert!(herdr.is_available());
-    let result = herdr.activate();
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("failed to spawn herdr session"));
-}
-
-#[test]
-fn herdr_display_status_initial() {
-    let mut mock = MockCommandExecutor::new();
-    mock.push_success(b"herdr 0.1.0".to_vec());
-
-    let config = DisplayConfig::default();
-    let herdr = HerdrDisplay::with_executor(config, Arc::new(mock));
-
-    let status = herdr.status();
-    assert_eq!(status.backend, DisplayBackend::Herdr);
-    assert!(status.available);
-    assert!(!status.active);
-}
-
-#[test]
-fn herdr_display_status_after_activation() {
-    let mut mock = MockCommandExecutor::new();
-    mock.push_success(b"herdr 0.1.0".to_vec());
-
-    let config = DisplayConfig::default();
-    let mut herdr = HerdrDisplay::with_executor(config, Arc::new(mock));
-
-    herdr.mark_session_active("test-session".to_string());
-    let status = herdr.status();
-    assert!(status.active);
-    assert_eq!(status.backend, DisplayBackend::Herdr);
-}
-
-#[test]
-fn herdr_display_status_after_deactivation() {
-    let mut mock = MockCommandExecutor::new();
-    mock.push_success(b"herdr 0.1.0".to_vec());
-
-    let config = DisplayConfig::default();
-    let mut herdr = HerdrDisplay::with_executor(config, Arc::new(mock));
-
-    herdr.mark_session_active("test-session".to_string());
-    herdr.mark_session_inactive();
-    let status = herdr.status();
-    assert!(!status.active);
-}
-
-#[test]
-fn herdr_display_version_parsing() {
-    let mut mock = MockCommandExecutor::new();
-    mock.push_success(b"herdr 0.1.0".to_vec());
-
-    let config = DisplayConfig::default();
-    let herdr = HerdrDisplay::with_executor(config, Arc::new(mock));
-
-    assert!(herdr.is_available());
-}
-
-#[test]
-fn herdr_display_version_parsing_standalone() {
-    let mut mock = MockCommandExecutor::new();
-    mock.push_success(b"0.1.0".to_vec());
-
-    let config = DisplayConfig::default();
-    let herdr = HerdrDisplay::with_executor(config, Arc::new(mock));
-
-    assert!(herdr.is_available());
-}
-
-#[test]
-fn herdr_display_version_too_old() {
-    let mut mock = MockCommandExecutor::new();
-    mock.push_success(b"herdr 0.0.9".to_vec());
-
-    let config = DisplayConfig::default();
-    let herdr = HerdrDisplay::with_executor(config, Arc::new(mock));
-
-    assert!(!herdr.is_available());
-}
-
-#[test]
-fn herdr_display_verifies_version_check_command() {
-    let mut mock = MockCommandExecutor::new();
-    mock.push_success(b"herdr 0.1.0".to_vec());
-
-    let config = DisplayConfig::default();
-    let mock = Arc::new(mock);
-    let herdr = HerdrDisplay::with_executor(config, mock.clone());
-
-    herdr.is_available();
-    mock.assert_version_check_invoked();
-}
-
-#[test]
-fn herdr_display_verifies_session_creation_command() {
-    let mut mock = MockCommandExecutor::new();
-    // 1st: is_available check
-    mock.push_success(b"herdr 0.1.0".to_vec());
-    // 2nd: activate -> is_available check
-    mock.push_success(b"herdr 0.1.0".to_vec());
-    // 3rd: activate -> activate_herdr
-    mock.push_success(Vec::new());
-
-    let config = DisplayConfig::default();
-    let mock = Arc::new(mock);
-    let mut herdr = HerdrDisplay::with_executor(config, mock.clone());
-
-    assert!(herdr.is_available());
-    assert!(herdr.activate().is_ok());
-    mock.assert_session_creation_invoked();
-}
-
-#[test]
-fn herdr_display_verifies_no_extra_commands_on_unavailable() {
-    let mut mock = MockCommandExecutor::new();
-    mock.push_spawn_error("not found");
-
-    let config = DisplayConfig::default();
-    let mock = Arc::new(mock);
-    let herdr = HerdrDisplay::with_executor(config, mock.clone());
-
-    assert!(!herdr.is_available());
-    let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0, "herdr");
-    assert_eq!(calls[0].1, vec!["--version"]);
+    // Closing the pane this backend actually created succeeds and
+    // removes it from ownership tracking.
+    herdr.close_owned_pane(&pane_id).expect("closing an owned pane must succeed");
+    assert!(herdr.owned_pane_ids().is_empty());
 }

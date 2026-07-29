@@ -51,7 +51,7 @@ pub use workspace::{
     LeaseMode, LeaseRequest, ReleaseRequest, WorkspaceEvent, WorkspaceInfo, WorkspaceLease,
     WorkspaceState,
 };
-pub use display::{DisplayBackend, DisplayConfig, DisplayStatus};
+pub use display::{DisplayBackend, DisplayConfig, DisplayPlacement, DisplayStatus};
 
 pub use artifact::{
     Artifact, ArtifactFetchResult, ArtifactFetchRequest, ArtifactKind, ArtifactListRequest,

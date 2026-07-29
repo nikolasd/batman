@@ -394,6 +394,7 @@ impl OrchestrationService {
     async fn run_submit(&self, params: &Value) -> Result<Value, ServiceError> {
         let task_id = parse_task_id(params.get("taskId"))?;
         let worker_id = parse_worker_id(params.get("workerId"))?;
+        let prompt = params.get("prompt").and_then(Value::as_str).map(str::to_string);
         // Cross-project rejection: the task must exist in this project.
         self.db
             .run_domain_op(query::task_get_op(task_id))
@@ -441,6 +442,7 @@ impl OrchestrationService {
             run_id,
             task_id,
             worker_id,
+            prompt,
             events_tx: self.events_tx.clone(),
         };
         // Orchestration-test-scope: awaited synchronously so the caller
@@ -572,6 +574,7 @@ impl OrchestrationService {
             .transpose()
             .map_err(|_| ServiceError::invalid_params("replyTo is not a valid id"))?;
 
+        let follow_up_payload = payload.clone();
         let message_id = MessageId::new();
         let message = RunMessage {
             message_id,
@@ -598,6 +601,35 @@ impl OrchestrationService {
             .await
             .map_err(ServiceError::from)?;
         self.broadcast(&mut sequence);
+
+        // Best-effort live delivery to an already-running adapter. A
+        // missing driver, a `queued`/not-yet-started run (the normal case
+        // -- `NoRunningAdapter`), or any other delivery failure must never
+        // fail this RPC or unwind the message already durably recorded
+        // above: the message stays `recorded` and the run's state is
+        // untouched, matching `RunDriver::send_follow_up`'s own contract.
+        if let Some(driver) = self.run_driver.clone() {
+            if let Err(err) = driver
+                .send_follow_up(run_id, task_id, sender_worker_id, follow_up_payload)
+                .await
+            {
+                let mut diagnostic = self
+                    .db
+                    .run_domain_op(Box::new(move |conn| {
+                        let mut repo = DomainRepository::new(conn, project_id);
+                        repo.record_diagnostic(
+                            run_id,
+                            batman_protocol::DiagnosticLevel::Warning,
+                            "follow_up_delivery_failed",
+                            format!("run {run_id}: {err}"),
+                        )
+                        .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+                    }))
+                    .await
+                    .map_err(ServiceError::from)?;
+                self.broadcast(&mut diagnostic);
+            }
+        }
 
         Ok(json!({
             "messageId": message_id.to_string(),

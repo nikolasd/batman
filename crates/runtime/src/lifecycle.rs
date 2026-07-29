@@ -17,13 +17,16 @@
 //! contended path, so there is no remove-then-recreate window in which two
 //! daemons could own the same socket and database.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use batman_protocol::BinarySource;
+use batman_protocol::{
+    BinarySource, Classified, ContentClass, DiagnosticLevel, EventEnvelope, RuntimeEvent,
+};
 use nix::errno::Errno;
 use nix::fcntl::{Flock, FlockArg};
 use nix::sys::signal::{self, Signal};
@@ -36,12 +39,15 @@ use tokio::net::UnixStream;
 use crate::VERSION;
 use crate::db::DatabaseHandle;
 use crate::ipc::{self, Server, ServerConfig};
-use crate::adapter::registry::{AdapterRegistry, FixtureAuthorization};
+use crate::adapter::mcp_config::AdapterMcpConfig;
+use crate::adapter::registry::AdapterRegistry;
 use crate::paths::{PathError, RuntimePaths};
+use crate::coordination::{ScopeTokenStore, ScopeTokenVerifier};
 use crate::security::redaction::{RawEventKind, RawRuntimeEvent, Redactor};
 use crate::security::{SecurityError, ensure_private_dir, ensure_private_file};
 
 pub use crate::ipc::should_idle_shutdown;
+use crate::adapter::DenyByDefaultAuthorization;
 
 // ------------------------------------------------------------------ serve
 
@@ -140,12 +146,59 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
     });
     db.append_event(started).await?;
 
+    let repo_root = std::fs::canonicalize(&opts.repo).unwrap_or_else(|_| opts.repo.clone());
+
+    // The credential store every worker-MCP subprocess's scope token is
+    // verified against. Without this, `ServerConfig::default()`'s
+    // `RejectAllWorkerVerifier` would reject every worker-MCP reconnect
+    // even when an adapter below successfully embeds one via `mcp`.
+    let scope_tokens = Arc::new(ScopeTokenStore::new());
+
+    // `AdapterMcpConfig` needs this runtime's own verified binary path to
+    // tell a supervised vendor process which `batcave coordination-mcp`
+    // to spawn. `current_exe()` can fail (e.g. the executable was removed
+    // after this process started); when it does, workers still start --
+    // just without worker-coordination MCP tools -- rather than failing
+    // the whole daemon. Never guessed: only a real resolved path is used.
+    let mcp = match std::env::current_exe() {
+        Ok(batcave_path) => Some(AdapterMcpConfig {
+            scope_tokens: Arc::clone(&scope_tokens),
+            project_id: paths.project_id,
+            batcave_path,
+            state_dir: paths.root.clone(),
+            repository: repo_root.clone(),
+        }),
+        Err(err) => {
+            let unavailable = redactor.sanitize(RawRuntimeEvent {
+                timestamp: batman_protocol::Timestamp::now(),
+                project_id: paths.project_id,
+                run_id: None,
+                kind: RawEventKind::Diagnostic {
+                    level: DiagnosticLevel::Warning,
+                    code: "worker_mcp_unavailable".to_string(),
+                    fragments: vec![Classified {
+                        class: ContentClass::Visible,
+                        value: format!(
+                            "could not resolve the running batcave binary's own path ({err}); \
+                             workers will start without worker-coordination MCP tools"
+                        ),
+                    }],
+                },
+            });
+            db.append_event(unavailable).await?;
+            None
+        }
+    };
+
+    let registry = Arc::new(AdapterRegistry::new(
+        Arc::new(DenyByDefaultAuthorization::from_env()),
+        repo_root,
+        mcp,
+    ));
     let config = ServerConfig {
         binary_source: opts.binary_source,
-        run_driver: Some(Arc::new(AdapterRegistry::new(
-            Arc::new(FixtureAuthorization { allow: true }),
-            std::fs::canonicalize(&opts.repo).unwrap_or(opts.repo.clone()),
-        ))),
+        run_driver: Some(Arc::clone(&registry) as Arc<dyn crate::service::RunDriver>),
+        worker_verifier: Arc::new(ScopeTokenVerifier::new(Arc::clone(&scope_tokens))),
         ..ServerConfig::default()
     };
     let server = Server::bind(
@@ -156,6 +209,15 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
     )
     .await?
     .with_idle(opts.idle_seconds.map(Duration::from_secs));
+
+    // Retrofit the real, server-owned `CoordinationBroker` into the
+    // registry constructed above -- necessarily before `Server::bind`,
+    // since it is threaded in via `ServerConfig::run_driver` -- so
+    // OMP-RPC adapters' in-process host-tool bridge answers against the
+    // same broker instance `coordination/*` RPC dispatch uses. See
+    // `AdapterRegistry::set_broker`'s own doc comment for why this is a
+    // post-construction setter rather than a constructor argument.
+    registry.set_broker(server.coordination_broker());
 
     server.serve(shutdown_signal()).await?;
 
@@ -453,6 +515,280 @@ async fn read_frame(
         anyhow::bail!("runtime closed the connection before responding");
     }
     Ok(serde_json::from_str(line.trim_end())?)
+}
+
+// ---------------------------------------------------------------- monitor
+
+/// Options for [`monitor`].
+#[derive(Debug, Clone)]
+pub struct MonitorOptions {
+    pub state_dir: PathBuf,
+    pub repo: PathBuf,
+    /// Renders only the run matching this id (its full, un-truncated wire
+    /// form). `None` renders every run in the project.
+    pub run_id: Option<String>,
+}
+
+/// Errors from [`monitor`].
+#[derive(Debug, thiserror::Error)]
+pub enum MonitorError {
+    #[error(transparent)]
+    Path(#[from] PathError),
+    #[error(transparent)]
+    Security(#[from] SecurityError),
+    #[error("{0}")]
+    Protocol(String),
+}
+
+/// One run's replayable monitor state: lifecycle state and the latest
+/// human-readable activity description. Mirrors the embedded TypeScript
+/// monitor's own `MonitorRow`/`reduceEvent`
+/// (`packages/extension/src/monitor/model.ts`), reduced to the fields
+/// this plain-text renderer uses.
+#[derive(Debug, Clone, Default)]
+struct MonitorRow {
+    state: Option<String>,
+    latest_activity: Option<String>,
+}
+
+/// The wire (camelCase) string a `RuntimeEventKind`-shaped value
+/// serializes to, e.g. `"messageRecorded"` -- used identically to how the
+/// embedded TypeScript monitor reads `event.payload.kind` directly off
+/// the wire, without hand-matching every variant here.
+fn wire_str<T: Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Applies one envelope to `rows`, returning the rendered line for its
+/// run if the envelope carries a run id and contributes a state or
+/// activity update. Extends the embedded TypeScript monitor's own
+/// `eventPatch` (which predates the adapter/workspace event kinds) with
+/// the mappings this daemon-side monitor can additionally see.
+fn apply_and_render(rows: &mut HashMap<String, MonitorRow>, envelope: &EventEnvelope) -> Option<String> {
+    let run_id = envelope.run_id.as_ref()?.to_string();
+    let (state, activity): (Option<String>, Option<String>) = match &envelope.event {
+        RuntimeEvent::RunEvent { state, .. } => (Some(state.clone()), Some(format!("run {state}"))),
+        RuntimeEvent::MessageEvent { kind, delivery_state, .. } => {
+            (None, Some(format!("{} {delivery_state}", wire_str(kind))))
+        }
+        RuntimeEvent::ApprovalEvent { kind, action, .. } => (
+            None,
+            Some(
+                if matches!(kind, batman_protocol::RuntimeEventKind::ApprovalRequested) {
+                    format!("approval requested: {action}")
+                } else {
+                    "approval decided".to_string()
+                },
+            ),
+        ),
+        RuntimeEvent::ChildEvent { kind, .. } => (
+            None,
+            Some(
+                if matches!(kind, batman_protocol::RuntimeEventKind::ChildWorkerRequested) {
+                    "child worker requested".to_string()
+                } else {
+                    "child worker request denied".to_string()
+                },
+            ),
+        ),
+        RuntimeEvent::AdapterMessageEvent { .. } => (None, Some("adapter message".to_string())),
+        RuntimeEvent::AdapterToolEvent { kind, .. } => (None, Some(format!("tool {}", wire_str(kind)))),
+        RuntimeEvent::AdapterUsageEvent { .. } => (None, Some("usage reported".to_string())),
+        RuntimeEvent::AdapterArtifactEvent { .. } => (None, Some("artifact produced".to_string())),
+        RuntimeEvent::AdapterNestedWorkerEvent { .. } => (None, Some("nested worker observed".to_string())),
+        RuntimeEvent::AdapterProtocolHealthEvent { .. } => (None, Some("protocol health changed".to_string())),
+        RuntimeEvent::WorkspaceEvent { kind, .. } => (None, Some(format!("workspace {}", wire_str(kind)))),
+        _ => return None,
+    };
+
+    let row = rows.entry(run_id.clone()).or_default();
+    if let Some(state) = state {
+        row.state = Some(state);
+    }
+    if let Some(activity) = activity {
+        row.latest_activity = Some(activity);
+    }
+
+    let short_id = &run_id[..run_id.len().min(8)];
+    let state_display = row.state.as_deref().unwrap_or("unknown");
+    Some(match &row.latest_activity {
+        Some(activity) => format!("{short_id} · {state_display} · {activity}"),
+        None => format!("{short_id} · {state_display}"),
+    })
+}
+
+/// Connects to the runtime as a `display` principal, replays every event
+/// from sequence 0, renders one line per contributing envelope, then
+/// follows new events live until interrupted (`SIGINT`/`SIGTERM`). A
+/// transient disconnect reconnects and replays from the highest sequence
+/// already rendered plus one, so no visible line is duplicated.
+///
+/// # Errors
+/// Returns [`MonitorError`] if the state paths cannot be resolved or the
+/// very first connection/handshake fails; once at least one connection has
+/// succeeded, a later disconnect retries rather than returning `Err`.
+pub async fn monitor(opts: &MonitorOptions) -> Result<(), MonitorError> {
+    ensure_private_dir(&opts.state_dir)?;
+    let paths = RuntimePaths::resolve(&opts.state_dir, &opts.repo)?;
+    let repo_str = std::fs::canonicalize(&opts.repo)
+        .unwrap_or_else(|_| opts.repo.clone())
+        .display()
+        .to_string();
+
+    let mut rows: HashMap<String, MonitorRow> = HashMap::new();
+    let mut last_sequence: u64 = 0;
+    let mut connected_once = false;
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
+
+    loop {
+        let connect_result = tokio::select! {
+            result = connect_and_catch_up(&paths.socket, &repo_str, last_sequence, opts.run_id.as_deref(), &mut rows) => result,
+            () = &mut shutdown => return Ok(()),
+        };
+        let (mut reader, _writer) = match connect_result {
+            Ok((reader, writer, replayed_through)) => {
+                connected_once = true;
+                last_sequence = last_sequence.max(replayed_through);
+                (reader, writer)
+            }
+            Err(_) if connected_once => {
+                tokio::select! {
+                    () = tokio::time::sleep(Duration::from_millis(500)) => continue,
+                    () = &mut shutdown => return Ok(()),
+                }
+            }
+            Err(err) => return Err(MonitorError::Protocol(err.to_string())),
+        };
+
+        loop {
+            tokio::select! {
+                frame = read_frame(&mut reader) => {
+                    match frame {
+                        Ok(notification) => {
+                            if notification.get("method").and_then(Value::as_str) != Some("events/event") {
+                                continue;
+                            }
+                            let Some(params) = notification.get("params") else { continue };
+                            let Ok(envelope) = serde_json::from_value::<EventEnvelope>(params.clone()) else { continue };
+                            last_sequence = last_sequence.max(envelope.sequence);
+                            if run_filter_matches(&envelope, opts.run_id.as_deref())
+                                && let Some(line) = apply_and_render(&mut rows, &envelope)
+                            {
+                                println!("{line}");
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                () = &mut shutdown => return Ok(()),
+            }
+        }
+    }
+}
+
+/// Whether `envelope` should be rendered given an optional `--run-id`
+/// filter: every envelope when unset, only the matching run's when set.
+fn run_filter_matches(envelope: &EventEnvelope, filter: Option<&str>) -> bool {
+    match filter {
+        None => true,
+        Some(wanted) => envelope
+            .run_id
+            .as_ref()
+            .is_some_and(|id| id.to_string() == wanted),
+    }
+}
+
+/// One connect/initialize/`events/replay`/`events/subscribe` sequence:
+/// replays every event after `after_sequence`, rendering each
+/// run-filter-matching, state/activity-contributing one, then subscribes
+/// for live delivery. Returns the open reader/writer halves and the
+/// highest sequence replayed, for the caller's live-read loop and
+/// reconnect checkpoint respectively.
+async fn connect_and_catch_up(
+    socket: &Path,
+    repo_str: &str,
+    after_sequence: u64,
+    run_id_filter: Option<&str>,
+    rows: &mut HashMap<String, MonitorRow>,
+) -> Result<
+    (
+        BufReader<tokio::net::unix::OwnedReadHalf>,
+        tokio::net::unix::OwnedWriteHalf,
+        u64,
+    ),
+    anyhow::Error,
+> {
+    let stream = UnixStream::connect(socket)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let (read, mut write) = stream.into_split();
+    let mut reader = BufReader::new(read);
+
+    let init = json!({
+        "jsonrpc": "2.0",
+        "id": "1",
+        "method": "initialize",
+        "params": {
+            "client": { "name": "batcave", "version": VERSION },
+            "supported": { "min": { "major": 1, "minor": 0 }, "max": { "major": 1, "minor": 0 } },
+            "repository": { "canonicalPath": repo_str, "vcsRoot": repo_str },
+            "auth": { "role": "display", "instanceId": "batcave-monitor" },
+            "capabilities": { "eventReplay": true, "maxFrameBytes": 1048576 },
+            "lastSequence": null
+        }
+    });
+    send_frame(&mut write, &init).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let init_response = read_frame(&mut reader).await?;
+    if init_response.get("error").is_some() {
+        anyhow::bail!("initialize failed: {init_response}");
+    }
+
+    let replay_request = json!({
+        "jsonrpc": "2.0",
+        "id": "2",
+        "method": "events/replay",
+        "params": { "afterSequence": after_sequence }
+    });
+    send_frame(&mut write, &replay_request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let replay_response = read_frame(&mut reader).await?;
+    if let Some(error) = replay_response.get("error") {
+        anyhow::bail!("events/replay failed: {error}");
+    }
+    let mut highest_sequence = after_sequence;
+    let empty = Vec::new();
+    let envelopes = replay_response
+        .get("result")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    for raw in envelopes {
+        let Ok(envelope) = serde_json::from_value::<EventEnvelope>(raw.clone()) else {
+            continue;
+        };
+        highest_sequence = highest_sequence.max(envelope.sequence);
+        if run_filter_matches(&envelope, run_id_filter)
+            && let Some(line) = apply_and_render(rows, &envelope)
+        {
+            println!("{line}");
+        }
+    }
+
+    let subscribe_request = json!({
+        "jsonrpc": "2.0",
+        "id": "3",
+        "method": "events/subscribe",
+        "params": {}
+    });
+    send_frame(&mut write, &subscribe_request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let subscribe_response = read_frame(&mut reader).await?;
+    if let Some(error) = subscribe_response.get("error") {
+        anyhow::bail!("events/subscribe failed: {error}");
+    }
+
+    Ok((reader, write, highest_sequence))
 }
 
 // ------------------------------------------------------------------- stop

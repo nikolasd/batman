@@ -39,7 +39,7 @@ pub use profile::{
     WorkerProfile,
 };
 pub use profile_store::{ProfileStore, ProfileStoreError};
-pub use registry::{AdapterAuthorization, AdapterRegistry, FixtureAuthorization, RegistryError};
+pub use registry::{AdapterAuthorization, AdapterRegistry, DenyByDefaultAuthorization, FixtureAuthorization, RegistryError};
 pub use r#trait::{
     Adapter, AdapterMessage, AdapterSnapshot, CancelScope, ProbeResult, StartSpec, VendorSessionRef,
 };

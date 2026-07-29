@@ -120,6 +120,7 @@ fn ctx(
         run_id,
         task_id,
         worker_id,
+        prompt: None,
         events_tx,
     }
 }
@@ -131,6 +132,7 @@ async fn a_worker_with_no_resolved_profile_snapshot_is_rejected() {
     let registry = AdapterRegistry::new(
         Arc::new(FixtureAuthorization { allow: true }),
         PathBuf::from("/tmp"),
+        None,
     );
 
     let err = registry
@@ -151,6 +153,7 @@ async fn a_terminal_degraded_profile_uses_terminal_adapter() {
     let registry = AdapterRegistry::new(
         Arc::new(FixtureAuthorization { allow: true }),
         PathBuf::from("/tmp"),
+        None,
     );
 
     // TerminalDegraded now constructs a terminal adapter (may succeed or fail based on host)
@@ -179,6 +182,7 @@ async fn authorization_denial_prevents_the_adapter_from_ever_starting() {
     let registry = AdapterRegistry::new(
         Arc::new(FixtureAuthorization { allow: false }),
         PathBuf::from("/tmp"),
+        None,
     );
 
     let err = registry
@@ -195,6 +199,86 @@ async fn authorization_denial_prevents_the_adapter_from_ever_starting() {
     assert_eq!(registry.running_count(), 0);
 }
 
+/// Serializes the two tests below, both of which mutate the process-wide
+/// `BATMAN_DEV_ALLOW_ALL_WORKERS` environment variable -- Cargo runs test
+/// *functions* in parallel by default, so without this guard one test's
+/// `set_var`/`remove_var` could race the other's `from_env()` read.
+/// `parking_lot::Mutex` (not `std::sync::Mutex`) specifically so a panic
+/// inside the guarded section (e.g. a failed assertion) can never poison
+/// the lock and spuriously fail the sibling test.
+static AUTHORIZATION_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+#[tokio::test]
+async fn deny_by_default_authorization_rejects_every_worker_when_the_dev_override_is_unset() {
+    let _guard = AUTHORIZATION_ENV_LOCK.lock();
+    // SAFETY: serialized against the sibling test below by `_guard`.
+    unsafe {
+        std::env::remove_var("BATMAN_DEV_ALLOW_ALL_WORKERS");
+    }
+    let (db, _dir, project_id) = harness().await;
+    let (run_id, task_id, worker_id) =
+        seed_worker_and_run(&db, project_id, Some(&omp_rpc_profile())).await;
+    let registry = AdapterRegistry::new(
+        Arc::new(batman_runtime::adapter::DenyByDefaultAuthorization::from_env()),
+        PathBuf::from("/tmp"),
+        None,
+    );
+
+    let err = registry
+        .start(ctx(db, project_id, run_id, task_id, worker_id))
+        .await
+        .expect_err("an unset dev override must deny every worker by default");
+    assert!(
+        err.contains("no production authorization policy is configured"),
+        "unexpected error message: {err}"
+    );
+    assert_eq!(registry.running_count(), 0, "a denied start must not spawn or reserve an adapter");
+}
+
+#[tokio::test]
+async fn deny_by_default_authorization_allows_every_worker_when_the_dev_override_is_set() {
+    let _guard = AUTHORIZATION_ENV_LOCK.lock();
+    // SAFETY: serialized against the sibling test above by `_guard`.
+    unsafe {
+        std::env::set_var("BATMAN_DEV_ALLOW_ALL_WORKERS", "1");
+    }
+    let (db, _dir, project_id) = harness().await;
+    let (run_id, task_id, worker_id) =
+        seed_worker_and_run(&db, project_id, Some(&omp_rpc_profile())).await;
+    let registry = AdapterRegistry::new(
+        Arc::new(batman_runtime::adapter::DenyByDefaultAuthorization::from_env()),
+        PathBuf::from("/tmp"),
+        None,
+    );
+
+    let result = registry
+        .start(ctx(db, project_id, run_id, task_id, worker_id))
+        .await;
+    unsafe {
+        std::env::remove_var("BATMAN_DEV_ALLOW_ALL_WORKERS");
+    }
+    // `omp_rpc_profile()`'s model selector is never reported by
+    // `omp models --json` on a clean install (see the sibling
+    // `a_successful_start_is_owned_by_the_registry_for_the_runs_lifetime`
+    // test's own comment), so the real vendor spawn may still fail in
+    // this environment -- what this test proves is narrower and
+    // environment-independent: authorization itself was never the
+    // reason for failure, i.e. the dev override genuinely let the start
+    // reach past authorization to the real adapter construction/spawn
+    // stage.
+    if let Err(err) = &result {
+        assert!(
+            !err.contains("authorization") && !err.contains("production authorization policy"),
+            "the dev override must not deny authorization: {err}"
+        );
+    }
+    assert_eq!(
+        registry.running_adapter(run_id).is_some(),
+        result.is_ok(),
+        "the registry must own an adapter for this run iff the start reported success"
+    );
+}
+
 #[tokio::test]
 async fn a_second_start_for_the_same_run_is_rejected_while_the_first_is_still_running() {
     let (db, _dir, project_id) = harness().await;
@@ -203,6 +287,7 @@ async fn a_second_start_for_the_same_run_is_rejected_while_the_first_is_still_ru
     let registry = AdapterRegistry::new(
         Arc::new(FixtureAuthorization { allow: true }),
         PathBuf::from("/tmp"),
+        None,
     );
 
     // The OMP-RPC adapter's `start()` spawns the real `omp` binary (or
@@ -237,6 +322,7 @@ async fn a_successful_start_is_owned_by_the_registry_for_the_runs_lifetime() {
     let registry = AdapterRegistry::new(
         Arc::new(FixtureAuthorization { allow: true }),
         PathBuf::from("/tmp"),
+        None,
     );
 
     // This model selector is never reported by `omp models --json` on a
@@ -288,6 +374,7 @@ async fn effective_capabilities_gate_authorization_not_raw_declared_claims() {
     let registry = AdapterRegistry::new(
         Arc::clone(&capturing) as Arc<dyn AdapterAuthorization>,
         PathBuf::from("/tmp"),
+        None,
     );
 
     let _ = registry

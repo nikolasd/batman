@@ -10,6 +10,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use ts_rs::TS;
 
+use crate::display::{DisplayBackend, DisplayPlacement};
 use crate::ids::{ApprovalId, ArtifactId, MessageId, ProjectId, RunId, TaskId, WorkerId};
 use crate::workspace::WorkspaceEvent;
 
@@ -296,6 +297,12 @@ pub enum RuntimeEventKind {
     /// declared `nested` capability.
     #[serde(rename = "adapterNestedWorkerObserved")]
     AdapterNestedWorkerObserved,
+    /// A display backend attached a Batman-owned pane to a run.
+    #[serde(rename = "displayPaneAttached")]
+    DisplayPaneAttached,
+    /// A display backend detached (closed) a Batman-owned pane.
+    #[serde(rename = "displayPaneDetached")]
+    DisplayPaneDetached,
 }
 
 /// A sanitized, durable runtime event. Fields are plain, already-sanitized
@@ -464,6 +471,23 @@ pub enum RuntimeEvent {
         worker_id: WorkerId,
         vendor_child_id: String,
         vendor_parent_ref: String,
+    },
+    /// A display backend attached or detached a Batman-owned pane.
+    DisplayEvent {
+        kind: RuntimeEventKind,
+        run_id: RunId,
+        backend: DisplayBackend,
+        placement: DisplayPlacement,
+        /// The vendor-assigned pane identifier only -- never terminal
+        /// contents, never an absolute socket or filesystem path.
+        pane_ref: String,
+    },
+    /// A human typed directly into a native pane, bypassing the
+    /// adapter. Sets the run's `needsReconciliation` flag.
+    OutOfBandInput {
+        run_id: RunId,
+        backend: DisplayBackend,
+        pane_ref: String,
     },
 }
 

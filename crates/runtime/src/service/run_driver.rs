@@ -27,6 +27,7 @@ pub struct RunDriverContext {
     pub run_id: RunId,
     pub task_id: TaskId,
     pub worker_id: WorkerId,
+    pub prompt: Option<String>,
     pub events_tx: broadcast::Sender<EventEnvelope>,
 }
 

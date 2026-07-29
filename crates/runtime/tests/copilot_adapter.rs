@@ -95,6 +95,32 @@ fn only_acp_protocol_v1_is_supported() {
     assert!(!copilot_acp_protocol_version_supported(2));
 }
 
+#[test]
+fn raising_the_max_acp_protocol_version_requires_a_session_update_nested_worker_mapping() {
+    // Category C, documented as a permanent wall while
+    // `COPILOT_MAX_ACP_PROTOCOL_VERSION == 1`: ACP protocol v1 has no
+    // `session/update` variant this adapter can map to a nested-worker
+    // observation (see `normalize.rs`'s own module doc). Nothing to
+    // guard until a newer protocol version is actually accepted.
+    if COPILOT_MAX_ACP_PROTOCOL_VERSION <= 1 {
+        return;
+    }
+    // Once a newer ACP version is accepted, `normalize.rs` must have
+    // grown a real branch producing `NestedWorkerObserved` for it --
+    // this inspects the actual source text (not just that the constant
+    // changed) so raising the version without also adding the mapping
+    // fails loudly here, rather than silently reopening the gap
+    // `unexpected_child_observation_scenario` currently reports
+    // honestly as a genuine, permanent limitation.
+    let source = include_str!("../src/adapter/copilot/normalize.rs");
+    assert!(
+        source.contains("NestedWorkerObserved"),
+        "COPILOT_MAX_ACP_PROTOCOL_VERSION was raised above 1, but normalize.rs still has no \
+         session/update branch producing NestedWorkerObserved -- add the mapping for the new \
+         ACP version's subagent-observation variant before raising this constant."
+    );
+}
+
 // ---------------------------------------------------- initialize negotiation
 
 #[test]
