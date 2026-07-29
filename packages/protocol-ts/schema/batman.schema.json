@@ -1841,6 +1841,47 @@
           "description": "A display backend detached (closed) a Batman-owned pane.",
           "type": "string",
           "const": "displayPaneDetached"
+        },
+        {
+          "description": "A policy violation was recorded (model not allowed, concurrency\nceiling exceeded, nested worker denied, or adapter not authorized).",
+          "type": "object",
+          "properties": {
+            "policyViolation": {
+              "type": "object",
+              "properties": {
+                "adapter": {
+                  "type": "string"
+                },
+                "is_nested": {
+                  "type": "boolean"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "profile_id": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "violation_kind": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "profile_id",
+                "adapter",
+                "model",
+                "violation_kind",
+                "reason",
+                "is_nested"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "policyViolation"
+          ]
         }
       ]
     },

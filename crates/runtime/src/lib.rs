@@ -25,6 +25,8 @@ pub mod service;
 pub mod supervisor;
 pub mod workspace;
 pub mod display;
+pub mod config;
+pub mod policy;
 
 pub use approval::{
     ApprovalCallback, ApprovalError, ApprovalService, DecideOutcome, NoopApprovalCallback,

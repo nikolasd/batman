@@ -210,7 +210,7 @@ impl Default for RunFlags {
 ///
 /// Every record creation, lifecycle transition, flag change, message delivery
 /// change, and approval request/decision produces one of these variants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 pub enum RuntimeEventKind {
     #[serde(rename = "taskCreated")]
@@ -303,6 +303,17 @@ pub enum RuntimeEventKind {
     /// A display backend detached (closed) a Batman-owned pane.
     #[serde(rename = "displayPaneDetached")]
     DisplayPaneDetached,
+    /// A policy violation was recorded (model not allowed, concurrency
+    /// ceiling exceeded, nested worker denied, or adapter not authorized).
+    #[serde(rename = "policyViolation")]
+    PolicyViolation {
+        profile_id: String,
+        adapter: String,
+        model: String,
+        violation_kind: String,
+        reason: String,
+        is_nested: bool,
+    },
 }
 
 /// A sanitized, durable runtime event. Fields are plain, already-sanitized
