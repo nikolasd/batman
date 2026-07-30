@@ -3,6 +3,81 @@
 This document explains how the foundation of BATMAN is designed and why. It assumes you have read
 the [README](../README.md) and want the engineering detail behind it.
 
+**Related ADRs:** [0001](adr/0001-omp-extension-with-separate-rust-daemon.md),
+[0002](adr/0002-rust-canonical-protocol-with-generated-bindings.md),
+[0003](adr/0003-sqlite-as-the-sole-persistence-engine.md),
+[0004](adr/0004-json-rpc-2-over-bounded-ndjson-on-a-unix-socket.md),
+[0005](adr/0005-single-thread-actor-owns-the-sqlite-connection.md),
+[0006](adr/0006-type-enforced-redaction-boundary.md),
+[0007](adr/0007-repository-scoped-singleton-via-kernel-flock.md),
+[0008](adr/0008-connect-or-spawn-with-idle-self-shutdown.md),
+[0009](adr/0009-role-based-authorization-from-the-connection-not-per-call.md),
+[0011](adr/0011-omp-retains-task-graph-authority.md),
+[0012](adr/0012-explicit-run-lifecycle-relation-runtime-evidence-only.md),
+[0013](adr/0013-injectable-run-driver-seam-fake-by-default.md),
+[0016](adr/0016-coordination-scope-tokens-bound-to-run-and-pid-ancestry.md),
+[0017](adr/0017-record-before-delivery-message-semantics.md),
+[0019](adr/0019-monitor-is-one-reducer-over-replay-and-live-no-separate-modes.md),
+[0020](adr/0020-per-mutation-event-broadcast-is-not-optional.md),
+[0021](adr/0021-shared-client-authenticates-with-the-union-of-required-roles.md)
+
+## 0. System Overview
+
+```mermaid
+graph TB
+    subgraph "OMP (Orchestration)"
+        A[OMP Extension<br/>@satori/batman]
+        B[OMP Tools<br/>batman_task, batman_worker,<br/>batman_run, etc.]
+        C[OMP Native Reconciler]
+        D[Embedded Monitor]
+    end
+
+    subgraph "BATMAN Runtime (batcave)"
+        E[IPC Server<br/>JSON-RPC 2.0 over NDJSON]
+        F[Database Actor<br/>SQLite journal]
+        G[Orchestration Service<br/>DomainRepository]
+        H[Adapter Registry<br/>4 worker adapters]
+        I[Coordination Broker<br/>Scope tokens, rate limiting]
+        J[Approval Service]
+        K[Supervisor<br/>Process management]
+        L[Workspace Operations<br/>Lease, Materialize, Apply]
+        M[Display Backends<br/>Herdr, tmux, Terminal]
+    end
+
+    subgraph "Worker Processes"
+        N[Claude Adapter]
+        O[Codex Adapter]
+        P[Copilot Adapter]
+        Q[OMP-RPC Adapter]
+    end
+
+    A -->|JSON-RPC| E
+    B -->|JSON-RPC| E
+    C -->|OMP bus events| G
+    D -->|events/subscribe| E
+    
+    E -->|commands| F
+    G -->|mutations| F
+    H -->|start/resume/cancel| K
+    I -->|coordination/*| G
+    J -->|approval/*| G
+    
+    H --> N
+    H --> O
+    H --> P
+    H --> Q
+    
+    N & O & P & Q -->|supervised process| K
+    K -->|workspace ops| L
+    K -->|display| M
+```
+
+**Key components:**
+- **OMP Extension**: TypeScript extension registering tools and commands with OMP
+- **BATMAN Runtime**: Rust daemon (`batcave`) handling worker supervision, persistence, and IPC
+- **Worker Processes**: Supervised vendor CLI processes (Claude, Codex, Copilot, OMP-RPC)
+- **Communication**: JSON-RPC 2.0 over bounded NDJSON on Unix sockets
+
 ## 1. The boundary: OMP vs. BATMAN
 
 | Concern | Owner |
@@ -19,10 +94,11 @@ state — durability always lives in the daemon's SQLite journal.
 
 ## 2. The wire contract and code generation
 
-`crates/protocol` is the single source of truth for every type that crosses the socket. Each wire
-type derives `Serialize`, `Deserialize`, `JsonSchema` (schemars 1.x), and `TS` (ts-rs 11.x), and is
-annotated `#[serde(rename_all = "camelCase", deny_unknown_fields)]` — the wire is camelCase and
-strict in both directions.
+`crates/protocol` is the single source of truth for every type that crosses the socket (see
+[ADR-0002](adr/0002-rust-canonical-protocol-with-generated-bindings.md)). Each wire type derives
+`Serialize`, `Deserialize`, `JsonSchema` (schemars 1.x), and `TS` (ts-rs 11.x), and is annotated
+`#[serde(rename_all = "camelCase", deny_unknown_fields)]` — the wire is camelCase and strict in
+both directions.
 
 Modules:
 
@@ -87,9 +163,10 @@ rejected with typed errors.
 
 ## 4. The SQLite journal and the database actor
 
-One `rusqlite::Connection` is owned by one dedicated `std::thread` (`db/actor.rs`). Async code
-talks to it through a bounded `tokio::sync::mpsc` command channel; each command carries a
-`oneshot` reply sender. Every write command replies only **after** its transaction commits.
+One `rusqlite::Connection` is owned by one dedicated `std::thread` (`db/actor.rs`) (see
+[ADR-0005](adr/0005-single-thread-actor-owns-the-sqlite-connection.md)). Async code talks to it
+through a bounded `tokio::sync::mpsc` command channel; each command carries a `oneshot` reply
+sender. Every write command replies only **after** its transaction commits.
 
 Connection configuration (asserted by tests, not just set):
 
@@ -111,6 +188,8 @@ Migration 1 (applied atomically via `rusqlite_migration`) creates two tables:
   `incomplete_operations()` returns unacknowledged intents after a restart so recovery can
   reconcile them.
 
+**Known limitation:** The `events` table still only stores `run_id`, not `task_id`/`worker_id`/`parent_worker_id`/`vendor_event_ref` (`source` is still hardcoded `runtime`). A *live* `events/event` notification's envelope carries `task_id`/`worker_id` (§11's `append_and_apply` sets them from its caller's parameters), but a *replayed* one from `events/replay` always has them `None` — `ipc/connection.rs::replay()` can only reconstruct an envelope from what the `events` table's columns hold. The monitor (§17) is unaffected because it reads the inner `RuntimeEvent` variant's own `task_id`/`worker_id` fields (always present, part of the payload), never the outer envelope's convenience fields — but any future consumer that filters `events/replay` by the envelope's `task_id`/`worker_id` will get silently wrong (empty) results. See [Known Limitations](known-limitations.md#events-table-missing-columns) for full details.
+
 `DatabaseHandle` API: `start`, `append_event`, `replay_events(after_sequence)`, `max_sequence`,
 `record_operation_intent`, `acknowledge_operation`, `incomplete_operations`, `diagnostics`,
 `shutdown`. Shutdown drains the channel, closes the connection, and joins the actor thread (via
@@ -118,8 +197,9 @@ Migration 1 (applied atomically via `rusqlite_migration`) creates two tables:
 
 ## 5. The redaction boundary
 
-This is the security core. The rule is *redact before durable persistence*, enforced by the type
-system rather than by convention (`security/redaction.rs`):
+This is the security core (see [ADR-0006](adr/0006-type-enforced-redaction-boundary.md)). The
+rule is *redact before durable persistence*, enforced by the type system rather than by convention
+(`security/redaction.rs`):
 
 - Raw, possibly-secret-bearing input is modeled as `RawRuntimeEvent`, whose content fields are
   `Classified<String>` with a `ContentClass` of `Visible`, `Thinking`, or `Secret`.
@@ -141,7 +221,9 @@ Visible text must survive; every raw secret/thinking byte must be absent from al
 
 ## 6. IPC: JSON-RPC 2.0 over bounded NDJSON
 
-The daemon listens on an owner-only Unix socket (`ipc/server.rs`, `ipc/connection.rs`). Transport
+The daemon listens on an owner-only Unix socket (`ipc/server.rs`, `ipc/connection.rs`) (see
+[ADR-0004](adr/0004-json-rpc-2-over-bounded-ndjson-on-a-unix-socket.md) and
+[ADR-0009](adr/0009-role-based-authorization-from-the-connection-not-per-call.md)). Transport
 rules:
 
 - **Admission before parsing.** After `accept()`, the peer's UID is read (SO_PEERCRED on Linux,
@@ -191,9 +273,14 @@ incremental UTF-8 buffer, monotonically increasing string request ids, a
 `coerceTypes: false`, `removeAdditional: false`, `useDefaults: false`) of **every** inbound
 message — a response with an unknown field is rejected before extension logic ever sees it.
 
+**Lesson from smoke testing:** A cached client shared across callers with different role needs must authenticate with the *union* of every role its callers need, not whatever the first caller happened to need. See [Engineering Lessons](engineering-lessons.md#cached-client-must-authenticate-with-the-union-of-all-roles) for full details.
+
+**Known limitation:** Subscription forwarder tasks for closed connections are reaped lazily on the next event broadcast; harmless in practice since a closed connection's own `events_rx.recv()` loop (`spawn_subscription`) exits on its own `Err` the next time anything is broadcast. See [Known Limitations](known-limitations.md#subscription-forwarder-tasks-for-closed-connections-are-reaped-lazily) for full details.
+
 ## 7. Daemon lifecycle
 
-`crates/runtime/src/lifecycle.rs` owns everything between "spawn" and "exit":
+Daemon lifecycle (see [ADR-0007](adr/0007-repository-scoped-singleton-via-kernel-flock.md) and
+[ADR-0008](adr/0008-connect-or-spawn-with-idle-self-shutdown.md)):
 
 - **Singleton via kernel flock.** `serve` opens a persistent `runtime.lock` (never deleted on the
   contended path) and takes `flock(LOCK_EX | LOCK_NB)`. Exactly one racer wins; the loser reads the
@@ -224,6 +311,8 @@ the winner instead of failing.
 
 ## 8. Platform packaging
 
+Platform packaging (see [ADR-0010](adr/0010-platform-binaries-as-npm-optional-leaf-packages.md)):
+
 `resolveBatcave(platform, arch, libc, env)` (`packages/extension/src/platform.ts`) maps the four
 supported tuples to leaf packages (`@satori/batman-darwin-arm64`, `-darwin-x64`,
 `-linux-arm64-gnu`, `-linux-x64-gnu`; npm `optionalDependencies` of `@satori/batman`) and rejects
@@ -238,6 +327,8 @@ into the matching leaf (`bin/batcave`, mode 0755) and writes a deterministic
 signing is a release-milestone concern.
 
 ## 9. The OMP surface
+
+The OMP surface (see [ADR-0011](adr/0011-omp-retains-task-graph-authority.md)):
 
 `packages/extension/src/index.ts` registers exactly one tool and one command with the OMP
 `ExtensionAPI`:
@@ -258,7 +349,12 @@ Since the orchestration extension, `index.ts` also wires the orchestration tools
 OMP-native reconciler (§14), and the embedded monitor (§17) — this section covers only the
 foundation-era status surface `batman_status` reuses.
 
+**Lesson from smoke testing:** A static `import ... with { type: "json" }` at module scope can hang the extension or corrupt `bun test`. See [Engineering Lessons](engineering-lessons.md#never-use-with-type-json-imports-at-extension-load-time) for full details.
+
 ## 10. Domain records and lifecycle
+
+Domain records and lifecycle (see [ADR-0011](adr/0011-omp-retains-task-graph-authority.md) and
+[ADR-0012](adr/0012-explicit-run-lifecycle-relation-runtime-evidence-only.md)):
 
 `crates/protocol/src/{task,worker,run,message,approval}.rs` define the orchestration domain's
 canonical wire types, all `camelCase` + `deny_unknown_fields` like every other protocol type:
@@ -295,7 +391,19 @@ only in the `ompExtension` role table (§6). `crates/protocol/src/event.rs`'s `R
 `ChildEvent`, and `ReconcileEvent` variants — one event per record creation, lifecycle transition,
 flag change, message-delivery change, and approval request/decision.
 
+The runtime implements four worker adapters in `crates/runtime/src/adapter/`: `ClaudeAdapter`,
+`CodexAdapter`, `CopilotAdapter`, and `OmpRpcAdapter`. Each adapter implements the `Adapter`
+trait and is managed by an `AdapterRegistry` that implements `RunDriver`. The registry resolves
+worker profiles, gates start on conformance-derived effective capabilities through an injected
+`AdapterAuthorization`, and owns adapters for the run's lifetime. Production defaults to
+`DenyByDefaultAuthorization` unless the `DevOverrideAuthorization` is explicitly enabled for
+development; the `PolicyEvaluator` from the Hardening plan is now integrated as the production
+authorization mechanism, enforcing model allowlists, concurrency ceilings, and nested worker policies.
+
 ## 11. Projection persistence
+
+Projection persistence (see [ADR-0003](adr/0003-sqlite-as-the-sole-persistence-engine.md) and
+[ADR-0020](adr/0020-per-mutation-event-broadcast-is-not-optional.md)):
 
 Migration 2 (`crates/runtime/src/db/migrations.rs`) adds six normalized tables —
 `worker_profiles`, `tasks`, `workers`, `runs`, `messages`, `approvals` — alongside the append-only
@@ -315,12 +423,16 @@ rolls back the event insert too — the journal and its projections can never di
 from the caller's `task_id`/`worker_id`/`run_id` plus the columns just written) is handed back so
 the service layer can broadcast it (§18).
 
+**Lesson from smoke testing:** A durable mutation must broadcast the same event it just committed, in the same call. See [Engineering Lessons](engineering-lessons.md#durable-mutations-must-broadcast-the-same-event-they-just-committed) for full details, including regression tests (`events_replay_round_trips_committed_mutation_events` and `events_subscribe_delivers_live_notifications_for_orchestration_mutations`).
+
 `crates/runtime/src/domain/transitions.rs::check_transition` validates every `RunState` edge
 against `RunState::can_transition_to` before `DomainRepository::transition_run` appends anything;
 an illegal edge (including every self-transition and every edge out of a terminal state) returns
 `TransitionError::Illegal` and appends nothing.
 
 ## 12. The orchestration RPC service
+
+Orchestration RPC service:
 
 `crates/runtime/src/service/orchestration.rs`'s `OrchestrationService` routes every method from
 §10 to a typed `DomainRepository` command (mutations) or a read-only query closure
@@ -335,14 +447,17 @@ revision match what's stored, and journals the old/new owner ids. `run/retry` ta
 the same `TaskId` — a retry is never an in-place resurrection.
 
 `run/submit` records the run (`queued`) and only then calls the injected `RunDriver` seam
-(`service/run_driver.rs`). Production `ServerConfig::run_driver` defaults to `None`: without an
-adapter registry, `run/submit` returns application error `adapter_unavailable`
-**after** the queued run is durably committed — it never pretends the run started and never drops
-it. Orchestration tests inject `FakeRunDriver`, which drives `queued -> starting -> working`
-through the same domain-repository transitions a real adapter would use. Implementing a real
-adapter registry is out of scope for this milestone (see §19).
+(`service/run_driver.rs`). The `AdapterRegistry` implements `RunDriver` against the four real
+worker adapters (Claude/Codex/Copilot/OMP-RPC); production wiring is configured via
+`ServerConfig::adapter_registry`. Without an adapter registry, `run/submit` returns application
+error `adapter_unavailable` **after** the queued run is durably committed — it never pretends the
+run started and never drops it. Orchestration tests inject `FakeRunDriver`, which drives
+`queued -> starting -> working` through the same domain-repository transitions a real adapter
+would use.
 
 ## 13. OMP orchestration tools
+
+OMP orchestration tools (see [ADR-0014](adr/0014-flat-op-discriminator-over-zod-discriminated-unions.md)):
 
 `packages/extension/src/tools/{tasks,workers,runs,messages,approvals,reconcile}.ts` register six
 deterministic OMP tools — `batman_task`, `batman_worker`, `batman_run`, `batman_message`,
@@ -362,6 +477,8 @@ read-only task context to a supervised vendor process.
 
 ## 14. OMP-native reconciliation
 
+OMP-native reconciliation (see [ADR-0015](adr/0015-omp-native-facts-as-non-owning-mirror-lost-on-omission.md)):
+
 `packages/extension/src/omp-native/{events,reconcile,types}.ts` mirrors OMP's own `task:subagent:
 lifecycle|progress|event` bus events into Batman worker/run facts **without ever changing OMP's
 state** — `index.ts` subscribes during `session_start` and unsubscribes during `session_shutdown`.
@@ -378,6 +495,9 @@ runtime-scoped `Run` row. `reconcileWithRuntime` calls `reconcile/omp` for the t
 ever rendered as live again.
 
 ## 15. The coordination broker
+
+The coordination broker (see [ADR-0016](adr/0016-coordination-scope-tokens-bound-to-run-and-pid-ancestry.md)
+and [ADR-0017](adr/0017-record-before-delivery-message-semantics.md)):
 
 `crates/protocol/src/coordination.rs` and `crates/runtime/src/coordination/{broker,rate_limit,
 scope_token}.rs` implement the worker-safe messaging surface a supervised vendor process uses
@@ -416,13 +536,21 @@ OMP-created child task/worker/run ids and returns the parent to `working`, denia
 `ChildWorkerRequestDenied { reason }` and also returns the parent to `working`. The runtime owns
 both transitions; OMP decides, Rust never does.
 
+The coordination broker is fully implemented and tested (`crates/runtime/tests/coordination.rs`).
+`ScopeTokenStore::new` is called from production code; `ServerConfig::default()`'s `worker_verifier`
+is `RejectAllWorkerVerifier` (replaced by `PolicyEvaluator` in the Hardening plan), and
+`AdapterRegistry::new` accepts an `Option<AdapterMcpConfig>` that is threaded into every adapter
+construction. The broker is wired into the adapter start path via `AdapterRegistry::set_broker`.
+
 ## 16. The correlated approval flow
 
+Correlated approval flow (see [ADR-0018](adr/0018-approval-decided-before-callback-never-re-ask-on-failure.md)):
+
 `crates/runtime/src/approval/service.rs`'s `ApprovalService` is the seam an adapter calls when a
-vendor process reports it needs human approval for an action (adapters are out of scope this
-milestone, so today only `crates/runtime/tests/approval.rs` exercises `request`/`decide`
-directly — there is no `approval/request` RPC method). `request(ApprovalRequest)` atomically
-creates the request and transitions the run `working -> waitingUser` in one durable event.
+vendor process reports it needs human approval for an action (adapters are implemented this
+milestone, so `crates/runtime/tests/approval.rs` exercises `request`/`decide` directly — there is
+no `approval/request` RPC method). `request(ApprovalRequest)` atomically creates the request and
+transitions the run `working -> waitingUser` in one durable event.
 
 `approval/decide` (the one approval RPC method the extension calls, via `batman_approval`, §13)
 enforces: only the connected `ompExtension` principal whose `instanceId` matches the task's
@@ -441,6 +569,8 @@ arguments, policy reason, approval id) only when OMP policy marks a decision
 `humanRequired: true`, never auto-approving even under `tools.approvalMode` overrides.
 
 ## 17. The embedded monitor
+
+The embedded monitor (see [ADR-0019](adr/0019-monitor-is-one-reducer-over-replay-and-live-no-separate-modes.md)):
 
 `packages/extension/src/monitor/{model,render,controller}.ts` render `/batman` as a pure
 event-reducer over the same durable stream every other client consumes:
@@ -465,102 +595,134 @@ event-reducer over the same durable stream every other client consumes:
   inactive rather than failing session startup; `/batman` retries the connection.
 - `compat.ts::assertCompatiblePiCodingAgentVersion` is a **test-only** no-model compatibility
   check (`render.test.ts`) that the installed `@oh-my-pi/pi-coding-agent` falls within the
-  `[17.0.7, 18.0.0)` range this monitor's `pi.appendEntry`/`ctx.ui.setWidget` usage is pinned to —
-  see §18 for why it must never run at extension-load time.
+  `[17.0.7, 18.0.0)` range this monitor's `pi.appendEntry`/`ctx.ui.setWidget` usage is pinned to
+  — see §9 for why it must never run at extension-load time.
 
-## 18. Lessons from the smoke scenario
+## 18. Data flow: event lifecycle
 
-Three defects surfaced only by running the Orchestration Extension's smoke scenario against a
-real `omp` session — none caught by the unit/integration suites, because each needed the exact
-combination of "the real compiled `omp` binary" and "a mutation had actually committed". Fixed in
-one commit with a regression test per bug; documented here so the same class of mistake isn't
-repeated.
+```mermaid
+sequenceDiagram
+    participant OMP as OMP Extension
+    participant IPC as IPC Server
+    participant DB as Database Actor
+    participant Service as Orchestration Service
+    participant Adapter as Adapter Registry
+    participant Worker as Worker Process
 
-**1. A static `with { type: "json" }` import can hang the extension, or corrupt `bun test`.**
-`compat.ts` originally did `import pkg from "@oh-my-pi/pi-coding-agent/package.json" with { type:
-"json" }` at module scope, called from `registerMonitor` at extension-load time. That import
-resolves fine under `bun run`/`bun test` in this repo's own `node_modules`, but **hangs forever**
-the instant the real `omp` binary (itself a compiled, bundled Bun executable) loads the extension
-file and tries to resolve that exact subpath from *its own* bundled module graph — confirmed by
-bisecting a minimal repro down to the bare import statement with no call. The same import, when
-present in a test file, also triggers an unrelated Bun resolver defect (`NameTooLong` on a
-runaway `file:` prefix chain) but *only* when several other test files run in the same `bun test`
-invocation — passes in isolation, fails in the full suite. Fix: the version check now lives only
-in a test (`render.test.ts`), matching the plan's own framing of it as a "no-model fixture", never
-called from production code; and the check itself now reads the peer's `package.json` via a plain
-filesystem walk from `import.meta.dir`, never through Bun's module resolver. **Lesson:** never run
-a `with { type: "json" }` import — or any dynamic resolution of a peer package's own metadata — at
-extension-load time or module scope in code the real `omp` binary will load; if you need a peer's
-installed version, read the file directly.
+    OMP->>IPC: initialize (ClientAuth: ompExtension)
+    IPC->>IPC: validate peer credentials
+    IPC-->>OMP: InitializeResult (protocol 1.0, project id)
 
-**2. A single cached client must authenticate with the union of every role its callers need.**
-`runtime.ts::ensureRuntime()` hardcoded `ClientAuth::Display` (read-only) for what its own doc
-comment called "a launcher connection" — correct for `batman_status`, the only caller when it was
-written. `index.ts::getClient()` later cached and reused that exact client for every orchestration
-tool too, so every mutation (`task/upsert`, `run/submit`, ...) failed
-`-32601 method ... is not available to this client` — silently, since `display`'s method table
-(§6) is a strict *subset* of `ompExtension`'s and nothing checks that relationship at compile
-time. Fix: `ensureRuntime` now authenticates as `ompExtension` unconditionally, safe for every
-existing caller because `ompExtension`'s allowed methods are always a superset. **Lesson:** when
-one cached connection is shared across callers with different needs, its role must be the
-*union*, not whatever the first caller happened to need — and a role table's superset/subset
-relationships between roles are exactly the kind of fact that belongs in a comment next to the
-role definition (see §6), not just in reviewers' heads.
+    OMP->>IPC: task/upsert (taskId, revision)
+    IPC->>Service: route to DomainRepository
+    Service->>DB: append_and_apply (event_json)
+    DB-->>Service: Committed { sequence, envelope }
+    Service-->>IPC: broadcast event
+    IPC-->>OMP: events/event notification
 
-**3. A durable mutation must broadcast the same event it just committed, in the same call.**
-`DomainRepository::append_and_apply` stored the *full* `EventEnvelope` (with `sequence`,
-`timestamp`, ...) into `event_json`, but `ipc/connection.rs::replay()` expects that column to hold
-only the bare `RuntimeEvent` — it reconstructs the envelope from the `events` table's own
-`sequence`/`timestamp`/`project_id`/`run_id` columns (§11). Every `events/replay` call therefore
-failed to deserialize once any mutation had committed. Separately, and worse: `Shared.events_tx`
-(the `tokio::sync::broadcast` channel §6's `spawn_subscription` reads from) had a subscriber but
-**no publisher anywhere** — none of the 15+ mutation call sites across `OrchestrationService`,
-`ApprovalService`, `CoordinationBroker`, and `RunDriverContext` ever called `.send()` on it. A
-monitor connected before a mutation committed would never observe it without reconnecting (which
-re-triggers `events/replay` — itself broken by the first bug). Fixed both: storage now writes the
-bare event; `Committed` now carries the full `EventEnvelope`; and
-`domain::{embed_envelope, take_envelope}` smuggle it across the `run_domain_op` closure boundary
-(whose closures are constrained to return a plain `serde_json::Value`) so every service broadcasts
-after every commit. **This is now invariant #7 in the README, and it is not enforced by the type
-system** — the compiler cannot catch "this new mutation appended an event but forgot to broadcast
-it". Any new `DomainRepository` mutation method **must** be wired through
-`embed_envelope`/`take_envelope`/`self.broadcast(&mut result)` at its call site, matching every
-existing sibling in `service/orchestration.rs`, or the monitor will silently show stale state for
-that mutation alone. `crates/runtime/tests/orchestration_rpc.rs`'s
-`events_replay_round_trips_committed_mutation_events` and
-`events_subscribe_delivers_live_notifications_for_orchestration_mutations` are the regression
-tests for both halves; the latter reproduced the bug as an infinite hang, not a clean failure —
-run it with a test-runner timeout if you ever suspect a new mutation has regressed this.
+    OMP->>IPC: run/submit (taskId, workerId)
+    IPC->>Service: route to DomainRepository
+    Service->>DB: insert run (state: queued)
+    Service->>Adapter: run_driver.start(ctx)
+    Adapter->>Worker: spawn supervised process
+    Worker->>Adapter: normalized events
+    Adapter->>Service: adapter events (via event_sink)
+    Service->>DB: append adapter events
+    DB-->>Service: Committed { sequence, envelope }
+    Service-->>IPC: broadcast events
+    IPC-->>OMP: events/event notifications
+
+    Worker->>Worker: completion/failure/cancel
+    Worker->>Adapter: terminal evidence
+    Adapter->>Service: transition_run (state: succeeded/failed/cancelled)
+    Service->>DB: append state transition
+    DB-->>Service: Committed { sequence, envelope }
+    Service-->>IPC: broadcast state change
+    IPC-->>OMP: events/event notification
+```
+
+**Key flows:**
+1. **Initialization**: OMP extension authenticates via `ClientAuth::OmpExtension`, receives protocol capabilities and allowed methods
+2. **Task submission**: OMP calls `task/upsert` → `run/submit` → adapter registry starts worker process
+3. **Event broadcast**: Every durable mutation broadcasts the same event it committed, in the same call
+4. **State transitions**: Only the runtime applies state edges, and only after process/protocol evidence
 
 ## 19. Known deferred items
 
-Consciously deferred as non-blocking after review (tracked for later milestones):
+Consciously deferred as non-blocking after review (tracked for later milestones). See [Known Limitations](known-limitations.md) for the full catalog with status updates.
 
-- **The `events` table still only stores `run_id`, not `task_id`/`worker_id`/`parent_worker_id`/
-  `vendor_event_ref`** (`source` is still hardcoded `runtime`). A *live* `events/event`
-  notification's envelope carries `task_id`/`worker_id` (§11's `append_and_apply` sets them from
-  its caller's parameters), but a *replayed* one from `events/replay` always has them `None` —
-  `ipc/connection.rs::replay()` can only reconstruct an envelope from what the `events` table's
-  columns hold. The monitor (§17) is unaffected because it reads the inner `RuntimeEvent`
-  variant's own `task_id`/`worker_id` fields (always present, part of the payload), never the
-  outer envelope's convenience fields — but any future consumer that filters `events/replay` by
-  the envelope's `task_id`/`worker_id` will get silently wrong (empty) results. Needs a schema
-  migration plus populating those columns in `append_and_apply`'s insert.
-- **The coordination broker (§15) has no production wiring point yet.** `ScopeTokenStore::new` is
-  called only from `crates/runtime/tests/coordination.rs`; `ServerConfig::default()`'s
-  `worker_verifier` stays `RejectAllWorkerVerifier`, and nothing in `run/submit`'s (absent)
-  adapter-start path calls `ScopeTokenStore::mint`. This is consistent with adapters being out of
-  scope this milestone — there is no supervised vendor process yet that would need a token — but
-  the Worker Adapters plan must wire a `ScopeTokenStore` into `Shared`/`ServerConfig` and mint a
-  token at adapter-start time before any real `workerMcp` connection can succeed against a
-  production daemon.
-- Worker adapters (real Claude/Codex/Copilot/OMP-RPC/local-model harnesses behind `RunDriver`),
-  workspaces, displays (Herdr/tmux), a policy engine, and any remote service are explicitly out of
-  scope for this milestone (Global Constraints) — every orchestration RPC method, tool, and the
-  monitor are exercised end to end only against `FakeRunDriver` and manually-created records.
-- The redaction regex denylist is intentionally small (API-key/bearer shapes); classification is
-  the primary boundary. Expanding the denylist (`ghp_`, `AKIA…`, JWT shapes) is planned
-  defense-in-depth.
-- Subscription forwarder tasks for closed connections are reaped lazily on the next event
-  broadcast; harmless in practice since a closed connection's own `events_rx.recv()` loop
-  (`spawn_subscription`) exits on its own `Err` the next time anything is broadcast.
+**Status:** All items tracked in [Known Limitations](known-limitations.md).
+
+## Appendix A: Quick Reference
+
+This appendix provides fast access to common operations, error codes, and file paths without requiring a full read of the document.
+
+### Common Operations
+
+| Operation | Command |
+|---|---|
+| Generate TypeScript bindings | `cargo run -p batman-xtask -- generate` or `bun run generate` |
+| Check for drift (CI) | `bun run check` |
+| Package binary for platform | `cargo run -p batman-xtask -- package --target <triple> --binary <path>` |
+| Start daemon (foreground) | `batcave serve --foreground` |
+| Stop daemon | `batcave stop` |
+
+### Key File Paths
+
+| Purpose | Path |
+|---|---|
+| Protocol types (Rust) | `crates/protocol/src/*.rs` |
+| Protocol types (TypeScript) | `packages/protocol-ts/src/generated/*.ts` |
+| JSON Schema | `packages/protocol-ts/schema/batman.schema.json` |
+| Database actor | `crates/runtime/src/db/actor.rs` |
+| IPC server | `crates/runtime/src/ipc/server.rs` |
+| IPC connection handler | `crates/runtime/src/ipc/connection.rs` |
+| Extension entry point | `packages/extension/src/index.ts` |
+| Runtime client | `packages/extension/src/client.ts` |
+| Runtime launcher | `packages/extension/src/runtime.ts` |
+| Platform resolver | `packages/extension/src/platform.ts` |
+| Adapter registry | `crates/runtime/src/adapter/registry.rs` |
+| Coordination broker | `crates/runtime/src/coordination/broker.rs` |
+| Approval service | `crates/runtime/src/approval/service.rs` |
+| Monitor controller | `packages/extension/src/monitor/controller.ts` |
+
+### Error Codes
+
+| Code | Meaning |
+|---|---|
+| `-32700` … `-32603` | Standard JSON-RPC errors |
+| `-32001` | `NOT_INITIALIZED` — first request must be `initialize` |
+| `-32002` | `INCOMPATIBLE_VERSION` — version ranges do not overlap |
+| `-32003` | `CAPABILITY_UNSUPPORTED` — method not in caller's role table |
+| `-32004` | `SEQUENCE_GONE` — requested sequence no longer available |
+| `73` | Daemon exit code — already running (machine-readable JSON on stdout) |
+
+### State Root Resolution
+
+State lives under `<state root>/repos/<repository-id>/`, where the state root resolves with this precedence:
+
+1. `BATMAN_STATE_DIR` (must be absolute)
+2. `$XDG_STATE_HOME/omp/batman` when `XDG_STATE_HOME` is set (must be absolute)
+3. `$HOME/${PI_CONFIG_DIR:-.omp}/orchestrator`
+
+### Role Table Summary
+
+| Role | Allowed Methods |
+|---|---|
+| `ompExtension` | All methods (superset) |
+| `display` | `runtime/status`, `events/subscribe`, `events/replay` |
+| `workerMcp` | `runtime/status` only |
+
+**Note:** A cached connection shared across callers must authenticate as the *union* of all roles (see [Engineering Lessons](engineering-lessons.md#cached-client-must-authenticate-with-the-union-of-all-roles)).
+
+### Regression Tests for Critical Invariants
+
+| Invariant | Test |
+|---|---|
+| Events replay round-trips committed mutations | `events_replay_round_trips_committed_mutation_events` |
+| Events subscribe delivers live notifications for mutations | `events_subscribe_delivers_live_notifications_for_orchestration_mutations` |
+| Redaction boundary holds | `crates/runtime/tests/redaction_boundary.rs` |
+| Coordination broker | `crates/runtime/tests/coordination.rs` |
+| Approval flow | `crates/runtime/tests/approval.rs` |
+
+Run with a test-runner timeout if you suspect a new mutation has regressed the broadcast invariant — the bug manifests as an infinite hang, not a clean failure.
