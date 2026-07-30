@@ -2,6 +2,7 @@
 node_modules/
 target/
 dist/
+.DS_Store
 
 # ts-rs `#[ts(export)]` writes here as a `cargo test` side effect; Task 3's
 # xtask owns the real export destination and invocation.
