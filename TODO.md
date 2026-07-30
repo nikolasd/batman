@@ -136,3 +136,89 @@ batman serve --org-config https://config.example.com/org.yaml
 - [ ] Add config validation against schema before loading
 - [ ] Add config versioning and migration support
 - [ ] Add config encryption for sensitive values
+
+---
+
+## Adapter Implementation Gaps (from conformance test failures)
+
+### 6. Claude adapter: missing lifecycle/usage/result event extraction
+
+**Status:** Open  
+**Priority:** Medium  
+**Labels:** adapter, claude, conformance
+
+**Description:**
+The Claude adapter's normalizer reads `initialize.jsonl` (a real Claude CLI session's stdout containing session start, streaming text, tool calls, and final result with usage/cost data) but does not extract three critical signals:
+- `VendorSessionEstablished` — proves which session is being tracked
+- `UsageReported` — proves token consumption and cost data
+- `MessageFinal(role="result")` — proves the turn is complete
+
+Without these, the runtime cannot track session lifecycle, report usage to OMP, or know when a turn is truly complete.
+
+**Implementation:**
+- Enhance `ClaudeNormalizer` to extract `VendorSessionEstablished` from the initialize frame
+- Extract `UsageReported` from the result frame's usage data (input/output tokens, cost)
+- Extract `MessageFinal(role="result")` from the result frame's text content
+- Ensure all three correlate to the same session ID
+
+**References:** `fixtures/adapters/claude/initialize.jsonl`, `crates/runtime/src/adapter/claude/normalize.rs`
+
+---
+
+### 7. Codex adapter: missing lifecycle/usage/artifact event extraction
+
+**Status:** Open  
+**Priority:** Medium  
+**Labels:** adapter, codex, conformance
+
+**Description:**
+The Codex adapter's normalizer reads `thread-turn.jsonl` (a real Codex thread transcript containing text chunks, tool calls, token usage, and file change artifacts) but does not extract six critical event types:
+- `MessageChunk` — streaming text chunks
+- `MessageFinal` — final message
+- `ToolStarted` — when a command begins
+- `ToolResult` — when a command finishes
+- `UsageReported` — token counts
+- `ArtifactProduced` — file changes
+
+Without these, OMP cannot track costs, know which files were changed by the worker, or correlate the full turn lifecycle.
+
+**Implementation:**
+- Enhance `CodexNormalizer` to extract all six event types from the thread transcript
+- Ensure all events correlate to the same thread/run/task/worker IDs
+- Verify the hidden `reasoning` content is still dropped before reaching visible events
+
+**References:** `fixtures/adapters/codex/thread-turn.jsonl`, `crates/runtime/src/adapter/codex/normalize.rs`
+
+---
+
+### 8. Copilot adapter: ACP v1 protocol limitation on usage reporting
+
+**Status:** Known gap (protocol limitation)  
+**Priority:** Low  
+**Labels:** adapter, copilot, protocol
+
+**Description:**
+ACP v1 does not transmit token usage or cost information in its session update frames. The Copilot adapter honestly declares `usage: none` rather than pretending to report something it cannot see. This is a protocol limitation, not a code bug.
+
+**What can be done:**
+- Wait for ACP v2 (or future protocol version) that transmits usage data
+- No code changes possible until the protocol evolves
+
+**References:** `fixtures/adapters/copilot/session-updates.jsonl`, `crates/runtime/src/adapter/copilot/client.rs`
+
+---
+
+### 9. Copilot live test: requires authenticated CLI session
+
+**Status:** Environment dependency  
+**Priority:** Low  
+**Labels:** testing, environment
+
+**Description:**
+The `real_binary_initialize_and_session_list_never_invoke_a_model` test requires a real, authenticated Copilot CLI session. Without one, the test cannot run — that's expected and documented. This is not a code gap; it's an environment gap.
+
+**What can be done:**
+- Run tests with `BATMAN_LIVE_COPILOT=1` and a valid Copilot session
+- No code changes needed
+
+**References:** `docs/manual-testing.md` §4c
