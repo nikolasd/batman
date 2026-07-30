@@ -19,13 +19,16 @@ Small, dependency-light, and the vocabulary for everything else.
 | `src/version.rs` | `ProtocolVersion`, `VersionRange` |
 | `src/rpc.rs` | JSON-RPC envelopes, `InitializeParams/Result`, `ClientAuth` roles, `RuntimeStatus`, `error_code` constants (`BatmanMethod` itself now lives in `method.rs`, re-exported here) |
 | `src/method.rs` | `BatmanMethod` — every JSON-RPC method name, foundation and orchestration alike |
-| `src/event.rs` | `EventEnvelope`, `RuntimeEvent`, `Timestamp`, `ContentClass`/`Classified<T>` |
+| `src/event.rs` | `EventEnvelope`, `RuntimeEvent`, `Timestamp`, `ContentClass`/`Classified<T>`, `RunFlags`, `DiagnosticLevel`, `EventSource`, `RuntimeEventKind` |
 | `src/task.rs` | `TaskRef` |
 | `src/worker.rs` | `WorkerProfileRef`, `Worker` |
-| `src/run.rs` | `Run`, `RunSpec`, `RunState` (+ `can_transition_to`/`is_terminal`), `RunFlags` |
+| `src/run.rs` | `Run`, `RunSpec`, `RunState` (+ `can_transition_to`/`is_terminal`) |
 | `src/message.rs` | `RunMessage`, `MessageKind`, `DeliveryState` |
-| `src/approval.rs` | `ApprovalRequest` |
-| `src/coordination.rs` | worker-safe request/result types, `COORDINATION_PAYLOAD_MAX_BYTES`, `COORDINATION_RATE_LIMIT_PER_MINUTE` |
+| `src/approval.rs` | `ApprovalRequest`, `ApprovalDecision` |
+| `src/coordination.rs` | worker-safe request/result types, `COORDINATION_PAYLOAD_MAX_BYTES`, `COORDINATION_RATE_LIMIT_PER_MINUTE`, `CoordinationAskPolicyParams`, `CoordinationChildDecision`, `CoordinationPeersParams`, `CoordinationPublishArtifactParams`, `CoordinationReportBlockedParams`, `CoordinationRequestChildParams`, `CoordinationSendParams`, `CoordinationTaskParams` |
+| `src/workspace.rs` | `LeaseRequest`, `LeaseMode`, `ReleaseRequest`, `ApplyRequest`, `ApplyStrategy`, `ApplyResult`, `InspectRequest`, `InspectResult`, `IsolationKind`, `WorkspaceEvent`, `WorkspaceInfo`, `WorkspaceLease`, `WorkspaceState` |
+| `src/display.rs` | `DisplayBackend`, `DisplayConfig`, `DisplayPlacement`, `DisplayStatus` |
+| `src/artifact.rs` | `Artifact`, `ArtifactFetchResult`, `ArtifactFetchRequest`, `ArtifactKind`, `ArtifactListRequest`, `ArtifactListResult` |
 | `tests/wire_contract.rs` | Proves camelCase + `deny_unknown_fields` on the wire |
 | `tests/domain_contract.rs` | `RunState` lifecycle table, `RunFlags` field names, `BatmanMethod` orchestration variants |
 | `tests/coordination_contract.rs` | Message kinds, delivery states, coordination request/result wire shapes |
@@ -36,10 +39,13 @@ Small, dependency-light, and the vocabulary for everything else.
 | File | What lives there |
 |---|---|
 | `src/main.rs` | Thin entry point; calls `cli::run()` |
-| `src/cli.rs` | clap definitions for `serve`/`status`/`stop`/`version`/`schema`; maps outcomes to exit codes (73 = lost the singleton race) |
-| `src/lifecycle.rs` | `serve()`/`status()`/`stop()`: flock singleton, lock metadata, idle shutdown, graceful-stop ordering, log routing |
+| `src/cli.rs` | clap definitions for `serve`/`status`/`stop`/`version`/`schema`/`monitor`/`audit`; maps outcomes to exit codes (73 = lost the singleton race) |
+| `src/lifecycle.rs` | `serve()`/`status()`/`stop()`: flock singleton, lock metadata, idle shutdown, graceful-stop ordering, log routing, recovery coordinator wiring, doctor integration |
+| `src/doctor.rs` | `Doctor` — health checking with rollout gates, adapter availability, configuration validity |
+| `src/recovery.rs` | `RecoveryCoordinator` — finds stuck runs after unclean shutdown, transitions to terminal states based on `stuck_threshold`, `recover_paused`, `recover_waiting` |
 | `src/paths.rs` | `RuntimePaths::resolve`, VCS-root discovery, `repository_id_from_canonical_root` |
 | `src/security/mod.rs` | `StateRoot::resolve` precedence, `ensure_private_dir`/`ensure_private_file` (0700/0600, atomic) |
+| `src/security/rules.rs` | Built-in redaction regex patterns (AWS keys, API keys, GitHub tokens) |
 | `src/security/redaction.rs` | `Redactor`, `RawRuntimeEvent`, `PersistableEvent`, `SanitizedJson` — the redaction boundary |
 | `src/db/actor.rs` | `DatabaseHandle` + the actor thread owning the SQLite connection |
 | `src/db/migrations.rs` | PRAGMAs, migration 1 (`events`, `operations`), migration 2 (`worker_profiles`, `tasks`, `workers`, `runs`, `messages`, `approvals`) |
@@ -52,14 +58,45 @@ Small, dependency-light, and the vocabulary for everything else.
 | `src/service/orchestration.rs` | `OrchestrationService` — routes every Task/Worker/Run/Message/Approval/Reconcile method to `DomainRepository` or `service/query.rs` |
 | `src/service/query.rs` | Read-only lookup closures (`task_get_op`, etc.) run through `DatabaseHandle::run_domain_op` |
 | `src/service/run_driver.rs` | `RunDriver` trait, `RunDriverContext`, `FakeRunDriver` (`queued -> starting -> working`) |
+| `src/adapter/trait.rs` | `Adapter` trait with `start`/`resume`/`send`/`cancel`/`dispose` |
+| `src/adapter/registry.rs` | `AdapterRegistry` — implements `RunDriver` against four worker adapters, `AdapterAuthorization` trait, `FixtureAuthorization`/`DenyByDefaultAuthorization` |
+| `src/adapter/claude/mod.rs` | `claude stream-json` protocol adapter |
+| `src/adapter/codex/mod.rs` | `codex app-server` protocol adapter |
+| `src/adapter/copilot/mod.rs` | `copilot --acp` protocol adapter |
+| `src/adapter/omp_rpc/mod.rs` | `omp --mode rpc` protocol adapter |
 | `src/coordination/broker.rs` | `CoordinationBroker` — record-before-delivery messaging, `sweep_unacknowledged_as_unknown` |
 | `src/coordination/scope_token.rs` | `ScopeTokenStore` (mint/verify), `PidAncestryChecker` |
 | `src/coordination/rate_limit.rs` | `RateLimiter` — 30 messages/minute/sender sliding window |
+| `src/coordination/mcp.rs` | MCP tool registry proxy |
+| `src/coordination/mcp_protocol.rs` | MCP protocol types |
 | `src/approval/service.rs` | `ApprovalService` — `request`/`decide`, ownership/idempotency/settled-run enforcement, `ApprovalCallback` seam |
+| `src/supervisor/process.rs` | Process-group scoped spawn with bounded stdio and escalation |
+| `src/supervisor/environment.rs` | Redacted environment snapshots |
+| `src/supervisor/output.rs` | Rotating stdout/stderr capture |
+| `src/workspace/lease.rs` | Lease arbitration |
+| `src/workspace/materialize.rs` | Materializes workspace changes |
+| `src/workspace/apply.rs` | Applies workspace changes |
+| `src/workspace/inspect.rs` | Inspects workspace state |
+| `src/workspace/copy.rs` | Workspace file copying utilities |
+| `src/workspace/artifact_store.rs` | Stores build artifacts |
+| `src/workspace/git.rs` | Git integration for workspace operations |
+| `src/display/terminal.rs` | Terminal display backend |
+| `src/display/herdr.rs` | Herdr display backend |
+| `src/display/tmux.rs` | Tmux display backend |
+| `src/config/merge.rs` | Configuration merging with strict unknown-key rejection |
+| `src/policy/evaluate.rs` | `RuntimePolicy` with SHA-256 fingerprint, `RolloutGates` |
+| `src/audit/export.rs` | JSONL export |
+| `src/audit/retention.rs` | Event retention and pruning |
+| `src/conformance/scenario.rs` | Adapter conformance test scenarios |
+| `src/conformance/report.rs` | Conformance test reporting |
 
 Integration tests in `crates/runtime/tests/` are the daemon's behavioural spec — one file per
 subsystem (`paths`, `database`, `redaction_boundary`, `ipc`, `lifecycle`, `domain_repository`,
-`orchestration_rpc`, `coordination`, `approval`). The lifecycle tests run the real compiled binary
+`orchestration_rpc`, `coordination`, `approval`, `adapter_contract`, `adapter_registry`,
+`claude_adapter`, `codex_adapter`, `copilot_adapter`, `omp_rpc_adapter`, `supervisor`,
+`workspace_apply`, `workspace_lease`, `workspace_materialize`, `display_registry`, `display_selector`,
+`herdr_display`, `tmux_display`, `terminal_adapter`, `monitor_cli`, `audit`, `config`, `conformance`,
+`coordination_mcp`, `redaction`). The lifecycle tests run the real compiled binary
 (`env!("CARGO_BIN_EXE_batcave")`) as real processes.
 
 ### `crates/xtask` — build tooling
@@ -73,13 +110,15 @@ binary into a leaf package with a deterministic manifest).
 | File | What lives there |
 |---|---|
 | `src/index.ts` | Default-export extension factory; registers `batman_status`, `/batman-status`, the six orchestration tools (via `tools/index.ts`), OMP-native lifecycle listeners (`omp-native/`), and the embedded monitor (`monitor/controller.ts`) |
-| `src/context.ts` | `buildStatusContext` — wires state root, repository, binary resolver, client cache; `DEFAULT_IDLE_SECONDS` |
+| `src/config.ts` | Configuration layer management |
 | `src/status.ts` | `getRuntimeStatus(ctx)` — the one shared status path; sanitized failure results |
 | `src/client.ts` | `BatmanClient` — NDJSON framing, byte-exact caps, request correlation, Ajv validation of every inbound frame |
 | `src/runtime.ts` | `ensureRuntime` (connect-or-spawn, authenticates as `ompExtension`), `buildServeArgs`, `resolveOverride` (`OMP_BATMAN_BINARY` validation), `repositoryIdFromRoot` |
 | `src/state.ts` | `resolveStateRoot(env, home)` — must stay semantically identical to Rust's `StateRoot::resolve` |
 | `src/platform.ts` | `resolveBatcave` tuple mapping, integrity/version checks, typed errors, `detectLibc` |
 | `src/integrity.ts` | `sha256File` |
+| `src/approval-ui.ts` | Approval UI components |
+| `src/conformance/index.ts` | `runConformance`, `formatConformanceSummary` — external conformance test runner |
 | `src/tools/shared.ts` | `callOrchestration` — the one execute body every orchestration tool uses; maps `JsonRpcRemoteError` to a stable tool error |
 | `src/tools/{tasks,workers,runs,messages,approvals,reconcile}.ts` | `batman_task`, `batman_worker`, `batman_run`, `batman_message`, `batman_approval`, `batman_reconcile` |
 | `src/omp-native/events.ts` | Normalizes `task:subagent:lifecycle\|progress\|event` bus payloads into `OmpNativeAgentFact` |
@@ -120,8 +159,9 @@ Follow this once with the files open and you will have seen every layer.
    spawns `batcave serve --state-dir … --repo … --idle-seconds …` detached, and retries with
    backoff (≤5 s).
 4. **Daemon startup** — `cli.rs` parses args → `lifecycle.rs:serve` resolves `RuntimePaths`, takes
-   the flock (loser exits 73), opens `DatabaseHandle` (migrations + PRAGMAs), appends a redacted
-   `runtimeStarted` event through the `Redactor`, binds the owner-only socket
+   the flock (loser exits 73), opens `DatabaseHandle` (migrations + PRAGMAs), runs `RecoveryCoordinator`
+   (automatic after `serve`), runs `Doctor::check()` (rollout gates, adapter availability),
+   appends a redacted `runtimeStarted` event through the `Redactor`, binds the owner-only socket
    (`ipc/server.rs:bind`), starts logging (`runtime.log` when detached).
 5. **Handshake** — the client sends `initialize` (first frame, 4 MiB bootstrap cap). The server
    already checked the peer UID at accept time. `connection.rs` validates the version range,
@@ -162,9 +202,12 @@ mutation, the durable journal, and the embedded monitor connect.
    sends it on `Shared.events_tx` *before* the JSON-RPC response is built. Any connection currently
    in `spawn_subscription` (§6 in `architecture.md`) receives it as an `events/event` notification
    in the same tick — this is the fix for the bug in §18.
-5. **The adapter seam** — `run_submit` then calls the injected `RunDriver` (none by default this
-   milestone): with no driver, it returns `adapter_unavailable` *after* the queued run already
-   committed in step 3 — the run is never silently dropped just because nothing can start it yet.
+5. **The adapter seam** — `run_submit` then calls the injected `RunDriver` (the `AdapterRegistry`
+   by default): it resolves the worker profile, checks `AdapterAuthorization` (deny-by-default in
+   production, configurable in tests), constructs the matching adapter (Claude/Codex/Copilot/OMP-RPC),
+   and spawns a supervised process via `Supervisor`. With no driver, it returns `adapter_unavailable`
+   *after* the queued run already committed in step 3 — the run is never silently dropped just
+   because nothing can start it yet.
 6. **The monitor observes it** — `monitor/controller.ts`'s `client.subscribe` callback (already
    running from `session_start`) receives the notification from step 4, `model.ts::reduceEvent`
    builds/updates the run's row from the `RunEvent` payload, and `refresh()` calls
@@ -234,6 +277,25 @@ printf '%s\n' '{"jsonrpc":"2.0","id":"1","method":"initialize","params":{...}}' 
 `pgrep -fl batcave`, then `batcave stop` (preferred) or `kill <pid>`. The kernel releases the flock
 on death, so the next start recovers automatically.
 
+**Run conformance tests.** To verify adapter implementations match their protocol specs:
+
+```bash
+# Run all conformance tests
+cargo test --test conformance
+
+# Run specific adapter conformance
+cargo test --test claude_adapter
+cargo test --test codex_adapter
+cargo test --test copilot_adapter
+cargo test --test omp_rpc_adapter
+```
+
+**Export audit events.** For offline analysis:
+
+```bash
+batcave audit export --state-dir <root> --repo <repo> --output /tmp/audit.jsonl
+```
+
 ## 5. Testing guide
 
 **Philosophy:** integration tests exercise real things — real processes, real sockets, real SQLite
@@ -257,6 +319,17 @@ provider).
 | `task/worker/run/message/approval/reconcile` RPC methods | `crates/runtime/tests/orchestration_rpc.rs` — remember the broadcast half (see the "Adding a new domain mutation" workflow in `getting-started.md`) |
 | Coordination broker behavior (bounds, rate limits, scope tokens) | `crates/runtime/tests/coordination.rs` |
 | Approval ownership, idempotency, callback, recovery | `crates/runtime/tests/approval.rs` |
+| Adapter contract and registry | `crates/runtime/tests/adapter_contract.rs`, `adapter_registry.rs` |
+| Claude/Codex/Copilot/OMP-RPC adapters | `crates/runtime/tests/{claude,codex,copilot,omp_rpc}_adapter.rs` |
+| Supervisor (process management) | `crates/runtime/tests/supervisor.rs` |
+| Workspace operations (lease, apply, materialize) | `crates/runtime/tests/{workspace_lease,workspace_apply,workspace_materialize}.rs` |
+| Display backends (terminal, herdr, tmux) | `crates/runtime/tests/{terminal,herdr,tmux}_adapter.rs`, `display_registry.rs`, `display_selector.rs` |
+| Configuration merging, rollout gates | `crates/runtime/tests/config.rs` |
+| Conformance test scenarios | `crates/runtime/tests/conformance.rs` |
+| Coordination MCP proxy | `crates/runtime/tests/coordination_mcp.rs` |
+| Redaction rules | `crates/runtime/tests/redaction.rs` |
+| Audit export/retention | `crates/runtime/tests/audit.rs` |
+| Monitor CLI | `crates/runtime/tests/monitor_cli.rs` |
 | TS client/launcher/extension logic | Sibling `*.test.ts` in `packages/extension/src/` |
 | Orchestration tool registration/schema/dispatch | `packages/extension/src/tools/tools.test.ts` |
 | OMP-native event mapping, coalescing, restart/`lost` | `packages/extension/src/omp-native/reconcile.test.ts` |
@@ -305,3 +378,16 @@ bun test packages/extension/src/client.test.ts -t "frame"              # TS test
   monitor silently** — no error, no test failure, just a widget that never updates for that one
   mutation. See the "Adding a new domain mutation" workflow in `getting-started.md` before adding
   one. Full story: `architecture.md` §18, item 3.
+- **Recovery runs automatically after each `serve` command.** If you're debugging why a stuck
+  run transitions to `failed`/`cancelled`, check `recovery.rs:RecoveryCoordinator` — it runs
+  before the daemon starts serving, based on `stuck_threshold` (default 5 minutes) and the
+  `recover_paused`/`recover_waiting` config flags. Use `batcave status --recover` to trigger
+  it manually for diagnostics.
+- **Rollout gates must all be `true` before production use.** The `Doctor::check()` runs on
+  every `serve` and `status` command. If any gate is unresolved, the doctor reports it and
+  the runtime refuses to serve in production mode. Check your config files (`~/.batman/config.yaml`,
+  `<repo>/.batman/config.yaml`) for `rollout_gates` fields.
+- **Adapter authorization is deny-by-default in production.** The `DenyByDefaultAuthorization`
+  rejects every worker unless `dev_override` is explicitly set. Tests inject `FixtureAuthorization`
+  to allow/deny as needed. Production callers must supply a real `PolicyEvaluator` (see the
+  Hardening plan's `PolicyEvaluator`, which owns model/adapter allowlists and ceilings).
