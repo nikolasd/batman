@@ -7,11 +7,11 @@ This guide covers everything you need to get started with BATMAN, from installat
 Before you begin, ensure you have the following installed:
 
 - **Rust** (version 1.70.0 or later)
-  - Install via [rustup](https://rustup.rs/): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+  - Install via Homebrew: `brew install rustup` then `rustup-init`
 - **Bun** (version 1.0.0 or later)
-  - Install via: `curl -fsSL https://bun.sh/install | bash`
+  - Install via Homebrew: `brew install oven-sh/bun/bun`
 - **Git** (version 2.0 or later)
-  - Install via your package manager or [git-scm.com](https://git-scm.com/)
+  - Pre-installed on macOS
 
 ## Installation
 
