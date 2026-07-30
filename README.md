@@ -29,9 +29,15 @@ If you're building multiagent systems that need to be auditable, recoverable, an
 
 ### For users (just want to use it)
 
-**Currently:** Pre-built binaries are not yet distributed. To use `batcave`, you must build from source (see [For developers](#for-developers-want-to-buildmodify)).
+**macOS (Homebrew):**
+```bash
+brew install Formula/batman.rb
+```
 
-**Coming soon:** Pre-built binaries for macOS ARM and Linux x64/ARM will be available via GitHub Releases and Homebrew.
+**Linux (pre-built binary):**
+Download the latest release from [GitHub Releases](https://github.com/can1357/batman/releases), extract, and add `batcave` to your PATH.
+
+**Note:** The Homebrew formula is located in `Formula/batman.rb`. Once GitHub Releases are published, you can run `brew tap can1357/batman && brew install batman` to install from the tap.
 
 ### For developers (want to build/modify)
 
