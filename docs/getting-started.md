@@ -6,9 +6,9 @@ This guide covers everything you need to get started with BATMAN, from installat
 
 Before you begin, ensure you have the following installed:
 
-- **Rust** (version 1.70.0 or later)
+- **Rust 1.97.1+** (pinned by `rust-toolchain.toml`; `rustup` installs it automatically once selected)
   - Install via Homebrew: `brew install rustup` then `rustup-init`
-- **Bun** (version 1.0.0 or later)
+- **Bun 1.3.14+** (pinned by `packageManager` in `package.json`)
   - Install via Homebrew: `brew install oven-sh/bun/bun`
 
 ## Installation
@@ -16,18 +16,20 @@ Before you begin, ensure you have the following installed:
 ### Clone the Repository
 
 ```bash
-git clone https://github.com/your-org/batman.git
+git clone git@github.com:nikolasd/batman.git
 cd batman
 ```
 
-### Install Dependencies
+### Build
 
 ```bash
-# Install Rust dependencies
-cargo install --path .
+# Build the batcave daemon (workspace root has no installable package,
+# so `cargo install --path .` will not work here)
+cargo build -p batman-runtime
 
-# Install TypeScript dependencies
+# Install TypeScript dependencies and build the OMP extension
 bun install
+bun run --cwd packages/extension build
 ```
 
 ## Configuration
@@ -298,23 +300,112 @@ cargo test
 
 ### Run Specific Test Suite
 
-…
-331:
+```bash
+cargo test --test adapter_contract
+cargo test --test adapter_registry
+cargo test --test approval
+cargo test --test audit
+cargo test --test claude_adapter
+cargo test --test claude_live      # gated on BATMAN_LIVE_CLAUDE=1, real model call
+cargo test --test codex_adapter
+cargo test --test config
+cargo test --test conformance
+cargo test --test coordination
+cargo test --test coordination_mcp
+cargo test --test copilot_adapter
+cargo test --test database
+cargo test --test display_registry
+cargo test --test display_selector
+cargo test --test domain_repository
+cargo test --test herdr_display
+cargo test --test ipc
+cargo test --test lifecycle
+cargo test --test monitor_cli
+cargo test --test omp_rpc_adapter
+cargo test --test orchestration_rpc
+cargo test --test paths
+cargo test --test redaction
+cargo test --test redaction_boundary
+cargo test --test supervisor
+cargo test --test terminal_adapter
+cargo test --test tmux_display
+cargo test --test workspace_apply
+cargo test --test workspace_lease
+cargo test --test workspace_materialize
+```
 
-…
-355:
+### Test Coverage
 
-…
-441:BATMAN is released under the [MIT License](LICENSE).
+The test suite includes 31 Rust integration test files (`crates/runtime/tests/`) covering:
+- Adapter contract and registry
+- Approval workflows
+- Audit and redaction
+- All four worker adapters (Claude, Codex, Copilot, OMP-RPC)
+- Configuration and merging
+- Conformance testing
+- Coordination and MCP integration
+- Database operations
+- Display registry and selection
+- Domain repository
+- IPC and lifecycle
+- Supervisor and terminal adapters
+- Tmux display management
+- Workspace operations (apply, lease, materialize)
+
+## Troubleshooting
+
+### Port Already in Use
+
+If you see an error like `Address already in use`, another process is using the configured port.
+
+**Solution**:
+1. Check what's using the port: `lsof -i :8080` (macOS/Linux) or `netstat -ano | findstr :8080` (Windows)
+2. Kill the process or use a different port: `batcave serve --port 8081`
+
+### Database Connection Errors
+
+If you see database-related errors, ensure the database URL in your configuration is correct and the database file is accessible.
+
+**Solution**:
+1. Check the database path in your state directory
+2. Ensure the directory exists and is writable
+3. Run status check: `batcave status`
+
+### Rollout Gates Unresolved
+
+If the doctor reports unresolved rollout gates, you cannot use the runtime in production.
+
+**Solution**:
+1. Review your configuration files
+2. Ensure all `rollout_gates` fields are set to `true` in your config
+3. Check the doctor output: `batcave status`
+
+### Permission Errors
+
+If you see permission errors, ensure BATMAN has the necessary permissions to access the configured paths.
+
+**Solution**:
+1. Check file permissions: `ls -la ~/.batman/`
+2. Adjust permissions if necessary: `chmod 755 ~/.batman/`
+
+### Recovery Issues
+
+If recovery is not working as expected, check the recovery configuration:
+
+**Solution**:
+1. Verify `stuck_threshold` is set appropriately (default: 5 minutes)
+2. Check `recover_paused` and `recover_waiting` settings
+3. Review the status output: `batcave status --recover`
+
 ## Contributing
 
-We welcome contributions! Please see the [CONTRIBUTING.md](CONTRIBUTING.md) file for guidelines.
+We welcome contributions! Please see the [CONTRIBUTING.md](../CONTRIBUTING.md) file for guidelines.
 
 ### Development Setup
 
 1. Clone the repository
-2. Install dependencies: `cargo install --path .`
-3. Run tests: `cargo test`
+2. Build the runtime: `cargo build -p batman-runtime`
+3. Run tests: `cargo test --workspace`
 4. Make your changes
 5. Submit a pull request
 
@@ -324,26 +415,11 @@ We welcome contributions! Please see the [CONTRIBUTING.md](CONTRIBUTING.md) file
 - Use `cargo fmt` to format code: `cargo fmt --all`
 - Use `cargo clippy` to check for common issues: `cargo clippy --all-targets --all-features -- -D warnings`
 
-### Running Tests
-
-```bash
-# Run all tests
-cargo test
-
-# Run specific test
-cargo test --test adapter_contract
-
-# Run with specific features
-cargo test --features "feature1,feature2"
-```
-
 ## Getting Help
 
-- **Documentation**: [docs.batman.dev](https://docs.batman.dev)
-- **Discord**: [discord.gg/batman](https://discord.gg/batman)
-- **GitHub Issues**: [github.com/your-org/batman/issues](https://github.com/your-org/batman/issues)
-- **Email**: support@batman.dev
+- **Documentation**: See the other files in [`docs/`](.) — start with [architecture.md](architecture.md) and [code-walkthrough.md](code-walkthrough.md)
+- **Issues**: Open a GitHub Issue on this repository
 
 ## License
 
-BATMAN is released under the [MIT License](LICENSE).
+This project's Rust crates are marked `UNLICENSED` in `Cargo.toml` (there is no `LICENSE` file in this repository). Do not assume MIT or any other open license applies.
