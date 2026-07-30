@@ -29,17 +29,28 @@ If you're building multiagent systems that need to be auditable, recoverable, an
 
 ### For users (just want to use it)
 
-**Install via script:**
+**Install via script (installs BOTH runtime and OMP extension):**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nikolasd/batman/main/scripts/install.sh | bash
 ```
 
-This downloads and installs the correct binary for your platform to `/usr/local/bin/batcave`.
+This installs:
+- `batcave` runtime to `~/.batman/bin/batcave`
+- OMP extension to `~/.batman/lib/node_modules/@satori/batman`
+- No root privileges required
 
-**Alternatively, install via Homebrew (once released):**
+**To uninstall:**
+```bash
+rm -rf ~/.batman
+rm -f /usr/local/bin/batcave 2>/dev/null || true
+```
+
+**Alternatively, install via Homebrew (runtime only, once released):**
 ```bash
 brew tap nikolasd/batman
 brew install batman
+# Then manually install the OMP extension:
+bun add @satori/batman --cwd ~/.batman/lib
 ```
 
 **Note:** The install script downloads from GitHub Releases. Once the first release is published, this will work. The Homebrew formula is in `Formula/batman.rb` and will work once a tap is created.
