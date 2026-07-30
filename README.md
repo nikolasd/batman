@@ -29,18 +29,28 @@ If you're building multiagent systems that need to be auditable, recoverable, an
 
 ### For users (just want to use it)
 
-**Install from local repository (works NOW for macOS ARM):**
+**Install from local repository (fresh clone requires building first):**
 ```bash
-# Clone the repo first, then run from repo root:
+# Clone the repo
+git clone https://github.com/nikolasd/batman.git
+cd batman
+
+# Build the runtime (required — binaries are gitignored release artifacts)
+cargo build -p batman-runtime
+
+# Copy the binary to the appropriate packages directory
+cp target/debug/batcave packages/batman-darwin-arm64/bin/batcave
+
+# Install (installs BOTH runtime and OMP extension)
 ./scripts/install-local.sh
 ```
 
+If you skip the build step, the installer will tell you exactly what to do.
+
 This installs:
-- `batcave` runtime to `~/.batman/bin/batcave` (from `packages/batman-darwin-arm64/bin/batcave`)
+- `batcave` runtime to `~/.batman/bin/batcave`
 - OMP extension to `~/.batman/lib/node_modules/@satori/batman`
 - No root privileges required
-
-**Note:** This currently only supports macOS ARM (pre-built binary exists at `packages/batman-darwin-arm64/bin/batcave`). For other platforms, build from source first: `cargo build -p batman-runtime`, then copy the binary to the appropriate `packages/batman-*/bin/` directory.
 
 **To uninstall:**
 ```bash
