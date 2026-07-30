@@ -35,16 +35,16 @@ brew install Formula/batman.rb
 ```
 
 **Linux (pre-built binary):**
-Download the latest release from [GitHub Releases](https://github.com/can1357/batman/releases), extract, and add `batcave` to your PATH.
+Download the latest release from [GitHub Releases](https://github.com/nikolasd/batman/releases), extract, and add `batcave` to your PATH.
 
-**Note:** The Homebrew formula is located in `Formula/batman.rb`. Once GitHub Releases are published, you can run `brew tap can1357/batman && brew install batman` to install from the tap.
+**Note:** The Homebrew formula is located in `Formula/batman.rb`. Once GitHub Releases are published, you can run `brew tap nikolasd/batman && brew install batman` to install from the tap.
 
 ### For developers (want to build/modify)
 
 **Prerequisites:** Rust 1.97+, Bun 1.3.14+, macOS or glibc Linux on arm64/x64. For the full OMP integration you also need OMP ≥ 17.0.7.
 
 ```bash
-git clone https://github.com/can1357/batman.git
+git clone https://github.com/nikolasd/batman.git
 cd batman
 bun install                 # link workspaces, install extension deps
 bun run check               # schema drift check + build + all tests
