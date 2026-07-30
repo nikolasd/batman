@@ -29,13 +29,9 @@ If you're building multiagent systems that need to be auditable, recoverable, an
 
 ### For users (just want to use it)
 
-**macOS (Homebrew):**
-```bash
-brew install batman
-```
+**Currently:** Pre-built binaries are not yet distributed. To use `batcave`, you must build from source (see [For developers](#for-developers-want-to-buildmodify)).
 
-**Linux/macOS (pre-built binary):**
-Download the latest release from [GitHub Releases](https://github.com/can1357/batman/releases), extract, and add `batcave` to your PATH.
+**Coming soon:** Pre-built binaries for macOS ARM and Linux x64/ARM will be available via GitHub Releases and Homebrew.
 
 ### For developers (want to build/modify)
 
