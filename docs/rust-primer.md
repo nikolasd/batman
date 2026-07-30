@@ -405,7 +405,7 @@ The runtime uses `tokio::sync::broadcast::channel(64)` to fan events to every li
 live subscription calls `.subscribe()` for its own receiver; every mutation calls
 `domain::broadcast_committed(&events_tx, &mut result)` after its transaction commits. If you add
 a mutation and forget to call `broadcast_committed`, nothing errors — the monitor just never
-updates for that one case; see `docs/architecture.md` §18 for exactly this bug.
+updates for that one case; see [`docs/engineering-lessons.md`](engineering-lessons.md#durable-mutations-must-broadcast-the-same-event-they-just-committed) for exactly this bug.
 
 **Do now:** read `db/actor.rs` top to bottom (it is the best-commented file in the repo), then
 find where `lifecycle::serve` calls `db.shutdown()` and confirm the ordering guarantee the

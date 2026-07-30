@@ -2,7 +2,7 @@
 
 This document catalogs all known technical limitations, constraints, and deferred items in the BATMAN system. These are consciously accepted as non-blocking for the current milestone but tracked for later resolution.
 
-**Reference:** See [Architecture](architecture.md) for the sections where each limitation is discussed in context.
+**Reference:** File/ADR pointers are given per item — `architecture.md` uses the C4 model (Level 1-4) rather than numbered `§N` sections.
 
 ---
 
@@ -10,12 +10,12 @@ This document catalogs all known technical limitations, constraints, and deferre
 
 ### Events table missing columns
 
-**Location:** §4 (The SQLite journal and the database actor)
+**Location:** `crates/runtime/src/db/migrations.rs` (schema), `crates/runtime/src/domain/repository.rs::append_and_apply`
 
 The `events` table still only stores `run_id`, not `task_id`/`worker_id`/`parent_worker_id`/`vendor_event_ref` (`source` is still hardcoded `runtime`). 
 
-- A *live* `events/event` notification's envelope carries `task_id`/`worker_id` (§11's `append_and_apply` sets them from its caller's parameters), but a *replayed* one from `events/replay` always has them `None` — `ipc/connection.rs::replay()` can only reconstruct an envelope from what the `events` table's columns hold.
-- The monitor (§17) is unaffected because it reads the inner `RuntimeEvent` variant's own `task_id`/`worker_id` fields (always present, part of the payload), never the outer envelope's convenience fields.
+- A *live* `events/event` notification's envelope carries `task_id`/`worker_id` (`append_and_apply` sets them from its caller's parameters), but a *replayed* one from `events/replay` always has them `None` — `ipc/connection.rs::replay()` can only reconstruct an envelope from what the `events` table's columns hold.
+- The monitor (`packages/extension/src/monitor/model.ts`) is unaffected because it reads the inner `RuntimeEvent` variant's own `task_id`/`worker_id` fields (always present, part of the payload), never the outer envelope's convenience fields.
 - **Impact:** Any future consumer that filters `events/replay` by the envelope's `task_id`/`worker_id` will get silently wrong (empty) results.
 
 **Fix required:** Schema migration plus populating those columns in `append_and_apply`'s insert.
@@ -28,7 +28,7 @@ The `events` table still only stores `run_id`, not `task_id`/`worker_id`/`parent
 
 ### Redaction regex denylist is intentionally small
 
-**Location:** §5 (The redaction boundary)
+**Location:** `crates/runtime/src/security/redaction.rs` (see [ADR-0006](adr/0006-type-enforced-redaction-boundary.md))
 
 The redaction regex denylist is intentionally small (API-key/bearer shapes); classification is the primary boundary.
 
@@ -41,7 +41,7 @@ The redaction regex denylist is intentionally small (API-key/bearer shapes); cla
 
 ### Subscription forwarder tasks for closed connections are reaped lazily
 
-**Location:** §6 (IPC: JSON-RPC 2.0 over bounded NDJSON)
+**Location:** `crates/runtime/src/ipc/connection.rs::spawn_subscription` (see [ADR-0004](adr/0004-json-rpc-2-over-bounded-ndjson-on-a-unix-socket.md))
 
 Subscription forwarder tasks for closed connections are reaped lazily on the next event broadcast.
 
@@ -54,7 +54,7 @@ Subscription forwarder tasks for closed connections are reaped lazily on the nex
 
 ### Worker adapters not yet fully wired in production
 
-**Location:** §10 (Domain records and lifecycle)
+**Location:** `crates/runtime/src/adapter/registry.rs` (see [ADR-0012](adr/0012-explicit-run-lifecycle-relation-runtime-evidence-only.md), [ADR-0013](adr/0013-injectable-run-driver-seam-fake-by-default.md))
 
 Worker adapters are implemented but not yet fully wired in production.
 
@@ -70,7 +70,7 @@ Worker adapters are implemented but not yet fully wired in production.
 
 ### Workspaces, displays, and policy engine require adapter registry
 
-**Location:** §8 (Platform packaging), §13 (OMP orchestration tools)
+**Location:** `crates/runtime/src/workspace/`, `crates/runtime/src/display/` (see [ADR-0010](adr/0010-platform-binaries-as-npm-optional-leaf-packages.md)), and `packages/extension/src/tools/` (OMP orchestration tools)
 
 Workspaces, displays (Herdr/tmux), and a policy engine are implemented but require the adapter registry to be fully wired.
 

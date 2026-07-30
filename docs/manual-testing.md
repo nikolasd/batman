@@ -543,7 +543,7 @@ approvals/Workspace mode/Latest activity/First seen/Last event.
 
 ## If something doesn't match
 
-See `getting-started.md`'s [Troubleshooting](getting-started.md#troubleshooting) table first —
+See [code-walkthrough.md's §4 debugging playbook](code-walkthrough.md#4-debugging-playbook) first —
 most manual-test surprises (`METHOD_NOT_FOUND`, an empty `/batman`, connect timeouts) are covered
 there with the exact cause. If a step in this document produces something not described here or
 there, that's either a real regression or a gap in this document — both are worth fixing; open an

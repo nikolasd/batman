@@ -152,12 +152,18 @@ graph LR
         CT[context.ts]
         RT[runtime.ts]
         PL[platform.ts]
+        CL[client.ts]
+        CF3[config.ts]
+        IN[integrity.ts]
+        SD[state.ts]
+        AU[approval-ui.ts]
         TL[tasks.ts]
         WL[workers.ts]
         RL[runs.ts]
         ML[messages.ts]
         AL[approvals.ts]
         RL2[reconcile.ts]
+        RC[omp-native reconciler]
         ON[omp-native/events.ts]
         ON2[omp-native/reconcile.ts]
         ON3[omp-native/types.ts]
@@ -165,6 +171,7 @@ graph LR
         MR[monitor/render.ts]
         MC[monitor/controller.ts]
         CC[monitor/compat.ts]
+        CN[conformance/index.ts]
     end
 
     IE --> ST
@@ -190,9 +197,14 @@ graph LR
 - **Runtime client** ([`packages/extension/src/client.ts`](packages/extension/src/client.ts)): JSON-RPC client with correlation table
 - **Runtime launcher** ([`packages/extension/src/runtime.ts`](packages/extension/src/runtime.ts)): `ensureRuntime()` with binary selection and connection retry
 - **Platform resolver** ([`packages/extension/src/platform.ts`](packages/extension/src/platform.ts)): `resolveBatcave()` for platform-specific binaries
+- **Integrity** ([`packages/extension/src/integrity.ts`](packages/extension/src/integrity.ts)): `sha256File` — verifies packaged binaries against their manifest checksum
+- **State root resolver** ([`packages/extension/src/state.ts`](packages/extension/src/state.ts)): `resolveStateRoot(env, home)` — must stay semantically identical to Rust's `StateRoot::resolve`
+- **Config** ([`packages/extension/src/config.ts`](packages/extension/src/config.ts)): Configuration layer management
+- **Approval UI** ([`packages/extension/src/approval-ui.ts`](packages/extension/src/approval-ui.ts)): Approval UI components
 - **Orchestration tools** ([`packages/extension/src/tools/`](packages/extension/src/tools/)): `batman_task`, `batman_worker`, `batman_run`, `batman_message`, `batman_approval`, `batman_reconcile`
 - **OMP-native reconciler** ([`packages/extension/src/omp-native/`](packages/extension/src/omp-native/)): Mirrors OMP bus events into Batman facts
 - **Embedded monitor** ([`packages/extension/src/monitor/`](packages/extension/src/monitor/)): `model.ts`, `render.ts`, `controller.ts`, `compat.ts`
+- **Conformance runner** ([`packages/extension/src/conformance/index.ts`](packages/extension/src/conformance/index.ts)): `runConformance`, `formatConformanceSummary` — external conformance test runner
 
 ### 3.2. BATMAN Runtime Components
 

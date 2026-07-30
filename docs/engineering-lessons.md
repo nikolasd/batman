@@ -2,7 +2,7 @@
 
 This document catalogs hard-won lessons from smoke testing, production incidents, and debugging. These are the kind of things that should be discovered by reading documentation, not by trial and error.
 
-**Reference:** See [Architecture](architecture.md) for the sections where each lesson is discussed in context.
+**Reference:** These lessons are cross-referenced by file/ADR, not by `architecture.md` section number — that document was later rewritten onto the C4 model and no longer has numbered `§N` sections.
 
 ---
 
@@ -10,7 +10,7 @@ This document catalogs hard-won lessons from smoke testing, production incidents
 
 ### Cached client must authenticate with the union of all roles
 
-**Location:** §6 (IPC: JSON-RPC 2.0 over bounded NDJSON)
+**Location:** `packages/extension/src/runtime.ts::ensureRuntime` (see [ADR-0021](adr/0021-shared-client-authenticates-with-the-union-of-required-roles.md))
 
 A cached client shared across callers with different role needs must authenticate with the *union* of every role its callers need, not whatever the first caller happened to need.
 
@@ -26,7 +26,7 @@ A cached client shared across callers with different role needs must authenticat
 
 ### Never use `with { type: "json" }` imports at extension-load time
 
-**Location:** §9 (The OMP surface)
+**Location:** `packages/extension/src/monitor/compat.ts`
 
 A static `import ... with { type: "json" }` at module scope can hang the extension or corrupt `bun test`.
 
@@ -42,15 +42,15 @@ A static `import ... with { type: "json" }` at module scope can hang the extensi
 
 ### Durable mutations must broadcast the same event they just committed
 
-**Location:** §11 (Projection persistence)
+**Location:** `crates/runtime/src/domain/repository.rs::append_and_apply`, `crates/runtime/src/ipc/connection.rs::replay` (see [ADR-0020](adr/0020-per-mutation-event-broadcast-is-not-optional.md))
 
 A durable mutation must broadcast the same event it just committed, in the same call.
 
 **The bugs (two separate issues):**
 
-1. **Full vs. bare envelope:** `DomainRepository::append_and_apply` stored the *full* `EventEnvelope` (with `sequence`, `timestamp`, ...) into `event_json`, but `ipc/connection.rs::replay()` expects that column to hold only the bare `RuntimeEvent` — it reconstructs the envelope from the `events` table's own `sequence`/`timestamp`/`project_id`/`run_id` columns (§11). Every `events/replay` call therefore failed to deserialize once any mutation had committed.
+1. **Full vs. bare envelope:** `DomainRepository::append_and_apply` stored the *full* `EventEnvelope` (with `sequence`, `timestamp`, ...) into `event_json`, but `ipc/connection.rs::replay()` expects that column to hold only the bare `RuntimeEvent` — it reconstructs the envelope from the `events` table's own `sequence`/`timestamp`/`project_id`/`run_id` columns. Every `events/replay` call therefore failed to deserialize once any mutation had committed.
 
-2. **No publisher for broadcast channel:** `Shared.events_tx` (the `tokio::sync::broadcast` channel §6's `spawn_subscription` reads from) had a subscriber but **no publisher anywhere** — none of the 15+ mutation call sites across `OrchestrationService`, `ApprovalService`, `CoordinationBroker`, and `RunDriverContext` ever called `.send()` on it. A monitor connected before a mutation committed would never observe it without reconnecting (which re-triggers `events/replay` — itself broken by the first bug).
+2. **No publisher for broadcast channel:** `Shared.events_tx` (the `tokio::sync::broadcast` channel `ipc/connection.rs::spawn_subscription` reads from) had a subscriber but **no publisher anywhere** — none of the 15+ mutation call sites across `OrchestrationService`, `ApprovalService`, `CoordinationBroker`, and `RunDriverContext` ever called `.send()` on it. A monitor connected before a mutation committed would never observe it without reconnecting (which re-triggers `events/replay` — itself broken by the first bug).
 
 **The fix:** Storage now writes the bare event; `Committed` now carries the full `EventEnvelope`; and `domain::{embed_envelope, take_envelope}` smuggle it across the `run_domain_op` closure boundary (whose closures are constrained to return a plain `serde_json::Value`) so every service broadcasts after every commit.
 

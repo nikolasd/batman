@@ -138,7 +138,7 @@ binary into a leaf package with a deterministic manifest).
 | `src/monitor/model.ts` | `reduceEvent` — the pure event-reducer building `MonitorState` |
 | `src/monitor/render.ts` | Turns `MonitorState` into the widget's concise lines + per-run status detail |
 | `src/monitor/controller.ts` | `registerMonitor` — replay-first `session_start` wiring, `/batman [status <runId>]`, retry-on-reconnect |
-| `src/monitor/compat.ts` | Test-only `assertCompatiblePiCodingAgentVersion` (never called at runtime — see §6) |
+| `src/monitor/compat.ts` | Test-only `assertCompatiblePiCodingAgentVersion` (never called at runtime — see [`engineering-lessons.md`](engineering-lessons.md#never-use-with--type-json--imports-at-extension-load-time)) |
 
 Each module has a sibling `*.test.ts`. `client.test.ts` and `index.test.ts` spawn the real daemon.
 
@@ -197,12 +197,12 @@ mutation, the durable journal, and the embedded monitor connect.
 
 1. **The tool call** — the model calls `batman_run` with `{ op: "submit", taskId, workerId }`
    (`tools/runs.ts`); `execute` calls `ctx.getClient(cwd)` (the *same* cached `ompExtension`
-   client every orchestration tool and the monitor share — see §18 in `architecture.md` for why
+   client every orchestration tool and the monitor share — see [`engineering-lessons.md`](engineering-lessons.md#cached-client-must-authenticate-with-the-union-of-all-roles) for why
    its role matters) and `callOrchestration(client, "run/submit", params)`
    (`tools/shared.ts`) — nothing more; no worker selection, no retry, no lifecycle inference here.
 2. **Dispatch** — `connection.rs::dispatch` sees `BatmanMethod::RunSubmit` is one of the
    orchestration methods, forwards the raw params to `OrchestrationService::dispatch`
-   (`service/orchestration.rs`), which the role table (§6 in `architecture.md`) already confirmed
+   (`service/orchestration.rs`), which the role table (Appendix A's "Role Table Summary" in `architecture.md`) already confirmed
    this connection's `ompExtension` principal may call.
 3. **The mutation** — `run_submit` builds a `Run { state: queued, ... }` and calls
    `DomainRepository::submit_run` inside a `run_domain_op` closure. `append_and_apply`
@@ -212,8 +212,8 @@ mutation, the durable journal, and the embedded monitor connect.
 4. **The broadcast** — back in `run_submit`, `embed_envelope`/`take_envelope` carry the returned
    `Committed.envelope` across the `run_domain_op` boundary, and `self.broadcast(&mut result)`
    sends it on `Shared.events_tx` *before* the JSON-RPC response is built. Any connection currently
-   in `spawn_subscription` (§6 in `architecture.md`) receives it as an `events/event` notification
-   in the same tick — this is the fix for the bug in §18.
+   in `spawn_subscription` receives it as an `events/event` notification
+   in the same tick — this is the fix for the bug described in [`engineering-lessons.md`](engineering-lessons.md#durable-mutations-must-broadcast-the-same-event-they-just-committed).
 5. **The adapter seam** — `run_submit` then calls the injected `RunDriver` (the `AdapterRegistry`
    by default): it resolves the worker profile, checks `AdapterAuthorization` (deny-by-default in
    production, configurable in tests), constructs the matching adapter (Claude/Codex/Copilot/OMP-RPC),
@@ -278,7 +278,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":"1","method":"initialize","params":{...}}' 
 | exit 73 + `already_running` JSON | Lost the singleton flock race — a daemon already serves this repo |
 | `NOT_INITIALIZED` (-32001) | You sent a method before `initialize` |
 | `INCOMPATIBLE_VERSION` (-32002) | Version ranges don't overlap protocol 1.0 |
-| `METHOD_NOT_FOUND` for a method you know exists | Your role's method table hides it — check `ClientPrincipal::allowed_methods`; if it's `ompExtension`-only, also check you didn't authenticate as `display` (§18 in `architecture.md`, item 2) |
+| `METHOD_NOT_FOUND` for a method you know exists | Your role's method table hides it — check `ClientPrincipal::allowed_methods`; if it's `ompExtension`-only, also check you didn't authenticate as `display` (see [`engineering-lessons.md`](engineering-lessons.md#cached-client-must-authenticate-with-the-union-of-all-roles)) |
 | `ILLEGAL_TRANSITION` (-32100) | The requested `RunState` edge isn't in the canonical lifecycle relation (`domain/transitions.rs`) — check `RunState::can_transition_to` |
 | `adapter_unavailable` from `run/submit` | Expected without a wired `RunDriver` (none by default this milestone) — the run is still `queued`, check `run/list`/`run/get` |
 | `RATE_LIMITED` from `coordination/send` | More than 30 messages/minute from one sender (`coordination/rate_limit.rs`) |
@@ -328,7 +328,7 @@ provider).
 | Foundation protocol methods, negotiation, roles | `crates/runtime/tests/ipc.rs` |
 | Locking, shutdown, idle, CLI | `crates/runtime/tests/lifecycle.rs` (real-process tests; keep timers ~1 s) |
 | `DomainRepository` transactions, projection rollback, event rebuild | `crates/runtime/tests/domain_repository.rs` |
-| `task/worker/run/message/approval/reconcile` RPC methods | `crates/runtime/tests/orchestration_rpc.rs` — remember the broadcast half (see the "Adding a new domain mutation" workflow in `getting-started.md`) |
+| `task/worker/run/message/approval/reconcile` RPC methods | `crates/runtime/tests/orchestration_rpc.rs` — remember the broadcast half (see [`engineering-lessons.md`](engineering-lessons.md#durable-mutations-must-broadcast-the-same-event-they-just-committed) and §3 above) |
 | Coordination broker behavior (bounds, rate limits, scope tokens) | `crates/runtime/tests/coordination.rs` |
 | Approval ownership, idempotency, callback, recovery | `crates/runtime/tests/approval.rs` |
 | Adapter contract and registry | `crates/runtime/tests/adapter_contract.rs`, `adapter_registry.rs` |
@@ -381,15 +381,15 @@ bun test packages/extension/src/client.test.ts -t "frame"              # TS test
   bundled module graph, different resolution entirely), and can crash a multi-file `bun test` run
   with an unrelated Bun resolver defect. If you need a peer's installed version, read its
   `package.json` with a plain `fs` walk (see `monitor/compat.ts`). Full story:
-  `architecture.md` §18, item 1.
+  [`engineering-lessons.md`](engineering-lessons.md#never-use-with--type-json--imports-at-extension-load-time).
 - **A cached client shared by multiple callers needs the union of every role they need, not
   whichever role the first caller happened to need.** `ensureRuntime`'s client is shared by every
   orchestration tool and the monitor; it authenticates as `ompExtension` for exactly this reason.
-  Full story: `architecture.md` §18, item 2.
+  Full story: [`engineering-lessons.md`](engineering-lessons.md#cached-client-must-authenticate-with-the-union-of-all-roles).
 - **A `DomainRepository` mutation that doesn't broadcast its `Committed.envelope` breaks the
   monitor silently** — no error, no test failure, just a widget that never updates for that one
-  mutation. See the "Adding a new domain mutation" workflow in `getting-started.md` before adding
-  one. Full story: `architecture.md` §18, item 3.
+  mutation. See §3 above before adding one. Full story:
+  [`engineering-lessons.md`](engineering-lessons.md#durable-mutations-must-broadcast-the-same-event-they-just-committed).
 - **Recovery runs automatically after each `serve` command.** If you're debugging why a stuck
   run transitions to `failed`/`cancelled`, check `recovery.rs:RecoveryCoordinator` — it runs
   before the daemon starts serving, based on `stuck_threshold` (default 5 minutes) and the
