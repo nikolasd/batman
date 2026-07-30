@@ -17,6 +17,7 @@ pub mod audit;
 pub mod conformance;
 pub mod coordination;
 pub mod db;
+pub mod doctor;
 pub mod domain;
 pub mod display;
 pub mod ipc;
@@ -36,6 +37,7 @@ pub use approval::{
 pub use audit::{Export, Retention};
 pub use coordination::{CoordinationBroker, CoordinationError, ScopeTokenStore};
 pub use db::{DatabaseHandle, DbError};
+pub use doctor::{Doctor, DoctorError, DoctorResult, FailedCheck};
 pub use domain::{Committed, DomainError, DomainRepository, TransitionError};
 pub use ipc::{IpcError, Server, ServerConfig};
 pub use lifecycle::should_idle_shutdown;
