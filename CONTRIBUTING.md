@@ -10,9 +10,6 @@ Thank you for your interest in contributing to BATMAN! This document provides gu
   - Install via Homebrew: `brew install rustup` then `rustup-init`
 - **Bun** (version 1.3.14 or later)
   - Install via Homebrew: `brew install oven-sh/bun/bun`
-- **Git** (version 2.0 or later)
-  - Pre-installed on macOS
-
 ### Setup
 
 ```bash
