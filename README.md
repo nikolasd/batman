@@ -44,6 +44,26 @@ brew install batman
 
 **Note:** The install script downloads from GitHub Releases. Once the first release is published, this will work. The Homebrew formula is in `Formula/batman.rb` and will work once a tap is created.
 
+## Publishing a Release
+
+To publish a new release (which triggers automatic binary building and publishing):
+
+```bash
+# Update the version in packages/extension/package.json first
+# Then publish:
+cargo run -p batman-xtask -- publish
+```
+
+This creates a git tag `v<version>` and pushes it to origin, triggering the [release.yml](.github/workflows/release.yml) CI/CD pipeline which:
+1. Builds `batcave` for macOS ARM/Intel, Linux x64/ARM, and Windows
+2. Creates a GitHub Release with the binaries as assets
+3. Makes the install script work for end users
+
+Once the release is published, users can install via:
+```bash
+curl -fsSL https://raw.githubusercontent.com/nikolasd/batman/main/scripts/install.sh | bash
+```
+
 ### For developers (want to build/modify)
 
 **Prerequisites:** Rust 1.97+, Bun 1.3.14+, macOS or glibc Linux on arm64/x64. For the full OMP integration you also need OMP ≥ 17.0.7.
