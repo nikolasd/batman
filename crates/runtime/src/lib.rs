@@ -18,15 +18,16 @@ pub mod conformance;
 pub mod coordination;
 pub mod db;
 pub mod domain;
+pub mod display;
 pub mod ipc;
 pub mod lifecycle;
 pub mod paths;
 pub mod policy;
+pub mod recovery;
 pub mod security;
 pub mod service;
 pub mod supervisor;
 pub mod workspace;
-pub mod display;
 pub mod config;
 
 pub use approval::{
@@ -39,5 +40,7 @@ pub use domain::{Committed, DomainError, DomainRepository, TransitionError};
 pub use ipc::{IpcError, Server, ServerConfig};
 pub use lifecycle::should_idle_shutdown;
 pub use paths::{PathError, RuntimePaths, repository_id_from_canonical_root};
+pub use recovery::{RecoveryConfig, RecoveryCoordinator, RecoveryError, RecoveryResult};
 pub use security::{SecurityError, StateRoot};
 pub use service::{FakeRunDriver, OrchestrationService, RunDriver, RunDriverContext, ServiceError};
+
