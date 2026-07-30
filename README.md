@@ -29,15 +29,20 @@ If you're building multiagent systems that need to be auditable, recoverable, an
 
 ### For users (just want to use it)
 
-**macOS (Homebrew):**
+**Install via script:**
 ```bash
-brew install Formula/batman.rb
+curl -fsSL https://raw.githubusercontent.com/nikolasd/batman/main/scripts/install.sh | bash
 ```
 
-**Linux (pre-built binary):**
-Download the latest release from [GitHub Releases](https://github.com/nikolasd/batman/releases), extract, and add `batcave` to your PATH.
+This downloads and installs the correct binary for your platform to `/usr/local/bin/batcave`.
 
-**Note:** The Homebrew formula is located in `Formula/batman.rb`. Once GitHub Releases are published, you can run `brew tap nikolasd/batman && brew install batman` to install from the tap.
+**Alternatively, install via Homebrew (once released):**
+```bash
+brew tap nikolasd/batman
+brew install batman
+```
+
+**Note:** The install script downloads from GitHub Releases. Once the first release is published, this will work. The Homebrew formula is in `Formula/batman.rb` and will work once a tap is created.
 
 ### For developers (want to build/modify)
 
