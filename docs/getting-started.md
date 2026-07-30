@@ -45,9 +45,9 @@ Configuration files are YAML with strict unknown-key rejection (fails closed wit
 
 ### Configuration File Locations
 
-- **Org config**: `/etc/batman/org.yaml` (or path specified by `BATMAN_ORG_CONFIG`)
-- **Repo config**: `<repo>/.batman/config.yaml`
-- **User config**: `~/.batman/config.yaml`
+  - Org config: file path (or path specified by `BATMAN_ORG_CONFIG`)
+  - Repo config: `<repo>/.batman/config.yaml`
+  - User config: `~/.batman/config.yaml`
 
 ### Configuration File Example
 
