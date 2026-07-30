@@ -27,17 +27,29 @@ If you're building multiagent systems that need to be auditable, recoverable, an
 
 ## Installation
 
+### For users (just want to use it)
+
+**macOS (Homebrew):**
+```bash
+brew install batman
+```
+
+**Linux/macOS (pre-built binary):**
+Download the latest release from [GitHub Releases](https://github.com/can1357/batman/releases), extract, and add `batcave` to your PATH.
+
+### For developers (want to build/modify)
+
 **Prerequisites:** Rust 1.97+, Bun 1.3.14+, macOS or glibc Linux on arm64/x64. For the full OMP integration you also need OMP ≥ 17.0.7.
 
 ```bash
+git clone https://github.com/can1357/batman.git
+cd batman
 bun install                 # link workspaces, install extension deps
 bun run check               # schema drift check + build + all tests
 cargo build -p batman-runtime
 ```
 
 This builds the `batcave` daemon binary in `target/debug/batcave`.
-
-## Usage
 
 ### Get started in 5 minutes
 
