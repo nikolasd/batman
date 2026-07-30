@@ -133,3 +133,7 @@ export default function batmanExtension(pi: ExtensionAPI): void {
     reconciler.dispose();
   });
 }
+
+// Export conformance utilities for external use.
+export { runConformance, formatConformanceSummary } from "./conformance";
+export type { ConformanceConfig, ConformanceReport, ConformanceTestResult, AdapterKind, ConformanceMode } from "./conformance";
