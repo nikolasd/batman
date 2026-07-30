@@ -28,10 +28,8 @@ cd batman
 # Install Rust dependencies
 cargo install --path .
 
-# Install Node.js dependencies (if using npm/yarn)
-npm install
-# or
-yarn install
+# Install TypeScript dependencies
+bun install
 ```
 
 ## Configuration
