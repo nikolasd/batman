@@ -242,6 +242,8 @@ graph TB
         AR2[audit/retention.rs]
         CF[conformance/scenario.rs]
         CR[conformance/report.rs]
+        CFG[config/merge.rs]
+        PE[policy/evaluate.rs]
     end
 
     CLI --> LC
@@ -278,6 +280,9 @@ graph TB
     SV --> SO
     WO --> WS
     AS --> DR2
+    CFG --> PE
+    CFG --> DO
+    PE -.->|not yet wired into production authorization| AR
 ```
 
 **Key components:**
@@ -342,6 +347,10 @@ graph TB
 - **Audit Retention** ([`crates/runtime/src/audit/retention.rs`](crates/runtime/src/audit/retention.rs)): Event retention and pruning
 - **Conformance Scenarios** ([`crates/runtime/src/conformance/scenario.rs`](crates/runtime/src/conformance/scenario.rs)): Adapter conformance test scenarios
 - **Conformance Report** ([`crates/runtime/src/conformance/report.rs`](crates/runtime/src/conformance/report.rs)): Conformance test reporting
+
+#### Configuration and Policy
+- **Config Merge** ([`crates/runtime/src/config/merge.rs`](crates/runtime/src/config/merge.rs)): Layers org/repo/user/per-run YAML with strict unknown-key rejection into an immutable, SHA-256-fingerprinted `RuntimePolicy`
+- **Policy Evaluator** ([`crates/runtime/src/policy/evaluate.rs`](crates/runtime/src/policy/evaluate.rs)): `PolicyEvaluator` implements `AdapterAuthorization` against a `RuntimePolicy` (model allowlist, concurrency ceiling) — exists and is tested, but production `ServerConfig::default()` still uses `DenyByDefaultAuthorization` until this is wired in (see [known-limitations.md](known-limitations.md))
 
 ## Level 4: Code (C4-4)
 
