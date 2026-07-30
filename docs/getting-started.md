@@ -10,8 +10,6 @@ Before you begin, ensure you have the following installed:
   - Install via Homebrew: `brew install rustup` then `rustup-init`
 - **Bun** (version 1.0.0 or later)
   - Install via Homebrew: `brew install oven-sh/bun/bun`
-- **Git** (version 2.0 or later)
-  - Pre-installed on macOS
 
 ## Installation
 
