@@ -29,15 +29,18 @@ If you're building multiagent systems that need to be auditable, recoverable, an
 
 ### For users (just want to use it)
 
-**Install via script (installs BOTH runtime and OMP extension):**
+**Install from local repository (works NOW for macOS ARM):**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nikolasd/batman/main/scripts/install.sh | bash
+# Clone the repo first, then run from repo root:
+./scripts/install-local.sh
 ```
 
 This installs:
-- `batcave` runtime to `~/.batman/bin/batcave`
+- `batcave` runtime to `~/.batman/bin/batcave` (from `packages/batman-darwin-arm64/bin/batcave`)
 - OMP extension to `~/.batman/lib/node_modules/@satori/batman`
 - No root privileges required
+
+**Note:** This currently only supports macOS ARM (pre-built binary exists at `packages/batman-darwin-arm64/bin/batcave`). For other platforms, build from source first: `cargo build -p batman-runtime`, then copy the binary to the appropriate `packages/batman-*/bin/` directory.
 
 **To uninstall:**
 ```bash
@@ -45,15 +48,16 @@ rm -rf ~/.batman
 rm -f /usr/local/bin/batcave 2>/dev/null || true
 ```
 
-**Alternatively, install via Homebrew (runtime only, once released):**
+**Future: Install from GitHub Releases (once first release is published):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/nikolasd/batman/main/scripts/install.sh | bash
+```
+
+**Future: Install via Homebrew (once a tap is created):**
 ```bash
 brew tap nikolasd/batman
 brew install batman
-# Then manually install the OMP extension:
-bun add @satori/batman --cwd ~/.batman/lib
 ```
-
-**Note:** The install script downloads from GitHub Releases. Once the first release is published, this will work. The Homebrew formula is in `Formula/batman.rb` and will work once a tap is created.
 
 ## Publishing a Release
 
