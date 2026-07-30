@@ -85,19 +85,11 @@ will complain about the type mismatch.
 
 ### Modules
 
-`crates/protocol/src/lib.rs` is the crate root. It declares 13 child modules (`approval`,
-`coordination`, `event`, `ids`, `message`, `method`, `rpc`, `run`, `task`, `version`, `worker`,
-`workspace`, `display`, `artifact`) and re-exports their public items so users write
-`batman_protocol::Timestamp` instead of `batman_protocol::event::Timestamp`.
+`crates/protocol/src/lib.rs` is the crate root. It declares 14 child modules (`approval`, `coordination`, `event`, `ids`, `message`, `method`, `rpc`, `run`, `task`, `version`, `worker`, `workspace`, `display`, `artifact`) and re-exports their public items so users write `batman_protocol::Timestamp` instead of `batman_protocol::event::Timestamp`.
 
-This is the same pattern as a TypeScript barrel `index.ts`, except visibility is enforced: without
-`pub`, an item is private to its module — a fact Day 5 turns into a security mechanism.
+This is the same pattern as a TypeScript barrel `index.ts`, except visibility is enforced: without `pub`, an item is private to its module — a fact Day 5 turns into a security mechanism.
 
-**Do now:** run `cargo test -p batman-protocol`, then read all the files in
-`crates/protocol/src/` top to bottom. They're short, and they're 80% struct/enum declarations —
-ideal first Rust.
-
----
+**Do now:** run `cargo test -p batman-protocol`, then read all the files in `crates/protocol/src/` top to bottom. They're short, and they're 80% struct/enum declarations — ideal first Rust.
 
 ## Day 2 — Ownership and borrowing (the one genuinely new idea)
 
@@ -296,10 +288,7 @@ key types. When you're lost about where something lives, start from `lib.rs`.
 **Do now:** pick `RuntimeStatus` in `rpc.rs`, follow it to
 `packages/protocol-ts/src/generated/RuntimeStatus.ts` and to its entry in
 `packages/protocol-ts/schema/batman.schema.json`. Change nothing; just see that the Rust struct is
-the single source all three artifacts share. Then read `crates/protocol/tests/wire_contract.rs` —
-it asserts the wire shapes you just learned to predict.
-
----
+The runtime crate's `lib.rs` exposes 18 public modules — `adapter`, `approval`, `audit`, `conformance`, `coordination`, `db`, `doctor`, `domain`, `display`, `ipc`, `lifecycle`, `paths`, `policy`, `recovery`, `security`, `service`, `supervisor`, `workspace`, `config` — each re-exporting its key types. When you're lost about where something lives, start from `lib.rs`.
 
 ## Day 5 — Visibility as a security boundary ("make illegal states unrepresentable")
 

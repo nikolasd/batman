@@ -60,10 +60,23 @@ Small, dependency-light, and the vocabulary for everything else.
 | `src/service/run_driver.rs` | `RunDriver` trait, `RunDriverContext`, `FakeRunDriver` (`queued -> starting -> working`) |
 | `src/adapter/trait.rs` | `Adapter` trait with `start`/`resume`/`send`/`cancel`/`dispose` |
 | `src/adapter/registry.rs` | `AdapterRegistry` — implements `RunDriver` against four worker adapters, `AdapterAuthorization` trait, `FixtureAuthorization`/`DenyByDefaultAuthorization` |
+| `src/adapter/event_sink.rs` | `DomainAdapterEventSink` — sanitizes, journals, and broadcasts adapter events |
+| `src/adapter/error.rs` | `AdapterError` — adapter-specific error types |
+| `src/adapter/capability.rs` | `AdapterCapabilities` — capability declarations for each adapter |
+| `src/adapter/mcp_config.rs` | MCP configuration generation for adapter processes |
+| `src/adapter/profile.rs` | `WorkerProfile` — worker profile definitions |
+| `src/adapter/profile_store.rs` | `ProfileStore` — adapter profile persistence |
+| `src/adapter/terminal.rs` | Terminal adapter backend |
 | `src/adapter/claude/mod.rs` | `claude stream-json` protocol adapter |
+| `src/adapter/claude/command.rs` | Claude CLI command construction |
+| `src/adapter/claude/protocol.rs` | Claude protocol types |
 | `src/adapter/codex/mod.rs` | `codex app-server` protocol adapter |
+| `src/adapter/codex/schema.rs` | Codex schema definitions |
 | `src/adapter/copilot/mod.rs` | `copilot --acp` protocol adapter |
+| `src/adapter/copilot/client.rs` | Copilot ACP client implementation |
+| `src/adapter/copilot/compatibility.rs` | Copilot compatibility checks |
 | `src/adapter/omp_rpc/mod.rs` | `omp --mode rpc` protocol adapter |
+| `src/adapter/omp_rpc/client.rs` | OMP-RPC client implementation |
 | `src/coordination/broker.rs` | `CoordinationBroker` — record-before-delivery messaging, `sweep_unacknowledged_as_unknown` |
 | `src/coordination/scope_token.rs` | `ScopeTokenStore` (mint/verify), `PidAncestryChecker` |
 | `src/coordination/rate_limit.rs` | `RateLimiter` — 30 messages/minute/sender sliding window |
@@ -89,7 +102,6 @@ Small, dependency-light, and the vocabulary for everything else.
 | `src/audit/retention.rs` | Event retention and pruning |
 | `src/conformance/scenario.rs` | Adapter conformance test scenarios |
 | `src/conformance/report.rs` | Conformance test reporting |
-
 Integration tests in `crates/runtime/tests/` are the daemon's behavioural spec — one file per
 subsystem (`paths`, `database`, `redaction_boundary`, `ipc`, `lifecycle`, `domain_repository`,
 `orchestration_rpc`, `coordination`, `approval`, `adapter_contract`, `adapter_registry`,

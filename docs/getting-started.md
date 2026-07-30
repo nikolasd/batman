@@ -115,13 +115,13 @@ All gates must be `true` before production use.
 ### Start the Server
 
 ```bash
-batman serve
+batcave serve
 ```
 
 This starts the BATMAN server with default configuration. To use custom configuration files:
 
 ```bash
-batman serve \
+batcave serve \
   --org-config /etc/batman/org.yaml \
   --repo-config .batman/config.yaml \
   --user-config ~/.batman/config.yaml
@@ -130,7 +130,7 @@ batman serve \
 ### Run Status Check with Doctor
 
 ```bash
-batman status
+batcave status
 ```
 
 The `status` command runs a comprehensive health check including:
@@ -142,13 +142,13 @@ The `status` command runs a comprehensive health check including:
 To enable crash recovery during status check:
 
 ```bash
-batman status --recover
+batcave status --recover
 ```
 
 ### Stop the Server
 
 ```bash
-batman stop
+batcave stop
 ```
 
 ### Audit Export
@@ -156,7 +156,7 @@ batman stop
 Export audit events to JSONL format:
 
 ```bash
-batman audit export --state-dir ~/.batman/state --output /tmp/audit.jsonl
+batcave audit export --state-dir ~/.batman/state --output /tmp/audit.jsonl
 ```
 
 ## Security Features
@@ -217,7 +217,7 @@ Events older than the retention period are automatically purged.
 Export audit events to JSONL format for offline analysis:
 
 ```bash
-batman audit export --state-dir ~/.batman/state --output /tmp/audit.jsonl
+batcave audit export --state-dir ~/.batman/state --output /tmp/audit.jsonl
 ```
 
 ## Crash Recovery
@@ -242,7 +242,7 @@ Recovery runs automatically after each `serve` command.
 Trigger recovery manually via the `status` command:
 
 ```bash
-batman status --recover
+batcave status --recover
 ```
 
 ### Recovery Configuration
@@ -298,106 +298,14 @@ cargo test
 
 ### Run Specific Test Suite
 
-```bash
-cargo test --test adapter_contract
-cargo test --test approval
-cargo test --test audit
-cargo test --test claude_adapter
-cargo test --test codex_adapter
-cargo test --test config
-cargo test --test conformance
-cargo test --test coordination
-cargo test --test copilot_adapter
-cargo test --test database
-cargo test --test display_registry
-cargo test --test display_selector
-cargo test --test domain_repository
-cargo test --test herdr_display
-cargo test --test ipc
-cargo test --test lifecycle
-cargo test --test monitor_cli
-cargo test --test omp_rpc_adapter
-cargo test --test orchestration_rpc
-cargo test --test paths
-cargo test --test redaction
-cargo test --test redaction_boundary
-cargo test --test supervisor
-cargo test --test terminal_adapter
-cargo test --test tmux_display
-cargo test --test workspace_apply
-cargo test --test workspace_lease
-cargo test --test workspace_materialize
-```
+…
+331:
 
-### Run with Specific Features
+…
+355:
 
-```bash
-cargo test --features "feature1,feature2"
-```
-
-### Test Coverage
-
-The test suite includes 31 Rust test files covering:
-- Adapter contract and registry
-- Approval workflows
-- Audit and redaction
-- All four worker adapters (Claude, Codex, Copilot, OMP-RPC)
-- Configuration and merging
-- Conformance testing
-- Coordination and MCP integration
-- Database operations
-- Display registry and selection
-- Domain repository
-- IPC and lifecycle
-- Supervisor and terminal adapters
-- Tmux display management
-- Workspace operations (apply, lease, materialize)
-
-## Troubleshooting
-
-### Port Already in Use
-
-If you see an error like `Address already in use`, another process is using the configured port.
-
-**Solution**:
-1. Check what's using the port: `lsof -i :8080` (macOS/Linux) or `netstat -ano | findstr :8080` (Windows)
-2. Kill the process or use a different port: `batman serve --port 8081`
-
-### Database Connection Errors
-
-If you see database-related errors, ensure the database URL in your configuration is correct and the database file is accessible.
-
-**Solution**:
-1. Check the database path in your state directory
-2. Ensure the directory exists and is writable
-3. Run status check: `batman status`
-
-### Rollout Gates Unresolved
-
-If the doctor reports unresolved rollout gates, you cannot use the runtime in production.
-
-**Solution**:
-1. Review your configuration files
-2. Ensure all `rollout_gates` fields are set to `true` in your config
-3. Check the doctor output: `batman status`
-
-### Permission Errors
-
-If you see permission errors, ensure BATMAN has the necessary permissions to access the configured paths.
-
-**Solution**:
-1. Check file permissions: `ls -la ~/.batman/`
-2. Adjust permissions if necessary: `chmod 755 ~/.batman/`
-
-### Recovery Issues
-
-If recovery is not working as expected, check the recovery configuration:
-
-**Solution**:
-1. Verify `stuck_threshold` is set appropriately (default: 5 minutes)
-2. Check `recover_paused` and `recover_waiting` settings
-3. Review the status output: `batman status --recover`
-
+…
+441:BATMAN is released under the [MIT License](LICENSE).
 ## Contributing
 
 We welcome contributions! Please see the [CONTRIBUTING.md](CONTRIBUTING.md) file for guidelines.
