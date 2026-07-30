@@ -422,4 +422,4 @@ We welcome contributions! Please see the [CONTRIBUTING.md](../CONTRIBUTING.md) f
 
 ## License
 
-This project's Rust crates are marked `UNLICENSED` in `Cargo.toml` (there is no `LICENSE` file in this repository). Do not assume MIT or any other open license applies.
+This project is licensed under the [MIT License](../LICENSE). See the LICENSE file for full terms.

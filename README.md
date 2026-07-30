@@ -133,3 +133,7 @@ These hold everywhere in the codebase; changes that weaken them will be rejected
 7. Every domain mutation commits its event and broadcasts the same `EventEnvelope` to live
    `events/subscribe` listeners in the same call — a mutation that appends without broadcasting
    silently breaks the embedded monitor (see [`docs/engineering-lessons.md`](docs/engineering-lessons.md#durable-mutations-must-broadcast-the-same-event-they-just-committed)).
+
+## License
+
+This project is licensed under the [MIT License](LICENSE). See the LICENSE file for full terms.
