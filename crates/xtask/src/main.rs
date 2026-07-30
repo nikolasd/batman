@@ -53,6 +53,10 @@ enum Command {
         #[arg(long)]
         binary: PathBuf,
     },
+    /// Create a git tag and push it to trigger the release CI/CD pipeline.
+    /// The release.yml workflow builds binaries for all platforms and publishes
+    /// them as GitHub Release assets.
+    Publish,
 }
 
 /// The target triples the foundation ships prebuilt `batcave` leaves for.
@@ -106,6 +110,7 @@ fn main() -> Result<()> {
     match args.command {
         Command::Generate { check } => run_generate(check),
         Command::Package { target, binary } => package_leaf(&workspace_root(), &target, &binary),
+        Command::Publish => publish(),
     }
 }
 
@@ -408,6 +413,45 @@ fn package_leaf(root: &Path, target: &str, binary: &Path) -> Result<()> {
         bin_path.display(),
         manifest_path.display()
     );
+    Ok(())
+}
+
+/// Creates a git tag for the current extension version and pushes it to origin.
+/// This triggers the release.yml CI/CD pipeline which builds binaries for all
+/// supported platforms and publishes them as GitHub Release assets.
+fn publish() -> Result<()> {
+    let root = workspace_root();
+    let version = read_extension_version(&root)?;
+    let tag = format!("v{version}");
+
+    println!("Publishing release {tag}...");
+
+    // Create the tag
+    let status = std::process::Command::new("git")
+        .args(["tag", &tag])
+        .status()
+        .with_context(|| "failed to create git tag")?;
+
+    if !status.success() {
+        anyhow::bail!("failed to create git tag {tag}");
+    }
+
+    println!("Created tag {tag}");
+
+    // Push the tag to origin
+    let status = std::process::Command::new("git")
+        .args(["push", "origin", &tag])
+        .status()
+        .with_context(|| "failed to push tag to origin")?;
+
+    if !status.success() {
+        anyhow::bail!("failed to push tag {tag} to origin");
+    }
+
+    println!("Pushed tag {tag} to origin. The release CI/CD pipeline will now build and publish binaries.");
+    println!("Once complete, users can install via:");
+    println!("  curl -fsSL https://raw.githubusercontent.com/nikolasd/batman/main/scripts/install.sh | bash");
+
     Ok(())
 }
 
