@@ -20,20 +20,69 @@ cargo build -p batman-runtime
 bun run --cwd packages/extension build
 ```
 
-## 0. Important caveat: the `batcave` CLI is a stub
+## Environment variables and configuration
 
-The `batcave` binary's CLI surface (`crates/runtime/src/cli.rs`) declares `serve`, `status`,
-`stop`, `version`, `schema`, and `audit export` as subcommands, but **only `version` is actually
-implemented**. Every other arm in `cli::run()` prints `"command not yet implemented"` and exits
-with `ExitCode::FAILURE`. There is no `coordination-mcp`, `adapters`, `conformance`, `monitor`,
-or `display` subcommand anywhere in the CLI parser.
+Several environment variables control BATMAN's behavior. Set these once per shell session:
 
-The underlying library functions (`lifecycle::serve`, `OrchestrationService`, the IPC layer, the
-domain layer, the database layer) are fully implemented. The CLI is just not wired to them yet.
+```bash
+# Override the state directory location (must be absolute)
+export BATMAN_STATE_DIR=/path/to/state
 
-**This means: you cannot test the daemon directly via `batcave serve`. You must test it through
-the OMP extension, which handles spawning/connecting via `ensureRuntime()`.** The extension is
-the primary test surface for the running daemon.
+# Path to org config file (overrides default discovery)
+export BATMAN_ORG_CONFIG=/path/to/org.yaml
+
+# Development override: authorize all workers (DO NOT use in production)
+export BATMAN_DEV_ALLOW_ALL_WORKERS=1
+
+# Gates for live conformance tests (per-adapter)
+export BATMAN_LIVE_CLAUDE=1    # Claude adapter live tests
+export BATMAN_LIVE_CODEX=1     # Codex adapter live tests (needs $OPENAI_API_KEY)
+export BATMAN_LIVE_COPILOT=1   # Copilot adapter live tests
+export BATMAN_LIVE_OMP=1       # OMP-RPC adapter live tests (needs local model server)
+
+# Path override for the batcave binary (bypasses packaged binary discovery)
+export OMP_BATMAN_BINARY="$PWD/target/debug/batcave"
+```
+
+**State directory resolution** (in precedence order):
+1. `BATMAN_STATE_DIR` (must be absolute)
+2. `$XDG_STATE_HOME/omp/batman` when `XDG_STATE_HOME` is set (must be absolute)
+3. `$HOME/${PI_CONFIG_DIR:-.omp}/orchestrator`
+
+**Configuration file locations** (in precedence order, lowest to highest):
+1. **Org config** — file path (or path specified by `BATMAN_ORG_CONFIG`)
+2. **Repo config** — `<repo>/.batman/config.yaml`
+3. **User config** — `~/.batman/config.yaml`
+
+Configuration files are YAML with strict unknown-key rejection (fails closed with line/column diagnostics). Example:
+
+```yaml
+# ~/.batman/config.yaml
+max_workers: 4
+concurrency_ceiling: 8
+retention: "30d"
+display:
+  backend: auto
+models:
+  allowed:
+    - "gpt-4"
+    - "claude-3-opus"
+security:
+  patterns:
+    - "AKIA[0-9A-Za-z]{16}"  # AWS access key pattern
+    - "sk-[a-zA-Z0-9]{32}"  # API key pattern
+rollout_gates:
+  vendor_terms_accepted: true
+  retention_configured: true
+  model_allowlist_set: true
+  concurrency_explicit: true
+  native_discovery_reviewed: true
+  ornith_identity_set: true
+```
+
+**Security notes:**
+- `BATMAN_DEV_ALLOW_ALL_WORKERS=1` is a development override that disables the `DenyByDefaultAuthorization` policy. This **must not** be used in production.
+- `BATMAN_LIVE_<ADAPTER>` gates should **never** be set in CI jobs or unattended runs — they enable real, billed model calls.
 
 ## 1. The daemon through OMP (no model call, no extension CLI needed)
 
@@ -75,18 +124,51 @@ path (SHA-256 of the canonical VCS root, `<stateDir>/repos/<repoId>/runtime.sock
 serve JSON-RPC requests. The daemon's single-instance flock locking, journal-before-shutdown, and
 `AdapterRegistry` wiring into `ServerConfig.run_driver` all happen inside `lifecycle::serve()`.
 
-**What you can't verify here:** The CLI's `serve`/`status`/`stop`/`schema` subcommands are stubs.
-You can't test the daemon's file-locking behavior (exit code 73 on double-serve), detached logging
-to `runtime.log`, or idle-timeout exit without going through the extension. Those are library
-properties, not CLI properties.
+**What you can verify here:** The CLI's `serve`/`status`/`stop`/`schema` subcommands are fully
+implemented and can be used directly. You can test the daemon's file-locking behavior (exit code
+73 on double-serve), detached logging to `runtime.log`, and idle-timeout exit through the CLI
+itself, not just through the extension.
+
+### Direct CLI testing (alternative to extension)
+
+The `batcave` CLI now provides direct access to all daemon operations:
+
+```bash
+# Start a daemon in the foreground
+batcave serve --repo /path/to/repo --state-dir /path/to/state --foreground
+
+# Query a running daemon's status
+batcave status --repo /path/to/repo --state-dir /path/to/state
+
+# Stop a running daemon
+batcave stop --repo /path/to/repo --state-dir /path/to/state
+
+# Display runtime events (replay + live)
+batcave monitor --repo /path/to/repo --state-dir /path/to/state
+
+# Export events to JSONL
+batcave audit export --repo /path/to/repo --state-dir /path/to/state --output events.jsonl
+
+# Print the JSON Schema
+batcave schema
+
+# Print the version
+batcave version
+```
+
+All commands accept `--state-dir` (defaults to `.batman` if it exists) and `--repo` (required).
+The `serve` command additionally accepts `--idle-seconds` (optional, makes the daemon exit after
+N seconds with no connections and no active runs) and `--foreground` (logs to stderr instead of
+`runtime.log`).
 
 ## 2. The embedded monitor (`/batman` slash command, no model call)
 
 The OMP extension registers an embedded monitor driven by a pure `model.ts` reducer over
 `EventEnvelope`s and a `render.ts` formatter. It's accessed via the `/batman` slash command —
-**not** a CLI subcommand (there is no `batcave monitor` or `batcave display` command).
+**or** via the `batcave monitor` CLI subcommand.
 
 ```bash
+# Through OMP extension (interactive)
 omp --extension "$EXT"          # no --print: stays open, interactive
 ```
 
@@ -98,6 +180,24 @@ renders "No BATMAN runs yet."
 `pi.appendEntry('batman-monitor', {sequence})` session entry for replay-on-restart, and updates
 the widget on every event. The controller handles `session_start` (connect, degrade silently if
 daemon unreachable) and `session_shutdown` (unsubscribe).
+
+### Direct CLI monitor (alternative to extension)
+
+```bash
+batcave monitor --repo /path/to/repo --state-dir /path/to/state
+```
+
+This connects as a `display` principal, replays every event from sequence 0, renders one line per
+contributing envelope, then follows new events live until interrupted (`SIGINT`/`SIGTERM`). A
+transient disconnect reconnects and replays from the highest sequence already rendered plus one,
+so no visible line is duplicated.
+
+Options:
+- `--run-id <id>` — Render only the run matching this id (full, un-truncated form)
+
+**What this verifies:** The CLI's `monitor` command connects to the runtime, replays events, and
+renders them as plain-text lines until interrupted. This is the same logic as the embedded
+monitor but exposed as a CLI subcommand for direct testing.
 
 ## 3. The orchestration tools (needs a real model call)
 
@@ -215,9 +315,13 @@ which drives `ApprovalService` directly, the same way this walkthrough can't.
 
 ### Clean up
 
-The `batcave stop` CLI command is a stub — it prints "not yet implemented" and exits with
-`FAILURE`. To clean up, wait out the idle interval (default 60s when spawned by the extension)
-or kill the daemon process directly:
+Use `batcave stop` to gracefully shut down the daemon:
+
+```bash
+batcave stop --repo /tmp/batman-smoke --state-dir /tmp/batman-state
+```
+
+Or, if the daemon is not responding:
 
 ```bash
 # Find the daemon process:

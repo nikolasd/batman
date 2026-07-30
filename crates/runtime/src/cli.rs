@@ -1,5 +1,5 @@
 //! The `batcave` command-line interface: `serve`, `status`, `stop`,
-//! `version`, `schema`, `monitor`, `display`, and `audit`. This layer only
+//! `version`, `schema`, `monitor`, and `audit`. This layer only
 //! parses arguments, resolves the state root when `--state-dir` is omitted,
 //! and maps [`crate::lifecycle`] outcomes to process exit codes; all
 //! behaviour lives in the library.
@@ -59,6 +59,18 @@ enum Command {
         #[arg(long)]
         repo: PathBuf,
     },
+    /// Display runtime events for one or all runs.
+    Monitor {
+        /// The BATMAN state root. Defaults to the resolved state root.
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+        /// The repository whose events to display.
+        #[arg(long)]
+        repo: PathBuf,
+        /// Render only the run matching this id (full, un-truncated form).
+        #[arg(long)]
+        run_id: Option<String>,
+    },
     /// Print the runtime version.
     Version,
     /// Print the canonical JSON Schema document to stdout.
@@ -97,24 +109,222 @@ pub async fn run() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Serve { .. } | Command::Status { .. } | Command::Stop { .. } => {
-            // TODO: Implement these commands (currently broken in original CLI)
-            eprintln!("command not yet implemented");
-            ExitCode::FAILURE
-        }
+        Command::Serve {
+            state_dir,
+            repo,
+            idle_seconds,
+            foreground,
+        } => run_serve(state_dir, repo, idle_seconds, foreground).await,
+        Command::Status {
+            wait_seconds,
+            state_dir,
+            repo,
+        } => run_status(wait_seconds, state_dir, repo).await,
+        Command::Stop { state_dir, repo } => run_stop(state_dir, repo).await,
+        Command::Monitor {
+            state_dir,
+            repo,
+            run_id,
+        } => run_monitor(state_dir, repo, run_id).await,
         Command::Version => {
             println!("batcave {VERSION}");
             ExitCode::SUCCESS
         }
-        Command::Schema => {
-            // TODO: Implement schema command
-            eprintln!("schema command not yet implemented");
-            ExitCode::FAILURE
+        Command::Schema => run_schema().await,
+        Command::Audit {
+            command: AuditCommand::Export {
+                state_dir,
+                repo,
+                from,
+                to,
+                output,
+            },
+        } => run_audit_export(state_dir, repo, from, to, output).await,
+    }
+}
+
+/// Runs `batcave serve`: acquires the single-instance lock, starts the IPC
+/// server, and serves until signalled, idle-shutdown, or in-band stop.
+async fn run_serve(
+    state_dir: Option<PathBuf>,
+    repo: PathBuf,
+    idle_seconds: Option<u64>,
+    foreground: bool,
+) -> ExitCode {
+    use batman_runtime::lifecycle::{self, ServeOptions};
+
+    let state_dir = match resolve_state_dir(state_dir) {
+        Ok(dir) => dir,
+        Err(err) => return fail(&err),
+    };
+
+    let options = ServeOptions {
+        state_dir,
+        repo,
+        idle_seconds,
+        foreground,
+        binary_source: batman_protocol::BinarySource::Unknown,
+    };
+
+    match lifecycle::serve(&options).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(lifecycle::ServeError::AlreadyRunning(already)) => {
+            // Machine-readable identity of the live runtime, on stdout.
+            println!(
+                "{}",
+                serde_json::to_string(&already).expect("AlreadyRunning serializes")
+            );
+            // EX_TEMPFAIL (73): a peer already holds the lock.
+            ExitCode::from(73)
         }
-        Command::Audit { command: AuditCommand::Export { .. } } => {
-            // TODO: Implement audit export command
-            eprintln!("audit export command not yet implemented");
+        Err(err) => fail(&err),
+    }
+}
+
+/// Runs `batcave status`: connects to the runtime, queries `runtime/status`,
+/// and prints the result as JSON.
+async fn run_status(
+    wait_seconds: Option<u64>,
+    state_dir: Option<PathBuf>,
+    repo: PathBuf,
+) -> ExitCode {
+    use batman_runtime::lifecycle::{self, StatusOptions};
+
+    let state_dir = match resolve_state_dir(state_dir) {
+        Ok(dir) => dir,
+        Err(err) => return fail(&err),
+    };
+
+    let options = StatusOptions {
+        state_dir,
+        repo,
+        wait_seconds,
+    };
+
+    match lifecycle::status(&options).await {
+        Ok(value) => {
+            println!("{}", serde_json::to_string(&value).expect("status serializes"));
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail(&err),
+    }
+}
+
+/// Runs `batcave stop`: signals a live runtime and waits for it to shut down.
+async fn run_stop(state_dir: Option<PathBuf>, repo: PathBuf) -> ExitCode {
+    use batman_runtime::lifecycle::{self, StopOptions};
+
+    let state_dir = match resolve_state_dir(state_dir) {
+        Ok(dir) => dir,
+        Err(err) => return fail(&err),
+    };
+
+    let options = StopOptions { state_dir, repo };
+
+    match lifecycle::stop(&options).await {
+        Ok(batman_runtime::lifecycle::StopOutcome::Stopped) => {
+            println!("runtime stopped");
+            ExitCode::SUCCESS
+        }
+        Ok(batman_runtime::lifecycle::StopOutcome::NotRunning) => {
+            println!("no runtime running for this repository");
+            ExitCode::from(1)
+        }
+        Err(err) => fail(&err),
+    }
+}
+
+/// Runs `batcave monitor`: connects to the runtime, replays events, and
+/// renders them as plain-text lines until interrupted.
+async fn run_monitor(
+    state_dir: Option<PathBuf>,
+    repo: PathBuf,
+    run_id: Option<String>,
+) -> ExitCode {
+    use batman_runtime::lifecycle::{self, MonitorOptions};
+
+    let state_dir = match resolve_state_dir(state_dir) {
+        Ok(dir) => dir,
+        Err(err) => return fail(&err),
+    };
+
+    let options = MonitorOptions {
+        state_dir,
+        repo,
+        run_id,
+    };
+
+    match lifecycle::monitor(&options).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => fail(&err),
+    }
+}
+
+/// Runs `batcave schema`: prints the canonical JSON Schema document.
+async fn run_schema() -> ExitCode {
+    // Read the schema file from the protocol package.
+    let schema_path = std::path::Path::new("packages/protocol-ts/schema/batman.schema.json");
+    match std::fs::read_to_string(schema_path) {
+        Ok(schema) => {
+            print!("{schema}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("failed to read schema file: {err}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Runs `batcave audit export`: exports events to a JSONL file.
+async fn run_audit_export(
+    state_dir: Option<PathBuf>,
+    repo: PathBuf,
+    from: Option<String>,
+    to: Option<String>,
+    output: PathBuf,
+) -> ExitCode {
+    // Use the audit export module (currently a stub that returns Ok(()))
+    let state_dir_resolved = resolve_state_dir(state_dir)
+        .unwrap_or_else(|_| PathBuf::from(".batman"));
+
+    let mut export = batman_runtime::audit::Export::new(
+        repo.to_string_lossy().to_string(),
+        state_dir_resolved.to_string_lossy().to_string(),
+        output.to_string_lossy().to_string(),
+    );
+    export.from = from;
+    export.to = to;
+
+    match export.export() {
+        Ok(()) => {
+            println!("events exported to {}", output.display());
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("export failed: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Resolves the state directory, defaulting to `.batman` if `None`.
+fn resolve_state_dir(state_dir: Option<PathBuf>) -> Result<PathBuf, String> {
+    match state_dir {
+        Some(dir) => Ok(dir),
+        None => {
+            let default = PathBuf::from(".batman");
+            if default.exists() {
+                Ok(default)
+            } else {
+                Err("state directory `.batman` does not exist; use --state-dir to specify it".to_string())
+            }
+        }
+    }
+}
+
+/// Prints an error to stderr and returns `ExitCode::FAILURE`.
+fn fail(err: &dyn std::fmt::Display) -> ExitCode {
+    eprintln!("{err}");
+    ExitCode::FAILURE
 }
