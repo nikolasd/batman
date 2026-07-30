@@ -1,6 +1,6 @@
 # B.A.T.M.A.N.
 
-**B**orderline **A**wesome **T**ool for **M**ultiagent **A**utomation by **N**ikolas.
+(**B**orderline **A**wesome **T**ool for **M**ultiagent **A**utomation by **N**ikolas.)
 
 BATMAN is an [Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi) extension backed by a durable,
 repository-scoped local daemon. OMP stays the brain — task intake, scheduling, worker selection,
