@@ -145,8 +145,8 @@ impl ClaudeNormalizer {
     ) -> Vec<ClaudeEvent> {
         let mut events = Vec::new();
 
-        if let Some(parent_id) = message.parent_tool_use_id.as_deref() {
-            if self.reported_subagents.insert(parent_id.to_string()) {
+        if let Some(parent_id) = message.parent_tool_use_id.as_deref()
+            && self.reported_subagents.insert(parent_id.to_string()) {
                 events.push(ClaudeEvent::Emit(
                     AdapterEventPayload::NestedWorkerObserved {
                         vendor_child_id: parent_id.to_string(),
@@ -154,7 +154,6 @@ impl ClaudeNormalizer {
                     },
                 ));
             }
-        }
 
         let role = match message.parent_tool_use_id.as_deref() {
             Some(parent_id) => format!("{base_role}:subagent:{parent_id}"),
@@ -235,9 +234,9 @@ fn tool_result_text(content: &Value) -> String {
 /// this falls back to the frame's own `outcome`
 /// (`"success"`/`"error"`/`"cancelled"`) rather than guessing.
 fn parse_hook_decision(hook: &RawHookLifecycle) -> String {
-    if let Some(output) = &hook.output {
-        if let Ok(parsed) = serde_json::from_str::<Value>(output) {
-            if let Some(behavior) = parsed
+    if let Some(output) = &hook.output
+        && let Ok(parsed) = serde_json::from_str::<Value>(output)
+            && let Some(behavior) = parsed
                 .get("hookSpecificOutput")
                 .and_then(|h| h.get("decision"))
                 .and_then(|d| d.get("behavior"))
@@ -245,8 +244,6 @@ fn parse_hook_decision(hook: &RawHookLifecycle) -> String {
             {
                 return behavior.to_string();
             }
-        }
-    }
     hook.outcome
         .clone()
         .unwrap_or_else(|| "unknown".to_string())

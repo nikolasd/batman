@@ -468,12 +468,11 @@ impl Adapter for OmpRpcAdapter {
                 self.model_selector().to_string(),
                 "--allow-home".to_string(),
             ];
-            if let Some(options) = self.profile_startup_options() {
-                if let Some(profile_name) = &options.profile {
+            if let Some(options) = self.profile_startup_options()
+                && let Some(profile_name) = &options.profile {
                     args.push("--profile".to_string());
                     args.push(profile_name.clone());
                 }
-            }
             if let Some(resume) = &spec.resume {
                 args.push("--resume".to_string());
                 args.push(resume.0.clone());

@@ -465,7 +465,7 @@ async fn dispatch(
             | BatmanMethod::WorkspaceApply
             | BatmanMethod::ArtifactList
             | BatmanMethod::ArtifactFetch => {
-                return error(
+                error(
                     &id,
                     error_code::METHOD_NOT_FOUND,
                     "method is not available to this client",

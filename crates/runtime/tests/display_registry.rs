@@ -1,11 +1,11 @@
 //! Display registry integration tests.
 
 use batman_runtime::display::{DisplayRegistry, DisplayBackendTrait};
-use batman_protocol::{DisplayBackend, DisplayConfig, DisplayStatus};
+use batman_protocol::{DisplayBackend, DisplayStatus};
 
 #[test]
 fn display_registry_basic() {
-    let mut registry = DisplayRegistry::new();
+    let registry = DisplayRegistry::new();
     assert!(registry.backends().is_empty());
 }
 

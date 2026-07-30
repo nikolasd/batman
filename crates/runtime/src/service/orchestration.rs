@@ -608,8 +608,8 @@ impl OrchestrationService {
         // fail this RPC or unwind the message already durably recorded
         // above: the message stays `recorded` and the run's state is
         // untouched, matching `RunDriver::send_follow_up`'s own contract.
-        if let Some(driver) = self.run_driver.clone() {
-            if let Err(err) = driver
+        if let Some(driver) = self.run_driver.clone()
+            && let Err(err) = driver
                 .send_follow_up(run_id, task_id, sender_worker_id, follow_up_payload)
                 .await
             {
@@ -629,7 +629,6 @@ impl OrchestrationService {
                     .map_err(ServiceError::from)?;
                 self.broadcast(&mut diagnostic);
             }
-        }
 
         Ok(json!({
             "messageId": message_id.to_string(),

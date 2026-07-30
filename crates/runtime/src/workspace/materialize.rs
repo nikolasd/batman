@@ -34,6 +34,7 @@ impl From<crate::workspace::git::GitError> for MaterializerError {
 
 /// Coordinates workspace materialization for different isolation strategies.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct WorkspaceMaterializer {
     project_id: ProjectId,
     repository: PathBuf,
@@ -74,13 +75,12 @@ impl WorkspaceMaterializer {
         let canonical_root = self.root.canonicalize().unwrap_or(self.root.clone());
         
         // Resolve the nearest existing ancestor and check it's under the root
-        if let Some(canonical) = Self::resolve_nearest_existing(&candidate) {
-            if !canonical.starts_with(&canonical_root) {
+        if let Some(canonical) = Self::resolve_nearest_existing(&candidate)
+            && !canonical.starts_with(&canonical_root) {
                 return Err(MaterializerError::PathValidation(
                     "Path escapes lease root via symlink".to_string()
                 ));
             }
-        }
         // For non-existent paths, lexical validation is sufficient
         
         Ok(())

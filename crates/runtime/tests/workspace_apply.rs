@@ -7,6 +7,7 @@ use batman_runtime::workspace::{ArtifactStore, WorkspaceApplier, WorkspaceInspec
 use std::path::PathBuf;
 use std::process::Command;
 
+#[allow(dead_code)]
 fn project_id() -> ProjectId {
     ProjectId::parse("01900000-0000-0000-0000-000000000001").unwrap()
 }
@@ -15,7 +16,7 @@ fn project_id() -> ProjectId {
 fn create_fixture_repo() -> PathBuf {
     let repo = tempfile::TempDir::new()
         .expect("Failed to create temp dir")
-        .into_path();
+        .keep();
 
     // Initialize as a git repository
     Command::new("git")
@@ -91,7 +92,7 @@ async fn workspace_apply_with_real_patch() {
     let store = ArtifactStore::new();
 
     // Create a second clone to modify (source of the patch)
-    let source = tempfile::TempDir::new().unwrap().into_path();
+    let source = tempfile::TempDir::new().unwrap().keep();
     std::fs::copy(repo.join("file1.txt"), source.join("file1.txt")).unwrap();
     Command::new("git")
         .current_dir(&source)
@@ -172,7 +173,7 @@ async fn workspace_apply_stale_revision_returns_conflict() {
     let store = ArtifactStore::new();
 
     // Create a second clone to generate the patch from (source)
-    let source = tempfile::TempDir::new().unwrap().into_path();
+    let source = tempfile::TempDir::new().unwrap().keep();
     std::fs::copy(repo.join("file1.txt"), source.join("file1.txt")).unwrap();
     Command::new("git")
         .current_dir(&source)

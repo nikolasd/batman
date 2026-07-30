@@ -7,8 +7,6 @@
 
 use std::sync::Arc;
 
-use std::pin::Pin;
-use std::future::Future;
 
 use super::capability::{
     AdapterCapabilities, ApprovalsCapability, DurabilityCapability, NestedCapability,
@@ -109,7 +107,7 @@ impl Adapter for TerminalAdapter {
                             .await
                     } else {
                         tokio::process::Command::new("tmux")
-                            .args(&["new-session", "-d", "-s", &session_name])
+                            .args(["new-session", "-d", "-s", &session_name])
                             .output()
                             .await
                     };
@@ -144,7 +142,7 @@ impl Adapter for TerminalAdapter {
                             .await
                     } else {
                         tokio::process::Command::new("herdr")
-                            .args(&["new", &session_name])
+                            .args(["new", &session_name])
                             .output()
                             .await
                     };

@@ -7,6 +7,7 @@ use super::DisplayBackendTrait;
 /// Raw terminal display backend (degraded capabilities).
 ///
 /// Always available as a fallback. Does not require external tools.
+#[allow(dead_code)]
 pub struct TerminalDisplay {
     config: DisplayConfig,
 }

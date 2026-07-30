@@ -62,21 +62,13 @@ const DECLARED_CAPABILITIES: AdapterCapabilities = AdapterCapabilities {
     durability: DurabilityCapability::VendorResumable,
 };
 
+#[derive(Default)]
 struct AdapterState {
     client: Option<Arc<CopilotAcpClient>>,
     vendor_session_id: Option<String>,
     event_drain: Option<JoinHandle<()>>,
 }
 
-impl Default for AdapterState {
-    fn default() -> Self {
-        Self {
-            client: None,
-            vendor_session_id: None,
-            event_drain: None,
-        }
-    }
-}
 
 /// The `copilot` worker adapter: one supervised `copilot --acp` process
 /// per [`CopilotAdapter`] instance, reached only over NDJSON stdio.
@@ -125,6 +117,7 @@ impl CopilotAdapter {
     /// (across `start`/`resume`/`send`/`cancel`) to `run_id`/`task_id`/
     /// `worker_id`.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         program: PathBuf,
         cwd: PathBuf,
@@ -245,8 +238,8 @@ impl CopilotAdapter {
             }
         }
         let negotiated = client.initialize().await?;
-        if let Some(version) = &negotiated.agent_version {
-            if !copilot_cli_version_known(version) {
+        if let Some(version) = &negotiated.agent_version
+            && !copilot_cli_version_known(version) {
                 client.shutdown().await;
                 return Err(AdapterError::incompatible_version(
                     "copilot",
@@ -262,7 +255,6 @@ impl CopilotAdapter {
                     ),
                 ));
             }
-        }
         let client = Arc::new(client);
         state.client = Some(client.clone());
         Ok(client)

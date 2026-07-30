@@ -283,8 +283,8 @@ impl RunDriver for AdapterRegistry {
     fn send_follow_up(
         &self,
         run_id: RunId,
-        task_id: TaskId,
-        worker_id: WorkerId,
+        _task_id: TaskId,
+        _worker_id: WorkerId,
         prompt: String,
     ) -> RunDriverFuture<'static, Result<(), String>> {
         let running = Arc::clone(&self.running);

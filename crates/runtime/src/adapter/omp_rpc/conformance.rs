@@ -834,6 +834,7 @@ fn managed_nesting_rejection_scenario() -> ScenarioResult {
 /// A vendor-reported subagent normalizes into `NestedWorkerObserved`
 /// even though this adapter always declares `nested: none` -- emission
 /// never upgrades the declared capability.
+#[allow(dead_code)]
 fn unexpected_child_observation_scenario() -> ScenarioResult {
     let events = normalize_fixture_lines(&load_fixture_lines("subagents.jsonl"));
     let nested = events.iter().find_map(|e| match e {

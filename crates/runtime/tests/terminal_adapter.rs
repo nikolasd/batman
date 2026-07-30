@@ -126,8 +126,7 @@ impl CommandRunner for MockCommandRunner {
                 Some(MockOutput::SpawnError(msg)) => {
                     Err(io::Error::new(io::ErrorKind::NotFound, msg.as_str()))
                 }
-                None => Err(io::Error::new(
-                    io::ErrorKind::Other,
+                None => Err(io::Error::other(
                     "no more results",
                 )),
             }

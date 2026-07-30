@@ -14,6 +14,7 @@ pub enum GitError {
     Io(#[from] std::io::Error),
 }
 
+#[allow(dead_code)]
 pub struct GitWorktree {
     pub repository: std::path::PathBuf,
     pub path: std::path::PathBuf,
@@ -54,6 +55,7 @@ impl GitWorktree {
 
     /// Removes the worktree.
     /// Executes `git worktree remove <path>` from the source repository.
+    #[allow(dead_code)]
     pub fn remove(&self) -> Result<(), GitError> {
         // Use .arg() with Path directly to preserve non-UTF-8 paths
         let output = Command::new("git")

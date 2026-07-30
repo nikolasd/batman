@@ -167,7 +167,7 @@ pub struct ReleaseRequest {
 /// Parameters for listing active leases for a repository.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[ts(export)]
+#[expect(dead_code)]
 pub struct LeaseListRequest {
     pub project_id: ProjectId,
 }

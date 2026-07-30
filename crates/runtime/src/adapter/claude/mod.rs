@@ -249,8 +249,8 @@ impl ClaudeAdapter {
         // real pid, known only now. On failure the vendor process must
         // never be left running with a scope token that never went
         // live -- terminate it and report an error rather than proceed.
-        if let (Some(mcp), Some(injection)) = (&self.mcp, &mcp_injection) {
-            if let Err(err) = mcp.activate(
+        if let (Some(mcp), Some(injection)) = (&self.mcp, &mcp_injection)
+            && let Err(err) = mcp.activate(
                 injection.token.clone(),
                 run_id,
                 task_id,
@@ -266,7 +266,6 @@ impl ClaudeAdapter {
                     format!("failed to activate worker MCP scope token: {err}"),
                 ));
             }
-        }
 
         sink.emit(AdapterEvent {
             run_id,
@@ -371,6 +370,7 @@ fn write_mcp_config_file(path: &Path, document: &serde_json::Value) -> std::io::
 /// The background task that exclusively owns one `ManagedProcess`:
 /// normalizes+emits every stdout frame, and serializes stdin
 /// writes/termination requested through `commands`.
+    #[allow(clippy::too_many_arguments)]
 async fn run_session(
     mut process: ManagedProcess,
     mut commands: mpsc::Receiver<SessionCommand>,

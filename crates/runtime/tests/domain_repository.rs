@@ -6,7 +6,6 @@
 
 use batman_protocol::{EventEnvelope, RuntimeEvent, RuntimeEventKind, TaskRef, Timestamp, WorkerProfileRef};
 use rusqlite::Connection;
-use serde_json;
 
 /// A minimal in-memory database with foundation + orchestration migrations.
 fn open_test_db() -> Connection {
@@ -124,6 +123,7 @@ fn open_test_db() -> Connection {
 // Test helpers — create fixtures
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn make_task_ref(owner: &str, revision: u64) -> TaskRef {
     TaskRef {
         owner_client_instance_id: owner.to_string(),
@@ -537,23 +537,18 @@ fn rebuild_run_from_events_matches_projection() {
         .expect("query_map")
         .collect::<Result<Vec<_>, _>>()
         .expect("collect events");
-    let mut rebuilt_vendor_session: Option<String> = None;
+    let _rebuilt_vendor_session: Option<String> = None;
     let mut rebuilt_state: Option<String> = None;
-    let mut rebuilt_started_at: Option<String> = None;
+    let _rebuilt_started_at: Option<String> = None;
 
     for (_seq, event_json) in &events {
         let envelope: EventEnvelope =
             serde_json::from_str(event_json).expect("event deserializes");
-        if let Some(run_id_ref) = envelope.run_id {
-            if run_id_ref == run_id {
-                match &envelope.event {
-                    RuntimeEvent::RunEvent { state, .. } => {
-                        rebuilt_state = Some(state.clone());
-                    }
-                    _ => {}
+        if let Some(run_id_ref) = envelope.run_id
+            && run_id_ref == run_id
+                && let RuntimeEvent::RunEvent { state, .. } = &envelope.event {
+                    rebuilt_state = Some(state.clone());
                 }
-            }
-        }
     }
 
     // Read the stored projection.
@@ -565,7 +560,7 @@ fn rebuild_run_from_events_matches_projection() {
         )
         .expect("read stored state");
 
-    let stored_vendor: Option<String> = conn
+    let _stored_vendor: Option<String> = conn
         .query_row(
             "SELECT vendor_session_id FROM runs WHERE run_id = ?1",
             [run_id.to_string()],

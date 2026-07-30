@@ -135,6 +135,7 @@ impl CoordinationBroker {
     /// (`recorded`) and immediately marks it `sent` -- no adapter exists in
     /// this milestone to acknowledge it further, so it settles there until
     /// a future adapter integration acknowledges or fails it.
+    #[allow(clippy::too_many_arguments)]
     pub async fn send(
         &self,
         run_id: RunId,
@@ -459,6 +460,7 @@ impl CoordinationBroker {
         Ok((task_id, worker_id))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_internal(
         &self,
         run_id: RunId,
@@ -512,13 +514,12 @@ impl CoordinationBroker {
             }))
             .await?;
         let swept = result["swept"].as_u64().unwrap_or(0);
-        if let Some(envelopes) = result.as_object_mut().and_then(|m| m.remove("__envelopes")) {
-            if let Ok(envelopes) = serde_json::from_value::<Vec<EventEnvelope>>(envelopes) {
+        if let Some(envelopes) = result.as_object_mut().and_then(|m| m.remove("__envelopes"))
+            && let Ok(envelopes) = serde_json::from_value::<Vec<EventEnvelope>>(envelopes) {
                 for envelope in envelopes {
                     let _ = self.events_tx.send(envelope);
                 }
             }
-        }
         Ok(swept)
     }
 

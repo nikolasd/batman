@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Optional, `#[ignore]`d end-to-end conformance probe for
 //! [`ClaudeAdapter`], gated on `BATMAN_LIVE_CLAUDE=1`.
 //!

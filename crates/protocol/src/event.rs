@@ -176,7 +176,7 @@ pub enum DiagnosticLevel {
 /// `degradedControl`, `needsReconciliation`, `protocolUnhealthy`,
 /// `policyQuarantined`, `workspaceDirty`, and `childrenActive` are all
 /// independent booleans.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Default, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export)]
 pub struct RunFlags {
@@ -193,18 +193,6 @@ pub struct RunFlags {
     pub children_active: bool,
 }
 
-impl Default for RunFlags {
-    fn default() -> Self {
-        Self {
-            degraded_control: false,
-            needs_reconciliation: false,
-            protocol_unhealthy: false,
-            policy_quarantined: false,
-            workspace_dirty: false,
-            children_active: false,
-        }
-    }
-}
 
 /// The semantic kind of an orchestration event stored in the durable journal.
 ///

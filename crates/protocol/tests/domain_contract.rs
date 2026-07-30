@@ -4,10 +4,9 @@
 //! wire-format strictness of every orchestration record.
 
 use batman_protocol::{
-    ApprovalDecision, BatmanMethod, DeliveryState, EventEnvelope, RuntimeEvent, RuntimeEventKind,
+    ApprovalDecision, DeliveryState, RuntimeEventKind,
     Run, RunFlags, RunSpec, RunState, TaskRef, Timestamp, Worker, WorkerProfileRef,
 };
-use serde_json;
 
 // ---------------------------------------------------------------------------
 // Lifecycle table — every listed edge must be accepted; every other pair,
@@ -315,7 +314,7 @@ fn runtime_event_kind_covers_all_variants() {
 
 #[test]
 fn all_orchestration_methods_exist() {
-    use BatmanMethod::{
+    use batman_protocol::BatmanMethod::{
         ApprovalDecide, ApprovalList, CoordinationChildDecide, CoordinationChildList,
         MessageList, MessageSend, ReconcileOmp,
         RunCancel, RunGet, RunList, RunRetry, RunSubmit,

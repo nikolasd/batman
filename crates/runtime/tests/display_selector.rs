@@ -1,8 +1,7 @@
 //! Display selector tests.
 
-use batman_protocol::{DisplayBackend, DisplayConfig, DisplayStatus};
+use batman_protocol::{DisplayBackend, DisplayStatus};
 use batman_runtime::display::{DisplayBackendTrait, DisplayRegistry, DisplaySelector};
-use std::sync::Arc;
 
 /// Fake backend for display selector tests.
 struct FakeBackend {

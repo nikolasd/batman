@@ -4,7 +4,6 @@
 //! commit history, and generates a patch artifact stored in the ArtifactStore.
 
 use batman_protocol::{Artifact, ArtifactId, ArtifactKind, InspectRequest, InspectResult};
-use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use thiserror::Error;

@@ -9,7 +9,6 @@ use crate::ids::{ProjectId, RunId, TaskId, WorkerId};
 use crate::version::{ProtocolVersion, VersionRange};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json;
 use ts_rs::TS;
 
 /// Identifies a repository on disk, independent of any particular runtime

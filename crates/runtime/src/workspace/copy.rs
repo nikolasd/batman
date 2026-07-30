@@ -3,7 +3,6 @@
 //! Manages copying workspace trees for isolation.
 //! Copies without following symlinks - symlinks are recreated as symlinks.
 
-use std::path::Path;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

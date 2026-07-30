@@ -135,8 +135,7 @@ fn downgrade_on_scenario_failure(
 ) -> AdapterCapabilities {
     let failed = |name: &str| scenarios.iter().any(|s| s.name == name && !s.passed);
     use crate::adapter::{
-        ApprovalsCapability, NestedCapability, ResumeCapability, SteeringCapability,
-        UsageCapability, WorkspaceControlCapability,
+        ApprovalsCapability, NestedCapability, ResumeCapability, SteeringCapability, WorkspaceControlCapability,
     };
     if failed(super::scenario::APPROVAL) {
         capabilities.approvals = ApprovalsCapability::None;

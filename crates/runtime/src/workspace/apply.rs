@@ -4,7 +4,6 @@
 //! using the specified strategy (ApplyPatch or CherryPick).
 
 use batman_protocol::{ApplyRequest, ApplyResult, ApplyStrategy};
-use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use thiserror::Error;

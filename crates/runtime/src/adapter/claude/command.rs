@@ -56,12 +56,11 @@ pub fn build_args(
         }
     }
 
-    if let Some(allowed) = &options.allowed_tools {
-        if !allowed.is_empty() {
+    if let Some(allowed) = &options.allowed_tools
+        && !allowed.is_empty() {
             args.push("--allowedTools".to_string());
             args.extend(allowed.iter().cloned());
         }
-    }
     if let Some(mode) = &options.permission_mode {
         args.push("--permission-mode".to_string());
         args.push(mode.clone());

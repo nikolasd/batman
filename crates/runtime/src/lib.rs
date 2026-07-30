@@ -13,6 +13,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod adapter;
 pub mod approval;
+pub mod audit;
 pub mod conformance;
 pub mod coordination;
 pub mod db;
@@ -20,17 +21,18 @@ pub mod domain;
 pub mod ipc;
 pub mod lifecycle;
 pub mod paths;
+pub mod policy;
 pub mod security;
 pub mod service;
 pub mod supervisor;
 pub mod workspace;
 pub mod display;
 pub mod config;
-pub mod policy;
 
 pub use approval::{
     ApprovalCallback, ApprovalError, ApprovalService, DecideOutcome, NoopApprovalCallback,
 };
+pub use audit::{Export, Retention};
 pub use coordination::{CoordinationBroker, CoordinationError, ScopeTokenStore};
 pub use db::{DatabaseHandle, DbError};
 pub use domain::{Committed, DomainError, DomainRepository, TransitionError};

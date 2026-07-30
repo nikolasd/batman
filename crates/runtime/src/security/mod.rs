@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use nix::unistd::Uid;
 
 pub mod redaction;
+pub mod rules;
 
 /// Errors resolving or securing BATMAN's on-disk state.
 #[derive(Debug, thiserror::Error)]

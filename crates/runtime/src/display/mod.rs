@@ -20,7 +20,6 @@ pub use tmux::TmuxDisplay;
 use batman_protocol::{DisplayBackend, DisplayStatus};
 use std::io;
 use std::process::Command;
-use std::sync::Arc;
 
 /// Result of a command execution — platform-independent, fixture-friendly.
 #[derive(Debug, Clone)]
@@ -142,11 +141,10 @@ impl DisplaySelector {
         for backend in &self.preferred {
             if let Some(registered) = registry.backends().iter().find(|b| {
                 b.backend_name() == backend.to_string()
-            }) {
-                if registered.is_available() {
+            })
+                && registered.is_available() {
                     return Some(registered.as_ref());
                 }
-            }
         }
         None
     }

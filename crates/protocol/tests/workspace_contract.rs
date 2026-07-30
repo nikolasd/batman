@@ -63,7 +63,7 @@ fn sample_artifact() -> Artifact {
 // ------------------------------------------------------------------ tests
 
 #[test]
-fn lease_mode_serializes_as_camelCase() {
+fn lease_mode_serializes_as_camel_case() {
     let val = serialise(&LeaseMode::ReadOnly);
     assert_eq!(val.as_str().unwrap(), "readOnly");
 
@@ -72,7 +72,7 @@ fn lease_mode_serializes_as_camelCase() {
 }
 
 #[test]
-fn isolation_kind_serializes_as_camelCase() {
+fn isolation_kind_serializes_as_camel_case() {
     let val = serialise(&IsolationKind::Shared);
     assert_eq!(val.as_str().unwrap(), "shared");
 
@@ -84,7 +84,7 @@ fn isolation_kind_serializes_as_camelCase() {
 }
 
 #[test]
-fn workspace_state_serializes_as_camelCase() {
+fn workspace_state_serializes_as_camel_case() {
     for (variant, expected) in [
         (WorkspaceState::Allocating, "allocating"),
         (WorkspaceState::Active, "active"),
@@ -234,7 +234,7 @@ fn apply_request_and_result_contracts() {
 }
 
 #[test]
-fn apply_strategy_serializes_as_camelCase() {
+fn apply_strategy_serializes_as_camel_case() {
     assert_eq!(
         serialise(&ApplyStrategy::ApplyPatch).as_str().unwrap(),
         "applyPatch"
@@ -388,7 +388,7 @@ fn workspace_event_cleanup_failed() {
 // ------------------------------------------------------------------ artifact contracts
 
 #[test]
-fn artifact_kind_serializes_as_camelCase() {
+fn artifact_kind_serializes_as_camel_case() {
     for (variant, expected) in [
         (ArtifactKind::Patch, "patch"),
         (ArtifactKind::CommitList, "commitList"),
@@ -588,7 +588,7 @@ fn workspace_method_strings_serialize_correctly() {
         (BatmanMethod::ArtifactFetch, "artifact/fetch"),
     ];
     for (method, expected) in methods {
-        let json = serde_json::to_value(&method).expect("serializable");
+        let json = serde_json::to_value(method).expect("serializable");
         assert_eq!(
             json.as_str().unwrap(),
             expected,
@@ -603,7 +603,7 @@ fn workspace_method_strings_serialize_correctly() {
 
 #[test]
 fn runtime_event_workspace_event_serializes() {
-    use batman_protocol::{BatmanMethod, RuntimeEvent};
+    use batman_protocol::RuntimeEvent;
     let ws_event = RuntimeEvent::WorkspaceEvent {
         kind: batman_protocol::WorkspaceEvent::LeaseRequested {
             lease_id: "ws-001".to_string(),

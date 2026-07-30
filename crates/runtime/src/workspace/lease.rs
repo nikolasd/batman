@@ -45,7 +45,7 @@ impl LeaseService {
             std::fs::create_dir_all(parent).map_err(|e| LeaseError::Db(e.to_string()))?;
         }
 
-        let conn = rusqlite::Connection::open(&db_path).map_err(|e| LeaseError::Db(e.to_string()))?;
+        let conn = rusqlite::Connection::open(db_path).map_err(|e| LeaseError::Db(e.to_string()))?;
         
         conn.execute_batch("CREATE TABLE IF NOT EXISTS workspace_leases (
             lease_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, mode TEXT NOT NULL,

@@ -7,7 +7,7 @@ use batman_protocol::{
     Artifact, ArtifactFetchResult, ArtifactId, ArtifactKind, ArtifactListResult,
 };
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -61,7 +61,7 @@ impl ArtifactStore {
         artifact: Artifact,
         content: Vec<u8>,
     ) -> Result<ArtifactId, ArtifactStoreError> {
-        let id = artifact.artifact_id.clone();
+        let id = artifact.artifact_id;
 
         // If on-disk storage is configured, write the content
         if let Some(ref storage_dir) = self.storage_dir {
@@ -74,7 +74,7 @@ impl ArtifactStore {
         }
 
         let mut artifacts = self.artifacts.write().await;
-        artifacts.insert(id.clone(), StoredArtifact {
+        artifacts.insert(id, StoredArtifact {
             metadata: artifact,
             content,
         });
@@ -86,14 +86,14 @@ impl ArtifactStore {
     pub async fn fetch(&self, id: &ArtifactId) -> Result<Artifact, ArtifactStoreError> {
         let artifacts = self.artifacts.read().await;
         artifacts.get(id).map(|a| a.metadata.clone())
-            .ok_or_else(|| ArtifactStoreError::NotFound(id.clone()))
+            .ok_or(ArtifactStoreError::NotFound(*id))
     }
 
     /// Fetches an artifact's content (bytes).
     pub async fn fetch_content(&self, id: &ArtifactId) -> Result<Vec<u8>, ArtifactStoreError> {
         let artifacts = self.artifacts.read().await;
         artifacts.get(id).map(|a| a.content.clone())
-            .ok_or_else(|| ArtifactStoreError::NotFound(id.clone()))
+            .ok_or(ArtifactStoreError::NotFound(*id))
     }
 
     /// Fetches a bounded chunk of an artifact's content as base64.
@@ -104,7 +104,7 @@ impl ArtifactStore {
         length: u64,
     ) -> Result<ArtifactFetchResult, ArtifactStoreError> {
         let artifacts = self.artifacts.read().await;
-        let stored = artifacts.get(id).ok_or_else(|| ArtifactStoreError::NotFound(id.clone()))?;
+        let stored = artifacts.get(id).ok_or(ArtifactStoreError::NotFound(*id))?;
 
         let metadata = &stored.metadata;
         let content = &stored.content;

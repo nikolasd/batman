@@ -371,6 +371,7 @@ impl RuntimePolicy {
 
 /// Returns the SHA-256 fingerprint of a merged policy document.
 #[must_use]
+#[allow(dead_code)]
 pub fn fingerprint_policy(document: &serde_json::Value) -> String {
     RuntimePolicy::compute_fingerprint(document)
 }
