@@ -324,17 +324,17 @@ The `.github/workflows/release.yml` workflow:
 
 ### xtask
 
-The `batman-xtask` crate provides CLI utilities for release management:
+The `batman-xtask` crate (in `crates/xtask/`) handles codegen and leaf packaging. Release builds are done with standard Cargo:
 
 ```bash
-# Build for all targets
-cargo xtask release build
+# Build for a target (repeat for each target triple)
+cargo build --release --target <triple>
 
-# Package artifacts
-cargo xtask release package --output-dir dist
+# Package a built binary into a leaf package with manifest.json
+cargo run -p batman-xtask -- package --target <triple> --binary target/<triple>/release/batcave
 
-# Generate checksums
-cargo xtask release checksum --output-dir dist
+# Verify generated bindings/schema are up to date (CI)
+cargo run -p batman-xtask -- generate --check
 ```
 
 ### Supported Targets
@@ -441,7 +441,7 @@ If you're upgrading from M3, here's what you need to know:
 
 4. **Doctor**: The new `Doctor` provides comprehensive health checking. Use it in your startup sequence to verify runtime health.
 
-5. **Release**: The new CI workflow and xtask simplify release management. Use `cargo xtask release` for local builds.
+5. **Release**: Build with `cargo build --release --target <triple>` and package with `cargo run -p batman-xtask -- package --target <triple> --binary <path>`.
 
 6. **Conformance**: The new TypeScript conformance gates provide structured testing. Use `runConformance()` in your CI pipeline.
 

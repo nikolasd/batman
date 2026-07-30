@@ -25,24 +25,42 @@ The plan:
 | You know | Rust equivalent |
 |---|---|
 | `package.json` | `Cargo.toml` (root one defines the *workspace*; each crate has its own) |
-| `node_modules` + lockfile | `~/.cargo` cache + `Cargo.lock` |
-| a package | a **crate** (this repo has three: `batman-protocol`, `batman-runtime`, `batman-xtask`) |
+| `bun.lock` | `Cargo.lock` |
+| a package | a **crate** (this repo has four: `batman-protocol`, `batman-runtime`, `batman-xtask`, `batman-fake-worker`) |
 | `bun test` | `cargo test` |
 | `bun run build` | `cargo build` (`target/debug/batcave` is the output binary) |
 | eslint / prettier | `cargo clippy` / `cargo fmt` |
 
 `cargo test -p batman-protocol` = "run tests for that one workspace package".
 
+The workspace uses Rust edition 2024 and pins `rust-version = "1.97.1"`. The resolver is `"3"`.
+
 ### Anatomy of a Rust file
 
 Open `crates/protocol/src/version.rs`. Almost everything you'll ever read is one of these forms:
 
 ```rust
-pub struct ProtocolVersion { pub major: u16, pub minor: u16 }  // like an interface + object shape
-impl ProtocolVersion {                                          // methods live in impl blocks,
-    pub fn new(major: u16, minor: u16) -> Self { ... }          //   not inside the struct
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema, TS,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export)]
+pub struct ProtocolVersion {
+    pub major: u16,
+    pub minor: u16,
+}
+
+impl ProtocolVersion {
+    #[must_use]
+    pub const fn new(major: u16, minor: u16) -> Self {
+        Self { major, minor }
+    }
 }
 ```
+
+Note the derives: `Copy, PartialEq, Eq, PartialOrd, Ord, Hash` were added so this type can be used
+as a map key, sorted, and compared — protocol versions are cheap value types. The `#[ts(export)]`
+attribute hooks into `ts-rs` to generate TypeScript bindings automatically.
 
 Decoder ring for the sigils you'll meet constantly:
 
@@ -57,6 +75,8 @@ Decoder ring for the sigils you'll meet constantly:
 | `|x| x + 1` | closure | `(x) => x + 1` |
 | `foo!(…)` | **macro** call (code generated at compile time) | no analogy; `println!`, `format!`, `assert_eq!` are macros |
 | `#[derive(…)]`, `#[serde(…)]` | attributes annotating the next item | decorators, roughly |
+| `#[must_use]` | compiler warns if the return value is discarded | no direct TS analogue |
+| `const fn` | a function callable at compile time (const evaluation) | no direct TS analogue |
 | last expression, no semicolon | the return value | explicit `return` (allowed too, but idiomatic Rust omits it) |
 
 That last one trips everyone: in `fn f() -> u32 { 41 + 1 }` the `41 + 1` *is* the return because it
@@ -65,13 +85,15 @@ will complain about the type mismatch.
 
 ### Modules
 
-`crates/protocol/src/lib.rs` is the crate root. `mod event;` means "there is a file `event.rs`;
-compile it as a child module". `pub use event::{Timestamp, …};` re-exports its items so users write
-`batman_protocol::Timestamp`. This is the same pattern as a TypeScript barrel `index.ts`, except
-visibility is enforced: without `pub`, an item is private to its module — a fact Day 5 turns into a
-security mechanism.
+`crates/protocol/src/lib.rs` is the crate root. It declares 13 child modules (`approval`,
+`coordination`, `event`, `ids`, `message`, `method`, `rpc`, `run`, `task`, `version`, `worker`,
+`workspace`, `display`, `artifact`) and re-exports their public items so users write
+`batman_protocol::Timestamp` instead of `batman_protocol::event::Timestamp`.
 
-**Do now:** run `cargo test -p batman-protocol`, then read all four files in
+This is the same pattern as a TypeScript barrel `index.ts`, except visibility is enforced: without
+`pub`, an item is private to its module — a fact Day 5 turns into a security mechanism.
+
+**Do now:** run `cargo test -p batman-protocol`, then read all the files in
 `crates/protocol/src/` top to bottom. They're short, and they're 80% struct/enum declarations —
 ideal first Rust.
 
@@ -83,8 +105,8 @@ Rust has no garbage collector. Instead, every value has exactly **one owner**, a
 tracks it. Three rules cover most of what you'll read:
 
 1. **Assignment moves.** `let b = a;` for a heap value (e.g. `String`, `PathBuf`, `Vec`) makes `b`
-   the owner; using `a` afterwards is a compile error. (Cheap `Copy` types — integers, `bool` —
-   are copied instead, like JS primitives.)
+   the owner; using `a` afterwards is a compile error. (Cheap `Copy` types — integers, `bool`,
+   `ProtocolVersion` — are copied instead, like JS primitives.)
 2. **`&T` borrows read-only, `&mut T` borrows writably.** Many `&T` borrows may coexist; a
    `&mut T` must be exclusive. The compiler enforces this — data races become compile errors.
 3. **Owner goes out of scope → value is freed** (its `Drop` runs). Deterministic, no GC pauses.
@@ -92,7 +114,7 @@ tracks it. Three rules cover most of what you'll read:
 Read a real signature with these glasses on (`crates/runtime/src/paths.rs`):
 
 ```rust
-pub fn resolve(state_root: &Path, repository: &Path) -> Result<RuntimePaths, PathError>
+pub fn resolve(state_root: &Path, repository: &Path) -> Result<Self, PathError>
 ```
 
 - `&Path` — "lend me a path to look at; I won't keep it or mutate it". The caller keeps ownership.
@@ -128,15 +150,21 @@ Rust enums are tagged unions — TypeScript discriminated unions, but first-clas
 (`crates/runtime/src/lifecycle.rs`):
 
 ```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopOutcome {
-    Stopped,
+    /// No live runtime was found to stop.
     NotRunning,
+    /// A live runtime was signalled and its socket was removed.
+    Stopped,
 }
 ```
 
 and with payloads (`crates/protocol/src/rpc.rs`):
 
 ```rust
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(tag = "role", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
+#[ts(export)]
 pub enum ClientAuth {
     OmpExtension { instance_id: String, agent_directory: String },
     WorkerMcp { instance_id: String, scope_token: String },
@@ -148,15 +176,21 @@ pub enum ClientAuth {
 later and every non-exhaustive `match` in the codebase becomes a compile error pointing you at
 what to update. That is why this codebase leans so hard on enums.
 
+The CLI layer (`crates/runtime/src/cli.rs`) defines six subcommands — `serve`, `status`, `stop`,
+`monitor`, `schema`, and `audit export` — each as a variant of a `Command` enum, and dispatches
+to a typed handler function per variant:
+
 ```rust
-match lifecycle::stop(&options).await {
-    Ok(StopOutcome::Stopped)    => println!("{}", json!({ "stopped": true })),
-    Ok(StopOutcome::NotRunning) => println!("{}", json!({ "stopped": false })),
-    Err(err)                    => return fail(&err),
+#[derive(Subcommand)]
+enum Command {
+    Serve { … },
+    Status { … },
+    Stop { … },
+    Monitor { … },
+    Schema,
+    Audit { command: AuditCommand },
 }
 ```
-
-(Real code: `crates/runtime/src/cli.rs:run_stop`.)
 
 ### No `null`, no exceptions
 
@@ -198,7 +232,7 @@ The `#[error(...)]` string is the human-readable message. `#[from]` variants (se
 let `?` auto-convert a lower layer's error into this layer's — that's how a `DbError` deep inside
 `serve` surfaces as a `ServeError` at the CLI.
 
-**Do now:** read `cli.rs` end to end (it's 220 lines and all of today's material), then trace one
+**Do now:** read `cli.rs` end to end (it's ~330 lines across six subcommands), then trace one
 `?` in `lifecycle::serve` down to the error enum variant it produces.
 
 ---
@@ -208,12 +242,13 @@ let `?` auto-convert a lower layer's error into this layer's — that's how a `D
 ### Traits ≈ interfaces, derives ≈ free implementations
 
 A trait declares capability (`Serialize`, `Debug`, `Clone`). `#[derive(...)]` asks the compiler
-(or a library macro) to implement it for you. Now this line — the most common line in
+(or a library macro) to implement it for you. Now this line — one of the most common lines in
 `crates/protocol` — reads fully:
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export)]
 pub struct ClientInfo { pub name: String, pub version: String }
 ```
 
@@ -224,6 +259,7 @@ pub struct ClientInfo { pub name: String, pub version: String }
   the JSON schema fall out of the Rust types**.
 - The `#[serde(...)]` attribute is configuration: camelCase field names on the wire, and reject
   unknown fields on input (that's Ajv's `additionalProperties: false`, but on the Rust side).
+- `#[ts(export)]` — `ts-rs` will generate a TypeScript type for this struct at build time.
 
 Enum representation attributes are worth 5 minutes because the wire shape depends on them:
 `ClientAuth` uses `#[serde(tag = "role", ...)]` (internal tag → `{"role":"ompExtension", ...}`),
@@ -236,6 +272,9 @@ Enum representation attributes are worth 5 minutes because the wire shape depend
 `crates/protocol/src/rpc.rs`:
 
 ```rust
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export)]
 pub struct JsonRpcRequest<P> { /* ... params: P ... */ }
 ```
 
@@ -248,6 +287,11 @@ Traits also give you *seams* for testing without a mocking framework: `ipc/mod.r
 `PeerCredentialReader` and `WorkerCredentialVerifier` traits; production wires
 `SystemPeerCredentialReader` / `RejectAllWorkerVerifier`, tests inject fakes. That's dependency
 injection, Rust-style: a trait object or generic parameter instead of a DI container.
+
+The runtime crate's `lib.rs` exposes 16 public modules — `adapter`, `approval`, `audit`,
+`conformance`, `coordination`, `db`, `doctor`, `domain`, `display`, `ipc`, `lifecycle`, `paths`,
+`policy`, `recovery`, `security`, `service`, `supervisor`, `workspace` — each re-exporting its
+key types. When you're lost about where something lives, start from `lib.rs`.
 
 **Do now:** pick `RuntimeStatus` in `rpc.rs`, follow it to
 `packages/protocol-ts/src/generated/RuntimeStatus.ts` and to its entry in
@@ -264,6 +308,9 @@ unless it went through redaction.* In TypeScript you'd write that in a comment a
 it's enforced by the module system (`crates/runtime/src/security/redaction.rs`):
 
 ```rust
+/// A sanitized event, the only type the database actor's journal accepts.
+/// Fields are private; there is no public constructor.
+#[derive(Debug, Clone)]
 pub struct PersistableEvent {
     timestamp: Timestamp,      // <- fields are NOT pub
     project_id: ProjectId,
@@ -282,13 +329,21 @@ for operation payloads.
 Two supporting ideas in the same file/area:
 
 - **Newtypes.** `pub struct SanitizedJson(String);` wraps a plain `String` in a distinct type so
-  it can't be confused with an arbitrary string. All 8 id types (`ProjectId` etc., in
-  `crates/protocol/src/ids.rs`) are newtypes over UUID strings — you cannot pass a `TaskId` where
-  a `RunId` is expected, even though both are "just strings" on the wire. The `uuid_id!` macro
-  generates them (macros: Day 7).
+  it can't be confused with an arbitrary string. All 8 id types (`ProjectId`, `TaskId`, `RunId`,
+  `OperationId`, `MessageId`, `ArtifactId`, `ApprovalId`, `WorkerId` — in
+  `crates/protocol/src/ids.rs`) are newtypes over UUIDv7 strings — you cannot pass a `TaskId`
+  where a `RunId` is expected, even though both are "just strings" on the wire. The `uuid_id!`
+  macro generates them (macros: Day 7).
 - **A hand-written trait impl as a control.** `Classified<T>` implements `Debug` manually so that
   `{:?}` prints `<redacted>` for non-visible content — even accidental debug logging can't leak a
   secret (`crates/protocol/src/event.rs`).
+
+The redaction module actually owns two types for this boundary:
+
+- `RawRuntimeEvent` — the unsafe, pre-redaction form that exists only in process memory.
+- `PersistableEvent` — the safe, post-redaction form that can be persisted.
+
+The `Redactor` struct is the sole bridge between them.
 
 **Do now:** try to defeat it. In any runtime file, attempt to construct a
 `PersistableEvent { ... }` literal or call a constructor. Read the compiler's refusal. That error
@@ -309,16 +364,30 @@ async caller ──(bounded mpsc: Command + oneshot reply-sender)──▶ actor
       ◀──────────────(oneshot: Result<T, DbError>)──────────────┘
 ```
 
-- `tokio::sync::mpsc::channel(32)` — a bounded multi-producer single-consumer queue. Bounded =
-  backpressure: producers wait instead of ballooning memory.
+- `tokio::sync::mpsc::channel(32)` — a bounded multi-producer single-consumer queue. Capacity is
+  32 (defined as `COMMAND_CHANNEL_CAPACITY`). Bounded = backpressure: producers wait instead of
+  ballooning memory.
 - Each `Command` variant (an enum, of course) carries a `oneshot::Sender` — a one-shot reply
   envelope. The caller `await`s the matching `oneshot::Receiver`.
 - Write commands reply only **after** `tx.commit()` succeeds, which is how "the call returned"
   comes to mean "it's durable".
 
+The `DatabaseHandle` is cheap to clone (it's an `Arc`), and `shutdown()` takes `&self` so the
+clean drain-and-join runs even while other clones of the handle are still live. A
+`DomainClosure` type alias (`Box<dyn FnOnce(&mut Connection) -> Result<Value, DomainError> + Send + 'static>`)
+is the unit of work dispatched to the actor thread.
+
 This is Go-style "share memory by communicating", and it's the standard Rust answer to "one
 resource, many users" — no mutex spaghetti, and ownership rules mean the compiler *verifies* that
 only the actor thread touches the connection.
+
+### IPC: per-connection reader + serialized writer
+
+Each accepted socket connection is handled by `ipc/connection.rs::handle()`: one reader loop
+parses incoming JSON-RPC frames, and a single serialized writer task serializes outgoing frames.
+A `WriterMsg` enum and an `mpsc::Sender<WriterMsg>` ensure that subscription event notifications
+never interleave mid-frame with a request response. The writer loop enforces a maximum frame size
+(4 MiB default, 64 KiB minimum).
 
 ### async/await and Tokio
 
@@ -331,21 +400,23 @@ this code:
    `ipc/server.rs`); `tokio::select!` races several futures (used for shutdown-vs-accept).
 
 The cardinal sin is **blocking inside async** (freezes a worker thread the whole runtime shares).
-When this codebase must block — joining the DB actor's OS thread in `shutdown` — it wraps the call
-in `tokio::task::spawn_blocking`, which shunts it to a dedicated blocking pool. If you see
-`spawn_blocking` in review comments, this is why.
+When this codebase must block — joining the DB actor's OS thread in `DatabaseHandle::shutdown` — it
+wraps the call in `tokio::task::spawn_blocking`, which shunts it to a dedicated blocking pool. If
+you see `spawn_blocking` in review comments, this is why.
 
 Sharing state across tasks combines Day 2 tools: `Arc<Shared>` (shared ownership) in
 `ipc/server.rs`, and channels rather than locks wherever possible. The per-connection design —
 one reader task, one writer task fed by a bounded channel — is in `ipc/connection.rs`.
 
-A second channel shape worth knowing: `tokio::sync::broadcast` (`Shared.events_tx` in
-`ipc/server.rs`), one sender, many receivers, every receiver gets every message (unlike `mpsc`,
-where one message goes to exactly one receiver). Each live `events/subscribe` connection calls
-`.subscribe()` for its own receiver; every orchestration mutation calls `.send()` once on the
-shared sender (`OrchestrationService::broadcast`, `service/orchestration.rs`) after its
-transaction commits. If you add a mutation and forget the `.send()`, nothing errors — the
-monitor just never updates for that one case; see `docs/architecture.md` §18 for exactly this bug.
+### Broadcast channels for event fan-out
+
+The runtime uses `tokio::sync::broadcast::channel(64)` to fan events to every live
+`events/subscribe` connection. The sender lives in `Shared.events_tx` and is cloned to
+`OrchestrationService`, `CoordinationBroker`, `ApprovalService`, and `RunDriverContext`. Each
+live subscription calls `.subscribe()` for its own receiver; every mutation calls
+`domain::broadcast_committed(&events_tx, &mut result)` after its transaction commits. If you add
+a mutation and forget to call `broadcast_committed`, nothing errors — the monitor just never
+updates for that one case; see `docs/architecture.md` §18 for exactly this bug.
 
 **Do now:** read `db/actor.rs` top to bottom (it is the best-commented file in the repo), then
 find where `lifecycle::serve` calls `db.shutdown()` and confirm the ordering guarantee the
@@ -358,11 +429,16 @@ architecture doc promises: stopping event committed → actor closed → socket 
 ### Tests
 
 - **Unit tests** live inside source files in a `#[cfg(test)] mod tests { ... }` block (= "compile
-  only when testing"). See the bottom of `security/redaction.rs`.
-- **Integration tests** are files in `tests/` compiled as separate crates using only the public
-  API — `crates/runtime/tests/{paths,database,redaction_boundary,ipc,lifecycle,domain_repository,
-  orchestration_rpc,coordination,approval}.rs`. The lifecycle suite runs the actual compiled
-  binary via `env!("CARGO_BIN_EXE_batcave")` as real child processes.
+  only when testing"). See the bottom of `security/redaction.rs`, `version.rs`, `ids.rs`, etc.
+- **Integration tests** are files in `crates/runtime/tests/` compiled as separate crates using
+  only the public API — there are 30+ test files covering `paths`, `database`, `redaction_boundary`,
+  `ipc`, `lifecycle`, `domain_repository`, `orchestration_rpc`, `coordination`, `approval`, every
+  adapter (claude, codex, copilot, omp_rpc), every display (terminal, tmux, herdr), audit,
+  conformance, supervisor, workspace (apply, lease, materialize), config, and monitor. The
+  lifecycle suite runs the actual compiled binary via `env!("CARGO_BIN_EXE_batcave")` as real
+  child processes.
+- Protocol integration tests live in `crates/protocol/tests/`: `wire_contract.rs`,
+  `workspace_contract.rs`, `domain_contract.rs`, `coordination_contract.rs`, `fixtures.rs`.
 - `#[test]` marks a test; `#[tokio::test]` gives it an async runtime; `assert!`, `assert_eq!`
   are the assertion macros. `tempfile::TempDir` is the throwaway-directory helper you'll see in
   nearly every runtime test.
@@ -414,5 +490,6 @@ You don't need to *write* macros for a long time, but you'll read three kinds he
 
 The unifying theme you should leave with: **this codebase uses Rust's compiler as its enforcement
 mechanism** — exhaustive `match` for protocol evolution, ownership for connection/lock lifetimes,
-and module privacy for the redaction boundary. When you review or write Rust here, the question is
-rarely "does it work" and usually "does the type system *prove* it works".
+module privacy for the redaction boundary, and traits as injectable seams for testing. When you
+review or write Rust here, the question is rarely "does it work" and usually "does the type
+system *prove* it works".
