@@ -9,7 +9,6 @@ import {
   renderRowDetails,
   renderRowLine,
   renderWidgetBox,
-  renderWidgetLines,
   stateIcon,
   stateColor,
   renderWidgetHeader,
@@ -63,21 +62,6 @@ function fakeTheme(): Theme {
     fg: (color: ThemeColor, text: string) => `[${color}]${text}[/${color}]`,
   } as unknown as Theme;
 }
-
-test("an empty state renders a single explanatory line", () => {
-  const lines = renderWidgetLines({ rows: {}, lastSequence: 0n });
-  expect(lines).toEqual(["No BATMAN runs yet."]);
-});
-
-test("renders at most MAX_WIDGET_ROWS lines with an overflow indicator", () => {
-  const rows = Array.from({ length: MAX_WIDGET_ROWS + 3 }, (_, i) =>
-    row({ runId: `run-${i}`, lastEventAt: `2026-01-01T00:${String(i).padStart(2, "0")}:00Z` }),
-  );
-  const lines = renderWidgetLines(stateOf(rows));
-  expect(lines).toHaveLength(MAX_WIDGET_ROWS + 1);
-  expect(lines[lines.length - 1]).toContain("more");
-  expect(lines[lines.length - 1]).toContain("/batman status");
-});
 
 test("a row line includes state, harness/model, flags, and pending approvals", () => {
   const line = renderRowLine(
@@ -196,11 +180,6 @@ test("renderWidgetBox appends a muted overflow line beyond MAX_WIDGET_ROWS", () 
   const overflowLine = lines[lines.length - 2];
   expect(overflowLine).toContain("[muted]");
   expect(overflowLine).toContain("more; use /batman status <runId> for full details.");
-});
-
-test("renderWidgetLines is unaffected by the renderWidgetBox refactor", () => {
-  const lines = renderWidgetLines({ rows: {}, lastSequence: 0n });
-  expect(lines).toEqual(["No BATMAN runs yet."]);
 });
 
 test("renderWidgetBox produces a top border, every content line, and the bottom border at equal total width", () => {

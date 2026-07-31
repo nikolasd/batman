@@ -519,10 +519,15 @@ verified descendant of the same live vendor process may reconnect).
 
 ## Reading the widget line
 
-Every `/batman` row (rendered by `packages/extension/src/monitor/render.ts::renderRowLine`) is:
+The `/batman` widget is a rounded border (drawn by
+`packages/extension/src/monitor/render.ts::assembleBox`) with a bat-icon header
+(`renderWidgetHeader`) spliced directly into the top border line. Each row inside the box is
+prefixed with a per-state Nerd Font icon (`render.ts::stateIcon`) before the state word, and
+colored per-state (`render.ts::stateColor`). Underneath the icon, the joined structure of each row
+(rendered by `renderRowLine`) is unchanged:
 
 ```
-<first 8 chars of runId> · <state> · [adapter/model] · [flags] · [pending approvals] · [workspace mode] · <latest activity>
+<first 8 chars of runId> · <icon> <state> · [adapter/model] · [flags] · [pending approvals] · [workspace mode] · <latest activity>
 ```
 
 — joined by ` · `, with any part that's undefined simply omitted. In this walkthrough there's no
@@ -536,10 +541,13 @@ real adapter, so you'll only ever see the run id, `state` (always `queued` here)
 | `ApprovalEvent` | `"approval requested: <action>"` or `"approval decided"` |
 | `ChildEvent` | `"child worker requested"` or `"child worker request denied"` |
 
-The widget caps at 10 rows (`MAX_WIDGET_ROWS`); when truncated, it appends
-`"… N more; use /batman status <runId> for full details."`. The `/batman status <runId>` detail
-block is a labeled multi-line dump: Run/Task/Worker/State/Harness-model/Flags/Pending
-approvals/Workspace mode/Latest activity/First seen/Last event.
+The widget caps at `MAX_WIDGET_ROWS` rows (now 7) — not 10 — because the host's `ctx.ui.setWidget`
+truncates array-content widgets at 10 total *lines*, and the border chrome (2 lines, plus a
+possible overflow line) has to fit inside that same 10-line budget alongside the rows. When
+truncated, the box appends `"… N more; use /batman status <runId> for full details."` as its last
+row, before the bottom border. The `/batman status <runId>` detail block is a labeled multi-line
+dump: Run/Task/Worker/State/Harness-model/Flags/Pending approvals/Workspace mode/Latest
+activity/First seen/Last event.
 
 ## If something doesn't match
 
