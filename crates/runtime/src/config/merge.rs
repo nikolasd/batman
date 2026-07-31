@@ -254,13 +254,14 @@ pub struct RolloutGates {
 }
 
 /// How to handle nested worker policy violations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NestedViolationAction {
     /// Quarantine the nested worker (blocks all side effects, requires explicit release).
     Quarantine,
     /// Cancel the nested worker (audited adapter path).
     Cancel,
     /// Quarantine then cancel (default).
+    #[default]
     QuarantineAndCancel,
 }
 
@@ -274,11 +275,6 @@ impl std::fmt::Display for NestedViolationAction {
     }
 }
 
-impl Default for NestedViolationAction {
-    fn default() -> Self {
-        Self::QuarantineAndCancel
-    }
-}
 
 impl<'de> serde::Deserialize<'de> for NestedViolationAction {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
