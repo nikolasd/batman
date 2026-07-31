@@ -185,21 +185,26 @@ The Hardening plan (Task 6) requires `tests/conformance/run.ts`, `tests/conforma
 
 ---
 
-### 15. No `batcave doctor` CLI command or `/batman-doctor` OMP command exists
+### 15. `batcave doctor` CLI command and `/batman-doctor` OMP command implemented
 
-**Status:** Open  
+**Status:** Implemented  
 **Priority:** Medium  
 **Labels:** cli, doctor, extension
 
 **Description:**
-The Hardening plan (Task 4) specifies `batcave doctor --json` as a standalone CLI command returning structured checks (`id`, `status`, evidence, remediation, `productionBlocking`), plus a `packages/extension/src/doctor.ts` rendering the same report via an OMP `/batman-doctor` command. **Verified 2026-07-31:** `cli.rs`'s `Command` enum has no `Doctor` variant (same exhaustive 7-variant match as items 10/11), and `packages/extension/src/doctor.ts` does not exist (confirmed via glob). The underlying `doctor.rs` check logic exists (252 lines) but is only ever invoked internally, not exposed as its own command either side of the boundary.
+The Hardening plan (Task 4) specifies `batcave doctor --json` as a standalone CLI command returning structured checks (`id`, `status`, evidence, remediation, `productionBlocking`), plus a `packages/extension/src/doctor.ts` rendering the same report via an OMP `/batman-doctor` command. **Implemented 2026-08-01:** `cli.rs` now has a `Doctor` variant (lines 92-103) wired to `run_doctor()` (lines 361-458). The underlying `doctor.rs` check logic (252 lines) is invoked by the CLI. `packages/extension/src/doctor.ts` provides `runDoctorCommand()` and `buildDoctorContext()` for direct CLI invocation (no runtime connection). `index.ts` registers both `batman_doctor` tool and `/batman-doctor` slash command. Integration tests at `crates/runtime/tests/doctor.rs` verify the CLI behavior (4 tests, all passing). Manual smoke test confirms JSON output format.
 
 **Implementation:**
-- Add a `Doctor { json: bool }` variant to `cli.rs`'s `Command` enum, wired to the existing `doctor.rs` checks
-- Add `packages/extension/src/doctor.ts` and a `/batman-doctor` OMP command rendering the same report
+- Added `Doctor { state_dir, repo, json }` variant to `cli.rs`'s `Command` enum
+- Wired `Command::Doctor` to `run_doctor()` in the match block (line 167-171)
+- Fixed corrupted `run_doctor()` function (removed duplicate match blocks)
+- Added `Serialize` derive to `DoctorResult` and `FailedCheck` in `doctor.rs`
+- Created `packages/extension/src/doctor.ts` with `runDoctorCommand()` and `buildDoctorContext()`
+- Registered `batman_doctor` tool and `/batman-doctor` command in `index.ts`
+- Added integration tests at `crates/runtime/tests/doctor.rs` (4 tests, all passing)
+- Manual smoke test confirms JSON output: `{"error":"...","healthy":false}`
 
-**References:** `.../2026-07-22-batman-hardening-release.md` (Task 4), `crates/runtime/src/cli.rs`, `crates/runtime/src/doctor.rs`
-
+**References:** `.../2026-07-22-batman-hardening-release.md` (Task 4), `crates/runtime/src/cli.rs`, `crates/runtime/src/doctor.rs`, `packages/extension/src/doctor.ts`, `packages/extension/src/index.ts`
 ---
 
 ### 16. Operator-facing docs (Tasks 7-8) aren't split out as the plan specifies, and no release-candidate checklist exists
