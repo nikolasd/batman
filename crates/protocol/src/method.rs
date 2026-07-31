@@ -111,4 +111,8 @@ pub enum BatmanMethod {
     ArtifactList,
     #[serde(rename = "artifact/fetch")]
     ArtifactFetch,
+
+    // Policy: violation resolution
+    #[serde(rename = "policy/violation/decide")]
+    PolicyViolationDecide,
 }

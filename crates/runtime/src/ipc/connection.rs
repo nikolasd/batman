@@ -428,8 +428,9 @@ async fn dispatch(
         | BatmanMethod::ApprovalDecide
         | BatmanMethod::CoordinationChildList
         | BatmanMethod::CoordinationChildDecide
+        | BatmanMethod::ProfileRegister
         | BatmanMethod::ReconcileOmp
-        | BatmanMethod::ProfileRegister => {
+        | BatmanMethod::PolicyViolationDecide => {
             let resolved = method.expect("allowed implies a known method");
             let params = message.get("params").cloned().unwrap_or(Value::Null);
             match shared

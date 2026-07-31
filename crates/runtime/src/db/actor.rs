@@ -58,11 +58,11 @@ pub enum DbError {
     /// recorded intent.
     #[error("no operation intent found for operation {0}")]
     UnknownOperation(String),
-
-    /// The actor's OS thread could not be spawned.
+    /// The actor thread could not be spawned.
     #[error("failed to spawn database actor thread: {0}")]
-    ThreadSpawn(#[source] std::io::Error),
-
+    ThreadSpawn(#[from] std::io::Error),
+    #[error("pruning events failed: {0}")]
+    PruneFailed(String),
     /// The actor thread is no longer running (e.g. it has already shut
     /// down), so the command could not be delivered or answered.
     #[error("database actor is not running")]

@@ -19,7 +19,7 @@
 
 mod merge;
 
-pub use merge::{ConfigMergeError, LayeredConfig, RolloutGates, RuntimePolicy};
+pub use merge::{ConfigMergeError, LayeredConfig, NestedViolationAction, RolloutGates, RuntimePolicy};
 
 use std::path::Path;
 

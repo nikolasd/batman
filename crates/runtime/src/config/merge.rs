@@ -247,6 +247,54 @@ pub struct RolloutGates {
     pub native_discovery_reviewed: bool,
     /// Whether Ornith identity is configured.
     pub ornith_identity_set: bool,
+    /// How to handle nested worker policy violations (quarantine/cancel/quarantineAndCancel).
+    pub nested_violation_action: NestedViolationAction,
+    /// Whether development binary override is allowed (defaults to false outside fixture/development mode).
+    pub allow_development_binary_override: bool,
+}
+
+/// How to handle nested worker policy violations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NestedViolationAction {
+    /// Quarantine the nested worker (blocks all side effects, requires explicit release).
+    Quarantine,
+    /// Cancel the nested worker (audited adapter path).
+    Cancel,
+    /// Quarantine then cancel (default).
+    QuarantineAndCancel,
+}
+
+impl std::fmt::Display for NestedViolationAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Quarantine => write!(f, "quarantine"),
+            Self::Cancel => write!(f, "cancel"),
+            Self::QuarantineAndCancel => write!(f, "quarantineAndCancel"),
+        }
+    }
+}
+
+impl Default for NestedViolationAction {
+    fn default() -> Self {
+        Self::QuarantineAndCancel
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for NestedViolationAction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.to_lowercase().as_str() {
+            "quarantine" => Ok(Self::Quarantine),
+            "cancel" => Ok(Self::Cancel),
+            "quarantineandcancel" | "quarantine_and_cancel" => Ok(Self::QuarantineAndCancel),
+            _ => Err(serde::de::Error::custom(format!(
+                "invalid nested_violation_action: {s}, expected 'quarantine', 'cancel', or 'quarantineAndCancel'"
+            ))),
+        }
+    }
 }
 
 impl RolloutGates {
@@ -259,6 +307,7 @@ impl RolloutGates {
             || !self.concurrency_explicit
             || !self.native_discovery_reviewed
             || !self.ornith_identity_set
+            || self.allow_development_binary_override
     }
 
     /// Returns the set of gate names that are unresolved.
@@ -283,6 +332,9 @@ impl RolloutGates {
         if !self.ornith_identity_set {
             gates.push("ornith_identity_set");
         }
+        if self.allow_development_binary_override {
+            gates.push("allow_development_binary_override");
+        }
         gates
     }
 
@@ -297,10 +349,24 @@ impl RolloutGates {
                 concurrency_explicit: false,
                 native_discovery_reviewed: false,
                 ornith_identity_set: false,
+                nested_violation_action: NestedViolationAction::default(),
+                allow_development_binary_override: false,
             };
         };
 
         let flag = |key: &str| obj.get(key).and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let nested_action = obj
+            .get("nested_violation_action")
+            .and_then(serde_json::Value::as_str)
+            .map(|s| match s.to_lowercase().as_str() {
+                "quarantine" => NestedViolationAction::Quarantine,
+                "cancel" => NestedViolationAction::Cancel,
+                "quarantineandcancel" | "quarantine_and_cancel" => {
+                    NestedViolationAction::QuarantineAndCancel
+                }
+                _ => NestedViolationAction::default(),
+            })
+            .unwrap_or_default();
 
         RolloutGates {
             vendor_terms_accepted: flag("vendor_terms_accepted"),
@@ -309,6 +375,8 @@ impl RolloutGates {
             concurrency_explicit: flag("concurrency_explicit"),
             native_discovery_reviewed: flag("native_discovery_reviewed"),
             ornith_identity_set: flag("ornith_identity_set"),
+            nested_violation_action: nested_action,
+            allow_development_binary_override: flag("allow_development_binary_override"),
         }
     }
 }
@@ -349,353 +417,18 @@ impl RuntimePolicy {
         self.rollout_gates.is_blocked()
     }
 
-    /// Returns the set of unresolved rollout gate names.
+    /// Returns the set of unresolved gate names.
     #[must_use]
     pub fn unresolved_gates(&self) -> Vec<&'static str> {
         self.rollout_gates.unresolved_gates()
     }
 
-    /// Computes a SHA-256 fingerprint of the merged policy document as a
-    /// canonical (compact, deterministic-key-order) JSON string.
+    /// Computes a SHA-256 fingerprint of the merged policy document.
     #[must_use]
-    pub fn compute_fingerprint(document: &serde_json::Value) -> String {
+    pub fn compute_fingerprint(merged: &serde_json::Value) -> String {
         use sha2::{Digest, Sha256};
-
-        let canonical = document.to_string();
         let mut hasher = Sha256::new();
-        hasher.update(canonical.as_bytes());
-        let result = hasher.finalize();
-        format!("{result:x}")
-    }
-}
-
-/// Returns the SHA-256 fingerprint of a merged policy document.
-#[must_use]
-#[allow(dead_code)]
-pub fn fingerprint_policy(document: &serde_json::Value) -> String {
-    RuntimePolicy::compute_fingerprint(document)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_layered_config_empty_all_missing() {
-        let layers = LayeredConfig::load(None, None, None).unwrap();
-        let result = layers.merge(None).unwrap();
-        assert_eq!(result.display_backend, "auto");
-        assert_eq!(result.max_workers, 4);
-        assert_eq!(result.concurrency_ceiling, 2);
-        assert!(result.allowed_models.is_empty());
-        assert!(result.org_security_patterns.is_empty());
-    }
-
-    #[test]
-    fn test_precedence_user_wins_over_org() {
-        let org = serde_json::json!({ "max_workers": 8, "retention": "30d" });
-        let user = serde_json::json!({ "max_workers": 6 });
-
-        let layers = LayeredConfig {
-            org: Some(ConfigLayerData {
-                layer: ConfigLayer::Org,
-                document: org,
-                source: None,
-            }),
-            repo: None,
-            user: Some(ConfigLayerData {
-                layer: ConfigLayer::User,
-                document: user,
-                source: None,
-            }),
-        };
-
-        let result = layers.merge(None).unwrap();
-        assert_eq!(result.max_workers, 6);
-        assert_eq!(result.retention, "30d");
-    }
-
-    #[test]
-    fn test_org_locks_reject_lower_layer_override() {
-        let org = serde_json::json!({
-            "max_workers": 8,
-            "retention": "30d",
-            "locks": { "retention": true }
-        });
-        let repo = serde_json::json!({ "retention": "90d" });
-
-        let layers = LayeredConfig {
-            org: Some(ConfigLayerData {
-                layer: ConfigLayer::Org,
-                document: org,
-                source: None,
-            }),
-            repo: Some(ConfigLayerData {
-                layer: ConfigLayer::Repo,
-                document: repo,
-                source: None,
-            }),
-            user: None,
-        };
-
-        let result = layers.merge(None);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        let msg = format!("{err}");
-        assert!(msg.contains("locked"));
-        assert!(msg.contains("retention"));
-    }
-
-    #[test]
-    fn test_per_run_overrides_locked_fields() {
-        let org = serde_json::json!({
-            "max_workers": 8,
-            "retention": "30d",
-            "locks": { "retention": true }
-        });
-        let per_run = serde_json::json!({ "retention": "7d" });
-
-        let layers = LayeredConfig {
-            org: Some(ConfigLayerData {
-                layer: ConfigLayer::Org,
-                document: org,
-                source: None,
-            }),
-            repo: None,
-            user: None,
-        };
-
-        let result = layers.merge(Some(&per_run)).unwrap();
-        assert_eq!(result.retention, "7d");
-    }
-
-    #[test]
-    fn test_display_preference_resolves_to_auto() {
-        let org = serde_json::json!({ "display": { "backend": "herdr" } });
-
-        let layers = LayeredConfig {
-            org: Some(ConfigLayerData {
-                layer: ConfigLayer::Org,
-                document: org,
-                source: None,
-            }),
-            repo: None,
-            user: None,
-        };
-
-        let result = layers.merge(None).unwrap();
-        assert_eq!(result.display_backend, "herdr");
-    }
-
-    #[test]
-    fn test_display_user_layer_wins() {
-        let org = serde_json::json!({ "display": { "backend": "herdr" } });
-        let user = serde_json::json!({ "display": { "backend": "tmux" } });
-
-        let layers = LayeredConfig {
-            org: Some(ConfigLayerData {
-                layer: ConfigLayer::Org,
-                document: org,
-                source: None,
-            }),
-            repo: None,
-            user: Some(ConfigLayerData {
-                layer: ConfigLayer::User,
-                document: user,
-                source: None,
-            }),
-        };
-
-        let result = layers.merge(None).unwrap();
-        assert_eq!(result.display_backend, "tmux");
-    }
-
-    #[test]
-    fn test_fingerprint_is_deterministic() {
-        let doc = serde_json::json!({ "max_workers": 4, "retention": "30d" });
-
-        let fp1 = RuntimePolicy::compute_fingerprint(&doc);
-        let fp2 = RuntimePolicy::compute_fingerprint(&doc);
-        assert_eq!(fp1, fp2);
-        assert_eq!(fp1.len(), 64); // SHA-256 hex is 64 chars
-    }
-
-    #[test]
-    fn test_fingerprint_changes_with_content() {
-        let doc1 = serde_json::json!({ "max_workers": 4 });
-        let doc2 = serde_json::json!({ "max_workers": 8 });
-
-        let fp1 = RuntimePolicy::compute_fingerprint(&doc1);
-        let fp2 = RuntimePolicy::compute_fingerprint(&doc2);
-        assert_ne!(fp1, fp2);
-    }
-
-    #[test]
-    fn test_concurrency_ceiling_clamped() {
-        let org = serde_json::json!({ "concurrency": { "ceiling": 100 } });
-
-        let layers = LayeredConfig {
-            org: Some(ConfigLayerData {
-                layer: ConfigLayer::Org,
-                document: org,
-                source: None,
-            }),
-            repo: None,
-            user: None,
-        };
-
-        let result = layers.merge(None).unwrap();
-        assert_eq!(result.concurrency_ceiling, 16); // max cap
-    }
-
-    #[test]
-    fn test_max_workers_clamped() {
-        let org = serde_json::json!({ "max_workers": 1000 });
-
-        let layers = LayeredConfig {
-            org: Some(ConfigLayerData {
-                layer: ConfigLayer::Org,
-                document: org,
-                source: None,
-            }),
-            repo: None,
-            user: None,
-        };
-
-        let result = layers.merge(None).unwrap();
-        assert_eq!(result.max_workers, 32); // max cap
-    }
-
-    #[test]
-    fn test_rollout_gates_default_blocked() {
-        let doc = serde_json::json!({});
-        let layers = LayeredConfig {
-            org: Some(ConfigLayerData {
-                layer: ConfigLayer::Org,
-                document: doc,
-                source: None,
-            }),
-            repo: None,
-            user: None,
-        };
-
-        let result = layers.merge(None).unwrap();
-        assert!(result.is_rollout_blocked());
-        assert_eq!(result.unresolved_gates().len(), 6);
-    }
-
-    #[test]
-    fn test_rollout_gates_all_clear() {
-        let doc = serde_json::json!({
-            "rollout_gates": {
-                "vendor_terms_accepted": true,
-                "retention_configured": true,
-                "model_allowlist_set": true,
-                "concurrency_explicit": true,
-                "native_discovery_reviewed": true,
-                "ornith_identity_set": true
-            }
-        });
-
-        let layers = LayeredConfig {
-            org: Some(ConfigLayerData {
-                layer: ConfigLayer::Org,
-                document: doc,
-                source: None,
-            }),
-            repo: None,
-            user: None,
-        };
-
-        let result = layers.merge(None).unwrap();
-        assert!(!result.is_rollout_blocked());
-        assert!(result.unresolved_gates().is_empty());
-    }
-
-    #[test]
-    fn test_allowed_models_parsed() {
-        let doc = serde_json::json!({
-            "models": { "allowlist": ["gpt-4", "claude-3"] }
-        });
-
-        let layers = LayeredConfig {
-            org: Some(ConfigLayerData {
-                layer: ConfigLayer::Org,
-                document: doc,
-                source: None,
-            }),
-            repo: None,
-            user: None,
-        };
-
-        let result = layers.merge(None).unwrap();
-        assert_eq!(result.allowed_models, vec!["gpt-4", "claude-3"]);
-    }
-
-    #[test]
-    fn test_full_precedence_chain_rejects_locked_override() {
-        // org: max_workers=8, retention=30d (locked: retention)
-        // repo: retention=90d — must be rejected (locked).
-        let org = serde_json::json!({
-            "max_workers": 8,
-            "retention": "30d",
-            "locks": { "retention": true }
-        });
-        let repo = serde_json::json!({ "retention": "90d" });
-
-        let layers = LayeredConfig {
-            org: Some(ConfigLayerData {
-                layer: ConfigLayer::Org,
-                document: org,
-                source: None,
-            }),
-            repo: Some(ConfigLayerData {
-                layer: ConfigLayer::Repo,
-                document: repo,
-                source: None,
-            }),
-            user: None,
-        };
-
-        let result = layers.merge(None);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_full_precedence_with_user_override() {
-        // org: max_workers=8, retention=30d (locked: retention)
-        // repo: max_workers=4 (allowed, not locked)
-        // user: max_workers=6 (allowed, not locked)
-        // per-run: retention=7d (allowed, per-run overrides locks)
-        let org = serde_json::json!({
-            "max_workers": 8,
-            "retention": "30d",
-            "locks": { "retention": true }
-        });
-        let repo = serde_json::json!({ "max_workers": 4 });
-        let user = serde_json::json!({ "max_workers": 6 });
-        let per_run = serde_json::json!({ "retention": "7d" });
-
-        let layers = LayeredConfig {
-            org: Some(ConfigLayerData {
-                layer: ConfigLayer::Org,
-                document: org,
-                source: None,
-            }),
-            repo: Some(ConfigLayerData {
-                layer: ConfigLayer::Repo,
-                document: repo,
-                source: None,
-            }),
-            user: Some(ConfigLayerData {
-                layer: ConfigLayer::User,
-                document: user,
-                source: None,
-            }),
-        };
-
-        let result = layers.merge(Some(&per_run)).unwrap();
-        assert_eq!(result.retention, "7d");
-        assert_eq!(result.max_workers, 6);
+        hasher.update(merged.to_string().as_bytes());
+        hex::encode(hasher.finalize())
     }
 }

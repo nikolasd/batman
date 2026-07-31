@@ -37,6 +37,15 @@ enum Command {
         /// than to `runtime.log`.
         #[arg(long)]
         foreground: bool,
+        /// Path to the org-level configuration file.
+        #[arg(long = "org-config")]
+        org_config: Option<PathBuf>,
+        /// Path to the repo-level configuration file.
+        #[arg(long = "repo-config")]
+        repo_config: Option<PathBuf>,
+        /// Path to the user-level configuration file.
+        #[arg(long = "user-config")]
+        user_config: Option<PathBuf>,
     },
     /// Print the runtime's `runtime/status` snapshot as JSON.
     Status {
@@ -114,7 +123,10 @@ pub async fn run() -> ExitCode {
             repo,
             idle_seconds,
             foreground,
-        } => run_serve(state_dir, repo, idle_seconds, foreground).await,
+            org_config,
+            repo_config,
+            user_config,
+        } => run_serve(state_dir, repo, idle_seconds, foreground, org_config, repo_config, user_config).await,
         Command::Status {
             wait_seconds,
             state_dir,
@@ -150,6 +162,9 @@ async fn run_serve(
     repo: PathBuf,
     idle_seconds: Option<u64>,
     foreground: bool,
+    org_config: Option<PathBuf>,
+    repo_config: Option<PathBuf>,
+    user_config: Option<PathBuf>,
 ) -> ExitCode {
     use batman_runtime::lifecycle::{self, ServeOptions};
 
@@ -164,6 +179,9 @@ async fn run_serve(
         idle_seconds,
         foreground,
         binary_source: batman_protocol::BinarySource::Unknown,
+        org_config,
+        repo_config,
+        user_config,
     };
 
     match lifecycle::serve(&options).await {

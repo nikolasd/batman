@@ -217,6 +217,7 @@ impl ClientPrincipal {
             ProfileRegister, ReconcileOmp, RunCancel, RunGet, RunList, RunRetry, RunSubmit,
             RuntimeShutdown, RuntimeStatus, TaskGet, TaskUpsert, WorkerCreate, WorkerGet,
             WorkerList,
+            PolicyViolationDecide,
         };
         match self.role {
             ClientRole::OmpExtension => vec![
@@ -242,6 +243,7 @@ impl ClientPrincipal {
                 CoordinationChildDecide,
                 ReconcileOmp,
                 ProfileRegister,
+                PolicyViolationDecide,
             ],
             ClientRole::Display => {
                 vec![

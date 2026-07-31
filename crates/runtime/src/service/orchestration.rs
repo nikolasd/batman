@@ -162,6 +162,9 @@ impl OrchestrationService {
             }
             BatmanMethod::CoordinationChildDecide => self.coordination_child_decide(params).await,
             BatmanMethod::ProfileRegister => self.profile_register(params).await,
+            BatmanMethod::PolicyViolationDecide => Err(ServiceError::internal(
+                "method is not routed through OrchestrationService",
+            )),
             _ => Err(ServiceError::internal(
                 "method is not routed through OrchestrationService",
             )),
@@ -695,8 +698,6 @@ impl OrchestrationService {
             },
         }))
     }
-
-    // -------------------------------------------------------- reconcile
 
     /// Rebinds a task from a disconnected OMP client instance to the
     /// connected `principal`, only when task ID and monotonic OMP revision

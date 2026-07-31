@@ -263,6 +263,8 @@ mod tests {
                 concurrency_explicit: true,
                 native_discovery_reviewed: true,
                 ornith_identity_set: true,
+                nested_violation_action: crate::config::NestedViolationAction::QuarantineAndCancel,
+                allow_development_binary_override: false,
             },
         }
     }

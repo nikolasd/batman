@@ -47,9 +47,7 @@ use crate::security::redaction::{RawEventKind, RawRuntimeEvent, Redactor};
 use crate::security::{SecurityError, ensure_private_dir, ensure_private_file};
 
 pub use crate::ipc::should_idle_shutdown;
-use crate::adapter::DenyByDefaultAuthorization;
-
-// ------------------------------------------------------------------ serve
+use crate::policy::PolicyEvaluator;
 
 /// Options for [`serve`].
 #[derive(Debug, Clone)]
@@ -65,6 +63,12 @@ pub struct ServeOptions {
     pub foreground: bool,
     /// Where this binary was loaded from, reported by `runtime/status`.
     pub binary_source: BinarySource,
+    /// Path to the org-level configuration file.
+    pub org_config: Option<PathBuf>,
+    /// Path to the repo-level configuration file.
+    pub repo_config: Option<PathBuf>,
+    /// Path to the user-level configuration file.
+    pub user_config: Option<PathBuf>,
 }
 
 /// The machine-readable identity of an already-running runtime, printed by
@@ -107,9 +111,10 @@ pub enum ServeError {
         #[source]
         source: std::io::Error,
     },
+    /// Resolving the effective policy failed (org/repo/user config parse/merge error).
+    #[error("config error: {0}")]
+    ConfigError(String),
 }
-
-/// Serves the runtime for one repository until signalled, shut down in-band,
 /// or idle. Acquires the single-instance lock first; performs a graceful,
 /// journal-before-socket-removal shutdown on exit.
 ///
@@ -190,8 +195,16 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
         }
     };
 
+    // Use the config paths from ServeOptions (passed through from CLI).
+    let policy = crate::config::resolve_effective_policy(
+        opts.org_config.as_deref(),
+        opts.repo_config.as_deref(),
+        opts.user_config.as_deref(),
+        None,
+    )
+    .map_err(|e| ServeError::ConfigError(e.to_string()))?;
     let registry = Arc::new(AdapterRegistry::new(
-        Arc::new(DenyByDefaultAuthorization::from_env()),
+        Arc::new(PolicyEvaluator::new(policy)),
         repo_root,
         mcp,
     ));

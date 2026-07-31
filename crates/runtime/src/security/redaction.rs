@@ -155,6 +155,24 @@ impl Redactor {
                     pattern: Regex::new(r"Bearer\s+[A-Za-z0-9._-]{20,}")
                         .expect("built-in bearer_token pattern is a valid, bounded regex"),
                 },
+                RedactionRule {
+                    id: "github_pat",
+                    // GitHub personal access tokens (ghp_ prefix).
+                    pattern: Regex::new(r"ghp_[A-Za-z0-9]{16,}")
+                        .expect("built-in github_pat pattern is a valid, bounded regex"),
+                },
+                RedactionRule {
+                    id: "aws_access_key",
+                    // AWS access key IDs (AKIA prefix).
+                    pattern: Regex::new(r"AKIA[0-9A-Z]{16}")
+                        .expect("built-in aws_access_key pattern is a valid, bounded regex"),
+                },
+                RedactionRule {
+                    id: "jwt",
+                    // JSON Web Tokens (three base64url-encoded segments).
+                    pattern: Regex::new(r"[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}")
+                        .expect("built-in jwt pattern is a valid, bounded regex"),
+                },
             ],
         }
     }
