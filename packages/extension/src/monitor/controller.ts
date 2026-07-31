@@ -7,7 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import type { BatmanClient } from "../client";
 import { EMPTY_MONITOR_STATE, reduceEvent, type MonitorState } from "./model";
-import { renderRowDetails, renderWidgetLines } from "./render";
+import { renderRowDetails, renderWidgetBox } from "./render";
 
 /** The custom session-entry type the last-rendered sequence is persisted under. */
 export const MONITOR_ENTRY_TYPE = "batman-monitor";
@@ -84,11 +84,6 @@ export class MonitorController {
     this.#onUpdate = undefined;
   }
 
-  /** The widget's current concise lines. */
-  renderLines(): string[] {
-    return renderWidgetLines(this.#state);
-  }
-
   /** Full detail text for `/batman status <runId>`, or `undefined` if no
    *  row exists for that run. */
   renderStatus(runId: string): string | undefined {
@@ -103,7 +98,7 @@ export function registerMonitor(pi: ExtensionAPI, ctx: MonitorControllerContext)
   let connected = false;
 
   function refresh(extCtx: ExtensionContext): void {
-    extCtx.ui.setWidget(WIDGET_KEY, controller.renderLines(), { placement: "aboveEditor" });
+    extCtx.ui.setWidget(WIDGET_KEY, renderWidgetBox(controller.getState(), extCtx.ui.theme), { placement: "aboveEditor" });
     pi.appendEntry(MONITOR_ENTRY_TYPE, { sequence: Number(controller.getState().lastSequence) });
   }
 
