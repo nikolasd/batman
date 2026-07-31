@@ -15,6 +15,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use thiserror::Error;
+use serde::Serialize;
 
 use crate::config::RuntimePolicy;
 use crate::db::DatabaseHandle;
@@ -47,7 +48,7 @@ pub enum DoctorError {
 }
 
 /// Result of a doctor check.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DoctorResult {
     /// Whether the runtime is healthy.
     pub healthy: bool,
@@ -63,7 +64,7 @@ pub struct DoctorResult {
 }
 
 /// A single failed check.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FailedCheck {
     /// The name of the check.
     pub check_name: String,

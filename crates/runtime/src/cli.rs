@@ -89,6 +89,18 @@ enum Command {
         #[command(subcommand)]
         command: AuditCommand,
     },
+    /// Run diagnostic checks on the runtime state and configuration.
+    Doctor {
+        /// The BATMAN state root. Defaults to the resolved state root.
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+        /// The repository to diagnose.
+        #[arg(long)]
+        repo: PathBuf,
+        /// Output as JSON (machine-readable).
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -152,6 +164,11 @@ pub async fn run() -> ExitCode {
                 output,
             },
         } => run_audit_export(state_dir, repo, from, to, output).await,
+        Command::Doctor {
+            state_dir,
+            repo,
+            json,
+        } => run_doctor(state_dir, repo, json).await,
     }
 }
 
@@ -341,6 +358,91 @@ fn resolve_state_dir(state_dir: Option<PathBuf>) -> Result<PathBuf, String> {
     }
 }
 
+/// Runs `batcave doctor`: runs diagnostic checks on the runtime state and configuration.
+async fn run_doctor(state_dir: Option<PathBuf>, repo: PathBuf, json: bool) -> ExitCode {
+    use batman_runtime::doctor::Doctor;
+
+    let state_dir_resolved = match resolve_state_dir(state_dir) {
+        Ok(dir) => dir,
+        Err(err) => return fail(&err),
+    };
+
+    // Try to open a database handle for the repo
+    let db = match batman_runtime::db::DatabaseHandle::start(
+        state_dir_resolved.join("runtime.db"),
+    )
+    .await
+    {
+        Ok(handle) => Some(std::sync::Arc::new(handle)),
+        Err(err) => {
+            if json {
+                println!("{}", serde_json::json!({
+                    "healthy": false,
+                    "error": format!("failed to open database: {err}")
+                }));
+            } else {
+                eprintln!("failed to open database: {err}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Load runtime policy (if available)
+    let policy = match batman_runtime::config::LayeredConfig::load(
+        None, // org_config
+        Some(repo.as_path()),
+        None, // user_config
+    ) {
+        Ok(config) => match config.merge(None) {
+            Ok(policy) => Some(policy),
+            Err(err) => {
+                if json {
+                    println!("{}", serde_json::json!({
+                        "healthy": false,
+                        "error": format!("failed to merge config: {err}")
+                    }));
+                } else {
+                    eprintln!("failed to merge config: {err}");
+                }
+                return ExitCode::FAILURE;
+            }
+        },
+        Err(err) => {
+            if json {
+                println!("{}", serde_json::json!({
+                    "healthy": false,
+                    "error": format!("failed to load config: {err}")
+                }));
+            } else {
+                eprintln!("failed to load config: {err}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let doctor = Doctor::new(db, Some(state_dir_resolved), policy);
+
+    match doctor.check().await {
+        Ok(result) => {
+            if json {
+                println!("{}", serde_json::to_string(&result).expect("DoctorResult serializes"));
+            } else {
+                println!("doctor check: {}", if result.healthy { "healthy" } else { "failed" });
+                if !result.failed_checks.is_empty() {
+                    eprintln!("failed checks:");
+                    for check in &result.failed_checks {
+                        eprintln!("  - {:?}", check);
+                    }
+                }
+            }
+            ExitCode::from(if result.healthy { 0 } else { 1 })
+        }
+        Err(err) => {
+            eprintln!("doctor check failed: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
 /// Prints an error to stderr and returns `ExitCode::FAILURE`.
 fn fail(err: &dyn std::fmt::Display) -> ExitCode {
     eprintln!("{err}");
