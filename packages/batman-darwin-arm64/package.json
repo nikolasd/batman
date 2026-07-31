@@ -6,7 +6,7 @@
   "os": ["darwin"],
   "cpu": ["arm64"],
   "private": false,
-  "publishConfig": { "access": "public" },
+  "publishConfig": { "access": "public", "registry": "https://npm.private-registry.internal/" },
   "files": ["bin/batcave", "index.js", "manifest.json"],
   "exports": {
     ".": "./index.js",

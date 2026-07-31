@@ -1,4 +1,4 @@
-name: Build and Publish Release Artifacts
+name: Build and Publish npm Packages
 
 on:
   push:
@@ -8,67 +8,83 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
         include:
           - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact_name: batcave-aarch64-apple-darwin
+            rust_target: aarch64-apple-darwin
+            leaf_target: darwin-arm64
           - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: batcave-x86_64-apple-darwin
+            rust_target: x86_64-apple-darwin
+            leaf_target: darwin-x64
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: batcave-x86_64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact_name: batcave-x86_64-pc-windows-msvc.exe
+            rust_target: aarch64-unknown-linux-gnu
+            leaf_target: linux-arm64-gnu
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            leaf_target: linux-x64-gnu
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.rust_target }}
 
-      - name: Build
-        run: cargo build --release --bin batcave
+      - name: Build batcave
+        run: cargo build --release --target ${{ matrix.rust_target }} --bin batcave
 
-      - name: Package artifact
+      - name: Assemble leaf package
         run: |
-          cd target/release
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp batcave.exe ${{ matrix.artifact_name }}
-          else
-            cp batcave ${{ matrix.artifact_name }}
-          fi
+          cargo run -p batman-xtask -- package \
+            --target ${{ matrix.leaf_target }} \
+            --binary target/${{ matrix.rust_target }}/release/batcave
 
-      - name: Upload artifact
+      - name: Upload leaf package
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: target/release/${{ matrix.artifact_name }}
+          name: batman-${{ matrix.leaf_target }}
+          path: packages/batman-${{ matrix.leaf_target }}/
 
-  release:
+  publish:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download all leaf packages
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          pattern: batman-*
+          path: packages
+          merge-multiple: false
 
-      - name: Create release
-        uses: softprops/action-gh-release@v1
+      - name: Restore leaf package layout
+        run: |
+          # actions/download-artifact nests each artifact under
+          # packages/<artifact-name>/, matching packages/batman-<target>/
+          # already -- nothing further to reshape.
+          ls -la packages/
+
+      - uses: oven-sh/setup-bun@v2
         with:
-          files: artifacts/**/*
-          generate_release_notes: true
+          bun-version: 1.3.14
+
+      - name: Publish leaf packages and extension to the private registry
+        env:
+          SATORI_NPM_TOKEN: ${{ secrets.SATORI_NPM_TOKEN }}
+        run: |
+          # Each package's own publishConfig.access (public for the 4 leaf
+          # packages, restricted for the extension) governs visibility --
+          # no --access flag here to avoid silently overriding it.
+          for pkg in packages/batman-darwin-arm64 packages/batman-darwin-x64 \
+                     packages/batman-linux-arm64-gnu packages/batman-linux-x64-gnu \
+                     packages/extension; do
+            (cd "$pkg" && bun publish)
+          done

@@ -27,69 +27,33 @@ If you're building multiagent systems that need to be auditable, recoverable, an
 
 ## Installation
 
-### For users (just want to use it)
+BATMAN is distributed as an OMP plugin. Install it with OMP's own plugin manager:
 
-**Install from local repository (fresh clone requires building first):**
 ```bash
-# Clone the repo
-git clone https://github.com/nikolasd/batman.git
-cd batman
-
-# Build the runtime (required — binaries are gitignored release artifacts)
-cargo build -p batman-runtime
-
-# Copy the binary to the appropriate packages directory
-cp target/debug/batcave packages/batman-darwin-arm64/bin/batcave
-
-# Install (installs BOTH runtime and OMP extension)
-./scripts/install-local.sh
+omp install @satori/batman
 ```
 
-If you skip the build step, the installer will tell you exactly what to do.
+This is OMP's native package manager (`omp plugin install`, equivalent to `omp plugin link` for local paths). One command:
 
-This installs:
-- `batcave` runtime to `~/.batman/bin/batcave`
-- OMP extension to `~/.batman/lib/node_modules/@satori/batman`
-- No root privileges required
+- Installs to `~/.omp/plugins` — user-owned directory, **no root privileges required**
+- Resolves `@satori/batman` and its matching platform binary package (`@satori/batman-<platform>`, containing `batcave`) together via npm `optionalDependencies` — the extension and the runtime install as one unit
+- Registers the extension for **automatic discovery** on every future `omp` launch — no `--extension` flag needed
+
+**Requires:** access to the private npm registry `@satori/*` packages are published to. Configure the `@satori` scope once — see [`.npmrc`](.npmrc) for the registry template (replace the placeholder URL and set `SATORI_NPM_TOKEN`), or use your organization's standard registry auth setup.
 
 **To uninstall:**
 ```bash
-rm -rf ~/.batman
-rm -f /usr/local/bin/batcave 2>/dev/null || true
+omp plugin uninstall @satori/batman
 ```
 
-**Future: Install from GitHub Releases (once first release is published):**
+**To upgrade:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nikolasd/batman/main/scripts/install.sh | bash
+omp plugin upgrade @satori/batman
 ```
 
-**Future: Install via Homebrew (once a tap is created):**
-```bash
-brew tap nikolasd/batman
-brew install batman
-```
+## Development
 
-## Publishing a Release
-
-To publish a new release (which triggers automatic binary building and publishing):
-
-```bash
-# Update the version in packages/extension/package.json first
-# Then publish:
-cargo run -p batman-xtask -- publish
-```
-
-This creates a git tag `v<version>` and pushes it to origin, triggering the [release.yml](.github/workflows/release.yml) CI/CD pipeline which:
-1. Builds `batcave` for macOS ARM/Intel, Linux x64/ARM, and Windows
-2. Creates a GitHub Release with the binaries as assets
-3. Makes the install script work for end users
-
-Once the release is published, users can install via:
-```bash
-curl -fsSL https://raw.githubusercontent.com/nikolasd/batman/main/scripts/install.sh | bash
-```
-
-### For developers (want to build/modify)
+For contributors building or modifying BATMAN itself (not for end users — see [Installation](#installation) above):
 
 **Prerequisites:** Rust 1.97+, Bun 1.3.14+, macOS or glibc Linux on arm64/x64. For the full OMP integration you also need OMP ≥ 17.0.7.
 
@@ -101,37 +65,31 @@ bun run check               # schema drift check + build + all tests
 cargo build -p batman-runtime
 ```
 
-This builds the `batcave` daemon binary in `target/debug/batcave`.
-
-### Get started in 5 minutes
-
-1. **Build the daemon:**
-   ```bash
-   cargo build -p batman-runtime
-   ```
-
-2. **Start the daemon** (replaces `$PWD` with your repo path):
-   ```bash
-   ./target/debug/batcave serve --state-dir /tmp/batman-state --repo "$PWD" --idle-seconds 30 &
-   ```
-
-3. **Check runtime status** (no model call required):
-   ```bash
-   ./target/debug/batcave status --state-dir /tmp/batman-state --repo "$PWD"
-   ```
-
-You now have a running BATMAN daemon with a durable event journal. Done.
-
-### Full OMP integration
-
-To use orchestration tools (task/worker/run management), start an interactive OMP session:
+To exercise the extension against your local changes before publishing, load it from its source path directly:
 
 ```bash
 OMP_BATMAN_BINARY="$PWD/target/debug/batcave" \
   omp --extension ./packages/extension/src/index.ts
 ```
 
-Then ask the model to use `batman_task`, `batman_worker`, and `batman_run`, and open `/batman` to watch runs live. See [docs/manual-testing.md](docs/manual-testing.md) for the full walkthrough.
+Ask the model to use `batman_task`, `batman_worker`, and `batman_run`, then open `/batman` to watch runs live. See [docs/manual-testing.md](docs/manual-testing.md) for the full walkthrough.
+
+## Publishing
+
+Maintainers publish new versions to the private npm registry via CI, not manually:
+
+```bash
+# Bump the version in packages/extension/package.json and every packages/batman-*/package.json first
+git tag v<version>
+git push origin v<version>
+```
+
+Pushing a `v*` tag triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which:
+1. Builds `batcave` for macOS ARM/Intel and Linux x64/ARM
+2. Assembles each platform leaf package (`cargo run -p batman-xtask -- package`)
+3. Publishes all 4 leaf packages and `@satori/batman` to the private registry
+
+**Requires:** a `SATORI_NPM_TOKEN` repository secret with publish access to the private registry.
 
 ## Contributing
 

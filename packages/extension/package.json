@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "files": ["dist"],
-  "publishConfig": { "access": "restricted" },
+  "publishConfig": { "access": "restricted", "registry": "https://npm.private-registry.internal/" },
   "exports": { ".": "./dist/index.js" },
   "omp": { "extensions": ["./dist/index.js"] },
   "scripts": {
