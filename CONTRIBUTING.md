@@ -146,6 +146,23 @@ docs/                     Engineering documentation (start here: docs/getting-st
    - Make requested changes
    - Update tests if needed
 
+## Releasing
+
+Maintainers publish new versions to the private npm registry via CI, not manually:
+
+```bash
+# Bump the version in packages/extension/package.json and every packages/batman-*/package.json first
+git tag v<version>
+git push origin v<version>
+```
+
+Pushing a `v*` tag triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which:
+1. Builds `batcave` for macOS ARM/Intel and Linux x64/ARM
+2. Assembles each platform leaf package (`cargo run -p batman-xtask -- package`)
+3. Builds the extension bundle (`bun run build`) and publishes all 4 leaf packages plus `@satori/batman` to the private registry
+
+**Requires:** a `SATORI_NPM_TOKEN` repository secret with publish access to the private registry.
+
 ## Documentation
 
 When contributing, consider updating documentation:

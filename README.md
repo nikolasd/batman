@@ -27,29 +27,24 @@ If you're building multiagent systems that need to be auditable, recoverable, an
 
 ## Installation
 
-BATMAN is distributed as an OMP plugin. Install it with OMP's own plugin manager:
+BATMAN consists of two components, both installed in one step:
+- **Plugin**: TypeScript extension loaded by OMP
+- **Binary**: `batcave` runtime daemon
 
 ```bash
 omp install @satori/batman
 ```
 
-This is OMP's native package manager (`omp plugin install`, equivalent to `omp plugin link` for local paths). One command:
-
-- Installs to `~/.omp/plugins` — user-owned directory, **no root privileges required**
-- Resolves `@satori/batman` and its matching platform binary package (`@satori/batman-<platform>`, containing `batcave`) together via npm `optionalDependencies` — the extension and the runtime install as one unit
-- Registers the extension for **automatic discovery** on every future `omp` launch — no `--extension` flag needed
-
-**Requires:** access to the private npm registry `@satori/*` packages are published to. Configure the `@satori` scope once — see [`.npmrc`](.npmrc) for the registry template (replace the placeholder URL and set `SATORI_NPM_TOKEN`), or use your organization's standard registry auth setup.
+This installs:
+- Plugin: `~/.omp/plugins/node_modules/@satori/batman` (TypeScript extension)
+- Runtime: `batcave` binary from the installed leaf package (discovered by the extension via `import.meta.resolve`)
 
 **To uninstall:**
 ```bash
 omp plugin uninstall @satori/batman
 ```
 
-**To upgrade:**
-```bash
-omp plugin upgrade @satori/batman
-```
+Requires access to the private npm registry `@satori/*` packages are published to. Configure the `@satori` scope once — see [`.npmrc`](.npmrc) for the registry template (replace the placeholder URL and set `SATORI_NPM_TOKEN`), or use your organization's standard registry auth setup.
 
 ## Development
 
@@ -73,34 +68,17 @@ OMP_BATMAN_BINARY="$PWD/target/debug/batcave" \
 
 Ask the model to use `batman_task`, `batman_worker`, and `batman_run`, then open `/batman` to watch runs live. See [docs/manual-testing.md](docs/manual-testing.md) for the full walkthrough.
 
-## Publishing
-
-Maintainers publish new versions to the private npm registry via CI, not manually:
-
-```bash
-# Bump the version in packages/extension/package.json and every packages/batman-*/package.json first
-git tag v<version>
-git push origin v<version>
-```
-
-Pushing a `v*` tag triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which:
-1. Builds `batcave` for macOS ARM/Intel and Linux x64/ARM
-2. Assembles each platform leaf package (`cargo run -p batman-xtask -- package`)
-3. Publishes all 4 leaf packages and `@satori/batman` to the private registry
-
-**Requires:** a `SATORI_NPM_TOKEN` repository secret with publish access to the private registry.
-
 ## Contributing
 
 Contributions are welcome. Before submitting a PR:
 
 1. Read [`docs/getting-started.md`](docs/getting-started.md) and [`docs/architecture.md`](docs/architecture.md).
 2. Run `bun run check` — schema drift, build, and all tests must pass.
-3. Follow the [Non-negotiable invariants](#non-negotiable-invariants) — changes that weaken them will be rejected.
+3. Follow the [Non-Negotiable Invariants](CONTRIBUTING.md#non-negotiable-invariants) — changes that weaken them will be rejected.
 4. Use descriptive commit messages. Reference issue numbers when applicable.
 5. Fill out the PR template completely, link related issues, and request review.
 
-For detailed guidelines, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+For detailed guidelines, see [`CONTRIBUTING.md`](CONTRIBUTING.md). For the release/publishing process, see [CONTRIBUTING.md's Releasing section](CONTRIBUTING.md#releasing).
 
 ## Author
 
