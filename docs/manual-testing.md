@@ -16,8 +16,8 @@ Same as [getting-started.md](getting-started.md#prerequisites): Rust 1.97.1+, Bu
 `omp` ≥ 17.0.7 on your `PATH`. Build both sides first:
 
 ```bash
-cargo build -p batman-runtime
-bun run --cwd packages/extension build
+bun run setup   # installs JS deps + builds the batcave runtime
+bun run build   # bundles the OMP extension to dist/index.js, loaded below
 ```
 
 ## Environment variables and configuration

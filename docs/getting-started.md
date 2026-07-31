@@ -1,13 +1,16 @@
 # BATMAN Getting Started Guide
 
-This guide covers everything you need to get started with BATMAN, from installation to troubleshooting. It covers all M4 hardening features including configuration, security, recovery, doctor, and release management.
+This guide covers everything you need to **build BATMAN from source as a contributor** — from setup to troubleshooting. It covers all M4 hardening features including configuration, security, recovery, doctor, and release management.
+
+> **Just want to use BATMAN, not build it?** See [README.md's Installation section](../README.md#installation) — `omp install @satori/batman` installs both the extension and the runtime with no build step. This guide is for developing BATMAN itself.
 
 ## Prerequisites
 
 Before you begin, ensure you have the following installed:
 
-- **Rust 1.97.1+** (pinned by `rust-toolchain.toml`; `rustup` installs it automatically once selected)
-  - Install via Homebrew: `brew install rustup` then `rustup-init`
+- **Rust 1.97.1+** (pinned by `rust-toolchain.toml`)
+  - Recommended: install via [rustup](https://rustup.rs) — automatically respects the pinned version
+  - Alternative: `brew install rust` (no automatic version pinning; verify with `rustc --version`)
 - **Bun 1.3.14+** (pinned by `packageManager` in `package.json`)
   - Install via Homebrew: `brew install oven-sh/bun/bun`
 
@@ -23,13 +26,11 @@ cd batman
 ### Build
 
 ```bash
-# Build the batcave daemon (workspace root has no installable package,
-# so `cargo install --path .` will not work here)
-cargo build -p batman-runtime
+# Install JS deps and build the batcave runtime in one step
+bun run setup
 
-# Install TypeScript dependencies and build the OMP extension
-bun install
-bun run --cwd packages/extension build
+# Bundle the OMP extension (required before manual testing loads dist/index.js)
+bun run build
 ```
 
 ## Configuration
@@ -404,8 +405,8 @@ We welcome contributions! Please see the [CONTRIBUTING.md](../CONTRIBUTING.md) f
 ### Development Setup
 
 1. Clone the repository
-2. Build the runtime: `cargo build -p batman-runtime`
-3. Run tests: `cargo test --workspace`
+2. Run `bun run setup` — installs JS deps, builds the batcave runtime
+3. Run tests: `bun run check`
 4. Make your changes
 5. Submit a pull request
 
