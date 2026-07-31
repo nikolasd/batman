@@ -11,6 +11,19 @@ import type { MonitorRow, MonitorState } from "./model";
 /** The widget never renders more than this many rows at once. */
 export const MAX_WIDGET_ROWS = 10;
 
+/**
+ * Counts Unicode code points rather than UTF-16 code units. Every Nerd Font
+ * icon this module uses (`BAT_ICON`, every `STATE_ICONS` entry) is on the
+ * astral plane (code point > U+FFFF), so it's stored as a UTF-16 surrogate
+ * pair — `"\u{F0B5F}".length === 2`, not 1. `.length`-based width/pad math
+ * would measure any icon-bearing string 1 unit too wide per icon relative to
+ * how many character cells it actually occupies. `Array.from` iterates a
+ * string by code point, correctly counting each surrogate pair as one unit.
+ */
+function codePointLength(text: string): number {
+  return Array.from(text).length;
+}
+
 const BAT_ICON = "\u{F0B5F}";
 const WIDGET_HEADER_TEXT = "BATMAN";
 
@@ -130,16 +143,16 @@ export function renderRowLine(row: MonitorRow): string {
  */
 function assembleBox(header: string, lines: string[], colors: ThemeColor[], theme: Theme): string[] {
   const { topLeft, topRight, bottomLeft, bottomRight, horizontal, vertical } = theme.boxRound;
-  const contentWidth = Math.max(...lines.map((line) => line.length)) + 2;
-  const width = Math.max(contentWidth, header.length + 4);
+  const contentWidth = Math.max(...lines.map((line) => codePointLength(line))) + 2;
+  const width = Math.max(contentWidth, codePointLength(header) + 4);
 
   const top =
     theme.fg("border", `${topLeft}${horizontal} `) +
     theme.fg("accent", header) +
-    theme.fg("border", ` ${horizontal.repeat(width - header.length - 3)}${topRight}`);
+    theme.fg("border", ` ${horizontal.repeat(width - codePointLength(header) - 3)}${topRight}`);
 
   const body = lines.map((line, index) => {
-    const pad = width - line.length - 1;
+    const pad = width - codePointLength(line) - 1;
     return (
       theme.fg("border", vertical) +
       " " +

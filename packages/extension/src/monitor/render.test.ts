@@ -218,7 +218,56 @@ test("renderWidgetBox produces a top border, every content line, and the bottom 
   ];
   const lines = renderWidgetBox(stateOf(rows), plainTheme);
 
-  const widths = new Set(lines.map((line) => line.length));
+  // Width equality must hold in *code points*, not UTF-16 code units. Every
+  // content line here carries a `stateIcon(...)` via `renderRowLine`, and the
+  // header (`renderWidgetHeader`) carries `BAT_ICON` — both astral-plane
+  // characters stored as UTF-16 surrogate pairs, so `.length` overcounts them
+  // by 1 each. That overcount is exactly what let the original `.length`-based
+  // implementation pass this same width check by coincidence: `.length`
+  // equality is tautological given how `assembleBox` derives its padding, so
+  // it can never actually detect a code-point-counting bug. Comparing
+  // `codePointLength` instead reproduces how many terminal cells each line
+  // occupies, which is the property that actually matters, and is exactly
+  // what breaks under the surrogate-pair bug this test guards against: the
+  // bottom border (no icon) would come out 1 code point wider than the top
+  // border and every icon-bearing content row.
+  const codePointLength = (text: string): number => Array.from(text).length;
+  const widths = new Set(lines.map((line) => codePointLength(line)));
+  expect(widths.size).toBe(1);
+
+  // `.length`-based width also happens to be self-consistent by construction
+  // (padding is derived from whatever measure is used to build it), so this
+  // assertion alone would not have caught the bug — it's here only to
+  // document that both metrics agree once the underlying measurement is
+  // fixed, i.e. every line's UTF-16 length equals its code point length plus
+  // exactly one surrogate pair for the icon-bearing lines (top border + every
+  // content row), and plus zero for the plain bottom border.
+  const utf16Lengths = lines.map((line) => line.length);
+  const codePointLengths = lines.map((line) => codePointLength(line));
+  for (let i = 0; i < lines.length; i++) {
+    const isBottomBorder = i === lines.length - 1;
+    expect(utf16Lengths[i] - codePointLengths[i]).toBe(isBottomBorder ? 0 : 1);
+  }
+});
+
+test("renderWidgetBox stays equal-width by code points for the empty state, where the header carries an icon but the content line does not", () => {
+  // The header (`BAT_ICON`) always carries a surrogate-pair icon; the
+  // empty-state line ("No BATMAN runs yet.") never does. Pre-fix, that
+  // asymmetry meant the top border's fill-character count (derived from
+  // `header.length`) came out 1 short relative to the body/bottom border
+  // (derived from a line with no surrogate pair to overcount) — the exact
+  // mismatch the surrogate-pair bug produced, isolated from any body-row
+  // icon so it can't be masked by icons appearing on every side of the
+  // comparison at once.
+  const plainTheme = {
+    boxRound: fakeTheme().boxRound,
+    fg: (_color: ThemeColor, text: string) => text,
+  } as unknown as Theme;
+
+  const lines = renderWidgetBox({ rows: {}, lastSequence: 0n }, plainTheme);
+
+  const codePointLength = (text: string): number => Array.from(text).length;
+  const widths = new Set(lines.map((line) => codePointLength(line)));
   expect(widths.size).toBe(1);
 });
 
