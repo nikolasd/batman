@@ -58,6 +58,13 @@ export function stateColor(state: string): ThemeColor {
   return STATE_COLORS[state] ?? FALLBACK_STATE_COLOR;
 }
 
+/** The widget's brand header: bat icon + "BATMAN", uncolored — the caller
+ *  (`renderWidgetBox`) applies theme color, so this stays a plain data
+ *  producer with no `Theme` dependency of its own. */
+export function renderWidgetHeader(): string {
+  return `${BAT_ICON} ${WIDGET_HEADER_TEXT}`;
+}
+
 /**
  * Renders up to {@link MAX_WIDGET_ROWS} concise lines, most-recently
  * active first. An empty state renders a single explanatory line rather

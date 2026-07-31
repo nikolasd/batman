@@ -11,6 +11,7 @@ import {
   renderWidgetLines,
   stateIcon,
   stateColor,
+  renderWidgetHeader,
 } from "./render";
 
 function row(overrides: Partial<MonitorRow>): MonitorRow {
@@ -113,6 +114,10 @@ test("stateColor returns the documented theme color for every known run state", 
 
 test("stateColor falls back to the theme's default text color for an unrecognized state", () => {
   expect(stateColor("totally-unknown")).toBe("text");
+});
+
+test("renderWidgetHeader returns the bat icon and the BATMAN label", () => {
+  expect(renderWidgetHeader()).toBe("\u{F0B5F} BATMAN");
 });
 
 test("a row line includes the state icon alongside the state word", () => {
