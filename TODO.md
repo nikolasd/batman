@@ -29,10 +29,10 @@ The monitor (§17) is unaffected because it reads the inner `RuntimeEvent` varia
 **Labels:** adapter, authorization, hardening
 
 **Description:**
-The `AdapterRegistry` exists and implements `RunDriver` against Claude/Codex/Copilot/OMP-RPC adapters. However, production `ServerConfig::default()` uses `DenyByDefaultAuthorization` until the Hardening plan's `PolicyEvaluator` is wired. The credential store for `workerMcp` connections is not yet implemented (`RejectAllWorkerVerifier` by default).
+The `AdapterRegistry` exists and implements `RunDriver` against Claude/Codex/Copilot/OMP-RPC adapters. However, production `ServerConfig::default()` uses `DenyByDefaultAuthorization` until the Hardening plan's `PolicyEvaluator` is wired. **Verified 2026-07-31: `PolicyEvaluator` is fully built and already implements the correct `AdapterAuthorization` trait** (`crates/runtime/src/policy/evaluate.rs:209`) — the gap is narrower than "build it": `crates/runtime/src/lifecycle.rs:193-197` simply constructs `DenyByDefaultAuthorization::from_env()` instead of a real `PolicyEvaluator`. The credential store for `workerMcp` connections is not yet implemented (`RejectAllWorkerVerifier` by default).
 
 **Implementation:**
-- Wire `PolicyEvaluator` into `ServerConfig`
+- Swap `lifecycle.rs`'s `AdapterRegistry::new(...)` call to construct and pass a real `PolicyEvaluator` (loaded from the effective merged config) instead of `DenyByDefaultAuthorization`
 - Implement credential store for `workerMcp` connections
 - Replace `RejectAllWorkerVerifier` with real credential verification
 
@@ -90,6 +90,134 @@ Remote service integration (cloud storage, external APIs) is explicitly out of s
 - No current action required
 
 **References:** `docs/architecture.md` §19
+
+---
+
+## M2/M3 Gap-Closure Discrepancies (found analyzing original plan suite, 2026-07-31)
+
+### 10. `coordination-mcp` CLI subcommand does not exist — worker MCP integration is broken end-to-end
+
+**Status:** Open  
+**Priority:** Critical  
+**Labels:** bug, adapter, worker-mcp, cli
+
+**Description:**
+`crates/runtime/src/adapter/mcp_config.rs` unconditionally configures every spawned worker CLI (Claude, Codex, Copilot, etc.) to launch its MCP server via `<batcave_path> coordination-mcp --state-dir <dir> --repo <repo>` — confirmed by `coordination_mcp_argv`/`coordination_mcp_server_config`/`coordination_mcp_config_document`, each with passing unit tests asserting this exact argv shape (`["coordination-mcp", "--state-dir", ..., "--repo", ...]`).
+
+But `crates/runtime/src/cli.rs`'s `Command` enum has exactly 7 variants — `Serve`, `Status`, `Stop`, `Monitor`, `Version`, `Schema`, `Audit` — no `CoordinationMcp`/`coordination-mcp` subcommand exists. This is confirmed by the exhaustive `match cli.command { ... }` block (no wildcard arm; the code compiles, so no 8th variant exists). Any worker whose harness spawns this MCP server entry will fail immediately with an unrecognized-subcommand error, breaking `batman_task`/`batman_send` tool access for every adapter that relies on `workerMcp` — the entire mechanism `crate::coordination::mcp` and `crate::coordination::mcp_protocol` implement (and test) has no CLI entry point to actually invoke it as a subprocess.
+
+**Implementation:**
+- Add a `CoordinationMcp { state_dir: Option<PathBuf>, repo: PathBuf, ... }` variant to `cli.rs`'s `Command` enum
+- Wire it to the existing, tested `crate::coordination::mcp` stdio MCP server implementation
+- Add an integration test that actually spawns `batcave coordination-mcp` as a subprocess and confirms it serves the tool schemas in `crate::coordination::mcp_protocol`
+
+**References:** `crates/runtime/src/adapter/mcp_config.rs`, `crates/runtime/src/cli.rs`, `crates/runtime/src/coordination/mcp.rs`, `crates/runtime/src/coordination/mcp_protocol.rs`
+
+---
+
+### 11. `batcave display probe` subcommand does not exist despite being marked "Closed" in the M2/M3 gap-closure doc
+
+**Status:** Open  
+**Priority:** Medium  
+**Labels:** bug, display, cli, documentation
+
+**Description:**
+The `2026-07-27-batman-m2-m3-gap-closure.md` plan doc's readiness matrix claims: "`batcave` has no `display probe` subcommand... Resolution: Add `Display { Probe { backend, json } }` subcommand... Status: Closed (2026-07-27)." This is directly contradicted by the actual code: `cli.rs`'s `Command` enum (verified exhaustively, same 7 variants as item 10) has no `Display` variant at all. The underlying probe logic likely exists in `display/herdr.rs`/`display/tmux.rs` (both substantial, pane-level implementations with real test coverage per `crates/runtime/tests/display_registry.rs`, `herdr_display.rs`, `tmux_display.rs`), but it is not exposed as a CLI entry point.
+
+**Implementation:**
+- Add the `Display { Probe { backend, json } }` subcommand as originally specified in the gap-closure doc, wired to the existing herdr/tmux probe logic
+- Or, if this was intentionally descoped, correct the gap-closure doc's "Closed" status to avoid future confusion (the doc itself warns three other claims in prior docs were "provably false" — this is a fourth)
+
+**References:** `.../2026-07-27-batman-m2-m3-gap-closure.md`, `crates/runtime/src/cli.rs`, `crates/runtime/src/display/herdr.rs`, `crates/runtime/src/display/tmux.rs`
+
+---
+
+### 12. Crash recovery is a single untested file, far short of the plan's multi-module kill-point-tested coordinator
+
+**Status:** Open  
+**Priority:** High  
+**Labels:** testing, recovery, hardening
+
+**Description:**
+The Hardening plan (Task 3) specifies a `crates/runtime/src/recovery/` module with separate `mod.rs`, `operations.rs`, `workers.rs`, `orphans.rs`, `workspaces.rs` files, a `RecoveryCoordinator::run()` that blocks all mutation methods until it completes, and a deterministic kill-point test matrix covering 6 distinct crash points per operation (intent / identity allocation / child spawn / vendor acknowledgement / event append / projection update) plus 8 specific invariants (no duplicated prompts, `unknown` for unacknowledged messages, vendor-resumable sessions resuming via new process, PID+start-identity+executable verification before reconnect, parent-scoped runs becoming `lost`, orphaned runs pausing with no new children, protected active workspace leases, quarantined stale materialization). **Verified 2026-07-31:** only a single flat `crates/runtime/src/recovery.rs` (210 lines) exists — confirmed via `glob crates/runtime/src/recovery/*` returning no matches — with zero test coverage (no inline `#[cfg(test)]`, no `crates/runtime/tests/recovery.rs`). `docs/getting-started.md` documents a `RecoveryCoordinator` and `RecoveryConfig` from a contributor/build perspective, but that doesn't substitute for the missing kill-point test matrix. `doctor.rs` (252 lines, also flat rather than the planned `doctor/{mod,check,report}.rs` submodule) is equally untested.
+
+**Implementation:**
+- Audit the flat `recovery.rs` against the 6 kill-points / 8 invariants above; restructure into the specified submodules if it doesn't already cover them
+- Add `crates/runtime/tests/recovery.rs` implementing the deterministic kill-point matrix (`--test-threads=1` per the plan, since it manipulates real process state)
+- Add `crates/runtime/tests/doctor.rs` covering each check function and the aggregate report shape
+
+**References:** `.../2026-07-22-batman-hardening-release.md` (Task 3, Task 4), `crates/runtime/src/recovery.rs`, `crates/runtime/src/doctor.rs`, `docs/getting-started.md`
+
+---
+
+### 13. No CI workflow runs on ordinary pushes/PRs — only the release-tag-triggered workflow exists
+
+**Status:** Open  
+**Priority:** High  
+**Labels:** ci, testing, release
+
+**Description:**
+The Hardening plan (Task 5) requires a `.github/workflows/ci.yml` separate from `release.yml`, running formatting, Clippy with warnings denied, Rust/Bun tests, generation-drift checks, package tests, a secret scan, and a dependency audit on every push — before any release artifact is ever built. **Verified 2026-07-31:** `.github/workflows/ci.yml` does not exist (confirmed via glob); `.github/workflows/` contains only the tag-triggered `release.yml`, which itself has no test step at all (`cargo build --release` straight into packaging — see the release-pipeline fix from 2026-07-31's session). This means nothing currently blocks a broken commit from being merged, let alone released.
+
+**Implementation:**
+- Add `.github/workflows/ci.yml` triggered on push/PR: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `bun run generate --check`, `bun test`
+- Add a dependency-audit step (`cargo audit`/`pip-audit`-equivalent for the JS side) and a secret-scan step
+
+**References:** `.../2026-07-22-batman-hardening-release.md` (Task 5), `.github/workflows/`
+
+---
+
+### 14. Releases are not gated on adapter conformance — the root-level conformance/install test suites don't exist
+
+**Status:** Open  
+**Priority:** High  
+**Labels:** ci, testing, conformance, release
+
+**Description:**
+The Hardening plan (Task 6) requires `tests/conformance/run.ts`, `tests/conformance/assert-report.ts`, and `tests/install/private-registry.test.ts` at the repo root, wired into `release.yml` so the workflow "refuses publish unless every advertised capability has a passing scenario on the target build." **Verified 2026-07-31:** none of these three files/directories exist (confirmed via glob). Per-adapter conformance logic does exist and is tested (`crates/runtime/src/conformance/`, `crates/runtime/tests/conformance.rs`), but nothing aggregates those results into a release-blocking gate, and nothing tests that the correct platform leaf actually installs and launches from the private registry before a release ships.
+
+**Implementation:**
+- Add `tests/conformance/run.ts` (fixture-mode aggregate runner) and `tests/conformance/assert-report.ts` (fails on any missing/failing scenario ID)
+- Add `tests/install/private-registry.test.ts` verifying the correct platform leaf installs and launches
+- Wire both into `release.yml` as a required step before the publish job
+
+**References:** `.../2026-07-22-batman-hardening-release.md` (Task 6), `crates/runtime/src/conformance/`, `.github/workflows/release.yml`
+
+---
+
+### 15. No `batcave doctor` CLI command or `/batman-doctor` OMP command exists
+
+**Status:** Open  
+**Priority:** Medium  
+**Labels:** cli, doctor, extension
+
+**Description:**
+The Hardening plan (Task 4) specifies `batcave doctor --json` as a standalone CLI command returning structured checks (`id`, `status`, evidence, remediation, `productionBlocking`), plus a `packages/extension/src/doctor.ts` rendering the same report via an OMP `/batman-doctor` command. **Verified 2026-07-31:** `cli.rs`'s `Command` enum has no `Doctor` variant (same exhaustive 7-variant match as items 10/11), and `packages/extension/src/doctor.ts` does not exist (confirmed via glob). The underlying `doctor.rs` check logic exists (252 lines) but is only ever invoked internally, not exposed as its own command either side of the boundary.
+
+**Implementation:**
+- Add a `Doctor { json: bool }` variant to `cli.rs`'s `Command` enum, wired to the existing `doctor.rs` checks
+- Add `packages/extension/src/doctor.ts` and a `/batman-doctor` OMP command rendering the same report
+
+**References:** `.../2026-07-22-batman-hardening-release.md` (Task 4), `crates/runtime/src/cli.rs`, `crates/runtime/src/doctor.rs`
+
+---
+
+### 16. Operator-facing docs (Tasks 7-8) aren't split out as the plan specifies, and no release-candidate checklist exists
+
+**Status:** Open  
+**Priority:** Low  
+**Labels:** documentation, release
+
+**Description:**
+The Hardening plan's Tasks 7-8 specify six standalone operator docs (`docs/installation.md`, `configuration.md`, `operations.md`, `security.md`, `compatibility.md`, `recovery.md`) generated from verified command output, plus `release/0.1.0-checklist.json` recording every gate's pass/blocked status with evidence digests. **Verified 2026-07-31:** none of the six named files or the checklist exist as separate files (glob, zero matches) — but this is *not* a documentation vacuum: `docs/getting-started.md` already covers installation, configuration (including the layered-precedence system), security/redaction, and a `RecoveryCoordinator`/`RecoveryConfig` section in real detail, and `docs/architecture.md` independently documents the exact `PolicyEvaluator`-not-wired gap from item 2. The real gaps are narrower: (a) that content is written for contributors building from source, not operators running a packaged release, and getting-started.md says so explicitly; (b) there is no `compatibility.md` generated from actual conformance-report data (tested CLI versions, unsupported operations, degraded fallback, evidence date); (c) there is no dedicated `operations.md` covering daemon lifecycle commands, coordinated Herdr-restart warnings, package rollback, or uninstall-preserves-state behavior; (d) no release-candidate checklist artifact exists at all.
+
+**Implementation:**
+- Once items 10-15 close, generate `docs/compatibility.md` from a real passing conformance report (per-harness protocol/version, tested capabilities, unsupported operations, evidence date)
+- Write `docs/operations.md` covering daemon start/stop/restart, Herdr coordinated-restart warning, package rollback, and uninstall semantics
+- Decide whether to split `getting-started.md`'s existing installation/configuration/security/recovery content into the remaining four named docs, or keep it consolidated and update the plan's expectation
+- Generate `release/0.1.0-checklist.json` once the above gates are closed
+
+**References:** `.../2026-07-22-batman-hardening-release.md` (Task 7, Task 8), `docs/getting-started.md`, `docs/architecture.md`
 
 ---
 
