@@ -1,0 +1,56 @@
+{
+  "version": "0.1.0",
+  "generated": "2026-08-01",
+  "hardening_release": "2026-07-22",
+  "gates": {
+    "task_1_policy_evaluator_wired": {
+      "status": "verified-local",
+      "evidence": "lifecycle.rs wires PolicyEvaluator; --org-config/--repo-config/--user-config CLI flags added; fail-closed on config errors",
+      "commit": "previous session"
+    },
+    "task_2_redaction_denylist": {
+      "status": "verified-local",
+      "evidence": "redaction.rs expanded with ghp_, AKIA, JWT patterns",
+      "commit": "previous session"
+    },
+    "task_3_recovery_tests": {
+      "status": "verified-local",
+      "evidence": "crates/runtime/src/recovery/ restructured; kill-point matrix test (6 kill-points, 8 invariants) written",
+      "commit": "previous session"
+    },
+    "task_4_doctor_cli": {
+      "status": "verified-local",
+      "evidence": "cli.rs Doctor variant wired; packages/extension/src/doctor.ts created; /batman-doctor command registered; integration tests 4/4 passing; manual smoke test confirms JSON output",
+      "commits": ["0aac0cd", "339cd39", "0231a8f", "b78d38b"]
+    },
+    "task_5_ci_workflow": {
+      "status": "implemented-but-unverified-in-ci",
+      "evidence": ".github/workflows/ci.yml created with format/clippy/test/generate-check/security jobs; note: JS/TS format check removed (no formatter configured)",
+      "commits": ["f20abd3", "8531a05"]
+    },
+    "task_6_conformance_gates": {
+      "status": "implemented-but-unverified-in-ci",
+      "evidence": "tests/conformance/run.ts and assert-report.ts stubs (clearly marked); tests/install/private-registry.test.ts stub; conformance job wired into release.yml before publish",
+      "commits": ["cbdef62", "41f6bca"]
+    },
+    "task_7_operator_docs": {
+      "status": "verified-local",
+      "evidence": "docs/compatibility.md and docs/operations.md created with verified claims from codebase",
+      "commit": "a165436"
+    }
+  },
+  "verification_summary": {
+    "library_tests": "129 tests passing (excluding 5 pre-existing adapter_registry.rs failures due to 'table workers has no column named task_id' schema mismatch - this is a known gap, not caused by this session's changes)",
+    "doctor_integration_tests": "4/4 passing",
+    "manual_smoke_test": "batcave doctor --json returns proper JSON even on failure",
+    "extension_build": "bun run build succeeds"
+  },
+  "known_failing_tests": [
+    "crates/runtime/tests/adapter_registry.rs: 5 tests fail due to 'table workers has no column named task_id' schema mismatch - pre-existing, not caused by this session"
+  ],
+  "known_limitations": [
+    "CI/Release gating (Tasks 5-6): Implemented but unverified in CI - no real GitHub Actions runners, npm registry, or signing keys available",
+    "PolicyViolationDecide: Stub implementation only - OrchestrationService has no policy field",
+    "No JS/TS formatter: CI format job only checks Rust (cargo fmt)"
+  ]
+}
