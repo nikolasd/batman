@@ -6,22 +6,21 @@ Thank you for your interest in contributing to BATMAN! This document provides gu
 
 ### Prerequisites
 
-- **Rust** (version 1.97.1 or later)
-  - Install via Homebrew: `brew install rustup` then `rustup-init`
+- **Rust** (version 1.97.1, pinned in `rust-toolchain.toml`)
+  - Recommended: install via [rustup](https://rustup.rs) — automatically respects the pinned version
+  - Alternative: `brew install rust` (no automatic version pinning; verify with `rustc --version`)
 - **Bun** (version 1.3.14 or later)
   - Install via Homebrew: `brew install oven-sh/bun/bun`
+
 ### Setup
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/batman.git
+git clone https://github.com/nikolasd/batman.git
 cd batman
 
-# Install dependencies
-bun install
-
-# Build the Rust components
-cargo build -p batman-runtime
+# Install JS deps and build the batcave runtime in one step
+bun run setup
 ```
 
 ## Running Tests

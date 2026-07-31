@@ -55,14 +55,13 @@ omp plugin upgrade @satori/batman
 
 For contributors building or modifying BATMAN itself (not for end users — see [Installation](#installation) above):
 
-**Prerequisites:** Rust 1.97+, Bun 1.3.14+, macOS or glibc Linux on arm64/x64. For the full OMP integration you also need OMP ≥ 17.0.7.
+**Prerequisites:** Bun 1.3.14+, macOS or glibc Linux on arm64/x64, and Rust — via [rustup](https://rustup.rs) (recommended: automatically respects the pinned `1.97.1` in `rust-toolchain.toml`) or your system package manager. For the full OMP integration you also need OMP ≥ 17.0.7.
 
 ```bash
 git clone https://github.com/nikolasd/batman.git
 cd batman
-bun install                 # link workspaces, install extension deps
+bun run setup               # installs JS deps + builds the batcave runtime
 bun run check               # schema drift check + build + all tests
-cargo build -p batman-runtime
 ```
 
 To exercise the extension against your local changes before publishing, load it from its source path directly:
