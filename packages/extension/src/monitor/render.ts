@@ -4,10 +4,59 @@
 // state (the model itself is unbounded, only the *rendered* widget is
 // capped).
 
+import type { Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
+
 import type { MonitorRow, MonitorState } from "./model";
 
 /** The widget never renders more than this many rows at once. */
 export const MAX_WIDGET_ROWS = 10;
+
+const BAT_ICON = "\u{F0B5F}";
+const WIDGET_HEADER_TEXT = "BATMAN";
+
+const STATE_ICONS: Record<string, string> = {
+  queued: "\u{F0150}",
+  starting: "\u{F14DF}",
+  working: "\u{F1461}",
+  waitingUser: "\u{F0B5A}",
+  waitingPeer: "\u{F000F}",
+  paused: "\u{F03E6}",
+  succeeded: "\u{F05E1}",
+  failed: "\u{F015A}",
+  cancelled: "\u{F073A}",
+  lost: "\u{F0BA6}",
+};
+const FALLBACK_STATE_ICON = "\u{F0625}";
+
+/**
+ * Nerd Font icon for a run state, or a generic fallback for a state this
+ * lookup doesn't recognize. `MonitorRow.state` is a plain `string` (the Rust
+ * `RunState` is a newtype around `String`, not a closed enum), so this can
+ * never be an exhaustive switch.
+ */
+export function stateIcon(state: string): string {
+  return STATE_ICONS[state] ?? FALLBACK_STATE_ICON;
+}
+
+const STATE_COLORS: Record<string, ThemeColor> = {
+  queued: "muted",
+  starting: "accent",
+  working: "accent",
+  waitingUser: "warning",
+  waitingPeer: "warning",
+  paused: "muted",
+  succeeded: "success",
+  failed: "error",
+  cancelled: "dim",
+  lost: "error",
+};
+const FALLBACK_STATE_COLOR: ThemeColor = "text";
+
+/** Theme color for a run state, or the theme's default text color for a
+ *  state this lookup doesn't recognize. */
+export function stateColor(state: string): ThemeColor {
+  return STATE_COLORS[state] ?? FALLBACK_STATE_COLOR;
+}
 
 /**
  * Renders up to {@link MAX_WIDGET_ROWS} concise lines, most-recently
@@ -29,7 +78,7 @@ export function renderWidgetLines(state: MonitorState): string[] {
 
 /** Renders one row as a single concise line. */
 export function renderRowLine(row: MonitorRow): string {
-  const parts = [shortId(row.runId), row.state];
+  const parts = [shortId(row.runId), `${stateIcon(row.state)} ${row.state}`];
   const harness = harnessLabel(row);
   if (harness !== undefined) {
     parts.push(harness);
