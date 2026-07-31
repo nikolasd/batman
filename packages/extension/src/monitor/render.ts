@@ -70,15 +70,24 @@ export function renderWidgetHeader(): string {
  * active first. An empty state renders a single explanatory line rather
  * than an empty widget.
  */
-export function renderWidgetLines(state: MonitorState): string[] {
+/** Sorts rows most-recently-active first and caps the visible slice at
+ *  {@link MAX_WIDGET_ROWS}, returning the total count separately so callers
+ *  can still detect and report truncation. Shared by `renderWidgetLines`
+ *  and `renderWidgetBox` so they can never disagree on which rows are
+ *  visible. */
+function selectRows(state: MonitorState): { rows: MonitorRow[]; totalCount: number } {
   const rows = Object.values(state.rows).sort((a, b) => (a.lastEventAt < b.lastEventAt ? 1 : -1));
-  if (rows.length === 0) {
+  return { rows: rows.slice(0, MAX_WIDGET_ROWS), totalCount: rows.length };
+}
+
+export function renderWidgetLines(state: MonitorState): string[] {
+  const { rows, totalCount } = selectRows(state);
+  if (totalCount === 0) {
     return ["No BATMAN runs yet."];
   }
-  const visible = rows.slice(0, MAX_WIDGET_ROWS);
-  const lines = visible.map(renderRowLine);
-  if (rows.length > MAX_WIDGET_ROWS) {
-    lines.push(`… ${rows.length - MAX_WIDGET_ROWS} more; use /batman status <runId> for full details.`);
+  const lines = rows.map(renderRowLine);
+  if (totalCount > MAX_WIDGET_ROWS) {
+    lines.push(`… ${totalCount - MAX_WIDGET_ROWS} more; use /batman status <runId> for full details.`);
   }
   return lines;
 }
@@ -104,6 +113,70 @@ export function renderRowLine(row: MonitorRow): string {
     parts.push(row.latestActivity);
   }
   return parts.join(" · ");
+}
+
+/**
+ * Assembles a rounded box around `lines`, each colored per `colors[i]`, with
+ * `header` spliced into the top border itself (matching the app's own
+ * editor chrome, which embeds its status segments in its top border rather
+ * than rendering them as a separate row) rather than as a separate row
+ * inside the box. `width` is chosen so the top border, every content line,
+ * and the bottom border all come out to the same total length: the content
+ * requirement is `longest line + 2` (one space of padding on each side);
+ * the header requirement is `header + 4` (corner, one leading dash, one
+ * space on each side of the header, before the closing corner) — whichever
+ * is larger wins. Requires `lines` to be non-empty (both `renderWidgetBox`
+ * call sites always pass at least the empty-state line).
+ */
+function assembleBox(header: string, lines: string[], colors: ThemeColor[], theme: Theme): string[] {
+  const { topLeft, topRight, bottomLeft, bottomRight, horizontal, vertical } = theme.boxRound;
+  const contentWidth = Math.max(...lines.map((line) => line.length)) + 2;
+  const width = Math.max(contentWidth, header.length + 4);
+
+  const top =
+    theme.fg("border", `${topLeft}${horizontal} `) +
+    theme.fg("accent", header) +
+    theme.fg("border", ` ${horizontal.repeat(width - header.length - 3)}${topRight}`);
+
+  const body = lines.map((line, index) => {
+    const pad = width - line.length - 1;
+    return (
+      theme.fg("border", vertical) +
+      " " +
+      theme.fg(colors[index] ?? "text", line) +
+      " ".repeat(pad) +
+      theme.fg("border", vertical)
+    );
+  });
+
+  const bottom = theme.fg("border", `${bottomLeft}${horizontal.repeat(width)}${bottomRight}`);
+
+  return [top, ...body, bottom];
+}
+
+/**
+ * The full bordered widget: a title-in-top-border box wrapping the same
+ * content `renderWidgetLines` produces, with each row additionally colored
+ * by `stateColor`. This is what `controller.ts` passes to `ui.setWidget`.
+ */
+export function renderWidgetBox(state: MonitorState, theme: Theme): string[] {
+  const { rows, totalCount } = selectRows(state);
+
+  let lines: string[];
+  let colors: ThemeColor[];
+  if (totalCount === 0) {
+    lines = ["No BATMAN runs yet."];
+    colors = ["text"];
+  } else {
+    lines = rows.map(renderRowLine);
+    colors = rows.map((row) => stateColor(row.state));
+    if (totalCount > MAX_WIDGET_ROWS) {
+      lines.push(`… ${totalCount - MAX_WIDGET_ROWS} more; use /batman status <runId> for full details.`);
+      colors.push("muted");
+    }
+  }
+
+  return assembleBox(renderWidgetHeader(), lines, colors, theme);
 }
 
 /** Renders the full detail block for `/batman status <runId>`. */

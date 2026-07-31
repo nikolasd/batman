@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme, ThemeColor } from "@oh-my-pi/pi-coding-agent";
 
 import { assertCompatiblePiCodingAgentVersion, PiCodingAgentVersionError } from "./compat";
 import type { MonitorRow, MonitorState } from "./model";
@@ -8,6 +8,7 @@ import {
   MAX_WIDGET_ROWS,
   renderRowDetails,
   renderRowLine,
+  renderWidgetBox,
   renderWidgetLines,
   stateIcon,
   stateColor,
@@ -42,6 +43,25 @@ function stateOf(rows: readonly MonitorRow[]): MonitorState {
     byId[r.runId] = r;
   }
   return { rows: byId, lastSequence: 1n };
+}
+
+function fakeTheme(): Theme {
+  return {
+    boxRound: {
+      topLeft: "╭",
+      topRight: "╮",
+      bottomLeft: "╰",
+      bottomRight: "╯",
+      horizontal: "─",
+      vertical: "│",
+      cross: "┼",
+      teeDown: "┬",
+      teeUp: "┴",
+      teeRight: "├",
+      teeLeft: "┤",
+    },
+    fg: (color: ThemeColor, text: string) => `[${color}]${text}[/${color}]`,
+  } as unknown as Theme;
 }
 
 test("an empty state renders a single explanatory line", () => {
@@ -137,6 +157,69 @@ test("renderRowDetails includes worker, action-relevant fields, and timestamps f
   expect(details).toContain("Latest activity: question sent");
   expect(details).toContain("First seen:");
   expect(details).toContain("Last event:");
+});
+
+test("renderWidgetBox embeds the accent-colored header in the top border", () => {
+  const lines = renderWidgetBox({ rows: {}, lastSequence: 0n }, fakeTheme());
+  expect(lines[0]).toContain("╭─");
+  expect(lines[0]).toContain(`[accent]${renderWidgetHeader()}[/accent]`);
+});
+
+test("renderWidgetBox wraps the empty-state line in the border, uncolored", () => {
+  const lines = renderWidgetBox({ rows: {}, lastSequence: 0n }, fakeTheme());
+  expect(lines).toHaveLength(3); // top border, empty-state line, bottom border
+  expect(lines[1]).toContain("[text]No BATMAN runs yet.[/text]");
+  expect(lines[1].startsWith("[border]│[/border]")).toBe(true);
+  expect(lines[1].endsWith("[border]│[/border]")).toBe(true);
+});
+
+test("renderWidgetBox colors each row by its state and ends with a plain bottom border", () => {
+  const succeededRow = row({ runId: "run-1", state: "succeeded" });
+  const lines = renderWidgetBox(stateOf([succeededRow]), fakeTheme());
+
+  expect(lines).toHaveLength(3);
+  expect(lines[1]).toContain(`[success]${renderRowLine(succeededRow)}[/success]`);
+
+  const bottom = lines[lines.length - 1];
+  expect(bottom.startsWith("[border]╰")).toBe(true);
+  expect(bottom.endsWith("╯[/border]")).toBe(true);
+});
+
+test("renderWidgetBox appends a muted overflow line beyond MAX_WIDGET_ROWS", () => {
+  const rows = Array.from({ length: MAX_WIDGET_ROWS + 2 }, (_, i) =>
+    row({ runId: `run-${i}`, lastEventAt: `2026-01-01T00:${String(i).padStart(2, "0")}:00Z` }),
+  );
+  const lines = renderWidgetBox(stateOf(rows), fakeTheme());
+
+  // top border + MAX_WIDGET_ROWS rows + 1 overflow line + bottom border
+  expect(lines).toHaveLength(MAX_WIDGET_ROWS + 3);
+  const overflowLine = lines[lines.length - 2];
+  expect(overflowLine).toContain("[muted]");
+  expect(overflowLine).toContain("more; use /batman status <runId> for full details.");
+});
+
+test("renderWidgetLines is unaffected by the renderWidgetBox refactor", () => {
+  const lines = renderWidgetLines({ rows: {}, lastSequence: 0n });
+  expect(lines).toEqual(["No BATMAN runs yet."]);
+});
+
+test("renderWidgetBox produces a top border, every content line, and the bottom border at equal total width", () => {
+  // A `fg` that returns text unchanged, unlike `fakeTheme()`'s tagging `fg` — the
+  // color-tag wrapper length would otherwise interfere with measuring raw visual
+  // width, which is exactly what this test checks.
+  const plainTheme = {
+    boxRound: fakeTheme().boxRound,
+    fg: (_color: ThemeColor, text: string) => text,
+  } as unknown as Theme;
+
+  const rows = [
+    row({ runId: "run-1", state: "succeeded", lastEventAt: "2026-01-01T00:00:00Z" }),
+    row({ runId: "run-2", state: "queued", lastEventAt: "2026-01-01T00:01:00Z" }),
+  ];
+  const lines = renderWidgetBox(stateOf(rows), plainTheme);
+
+  const widths = new Set(lines.map((line) => line.length));
+  expect(widths.size).toBe(1);
 });
 
 // ------------------------------------------- version compatibility check
