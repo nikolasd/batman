@@ -21,6 +21,7 @@ import { buildStatusContext } from "./context";
 import { normalizeEventPayload, normalizeLifecyclePayload, normalizeProgressPayload } from "./omp-native/events";
 import { OmpNativeReconciler, createOmpProcessEpoch } from "./omp-native/reconcile";
 import { getRuntimeStatus, type GetRuntimeStatusContext } from "./status";
+import { runDoctorCommand, buildDoctorContext, type DoctorContext } from "./doctor";
 import { registerOrchestrationTools } from "./tools";
 import { registerMonitor } from "./monitor/controller";
 import { ensureRuntime } from "./runtime";
@@ -91,6 +92,36 @@ export default function batmanExtension(pi: ExtensionAPI): void {
 
   registerOrchestrationTools(pi, { getClient });
   registerMonitor(pi, { getClient });
+  /**
+   * Context builder for the doctor command: resolves the batcave binary path
+   * and repository state for direct CLI invocation.
+   */
+  function doctorContextFor(cwd: ExtensionContext["cwd"]): DoctorContext {
+    return buildDoctorContext(cwd);
+  }
+
+  pi.registerTool({
+    name: "batman_doctor",
+    label: "BATMAN Doctor",
+    description: "Runs diagnostic checks on the BATMAN runtime state and configuration.",
+    parameters: pi.zod.object({}),
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      return runDoctorCommand(doctorContextFor(ctx.cwd));
+    },
+  });
+
+  pi.registerCommand("batman-doctor", {
+    description: "Run diagnostic checks on the BATMAN runtime state and configuration.",
+    handler: async (_args, ctx) => {
+      const result = await runDoctorCommand(doctorContextFor(ctx.cwd));
+      const text = result.content.map((block) => block.text).join("\n");
+      if (!ctx.hasUI) {
+        console.log(text);
+      } else {
+        ctx.ui.notify(text, result.isError ? "error" : "info");
+      }
+    },
+  });
 
   // OMP-native subagent lifecycle mirroring: one epoch per extension
   // process, normalized facts recorded by the reconciler, listeners
