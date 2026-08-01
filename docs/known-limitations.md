@@ -121,3 +121,42 @@ Both are purely environment/infrastructure dependencies of *this* dev machine at
 Remote service integration (cloud storage, external APIs) is explicitly out of scope for this milestone.
 
 **Status:** Open — future milestone.
+
+---
+
+## Hardening Release (2026-07-22) Limitations
+
+### PolicyViolationDecide is a stub implementation
+
+**Location:** `crates/runtime/src/ipc/connection.rs::handle` (stub returns `ServiceError::internal("not yet implemented")`)
+
+The `policy/violation/decide` RPC method is registered in `BatmanMethod` but returns a stub error. `OrchestrationService` has no `policy` field, no `decide_violation` fn, and no `DecideOutcome` enum at `crate::policy`. Actual quarantine-decision logic requires building a new service/module analogous to `approval::ApprovalService`.
+
+**Status:** Deferred — requires new policy service module.
+
+---
+
+### Conformance tests are non-functional stubs
+
+**Location:** `tests/conformance/run.ts`, `tests/conformance/assert-report.ts`, `tests/install/private-registry.test.ts`
+
+These files exist but are **stubs** that:
+- Write empty reports (no actual adapter checks)
+- Only check field presence, not that scenarios ran or passed
+- The conformance gate in `.github/workflows/release.yml` always passes
+
+Real implementation would spawn `batcave conformance` commands and validate actual scenario results.
+
+**Status:** Implemented but unverified in CI — marked as "partial" in TODO.md item 14.
+
+---
+
+### No JS/TS formatter configured
+
+**Location:** `.github/workflows/ci.yml`
+
+The CI format job only checks Rust (`cargo fmt`). No prettier/biome configured for JS/TS.
+
+**Status:** Open — can be added in a future milestone.
+
+---

@@ -98,5 +98,8 @@ This is a pre-1.0 project. Some things don't work yet:
 - **Credential store for `workerMcp` is not implemented.** `RejectAllWorkerVerifier` is the default.
 - **OMP-RPC approval flow is not normalized.** The adapter's `extension_ui_request` frame is silently dropped.
 - **No artifact tracking for OMP-RPC.** The `ArtifactProduced` payload is never constructed.
+- **PolicyViolationDecide is a stub.** `OrchestrationService` has no `policy` field; quarantine-decision logic deferred.
+- **Conformance tests are stubs.** `tests/conformance/run.ts` and `assert-report.ts` write empty reports; the conformance gate in `release.yml` always passes.
+- **No JS/TS formatter.** CI format job only checks Rust (`cargo fmt`).
 
 These are tracked in [`docs/known-limitations.md`](docs/known-limitations.md) and [`TODO.md`](TODO.md). If you're evaluating BATMAN for production, review those first.
