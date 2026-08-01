@@ -63,13 +63,17 @@ jobs:
 
       - name: Install JS workspace dependencies
         run: bun install
-
-      - name: Run conformance tests
+      - name: Run conformance unit tests
         run: bun test tests/conformance
 
-      - name: Validate conformance report
-        run: node -e "const {loadAndValidateReport} = require('./tests/conformance/assert-report.ts'); loadAndValidateReport('conformance-report.json');"
-        if: false  # STUB: real implementation would generate and validate report
+      - name: Generate conformance report (STUB - will fail validation)
+        run: |
+          # STUB: Real implementation would spawn 'batcave conformance --adapter <name> --output <path>' for each adapter
+          # For now, generate an empty report that will fail validation (intentional)
+          echo '{"timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","adapters":{"claude":{"adapter":"claude","mode":"fixture","declaredCapabilities":[],"effectiveCapabilities":[],"scenarios":[]},"codex":{"adapter":"codex","mode":"fixture","declaredCapabilities":[],"effectiveCapabilities":[],"scenarios":[]},"copilot":{"adapter":"copilot","mode":"fixture","declaredCapabilities":[],"effectiveCapabilities":[],"scenarios":[]},"omp-rpc":{"adapter":"omp-rpc","mode":"fixture","declaredCapabilities":[],"effectiveCapabilities":[],"scenarios":[]}}}' > conformance-report.json
+
+      - name: Validate conformance report (FAILS if stubs detected)
+        run: bun run -e "import { loadAndValidateReport } from './tests/conformance/assert-report.ts'; loadAndValidateReport('conformance-report.json');"
 
   publish:
     needs: [build, conformance]

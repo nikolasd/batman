@@ -46,7 +46,7 @@
     "extension_build": "bun run build succeeds"
   },
   "known_failing_tests": [
-    "crates/runtime/tests/adapter_registry.rs: 5 tests fail due to 'table workers has no column named task_id' schema mismatch - pre-existing, not caused by this session"
+    "crates/runtime/tests/adapter_registry.rs: 5 tests fail due to 'table workers has no column named task_id' schema mismatch - PRE-EXISTING (commit 90aa259 from 2026-07-25, 6 days before this session started on 2026-07-31)"
   ],
   "known_limitations": [
     "CI/Release gating (Tasks 5-6): Implemented but unverified in CI - no real GitHub Actions runners, npm registry, or signing keys available",
@@ -54,6 +54,6 @@
     "No JS/TS formatter: CI format job only checks Rust (cargo fmt)"
   ],
   "critical_warnings": [
-    "Task 6: Conformance gate is a no-op - stubs always emit empty/passing reports, never blocking releases. Recommend: implement real conformance test execution, remove gate, or add STUB label that fails build."
+    "Task 6: Conformance gate now INTENTIONALLY blocks release - stubs generate empty reports that fail validation. Real implementation must spawn 'batcave conformance' commands to generate non-empty reports with passing scenarios."
   ]
 }
