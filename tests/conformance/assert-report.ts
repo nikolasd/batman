@@ -52,7 +52,11 @@ export function loadAndValidateReport(filePath: string): void {
 }
 
 /**
- * Asserts that a conformance report is complete (all expected adapters present).
+ * Asserts that a conformance report is complete (all expected adapters present)
+ * AND that each adapter has at least one passing scenario.
+ *
+ * @throws Error if report is missing, adapters are missing, or any adapter has
+ *         zero scenarios or no passing scenarios.
  */
 export function assertReportComplete(report: unknown): void {
   if (!report || typeof report !== "object") {
@@ -72,6 +76,24 @@ export function assertReportComplete(report: unknown): void {
 
     const adapterReport = r.adapters[adapter];
     assertAdapterReportValid(adapterReport, adapter);
+    
+    // NEW: Fail if adapter has zero scenarios (indicates stub/no-op)
+    if (!adapterReport.scenarios || adapterReport.scenarios.length === 0) {
+      throw new Error(
+        `Adapter ${adapter} has zero scenarios — conformance report appears to be a stub. ` +
+        `Real implementation must spawn 'batcave conformance' and validate actual scenario results.`
+      );
+    }
+    
+    // NEW: Fail if no scenarios passed (all failed or skipped)
+    const passedCount = adapterReport.scenarios.filter(s => s.status === "passed").length;
+    if (passedCount === 0) {
+      throw new Error(
+        `Adapter ${adapter} has no passing scenarios — ${adapterReport.scenarios.length} total, ` +
+        `${adapterReport.scenarios.filter(s => s.status === "failed").length} failed, ` +
+        `${adapterReport.scenarios.filter(s => s.status === "skipped").length} skipped.`
+      );
+    }
   }
 }
 
