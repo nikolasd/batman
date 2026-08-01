@@ -1,5 +1,4 @@
-
-  import { readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 // Conformance report types (mirror of Rust struct)
 interface ScenarioResult {
   readonly scenario: string;
