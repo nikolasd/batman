@@ -52,5 +52,8 @@
     "CI/Release gating (Tasks 5-6): Implemented but unverified in CI - no real GitHub Actions runners, npm registry, or signing keys available",
     "PolicyViolationDecide: Stub implementation only - OrchestrationService has no policy field",
     "No JS/TS formatter: CI format job only checks Rust (cargo fmt)"
+  ],
+  "critical_warnings": [
+    "Task 6: Conformance gate is a no-op - stubs always emit empty/passing reports, never blocking releases. Recommend: implement real conformance test execution, remove gate, or add STUB label that fails build."
   ]
 }
