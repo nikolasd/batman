@@ -500,10 +500,12 @@ changed: it's not that the registry isn't wired in (it is), but that the registr
 authorization denies all workers, and there is no supported way to opt into a specific adapter
 without `BATMAN_DEV_ALLOW_ALL_WORKERS=1` — which defeats the security model.
 
-The MCP server side (`batcave coordination-mcp` — a library module, not a CLI subcommand) and
-the scope-token-authenticated in-process/subprocess plumbing behind it are fully built and
-independently tested against a real compiled `batcave` binary, driven as a genuine MCP client
-would:
+The MCP server side is now a real CLI subcommand (`batcave coordination-mcp --state-dir
+<path> --repo <path> --run-id <id>`, wired in 2026-08-02 — previously the argv every adapter's
+MCP config already built pointed at a subcommand that didn't exist, so `coordination-mcp`
+failed immediately with clap's unrecognized-subcommand error) and the scope-token-authenticated
+in-process/subprocess plumbing behind it are fully built and independently tested against a
+real compiled `batcave` binary, driven as a genuine MCP client would:
 
 ```bash
 cargo test -p batman-runtime --test coordination_mcp

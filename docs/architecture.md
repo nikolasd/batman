@@ -362,7 +362,7 @@ graph TB
 
 #### Configuration and Policy
 - **Config Merge** ([`crates/runtime/src/config/merge.rs`](crates/runtime/src/config/merge.rs)): Layers org/repo/user/per-run YAML with strict unknown-key rejection into an immutable, SHA-256-fingerprinted `RuntimePolicy`
-- **Policy Evaluator** ([`crates/runtime/src/policy/evaluate.rs`](crates/runtime/src/policy/evaluate.rs)): `PolicyEvaluator` implements `AdapterAuthorization` against a `RuntimePolicy` (model allowlist, concurrency ceiling) — wired into production via `lifecycle::serve()` (see [TODO.md](../TODO.md) for remaining gaps, e.g. the `workerMcp` credential store still defaulting to reject-all)
+- **Policy Evaluator** ([`crates/runtime/src/policy/evaluate.rs`](crates/runtime/src/policy/evaluate.rs)): `PolicyEvaluator` implements `AdapterAuthorization` against a `RuntimePolicy` (model allowlist, concurrency ceiling) — wired into production via `lifecycle::serve()`, same as the real `ScopeTokenVerifier` `workerMcp` credential store (see [TODO.md](../TODO.md) for remaining gaps)
 
 ## Level 4: Code (C4-4)
 
@@ -753,9 +753,9 @@ State lives under `<state root>/repos/<repository-id>/`, where the state root re
 
 | Role | Allowed Methods |
 |---|---|
-| `ompExtension` | All methods (superset) |
-| `display` | `runtime/status`, `events/subscribe`, `events/replay` |
-| `workerMcp` | `runtime/status` only |
+| `ompExtension` | All 22 mutation/read methods, including `policy/violation/decide`, `reconcile/omp`, and `profile/register` |
+| `display` | 11 read-only methods: `runtime/status`, `events/subscribe`, `events/replay`, `task/get`, `worker/list`, `worker/get`, `run/list`, `run/get`, `message/list`, `approval/list`, `coordination/child/list` |
+| `workerMcp` | 9 methods: `runtime/status` plus the 8 `coordination/*` tool-backing methods (`coordination/task`, `coordination/peers`, `coordination/send`, `coordination/requestChild`, `coordination/publishArtifact`, `coordination/reportBlocked`, `coordination/askPolicy`, `coordination/child/list`) |
 
 **Note:** A cached connection shared across callers must authenticate as the *union* of all roles (see [Engineering Lessons](engineering-lessons.md#cached-client-must-authenticate-with-the-union-of-all-roles)).
 
