@@ -14,9 +14,9 @@
       "commit": "previous session"
     },
     "task_3_recovery_tests": {
-      "status": "verified-local",
-      "evidence": "crates/runtime/src/recovery/ restructured; kill-point matrix test (6 kill-points, 8 invariants) written",
-      "commit": "previous session"
+      "status": "verified-local-stub",
+      "evidence": "crates/runtime/tests/recovery.rs: 3 tests passing (verifies stub returns empty, config defaults/custom values). Source recovery.rs is still a stub - kill-point matrix not yet implemented",
+      "commit": "85ea9b9"
     },
     "task_4_doctor_cli": {
       "status": "verified-local",
