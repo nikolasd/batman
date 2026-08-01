@@ -7,19 +7,17 @@
 
 use std::sync::Arc;
 
-
+use super::AdapterFuture;
 use super::capability::{
-    AdapterCapabilities, ApprovalsCapability, DurabilityCapability, NestedCapability,
-    NativeViewCapability, ProtocolKind, ResumeCapability, SteeringCapability, UsageCapability,
+    AdapterCapabilities, ApprovalsCapability, DurabilityCapability, NativeViewCapability,
+    NestedCapability, ProtocolKind, ResumeCapability, SteeringCapability, UsageCapability,
     WorkspaceControlCapability,
 };
 use super::error::AdapterError;
 use super::event_sink::AdapterEventSink;
 use super::r#trait::{
-    Adapter, AdapterMessage, AdapterSnapshot, CancelScope, ProbeResult,
-    StartSpec, VendorSessionRef,
+    Adapter, AdapterMessage, AdapterSnapshot, CancelScope, ProbeResult, StartSpec, VendorSessionRef,
 };
-use super::AdapterFuture;
 
 /// A command runner trait for terminal adapter testing.
 ///
@@ -30,7 +28,9 @@ pub trait CommandRunner: Send + Sync {
         &self,
         cmd: &str,
         args: &[&str],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<std::process::Output>> + Send>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<std::process::Output>> + Send>,
+    >;
 }
 
 /// A terminal adapter that wraps an underlying harness.
@@ -52,7 +52,7 @@ impl TerminalAdapter {
             command_runner: None,
         }
     }
-    
+
     /// Creates a new terminal adapter with an injected command runner.
     pub fn with_command_runner(harness: String, command_runner: Arc<dyn CommandRunner>) -> Self {
         TerminalAdapter {
@@ -103,7 +103,8 @@ impl Adapter for TerminalAdapter {
                 "tmux" => {
                     // Use injected command runner if available, otherwise use system command
                     let result = if let Some(ref runner) = command_runner {
-                        runner.run("tmux", &["new-session", "-d", "-s", &session_name])
+                        runner
+                            .run("tmux", &["new-session", "-d", "-s", &session_name])
                             .await
                     } else {
                         tokio::process::Command::new("tmux")
@@ -138,15 +139,14 @@ impl Adapter for TerminalAdapter {
                 "herdr" => {
                     // Herdr session command (placeholder - actual command depends on herdr CLI)
                     let result = if let Some(ref runner) = command_runner {
-                        runner.run("herdr", &["new", &session_name])
-                            .await
+                        runner.run("herdr", &["new", &session_name]).await
                     } else {
                         tokio::process::Command::new("herdr")
                             .args(["new", &session_name])
                             .output()
                             .await
                     };
-                    
+
                     match result {
                         Ok(output) if output.status.success() => Ok(()),
                         Ok(_) => Err(AdapterError::new(
@@ -189,31 +189,24 @@ impl Adapter for TerminalAdapter {
         _session: VendorSessionRef,
         _sink: Arc<dyn AdapterEventSink>,
     ) -> AdapterFuture<'_, ()> {
-        Box::pin(async move {
-            Err(AdapterError::capability_unsupported("terminal", "resume"))
-        })
+        Box::pin(async move { Err(AdapterError::capability_unsupported("terminal", "resume")) })
     }
 
     fn send(&self, _message: AdapterMessage) -> AdapterFuture<'_, ()> {
-        Box::pin(async move {
-            Err(AdapterError::capability_unsupported("terminal", "send"))
-        })
+        Box::pin(async move { Err(AdapterError::capability_unsupported("terminal", "send")) })
     }
 
-    fn respond_to_approval(
-        &self,
-        _approval_id: &str,
-        _decision: &str,
-    ) -> AdapterFuture<'_, ()> {
+    fn respond_to_approval(&self, _approval_id: &str, _decision: &str) -> AdapterFuture<'_, ()> {
         Box::pin(async move {
-            Err(AdapterError::capability_unsupported("terminal", "respond_to_approval"))
+            Err(AdapterError::capability_unsupported(
+                "terminal",
+                "respond_to_approval",
+            ))
         })
     }
 
     fn cancel(&self, _scope: CancelScope) -> AdapterFuture<'_, ()> {
-        Box::pin(async move {
-            Err(AdapterError::capability_unsupported("terminal", "cancel"))
-        })
+        Box::pin(async move { Err(AdapterError::capability_unsupported("terminal", "cancel")) })
     }
 
     fn snapshot(&self) -> AdapterFuture<'_, AdapterSnapshot> {
@@ -228,9 +221,7 @@ impl Adapter for TerminalAdapter {
     }
 
     fn dispose(&self) -> AdapterFuture<'_, ()> {
-        Box::pin(async move {
-            Ok(())
-        })
+        Box::pin(async move { Ok(()) })
     }
 }
 
@@ -338,7 +329,9 @@ mod tests {
     #[tokio::test]
     async fn test_terminal_adapter_send_returns_capability_unsupported() {
         let adapter = TerminalAdapter::new("test".to_string());
-        let message = AdapterMessage::Steer { text: "test".to_string() };
+        let message = AdapterMessage::Steer {
+            text: "test".to_string(),
+        };
         let result = adapter.send(message).await;
         assert!(result.is_err());
         let err = result.unwrap_err();

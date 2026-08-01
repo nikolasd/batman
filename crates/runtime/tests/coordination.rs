@@ -10,18 +10,18 @@ use std::sync::Arc;
 
 use batman_protocol::{ProjectId, RunId, TaskId, Timestamp, WorkerId};
 use batman_runtime::coordination::{
-    mcp_protocol, CoordinationBroker, ScopeBinding, ScopeTokenStore, ScopeTokenVerifier,
-    VendorProcessIdentity,
+    CoordinationBroker, ScopeBinding, ScopeTokenStore, ScopeTokenVerifier, VendorProcessIdentity,
+    mcp_protocol,
 };
 use batman_runtime::db::DatabaseHandle;
 use batman_runtime::ipc::{PeerCredentialReader, PeerCredentials, Server, ServerConfig};
 use batman_runtime::paths::RuntimePaths;
 use batman_runtime::service::FakeRunDriver;
 use nix::unistd::Uid;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::UnixStream;
+use tokio::net::unix::OwnedWriteHalf;
 use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 
@@ -77,8 +77,14 @@ struct Harness {
 
 impl Harness {
     async fn start() -> Self {
-        let state = tempfile::Builder::new().prefix("bat-co-s-").tempdir_in("/tmp").unwrap();
-        let repo = tempfile::Builder::new().prefix("bat-co-r-").tempdir_in("/tmp").unwrap();
+        let state = tempfile::Builder::new()
+            .prefix("bat-co-s-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let repo = tempfile::Builder::new()
+            .prefix("bat-co-r-")
+            .tempdir_in("/tmp")
+            .unwrap();
         std::fs::create_dir(repo.path().join(".git")).unwrap();
 
         let paths = RuntimePaths::resolve(state.path(), repo.path()).unwrap();
@@ -100,7 +106,11 @@ impl Harness {
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let join = tokio::spawn(async move {
-            let _ = server.serve(async move { let _ = shutdown_rx.await; }).await;
+            let _ = server
+                .serve(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
         });
 
         for _ in 0..50 {
@@ -225,7 +235,10 @@ async fn worker_client(harness: &Harness, token: &str) -> Client {
         }))
         .await;
     let init = client.recv().await;
-    assert!(init.get("error").is_none(), "worker initialize failed: {init:?}");
+    assert!(
+        init.get("error").is_none(),
+        "worker initialize failed: {init:?}"
+    );
     client
 }
 
@@ -233,17 +246,29 @@ async fn worker_client(harness: &Harness, token: &str) -> Client {
 /// returning the token plus the run/task/worker ids.
 async fn seed_scoped_run(harness: &Harness, omp: &mut Client) -> (String, RunId, TaskId, WorkerId) {
     let task = omp
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
         .await;
     let task_id = TaskId::parse(task["result"]["taskId"].as_str().unwrap()).unwrap();
 
     let worker = omp
-        .call(3, "worker/create", json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }))
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
         .await;
     let worker_id = WorkerId::parse(worker["result"]["workerId"].as_str().unwrap()).unwrap();
 
     let submit = omp
-        .call(4, "run/submit", json!({ "taskId": task_id.to_string(), "workerId": worker_id.to_string() }))
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id.to_string(), "workerId": worker_id.to_string() }),
+        )
         .await;
     let run_id = RunId::parse(submit["result"]["runId"].as_str().unwrap()).unwrap();
 
@@ -276,9 +301,16 @@ async fn execute_tool_call_fulfills_every_tool_against_the_real_broker() {
     let (_token, run_id, task_id, worker_id) = seed_scoped_run(&harness, &mut omp).await;
     // A second worker on the same task, so batman_peers has someone to see.
     let peer_worker = omp
-        .call(6, "worker/create", json!({ "fingerprint": "sha256:g", "adapter": "fake", "model": "m" }))
+        .call(
+            6,
+            "worker/create",
+            json!({ "fingerprint": "sha256:g", "adapter": "fake", "model": "m" }),
+        )
         .await;
-    let peer_worker_id = peer_worker["result"]["workerId"].as_str().unwrap().to_string();
+    let peer_worker_id = peer_worker["result"]["workerId"]
+        .as_str()
+        .unwrap()
+        .to_string();
     omp.call(
         7,
         "run/submit",
@@ -289,13 +321,23 @@ async fn execute_tool_call_fulfills_every_tool_against_the_real_broker() {
     let broker = harness.broker().await;
     let scope = bound_scope(run_id, task_id, worker_id);
 
-    let task = broker.execute_tool_call("batman_task", &json!({}), scope).await;
+    let task = broker
+        .execute_tool_call("batman_task", &json!({}), scope)
+        .await;
     assert_eq!(task["isError"], false, "{task:?}");
     assert_eq!(task["structuredContent"]["taskId"], task_id.to_string());
 
-    let peers = broker.execute_tool_call("batman_peers", &json!({}), scope).await;
+    let peers = broker
+        .execute_tool_call("batman_peers", &json!({}), scope)
+        .await;
     assert_eq!(peers["isError"], false, "{peers:?}");
-    assert_eq!(peers["structuredContent"]["peers"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        peers["structuredContent"]["peers"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 
     let send = broker
         .execute_tool_call(
@@ -308,7 +350,11 @@ async fn execute_tool_call_fulfills_every_tool_against_the_real_broker() {
     assert_eq!(send["structuredContent"]["deliveryState"], "sent");
 
     let request_child = broker
-        .execute_tool_call("batman_request_child", &json!({ "reason": "need help" }), scope)
+        .execute_tool_call(
+            "batman_request_child",
+            &json!({ "reason": "need help" }),
+            scope,
+        )
         .await;
     assert_eq!(request_child["isError"], false, "{request_child:?}");
     assert!(request_child["structuredContent"]["sequence"].is_number());
@@ -321,16 +367,27 @@ async fn execute_tool_call_fulfills_every_tool_against_the_real_broker() {
         )
         .await;
     assert_eq!(publish["isError"], false, "{publish:?}");
-    assert_eq!(publish["structuredContent"]["artifactRef"], "artifact://abc");
+    assert_eq!(
+        publish["structuredContent"]["artifactRef"],
+        "artifact://abc"
+    );
 
     let blocked = broker
-        .execute_tool_call("batman_report_blocked", &json!({ "reason": "waiting" }), scope)
+        .execute_tool_call(
+            "batman_report_blocked",
+            &json!({ "reason": "waiting" }),
+            scope,
+        )
         .await;
     assert_eq!(blocked["isError"], false, "{blocked:?}");
     assert_eq!(blocked["structuredContent"]["deliveryState"], "sent");
 
     let policy = broker
-        .execute_tool_call("batman_ask_policy", &json!({ "question": "may I write here?" }), scope)
+        .execute_tool_call(
+            "batman_ask_policy",
+            &json!({ "question": "may I write here?" }),
+            scope,
+        )
         .await;
     assert_eq!(policy["isError"], false, "{policy:?}");
     assert_eq!(policy["structuredContent"]["deliveryState"], "sent");
@@ -358,8 +415,12 @@ async fn execute_tool_call_rejects_a_smuggled_sender_worker_id_and_journals_noth
         .await;
     assert_eq!(result["isError"], true, "{result:?}");
 
-    let replay = omp.call(5, "events/replay", json!({ "afterSequence": 0 })).await;
-    let events = replay["result"].as_array().expect("events/replay returns an array");
+    let replay = omp
+        .call(5, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    let events = replay["result"]
+        .as_array()
+        .expect("events/replay returns an array");
     assert!(
         !events.iter().any(|e| e["event"]["type"] == "messageEvent"),
         "a rejected call must never journal any message at all: {events:?}"
@@ -374,9 +435,16 @@ async fn execute_tool_call_reports_an_unknown_tool_as_a_tool_error_not_a_panic()
     let broker = harness.broker().await;
     let scope = bound_scope(run_id, task_id, worker_id);
 
-    let result = broker.execute_tool_call("not_a_real_tool", &json!({}), scope).await;
+    let result = broker
+        .execute_tool_call("not_a_real_tool", &json!({}), scope)
+        .await;
     assert_eq!(result["isError"], true, "{result:?}");
-    assert!(result["content"][0]["text"].as_str().unwrap().contains("unknown tool"));
+    assert!(
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("unknown tool")
+    );
 }
 
 // ------------------------------------------------------------- send bounds
@@ -391,7 +459,10 @@ async fn coordination_send_requires_sender_task_and_payload() {
     let missing_sender = worker
         .call(2, "coordination/send", json!({ "runId": run_id.to_string(), "taskId": "x", "kind": "question", "payload": "hi" }))
         .await;
-    assert_eq!(missing_sender["error"]["code"], -32602, "{missing_sender:?}");
+    assert_eq!(
+        missing_sender["error"]["code"], -32602,
+        "{missing_sender:?}"
+    );
 }
 
 #[tokio::test]
@@ -514,9 +585,13 @@ async fn coordination_send_rejects_a_task_unrelated_to_the_run() {
         )
         .await;
     assert_eq!(result["error"]["code"], -32602, "{result:?}");
-    assert!(result["error"]["message"].as_str().unwrap().contains("cannot address"));
+    assert!(
+        result["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot address")
+    );
 }
-
 
 #[tokio::test]
 async fn coordination_methods_reject_a_run_that_has_already_settled() {
@@ -529,12 +604,28 @@ async fn coordination_methods_reject_a_run_that_has_already_settled() {
     // still technically live (nothing has revoked it yet), but every
     // worker-safe operation must reject it regardless: settlement, not
     // revocation, is what actually ends this run's ability to act.
-    let cancel = omp.call(5, "run/cancel", json!({ "runId": run_id.to_string() })).await;
-    assert!(cancel.get("error").is_none(), "run/cancel failed: {cancel:?}");
+    let cancel = omp
+        .call(5, "run/cancel", json!({ "runId": run_id.to_string() }))
+        .await;
+    assert!(
+        cancel.get("error").is_none(),
+        "run/cancel failed: {cancel:?}"
+    );
 
-    let task_call = worker.call(6, "coordination/task", json!({ "runId": run_id.to_string() })).await;
+    let task_call = worker
+        .call(
+            6,
+            "coordination/task",
+            json!({ "runId": run_id.to_string() }),
+        )
+        .await;
     assert_eq!(task_call["error"]["code"], -32602, "{task_call:?}");
-    assert!(task_call["error"]["message"].as_str().unwrap().contains("already settled"));
+    assert!(
+        task_call["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("already settled")
+    );
 
     let send_call = worker
         .call(
@@ -552,8 +643,12 @@ async fn coordination_methods_reject_a_run_that_has_already_settled() {
     assert_eq!(send_call["error"]["code"], -32602, "{send_call:?}");
 
     // Nothing from either rejected call reached the journal.
-    let replay = omp.call(8, "events/replay", json!({ "afterSequence": 0 })).await;
-    let events = replay["result"].as_array().expect("events/replay returns an array");
+    let replay = omp
+        .call(8, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    let events = replay["result"]
+        .as_array()
+        .expect("events/replay returns an array");
     assert!(
         !events.iter().any(|e| e["event"]["type"] == "messageEvent"),
         "a call rejected for run settlement must never journal a message: {events:?}"
@@ -642,7 +737,10 @@ async fn coordination_send_rate_limits_after_30_messages_per_minute() {
             )
             .await;
     }
-    assert_eq!(last["error"]["code"], -32006, "expected RATE_LIMITED: {last:?}");
+    assert_eq!(
+        last["error"]["code"], -32006,
+        "expected RATE_LIMITED: {last:?}"
+    );
 }
 
 // ---------------------------------------------------------- scope tokens
@@ -716,7 +814,10 @@ async fn coordination_send_never_writes_the_raw_token_into_the_event_journal() {
         .filter_map(Result::ok)
         .collect();
     for row in &rows {
-        assert!(!row.contains(&token), "token bytes leaked into the event journal: {row}");
+        assert!(
+            !row.contains(&token),
+            "token bytes leaked into the event journal: {row}"
+        );
     }
 }
 
@@ -727,7 +828,11 @@ async fn omp_extension_cannot_call_worker_safe_coordination_methods() {
     let harness = Harness::start().await;
     let mut omp = omp_client(&harness, "omp-1").await;
     let result = omp
-        .call(2, "coordination/send", json!({ "runId": RunId::new().to_string() }))
+        .call(
+            2,
+            "coordination/send",
+            json!({ "runId": RunId::new().to_string() }),
+        )
         .await;
     assert_eq!(result["error"]["code"], -32601, "{result:?}");
 }
@@ -758,7 +863,11 @@ async fn sweep_unacknowledged_as_unknown_settles_recorded_and_sent_messages() {
 
     // Simulate crash recovery: a fresh broker over the same database sweeps
     // every non-terminal delivery state to `unknown`, never resending.
-    let db = Arc::new(DatabaseHandle::start(harness.database.clone()).await.unwrap());
+    let db = Arc::new(
+        DatabaseHandle::start(harness.database.clone())
+            .await
+            .unwrap(),
+    );
     let (events_tx, _events_rx) = broadcast::channel(64);
     let broker = CoordinationBroker::new(db, ProjectId::new(), events_tx);
     let swept = broker.sweep_unacknowledged_as_unknown().await.unwrap();
@@ -766,7 +875,12 @@ async fn sweep_unacknowledged_as_unknown_settles_recorded_and_sent_messages() {
 
     let conn = rusqlite::Connection::open(&harness.database).unwrap();
     let state: String = conn
-        .query_row("SELECT delivery_state FROM messages LIMIT 1", [], |row| row.get(0))
+        .query_row("SELECT delivery_state FROM messages LIMIT 1", [], |row| {
+            row.get(0)
+        })
         .unwrap();
-    assert_eq!(state, "unknown", "unacknowledged message must settle at unknown, not acknowledged");
+    assert_eq!(
+        state, "unknown",
+        "unacknowledged message must settle at unknown, not acknowledged"
+    );
 }

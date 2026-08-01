@@ -2,7 +2,6 @@
 //!
 //! Exports events from the database to a JSONL file.
 
-
 /// Event export configuration.
 #[derive(Debug, Clone)]
 pub struct Export {

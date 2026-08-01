@@ -2,8 +2,8 @@
 //!
 //! Prunes events older than the configured retention period.
 
-use crate::db::DomainClosure;
 use crate::DatabaseHandle;
+use crate::db::DomainClosure;
 
 /// Retention policy for event pruning.
 #[derive(Debug, Clone)]
@@ -14,12 +14,14 @@ pub struct Retention {
 impl Retention {
     #[must_use]
     pub fn new(period: impl Into<String>) -> Self {
-        Self { period: period.into() }
+        Self {
+            period: period.into(),
+        }
     }
 
     pub async fn prune(&self, db_handle: &DatabaseHandle) -> Result<(), String> {
         let period = parse_period(&self.period)?;
-        
+
         // Calculate the cutoff timestamp as RFC3339 text matching how `timestamp` is stored
         let cutoff_text = time::OffsetDateTime::now_utc()
             .checked_sub(time::Duration::seconds(period as i64))
@@ -45,7 +47,6 @@ impl Retention {
                      )",
                     rusqlite::params![cutoff_text.as_str()],
                 )?;
-                
                 if deleted == 0 {
                     break;
                 }
@@ -53,12 +54,13 @@ impl Retention {
 
             Ok(serde_json::Value::Object(Default::default()))
         }) as DomainClosure;
-        
+
         // Use the existing run_domain_op method to execute the closure
-        db_handle.run_domain_op(closure)
+        db_handle
+            .run_domain_op(closure)
             .await
             .map_err(|e| format!("failed to execute prune operation: {e}"))?;
-        
+
         Ok(())
     }
 }
@@ -70,15 +72,19 @@ fn parse_period(period: &str) -> Result<u64, String> {
             .map(|d| d * 24 * 60 * 60)
             .map_err(|e| format!("invalid period: {e}"))
     } else if let Some(months) = period.strip_suffix("mo") {
-        months.parse::<u64>()
+        months
+            .parse::<u64>()
             .map(|m| m * 30 * 24 * 60 * 60)
             .map_err(|e| format!("invalid period: {e}"))
     } else if let Some(years) = period.strip_suffix("y") {
-        years.parse::<u64>()
+        years
+            .parse::<u64>()
             .map(|y| y * 365 * 24 * 60 * 60)
             .map_err(|e| format!("invalid period: {e}"))
     } else {
-        Err(format!("invalid period format: {period}, expected format like '30d', '90d', '1y'"))
+        Err(format!(
+            "invalid period format: {period}, expected format like '30d', '90d', '1y'"
+        ))
     }
 }
 

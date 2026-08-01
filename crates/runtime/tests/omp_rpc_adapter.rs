@@ -192,7 +192,10 @@ fn non_extension_ui_request_frames_never_produce_a_pending_approval() {
         .filter(|l| !l.contains("\"extension_ui_request\""))
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect();
-    assert!(!non_ui_frames.is_empty(), "turn.jsonl must contain non-extension_ui_request frames");
+    assert!(
+        !non_ui_frames.is_empty(),
+        "turn.jsonl must contain non-extension_ui_request frames"
+    );
     for frame in &non_ui_frames {
         assert_eq!(
             extension_ui_request_to_pending_approval(frame),

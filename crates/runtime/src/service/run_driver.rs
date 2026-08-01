@@ -42,7 +42,13 @@ pub trait RunDriver: Send + Sync {
 
     /// Sends a follow-up message to an already-started run. Returns [`RegistryError::NoRunningAdapter`]
     /// if no adapter is currently driving the run.
-    fn send_follow_up(&self, run_id: RunId, task_id: TaskId, worker_id: WorkerId, prompt: String) -> AdapterFuture<'static, Result<(), String>>;
+    fn send_follow_up(
+        &self,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        prompt: String,
+    ) -> AdapterFuture<'static, Result<(), String>>;
 }
 
 /// A deterministic driver for orchestration tests and fixtures: acknowledges
@@ -66,7 +72,9 @@ impl RunDriver for FakeRunDriver {
         _prompt: String,
     ) -> AdapterFuture<'static, Result<(), String>> {
         Box::pin(async move {
-            Err(format!("fake driver does not support follow-up for run {run_id}"))
+            Err(format!(
+                "fake driver does not support follow-up for run {run_id}"
+            ))
         })
     }
 }

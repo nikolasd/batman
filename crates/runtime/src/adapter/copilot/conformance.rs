@@ -637,7 +637,6 @@ fn managed_nesting_rejection_scenario() -> ScenarioResult {
     )
 }
 
-
 /// Runs every scenario this adapter can prove without a model call.
 pub async fn fixture_report() -> ConformanceReport {
     let (probe_result, version, declared_capabilities) = probe_scenario().await;

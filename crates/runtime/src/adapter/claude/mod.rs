@@ -257,15 +257,16 @@ impl ClaudeAdapter {
                 worker_id,
                 pid,
                 AdapterMcpConfig::default_expiry(),
-            ) {
-                process.terminate().await;
-                let _ = std::fs::remove_file(&injection.config_path);
-                return Err(AdapterError::process(
-                    self.kind(),
-                    "start",
-                    format!("failed to activate worker MCP scope token: {err}"),
-                ));
-            }
+            )
+        {
+            process.terminate().await;
+            let _ = std::fs::remove_file(&injection.config_path);
+            return Err(AdapterError::process(
+                self.kind(),
+                "start",
+                format!("failed to activate worker MCP scope token: {err}"),
+            ));
+        }
 
         sink.emit(AdapterEvent {
             run_id,
@@ -370,7 +371,7 @@ fn write_mcp_config_file(path: &Path, document: &serde_json::Value) -> std::io::
 /// The background task that exclusively owns one `ManagedProcess`:
 /// normalizes+emits every stdout frame, and serializes stdin
 /// writes/termination requested through `commands`.
-    #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn run_session(
     mut process: ManagedProcess,
     mut commands: mpsc::Receiver<SessionCommand>,

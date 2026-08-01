@@ -329,7 +329,10 @@ fn approval_scenario() -> ScenarioResult {
                 if approval.method != method {
                     return ScenarioResult::fail(
                         scenario::APPROVAL,
-                        format!("expected PendingApproval.method {method:?}, got {:?}", approval.method),
+                        format!(
+                            "expected PendingApproval.method {method:?}, got {:?}",
+                            approval.method
+                        ),
                     );
                 }
             }
@@ -715,7 +718,6 @@ async fn runtime_restart_scenario() -> ScenarioResult {
         Err(detail) => ScenarioResult::fail(scenario::RUNTIME_RESTART, detail),
     }
 }
-
 
 // -------------------------------------------------------- NATIVE_DISCOVERY
 

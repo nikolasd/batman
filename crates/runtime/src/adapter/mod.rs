@@ -8,7 +8,6 @@ mod capability;
 pub mod claude;
 pub mod codex;
 pub mod copilot;
-pub mod terminal;
 mod error;
 mod event_sink;
 pub mod mcp_config;
@@ -16,6 +15,7 @@ pub mod omp_rpc;
 mod profile;
 mod profile_store;
 pub mod registry;
+pub mod terminal;
 #[path = "trait.rs"]
 mod r#trait;
 
@@ -39,7 +39,10 @@ pub use profile::{
     WorkerProfile,
 };
 pub use profile_store::{ProfileStore, ProfileStoreError};
-pub use registry::{AdapterAuthorization, AdapterRegistry, DenyByDefaultAuthorization, FixtureAuthorization, RegistryError};
+pub use registry::{
+    AdapterAuthorization, AdapterRegistry, DenyByDefaultAuthorization, FixtureAuthorization,
+    RegistryError,
+};
 pub use r#trait::{
     Adapter, AdapterMessage, AdapterSnapshot, CancelScope, ProbeResult, StartSpec, VendorSessionRef,
 };

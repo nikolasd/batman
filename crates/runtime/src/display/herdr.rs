@@ -44,8 +44,14 @@ impl HerdrStatus {
             .get("protocol")
             .and_then(|v| v.as_u64())
             .ok_or_else(|| "herdr status --json missing client.protocol".to_string())?;
-        let server_running = server.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
-        let server_version = server.get("version").and_then(|v| v.as_str()).map(str::to_string);
+        let server_running = server
+            .get("running")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let server_version = server
+            .get("version")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let server_protocol = server.get("protocol").and_then(|v| v.as_u64());
         // Trust the server's own "compatible" field when present, but
         // never claim compatibility it doesn't report -- fall back to
@@ -70,7 +76,8 @@ impl HerdrStatus {
     #[must_use]
     pub fn remediation(&self) -> String {
         if !self.server_running {
-            return "herdr server is not running; start it or run `herdr` to launch one".to_string();
+            return "herdr server is not running; start it or run `herdr` to launch one"
+                .to_string();
         }
         match self.server_protocol {
             Some(server_protocol) if server_protocol != self.client_protocol => format!(
@@ -105,7 +112,8 @@ struct OwnedPane {
 /// seconds so repeated availability checks do not spawn a process each
 /// time.
 pub struct HerdrDisplay {
-    #[allow(dead_code)] // carried for parity with TmuxDisplay/TerminalDisplay; no field of it is read yet
+    #[allow(dead_code)]
+    // carried for parity with TmuxDisplay/TerminalDisplay; no field of it is read yet
     config: DisplayConfig,
     session_active: bool,
     executor: Arc<dyn CommandExecutor>,
@@ -156,7 +164,11 @@ impl HerdrDisplay {
 
     fn probe_uncached(&self) -> Result<HerdrStatus, String> {
         match self.executor.execute("herdr", &["status", "--json"]) {
-            Ok(CommandResult { success: true, stdout, .. }) => {
+            Ok(CommandResult {
+                success: true,
+                stdout,
+                ..
+            }) => {
                 let text = String::from_utf8_lossy(&stdout);
                 HerdrStatus::parse(&text)
             }
@@ -202,18 +214,25 @@ impl HerdrDisplay {
             // ordinary down-split, then moves it -- Herdr's own `pane
             // move` is what actually promotes a pane to a new
             // tab/workspace, not `pane split` itself.
-            DisplayPlacement::SplitDown | DisplayPlacement::Tab | DisplayPlacement::Workspace => "down",
+            DisplayPlacement::SplitDown | DisplayPlacement::Tab | DisplayPlacement::Workspace => {
+                "down"
+            }
             DisplayPlacement::Embedded => unreachable!("handled above"),
         };
-        let pane_id =
-            self.run_pane_command(&["pane", "split", "--current", "--direction", direction], "split")?;
+        let pane_id = self.run_pane_command(
+            &["pane", "split", "--current", "--direction", direction],
+            "split",
+        )?;
 
         // A partial move failure must clean up only the pane just
         // created, never a pre-existing one.
         let outcome: Result<(), String> = (|| {
             match placement {
                 DisplayPlacement::Tab => {
-                    self.execute_or_err(&["pane", "move", &pane_id, "--new-tab"], "move to new tab")?;
+                    self.execute_or_err(
+                        &["pane", "move", &pane_id, "--new-tab"],
+                        "move to new tab",
+                    )?;
                 }
                 DisplayPlacement::Workspace => {
                     self.execute_or_err(
@@ -289,7 +308,11 @@ impl HerdrDisplay {
     /// diagnostics.
     #[must_use]
     pub fn owned_pane_ids(&self) -> Vec<String> {
-        self.owned_panes.lock().iter().map(|p| p.pane_id.clone()).collect()
+        self.owned_panes
+            .lock()
+            .iter()
+            .map(|p| p.pane_id.clone())
+            .collect()
     }
 
     /// Runs the full `herdr` argv in `args` (including the leading
@@ -313,9 +336,11 @@ impl HerdrDisplay {
     /// `"pane"` subcommand), returning stdout on success.
     fn execute_or_err(&self, args: &[&str], what: &str) -> Result<String, String> {
         match self.executor.execute("herdr", args) {
-            Ok(CommandResult { success: true, stdout, .. }) => {
-                Ok(String::from_utf8_lossy(&stdout).into_owned())
-            }
+            Ok(CommandResult {
+                success: true,
+                stdout,
+                ..
+            }) => Ok(String::from_utf8_lossy(&stdout).into_owned()),
             Ok(CommandResult { stderr, .. }) => Err(format!(
                 "herdr {what} exited with error: {}",
                 String::from_utf8_lossy(&stderr)
@@ -347,7 +372,9 @@ impl DisplayBackendTrait for HerdrDisplay {
     }
 
     fn is_available(&self) -> bool {
-        self.probe().map(|status| status.compatible).unwrap_or(false)
+        self.probe()
+            .map(|status| status.compatible)
+            .unwrap_or(false)
     }
 
     fn activate(&mut self) -> Result<(), String> {
@@ -384,7 +411,9 @@ mod tests {
 
     impl FixtureExecutor {
         fn new() -> Self {
-            Self { responses: std::collections::HashMap::new() }
+            Self {
+                responses: std::collections::HashMap::new(),
+            }
         }
 
         fn with(mut self, key: &str, result: CommandResult) -> Self {
@@ -394,11 +423,19 @@ mod tests {
     }
 
     fn ok(stdout: &str) -> CommandResult {
-        CommandResult { success: true, stdout: stdout.as_bytes().to_vec(), stderr: Vec::new() }
+        CommandResult {
+            success: true,
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        }
     }
 
     fn err(stderr: &str) -> CommandResult {
-        CommandResult { success: false, stdout: Vec::new(), stderr: stderr.as_bytes().to_vec() }
+        CommandResult {
+            success: false,
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
     }
 
     impl CommandExecutor for FixtureExecutor {
@@ -433,7 +470,8 @@ mod tests {
 
     #[test]
     fn incompatible_status_makes_the_backend_unavailable_and_issues_no_pane_command() {
-        let executor = Arc::new(FixtureExecutor::new().with("herdr status --json", ok(MISMATCH_STATUS)));
+        let executor =
+            Arc::new(FixtureExecutor::new().with("herdr status --json", ok(MISMATCH_STATUS)));
         let display = HerdrDisplay::with_executor(DisplayConfig::default(), executor);
         assert!(!display.is_available());
 
@@ -477,7 +515,8 @@ mod tests {
 
     #[test]
     fn closing_an_untracked_pane_is_refused() {
-        let executor = Arc::new(FixtureExecutor::new().with("herdr status --json", ok(COMPATIBLE_STATUS)));
+        let executor =
+            Arc::new(FixtureExecutor::new().with("herdr status --json", ok(COMPATIBLE_STATUS)));
         let display = HerdrDisplay::with_executor(DisplayConfig::default(), executor);
         let result = display.close_owned_pane("not-owned:p1");
         assert!(result.is_err());
@@ -486,8 +525,12 @@ mod tests {
 
     #[test]
     fn probe_result_is_cached_for_five_seconds() {
-        let executor = Arc::new(FixtureExecutor::new().with("herdr status --json", ok(COMPATIBLE_STATUS)));
-        let display = HerdrDisplay::with_executor(DisplayConfig::default(), executor as Arc<dyn CommandExecutor>);
+        let executor =
+            Arc::new(FixtureExecutor::new().with("herdr status --json", ok(COMPATIBLE_STATUS)));
+        let display = HerdrDisplay::with_executor(
+            DisplayConfig::default(),
+            executor as Arc<dyn CommandExecutor>,
+        );
         // Two probes in quick succession must both succeed off the same
         // single fixture response -- `FixtureExecutor` errors on any
         // invocation it has no entry for, so a second real spawn here
@@ -499,7 +542,8 @@ mod tests {
 
     #[test]
     fn unreachable_herdr_binary_is_unavailable_not_a_panic() {
-        let executor = Arc::new(FixtureExecutor::new().with("herdr status --json", err("command not found")));
+        let executor =
+            Arc::new(FixtureExecutor::new().with("herdr status --json", err("command not found")));
         let display = HerdrDisplay::with_executor(DisplayConfig::default(), executor);
         assert!(!display.is_available());
     }

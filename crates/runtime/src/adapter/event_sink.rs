@@ -126,6 +126,8 @@ pub struct DomainAdapterEventSink {
     project_id: ProjectId,
     events_tx: broadcast::Sender<EventEnvelope>,
     redactor: Arc<Redactor>,
+    /// Org security patterns for redaction.
+    org_security_patterns: Vec<String>,
 }
 
 impl DomainAdapterEventSink {
@@ -134,12 +136,17 @@ impl DomainAdapterEventSink {
         db: Arc<DatabaseHandle>,
         project_id: ProjectId,
         events_tx: broadcast::Sender<EventEnvelope>,
+        org_security_patterns: Vec<String>,
     ) -> Self {
         Self {
             db,
             project_id,
             events_tx,
-            redactor: Arc::new(Redactor::new()),
+            redactor: Arc::new(Redactor::with_org_rules(&org_security_patterns).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "org security patterns failed to compile; using built-in rules only");
+                Redactor::new()
+            })),
+            org_security_patterns,
         }
     }
 

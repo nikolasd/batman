@@ -59,7 +59,10 @@ impl MockCommandExecutor {
         let found = calls.iter().any(|(p, args)| {
             p == program
                 && args.len() == expected_args.len()
-                && args.iter().zip(expected_args.iter()).all(|(a, e)| *a == **e)
+                && args
+                    .iter()
+                    .zip(expected_args.iter())
+                    .all(|(a, e)| *a == **e)
         });
         assert!(
             found,
@@ -80,19 +83,29 @@ impl MockCommandExecutor {
 impl CommandExecutor for MockCommandExecutor {
     fn execute(&self, program: &str, args: &[&str]) -> io::Result<CommandResult> {
         let idx = self.call_count.load(std::sync::atomic::Ordering::Relaxed);
-        self.call_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.call_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         {
             let mut calls = self.calls.lock().unwrap();
-            calls.push((program.to_string(), args.iter().map(|s| s.to_string()).collect()));
+            calls.push((
+                program.to_string(),
+                args.iter().map(|s| s.to_string()).collect(),
+            ));
         }
         match self.results.get(idx) {
-            Some(MockResult::Success(stdout)) => {
-                Ok(CommandResult { success: true, stdout: stdout.clone(), stderr: Vec::new() })
+            Some(MockResult::Success(stdout)) => Ok(CommandResult {
+                success: true,
+                stdout: stdout.clone(),
+                stderr: Vec::new(),
+            }),
+            Some(MockResult::Failure(stderr)) => Ok(CommandResult {
+                success: false,
+                stdout: Vec::new(),
+                stderr: stderr.clone(),
+            }),
+            Some(MockResult::SpawnError(msg)) => {
+                Err(io::Error::new(io::ErrorKind::NotFound, msg.clone()))
             }
-            Some(MockResult::Failure(stderr)) => {
-                Ok(CommandResult { success: false, stdout: Vec::new(), stderr: stderr.clone() })
-            }
-            Some(MockResult::SpawnError(msg)) => Err(io::Error::new(io::ErrorKind::NotFound, msg.clone())),
             None => Err(io::Error::other("no more results")),
         }
     }
@@ -161,7 +174,10 @@ fn tmux_display_with_mock_executor_unavailable_no_active_session() {
     let config = DisplayConfig::default();
     let tmux = TmuxDisplay::with_executor(config, Arc::new(mock));
 
-    assert!(!tmux.is_available(), "a real tmux binary with no active session must still be unavailable");
+    assert!(
+        !tmux.is_available(),
+        "a real tmux binary with no active session must still be unavailable"
+    );
 }
 
 #[test]
@@ -321,11 +337,17 @@ fn create_pane_for_workspace_placement_is_capability_unsupported_and_issues_no_c
     let mock = Arc::new(mock);
     let tmux = TmuxDisplay::with_executor(config, mock.clone());
 
-    let result =
-        tmux.create_pane(&["batcave".to_string()], DisplayPlacement::Workspace, "run-1");
+    let result = tmux.create_pane(
+        &["batcave".to_string()],
+        DisplayPlacement::Workspace,
+        "run-1",
+    );
     let err = result.expect_err("tmux has no workspace concept");
     assert!(err.contains("capability_unsupported"));
-    assert!(mock.recorded_calls().is_empty(), "no tmux command may run for an unsupported placement");
+    assert!(
+        mock.recorded_calls().is_empty(),
+        "no tmux command may run for an unsupported placement"
+    );
 }
 
 #[test]
@@ -345,7 +367,11 @@ fn create_pane_without_an_active_session_refuses_rather_than_starting_one() {
     let err = result.expect_err("no active session must refuse, not spawn a server");
     assert!(err.contains("no active tmux session"));
     let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 1, "only the session check may run; no split/window command");
+    assert_eq!(
+        calls.len(),
+        1,
+        "only the session check may run; no split/window command"
+    );
     assert_eq!(calls[0].1, vec!["display-message", "-p", "#{session_id}"]);
 }
 
@@ -366,7 +392,10 @@ fn split_right_creates_one_tagged_pane_and_records_ownership_with_argv_safe_comm
     // `Command::args` (never a shell) guarantees.
     let pane_id = tmux
         .create_pane(
-            &["/opt/my batcave/bin/batcave".to_string(), "monitor".to_string()],
+            &[
+                "/opt/my batcave/bin/batcave".to_string(),
+                "monitor".to_string(),
+            ],
             DisplayPlacement::SplitRight,
             "run-1",
         )
@@ -378,7 +407,11 @@ fn split_right_creates_one_tagged_pane_and_records_ownership_with_argv_safe_comm
     let split_call = &calls[1];
     assert_eq!(split_call.0, "tmux");
     assert!(split_call.1.contains(&"-h".to_string()));
-    assert!(split_call.1.contains(&"/opt/my batcave/bin/batcave".to_string()));
+    assert!(
+        split_call
+            .1
+            .contains(&"/opt/my batcave/bin/batcave".to_string())
+    );
 }
 
 #[test]
@@ -394,10 +427,18 @@ fn closing_an_untracked_pane_is_refused_and_closing_an_owned_one_removes_it() {
     let tmux = TmuxDisplay::with_executor(config, mock.clone());
 
     let pane_id = tmux
-        .create_pane(&["batcave".to_string(), "monitor".to_string()], DisplayPlacement::SplitDown, "run-1")
+        .create_pane(
+            &["batcave".to_string(), "monitor".to_string()],
+            DisplayPlacement::SplitDown,
+            "run-1",
+        )
         .expect("an active session must allow pane creation");
 
-    assert!(tmux.close_owned_pane("%99").is_err(), "an unrelated pane must never be closed");
-    tmux.close_owned_pane(&pane_id).expect("the pane this backend created must close");
+    assert!(
+        tmux.close_owned_pane("%99").is_err(),
+        "an unrelated pane must never be closed"
+    );
+    tmux.close_owned_pane(&pane_id)
+        .expect("the pane this backend created must close");
     assert!(tmux.owned_pane_ids().is_empty());
 }

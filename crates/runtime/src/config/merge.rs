@@ -275,7 +275,6 @@ impl std::fmt::Display for NestedViolationAction {
     }
 }
 
-
 impl<'de> serde::Deserialize<'de> for NestedViolationAction {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -350,7 +349,11 @@ impl RolloutGates {
             };
         };
 
-        let flag = |key: &str| obj.get(key).and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let flag = |key: &str| {
+            obj.get(key)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        };
         let nested_action = obj
             .get("nested_violation_action")
             .and_then(serde_json::Value::as_str)

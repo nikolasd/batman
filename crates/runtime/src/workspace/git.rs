@@ -29,7 +29,7 @@ impl GitWorktree {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(GitError::Io)?;
         }
-        
+
         // Execute git worktree add --detach from the source repository
         // Use .arg() with Path directly to preserve non-UTF-8 paths
         let output = Command::new("git")
@@ -41,7 +41,7 @@ impl GitWorktree {
             .arg(&self.base_commit)
             .output()
             .map_err(|e| GitError::Worktree(format!("Failed to execute git: {}", e)))?;
-        
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(GitError::Worktree(format!(
@@ -49,7 +49,7 @@ impl GitWorktree {
                 stderr
             )));
         }
-        
+
         Ok(())
     }
 
@@ -65,7 +65,7 @@ impl GitWorktree {
             .arg(&self.path)
             .output()
             .map_err(|e| GitError::Worktree(format!("Failed to execute git: {}", e)))?;
-        
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(GitError::Worktree(format!(
@@ -73,7 +73,7 @@ impl GitWorktree {
                 stderr
             )));
         }
-        
+
         Ok(())
     }
 }

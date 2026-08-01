@@ -23,26 +23,26 @@ impl CopyIsolation {
     /// Does NOT follow symlinks - recreates them as symlinks.
     pub fn copy(&self) -> Result<(), CopyError> {
         std::fs::create_dir_all(&self.destination)?;
-        
+
         for entry in std::fs::read_dir(&self.source)? {
             let entry = entry?;
             let name = entry.file_name();
-            let name_str = name.to_str().ok_or_else(|| {
-                CopyError::Copy("Invalid file name".to_string())
-            })?;
-            
+            let name_str = name
+                .to_str()
+                .ok_or_else(|| CopyError::Copy("Invalid file name".to_string()))?;
+
             // Skip .git directories
             if name_str == ".git" {
                 continue;
             }
-            
+
             let src_path = entry.path();
             let dest_path = self.destination.join(name);
-            
+
             // Use symlink_metadata to check the type WITHOUT following symlinks
             let metadata = std::fs::symlink_metadata(&src_path)?;
             let file_type = metadata.file_type();
-            
+
             // Check symlinks FIRST (before is_dir/is_file which follow symlinks)
             if file_type.is_symlink() {
                 // Recreate symlinks as symlinks (don't follow them)
@@ -73,7 +73,7 @@ impl CopyIsolation {
             }
             // Skip other special files (devices, sockets, etc.)
         }
-        
+
         Ok(())
     }
 }

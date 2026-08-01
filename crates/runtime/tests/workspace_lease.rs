@@ -17,10 +17,14 @@ fn multiple_shared_readonly_leases_succeed() {
     let run1 = test_run_id(1);
     let run2 = test_run_id(2);
 
-    let lease1 = service.acquire(run1, LeaseMode::ReadOnly, None).expect("first read-only lease");
+    let lease1 = service
+        .acquire(run1, LeaseMode::ReadOnly, None)
+        .expect("first read-only lease");
     assert_eq!(lease1.mode, LeaseMode::ReadOnly);
 
-    let lease2 = service.acquire(run2, LeaseMode::ReadOnly, None).expect("second read-only lease");
+    let lease2 = service
+        .acquire(run2, LeaseMode::ReadOnly, None)
+        .expect("second read-only lease");
     assert_eq!(lease2.mode, LeaseMode::ReadOnly);
 
     let info1 = service.get(lease1.lease_id.clone()).unwrap();
@@ -38,14 +42,21 @@ fn write_lease_excludes_all_others() {
     let run1 = test_run_id(1);
     let run2 = test_run_id(2);
 
-    let lease1 = service.acquire(run1, LeaseMode::Write, None).expect("first write lease");
+    let lease1 = service
+        .acquire(run1, LeaseMode::Write, None)
+        .expect("first write lease");
     assert_eq!(lease1.mode, LeaseMode::Write);
 
     let result = service.acquire(run2, LeaseMode::Write, None);
-    assert!(result.is_err(), "second write lease for same project must fail");
+    assert!(
+        result.is_err(),
+        "second write lease for same project must fail"
+    );
 
     service.release(lease1.lease_id).unwrap();
-    let lease2 = service.acquire(run2, LeaseMode::Write, None).expect("write lease after first released");
+    let lease2 = service
+        .acquire(run2, LeaseMode::Write, None)
+        .expect("write lease after first released");
     assert_eq!(lease2.mode, LeaseMode::Write);
 }
 
@@ -55,10 +66,15 @@ fn write_lease_blocks_readonly() {
     let run1 = test_run_id(1);
     let run2 = test_run_id(2);
 
-    let lease1 = service.acquire(run1, LeaseMode::Write, None).expect("write lease");
+    let lease1 = service
+        .acquire(run1, LeaseMode::Write, None)
+        .expect("write lease");
 
     let result = service.acquire(run2, LeaseMode::ReadOnly, None);
-    assert!(result.is_err(), "read-only lease must fail when write lease exists");
+    assert!(
+        result.is_err(),
+        "read-only lease must fail when write lease exists"
+    );
 
     service.release(lease1.lease_id).unwrap();
 }
@@ -72,7 +88,10 @@ fn readonly_lease_blocks_write() {
     let _lease1 = service.acquire(run1, LeaseMode::ReadOnly, None).unwrap();
 
     let result = service.acquire(run2, LeaseMode::Write, None);
-    assert!(result.is_err(), "write lease must fail when read-only lease exists");
+    assert!(
+        result.is_err(),
+        "write lease must fail when read-only lease exists"
+    );
 }
 
 #[test]
@@ -81,7 +100,9 @@ fn released_lease_cannot_be_reused() {
     let run1 = test_run_id(1);
     let run2 = test_run_id(2);
 
-    let lease1 = service.acquire(run1, LeaseMode::Write, None).expect("write lease");
+    let lease1 = service
+        .acquire(run1, LeaseMode::Write, None)
+        .expect("write lease");
     let lease1_id = lease1.lease_id.clone();
 
     service.release(lease1_id.clone()).unwrap();

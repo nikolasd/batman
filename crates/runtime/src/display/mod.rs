@@ -111,11 +111,17 @@ impl DisplayRegistry {
 
     /// Selects the best available backend.
     pub fn select_best(&self) -> Option<&dyn DisplayBackendTrait> {
-        self.backends.iter().find(|b| b.is_available()).map(|b| b.as_ref())
+        self.backends
+            .iter()
+            .find(|b| b.is_available())
+            .map(|b| b.as_ref())
     }
 
     /// Returns a mutable reference to a backend by index.
-    pub fn backend_mut(&mut self, index: usize) -> Option<&mut (dyn DisplayBackendTrait + 'static)> {
+    pub fn backend_mut(
+        &mut self,
+        index: usize,
+    ) -> Option<&mut (dyn DisplayBackendTrait + 'static)> {
         self.backends.get_mut(index).map(move |b| b.as_mut())
     }
 }
@@ -139,12 +145,14 @@ impl DisplaySelector {
     /// Selects the first available backend from the preferred list.
     pub fn select<'a>(&self, registry: &'a DisplayRegistry) -> Option<&'a dyn DisplayBackendTrait> {
         for backend in &self.preferred {
-            if let Some(registered) = registry.backends().iter().find(|b| {
-                b.backend_name() == backend.to_string()
-            })
-                && registered.is_available() {
-                    return Some(registered.as_ref());
-                }
+            if let Some(registered) = registry
+                .backends()
+                .iter()
+                .find(|b| b.backend_name() == backend.to_string())
+                && registered.is_available()
+            {
+                return Some(registered.as_ref());
+            }
         }
         None
     }
@@ -152,9 +160,11 @@ impl DisplaySelector {
     /// Returns the index of the first available backend from the preferred list.
     pub fn select_index(&self, registry: &DisplayRegistry) -> Option<usize> {
         for backend in &self.preferred {
-            if let Some(index) = registry.backends.iter().position(|b| {
-                b.backend_name() == backend.to_string() && b.is_available()
-            }) {
+            if let Some(index) = registry
+                .backends
+                .iter()
+                .position(|b| b.backend_name() == backend.to_string() && b.is_available())
+            {
                 return Some(index);
             }
         }
@@ -168,9 +178,8 @@ impl DisplaySelector {
 /// instead -- see [`HerdrDisplay::probe`]).
 #[must_use]
 pub(crate) fn version_gte(current: &str, minimum: &str) -> bool {
-    let parse_version = |v: &str| -> Vec<u32> {
-        v.split('.').filter_map(|s| s.parse::<u32>().ok()).collect()
-    };
+    let parse_version =
+        |v: &str| -> Vec<u32> { v.split('.').filter_map(|s| s.parse::<u32>().ok()).collect() };
 
     let current_parts = parse_version(current);
     let min_parts = parse_version(minimum);

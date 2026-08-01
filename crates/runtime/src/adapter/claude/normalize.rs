@@ -146,14 +146,15 @@ impl ClaudeNormalizer {
         let mut events = Vec::new();
 
         if let Some(parent_id) = message.parent_tool_use_id.as_deref()
-            && self.reported_subagents.insert(parent_id.to_string()) {
-                events.push(ClaudeEvent::Emit(
-                    AdapterEventPayload::NestedWorkerObserved {
-                        vendor_child_id: parent_id.to_string(),
-                        vendor_parent_ref: message.session_id.clone(),
-                    },
-                ));
-            }
+            && self.reported_subagents.insert(parent_id.to_string())
+        {
+            events.push(ClaudeEvent::Emit(
+                AdapterEventPayload::NestedWorkerObserved {
+                    vendor_child_id: parent_id.to_string(),
+                    vendor_parent_ref: message.session_id.clone(),
+                },
+            ));
+        }
 
         let role = match message.parent_tool_use_id.as_deref() {
             Some(parent_id) => format!("{base_role}:subagent:{parent_id}"),
@@ -236,14 +237,14 @@ fn tool_result_text(content: &Value) -> String {
 fn parse_hook_decision(hook: &RawHookLifecycle) -> String {
     if let Some(output) = &hook.output
         && let Ok(parsed) = serde_json::from_str::<Value>(output)
-            && let Some(behavior) = parsed
-                .get("hookSpecificOutput")
-                .and_then(|h| h.get("decision"))
-                .and_then(|d| d.get("behavior"))
-                .and_then(Value::as_str)
-            {
-                return behavior.to_string();
-            }
+        && let Some(behavior) = parsed
+            .get("hookSpecificOutput")
+            .and_then(|h| h.get("decision"))
+            .and_then(|d| d.get("behavior"))
+            .and_then(Value::as_str)
+    {
+        return behavior.to_string();
+    }
     hook.outcome
         .clone()
         .unwrap_or_else(|| "unknown".to_string())

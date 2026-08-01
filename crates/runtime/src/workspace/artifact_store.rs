@@ -74,10 +74,13 @@ impl ArtifactStore {
         }
 
         let mut artifacts = self.artifacts.write().await;
-        artifacts.insert(id, StoredArtifact {
-            metadata: artifact,
-            content,
-        });
+        artifacts.insert(
+            id,
+            StoredArtifact {
+                metadata: artifact,
+                content,
+            },
+        );
 
         Ok(id)
     }
@@ -85,14 +88,18 @@ impl ArtifactStore {
     /// Fetches an artifact's metadata.
     pub async fn fetch(&self, id: &ArtifactId) -> Result<Artifact, ArtifactStoreError> {
         let artifacts = self.artifacts.read().await;
-        artifacts.get(id).map(|a| a.metadata.clone())
+        artifacts
+            .get(id)
+            .map(|a| a.metadata.clone())
             .ok_or(ArtifactStoreError::NotFound(*id))
     }
 
     /// Fetches an artifact's content (bytes).
     pub async fn fetch_content(&self, id: &ArtifactId) -> Result<Vec<u8>, ArtifactStoreError> {
         let artifacts = self.artifacts.read().await;
-        artifacts.get(id).map(|a| a.content.clone())
+        artifacts
+            .get(id)
+            .map(|a| a.content.clone())
             .ok_or(ArtifactStoreError::NotFound(*id))
     }
 
@@ -138,12 +145,18 @@ impl ArtifactStore {
     pub async fn list(&self, kind: Option<ArtifactKind>) -> ArtifactListResult {
         let artifacts = self.artifacts.read().await;
         let filtered: Vec<Artifact> = if let Some(k) = kind {
-            artifacts.values().filter(|a| a.metadata.kind == k).map(|a| a.metadata.clone()).collect()
+            artifacts
+                .values()
+                .filter(|a| a.metadata.kind == k)
+                .map(|a| a.metadata.clone())
+                .collect()
         } else {
             artifacts.values().map(|a| a.metadata.clone()).collect()
         };
 
-        ArtifactListResult { artifacts: filtered }
+        ArtifactListResult {
+            artifacts: filtered,
+        }
     }
 }
 
@@ -160,8 +173,16 @@ fn base64_encode(data: &[u8]) -> String {
     let mut i = 0;
     while i < data.len() {
         let b0 = data[i] as u32;
-        let b1 = if i + 1 < data.len() { data[i + 1] as u32 } else { 0 };
-        let b2 = if i + 2 < data.len() { data[i + 2] as u32 } else { 0 };
+        let b1 = if i + 1 < data.len() {
+            data[i + 1] as u32
+        } else {
+            0
+        };
+        let b2 = if i + 2 < data.len() {
+            data[i + 2] as u32
+        } else {
+            0
+        };
 
         let triple = (b0 << 16) | (b1 << 8) | b2;
 

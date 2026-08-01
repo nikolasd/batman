@@ -3,20 +3,22 @@
 //! and reconciliation-driven ownership rebinding.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use batman_protocol::{ApprovalId, ApprovalRequest, ProjectId, RunId, TaskId, Timestamp, WorkerId};
-use batman_runtime::approval::{ApprovalCallback, ApprovalService, CallbackFuture, NoopApprovalCallback};
+use batman_runtime::approval::{
+    ApprovalCallback, ApprovalService, CallbackFuture, NoopApprovalCallback,
+};
 use batman_runtime::db::DatabaseHandle;
 use batman_runtime::ipc::{PeerCredentialReader, PeerCredentials, Server, ServerConfig};
 use batman_runtime::paths::RuntimePaths;
 use batman_runtime::service::FakeRunDriver;
 use nix::unistd::Uid;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::UnixStream;
+use tokio::net::unix::OwnedWriteHalf;
 use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 
@@ -28,12 +30,17 @@ struct FakeReader {
 
 impl PeerCredentialReader for FakeReader {
     fn read(&self, _stream: &UnixStream) -> PeerCredentials {
-        PeerCredentials { uid: self.uid, pid: Some(4242) }
+        PeerCredentials {
+            uid: self.uid,
+            pid: Some(4242),
+        }
     }
 }
 
 fn matching_reader() -> Arc<dyn PeerCredentialReader> {
-    Arc::new(FakeReader { uid: Some(Uid::current().as_raw()) })
+    Arc::new(FakeReader {
+        uid: Some(Uid::current().as_raw()),
+    })
 }
 
 /// An [`ApprovalCallback`] that always fails, for testing the
@@ -74,8 +81,14 @@ struct Harness {
 
 impl Harness {
     async fn start(config_fn: impl FnOnce(&mut ServerConfig)) -> Self {
-        let state = tempfile::Builder::new().prefix("bat-ap-s-").tempdir_in("/tmp").unwrap();
-        let repo = tempfile::Builder::new().prefix("bat-ap-r-").tempdir_in("/tmp").unwrap();
+        let state = tempfile::Builder::new()
+            .prefix("bat-ap-s-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let repo = tempfile::Builder::new()
+            .prefix("bat-ap-r-")
+            .tempdir_in("/tmp")
+            .unwrap();
         std::fs::create_dir(repo.path().join(".git")).unwrap();
 
         let paths = RuntimePaths::resolve(state.path(), repo.path()).unwrap();
@@ -95,7 +108,11 @@ impl Harness {
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let join = tokio::spawn(async move {
-            let _ = server.serve(async move { let _ = shutdown_rx.await; }).await;
+            let _ = server
+                .serve(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
         });
 
         for _ in 0..50 {
@@ -142,7 +159,10 @@ impl Client {
     async fn connect(socket: &Path) -> Self {
         let stream = UnixStream::connect(socket).await.unwrap();
         let (read, writer) = stream.into_split();
-        Self { reader: BufReader::new(read), writer }
+        Self {
+            reader: BufReader::new(read),
+            writer,
+        }
     }
 
     async fn send(&mut self, value: &Value) {
@@ -159,7 +179,8 @@ impl Client {
     }
 
     async fn call(&mut self, id: i64, method: &str, params: Value) -> Value {
-        self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })).await;
+        self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
+            .await;
         self.recv().await
     }
 }
@@ -196,17 +217,42 @@ async fn seed_pending_approval(
     owner_instance_id: &str,
 ) -> (ApprovalId, RunId, TaskId) {
     let task = omp
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": owner_instance_id, "revision": 1 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": owner_instance_id, "revision": 1 }),
+        )
         .await;
     let task_id = TaskId::parse(task["result"]["taskId"].as_str().unwrap()).unwrap();
-    let worker = omp.call(3, "worker/create", json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" })).await;
+    let worker = omp
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
     let worker_id = WorkerId::parse(worker["result"]["workerId"].as_str().unwrap()).unwrap();
-    let submit = omp.call(4, "run/submit", json!({ "taskId": task_id.to_string(), "workerId": worker_id.to_string() })).await;
+    let submit = omp
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id.to_string(), "workerId": worker_id.to_string() }),
+        )
+        .await;
     let run_id = RunId::parse(submit["result"]["runId"].as_str().unwrap()).unwrap();
 
-    let db = Arc::new(DatabaseHandle::start(harness.database.clone()).await.unwrap());
+    let db = Arc::new(
+        DatabaseHandle::start(harness.database.clone())
+            .await
+            .unwrap(),
+    );
     let (events_tx, _events_rx) = broadcast::channel(64);
-    let service = ApprovalService::new(db, harness.project_id, Arc::new(NoopApprovalCallback), events_tx);
+    let service = ApprovalService::new(
+        db,
+        harness.project_id,
+        Arc::new(NoopApprovalCallback),
+        events_tx,
+    );
     let approval_id = ApprovalId::new();
     service
         .request(ApprovalRequest {
@@ -233,18 +279,33 @@ async fn seed_pending_approval(
 async fn only_the_owning_instance_can_decide() {
     let harness = Harness::start(|_| {}).await;
     let mut owner = omp_client(&harness, "omp-owner").await;
-    let (approval_id, _run_id, _task_id) = seed_pending_approval(&harness, &mut owner, "omp-owner").await;
+    let (approval_id, _run_id, _task_id) =
+        seed_pending_approval(&harness, &mut owner, "omp-owner").await;
 
     let mut other = omp_client(&harness, "omp-other").await;
     let denied = other
-        .call(2, "approval/decide", json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }))
+        .call(
+            2,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+        )
         .await;
-    assert_eq!(denied["error"]["code"], -32602, "non-owner must be rejected: {denied:?}");
+    assert_eq!(
+        denied["error"]["code"], -32602,
+        "non-owner must be rejected: {denied:?}"
+    );
 
     let allowed = owner
-        .call(5, "approval/decide", json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }))
+        .call(
+            5,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+        )
         .await;
-    assert!(allowed.get("error").is_none(), "owner must be allowed: {allowed:?}");
+    assert!(
+        allowed.get("error").is_none(),
+        "owner must be allowed: {allowed:?}"
+    );
     assert_eq!(allowed["result"]["outcome"], "decided");
 }
 
@@ -269,7 +330,10 @@ async fn display_and_worker_mcp_cannot_reach_approval_decide() {
         .await;
     client.recv().await;
     let result = client.call(2, "approval/decide", json!({ "approvalId": ApprovalId::new().to_string(), "decision": "approve", "reason": "x" })).await;
-    assert_eq!(result["error"]["code"], -32601, "display must get METHOD_NOT_FOUND: {result:?}");
+    assert_eq!(
+        result["error"]["code"], -32601,
+        "display must get METHOD_NOT_FOUND: {result:?}"
+    );
 }
 
 // -------------------------------------------------------------- idempotency
@@ -278,13 +342,29 @@ async fn display_and_worker_mcp_cannot_reach_approval_decide() {
 async fn duplicate_identical_decision_is_idempotent_and_never_recalls_the_adapter() {
     let harness = Harness::start(|_| {}).await;
     let mut owner = omp_client(&harness, "omp-owner").await;
-    let (approval_id, _run_id, _task_id) = seed_pending_approval(&harness, &mut owner, "omp-owner").await;
+    let (approval_id, _run_id, _task_id) =
+        seed_pending_approval(&harness, &mut owner, "omp-owner").await;
 
-    let first = owner.call(5, "approval/decide", json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" })).await;
+    let first = owner
+        .call(
+            5,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+        )
+        .await;
     assert_eq!(first["result"]["outcome"], "decided");
 
-    let second = owner.call(6, "approval/decide", json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" })).await;
-    assert!(second.get("error").is_none(), "identical repeat must succeed: {second:?}");
+    let second = owner
+        .call(
+            6,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+        )
+        .await;
+    assert!(
+        second.get("error").is_none(),
+        "identical repeat must succeed: {second:?}"
+    );
     assert_eq!(second["result"]["outcome"], "alreadyDecided");
 }
 
@@ -292,9 +372,16 @@ async fn duplicate_identical_decision_is_idempotent_and_never_recalls_the_adapte
 async fn conflicting_second_decision_fails() {
     let harness = Harness::start(|_| {}).await;
     let mut owner = omp_client(&harness, "omp-owner").await;
-    let (approval_id, _run_id, _task_id) = seed_pending_approval(&harness, &mut owner, "omp-owner").await;
+    let (approval_id, _run_id, _task_id) =
+        seed_pending_approval(&harness, &mut owner, "omp-owner").await;
 
-    let first = owner.call(5, "approval/decide", json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" })).await;
+    let first = owner
+        .call(
+            5,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+        )
+        .await;
     assert_eq!(first["result"]["outcome"], "decided");
 
     let conflicting = owner.call(6, "approval/decide", json!({ "approvalId": approval_id.to_string(), "decision": "deny", "reason": "changed my mind" })).await;
@@ -307,27 +394,40 @@ async fn conflicting_second_decision_fails() {
 async fn a_decision_cannot_target_a_settled_run() {
     let harness = Harness::start(|_| {}).await;
     let mut owner = omp_client(&harness, "omp-owner").await;
-    let (approval_id, run_id, _task_id) = seed_pending_approval(&harness, &mut owner, "omp-owner").await;
+    let (approval_id, run_id, _task_id) =
+        seed_pending_approval(&harness, &mut owner, "omp-owner").await;
 
     // Settle the run out from under the pending approval: waitingUser has
     // no direct cancel path via run/cancel (only working/starting do), so
     // decide the approval first to return it to working, then cancel.
     // To exercise "settled" specifically, transition directly through the
     // domain repository.
-    let db = Arc::new(DatabaseHandle::start(harness.database.clone()).await.unwrap());
+    let db = Arc::new(
+        DatabaseHandle::start(harness.database.clone())
+            .await
+            .unwrap(),
+    );
     {
         use batman_runtime::domain::DomainRepository;
         let mut conn = rusqlite::Connection::open(&harness.database).unwrap();
         let mut repo = DomainRepository::new(&mut conn, harness.project_id);
         let failed = batman_protocol::RunState::try_from("failed").unwrap();
-        repo.transition_run(run_id, &failed).expect("force-fail the run for this test");
+        repo.transition_run(run_id, &failed)
+            .expect("force-fail the run for this test");
     }
     drop(db);
 
     let result = owner
-        .call(5, "approval/decide", json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }))
+        .call(
+            5,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+        )
         .await;
-    assert_eq!(result["error"]["code"], -32602, "settled run must reject the decision: {result:?}");
+    assert_eq!(
+        result["error"]["code"], -32602,
+        "settled run must reject the decision: {result:?}"
+    );
 }
 
 // ---------------------------------------------------------- callback path
@@ -339,10 +439,15 @@ async fn a_failed_callback_keeps_the_decision_and_marks_protocol_unhealthy() {
     })
     .await;
     let mut owner = omp_client(&harness, "omp-owner").await;
-    let (approval_id, run_id, _task_id) = seed_pending_approval(&harness, &mut owner, "omp-owner").await;
+    let (approval_id, run_id, _task_id) =
+        seed_pending_approval(&harness, &mut owner, "omp-owner").await;
 
     let result = owner
-        .call(5, "approval/decide", json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }))
+        .call(
+            5,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+        )
         .await;
     assert!(result.get("error").is_none(), "{result:?}");
     assert_eq!(result["result"]["outcome"], "decidedCallbackFailed");
@@ -350,11 +455,17 @@ async fn a_failed_callback_keeps_the_decision_and_marks_protocol_unhealthy() {
     // The decision itself was kept, and it never asks again: re-deciding
     // identically is a no-op.
     let repeat = owner
-        .call(6, "approval/decide", json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }))
+        .call(
+            6,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+        )
         .await;
     assert_eq!(repeat["result"]["outcome"], "alreadyDecided");
 
-    let get = owner.call(7, "run/get", json!({ "runId": run_id.to_string() })).await;
+    let get = owner
+        .call(7, "run/get", json!({ "runId": run_id.to_string() }))
+        .await;
     assert_eq!(get["result"]["flags"]["protocolUnhealthy"], true);
     // The run was NOT transitioned back to working on a failed callback.
     assert_eq!(get["result"]["state"], "waitingUser");
@@ -364,14 +475,21 @@ async fn a_failed_callback_keeps_the_decision_and_marks_protocol_unhealthy() {
 async fn a_successful_callback_returns_the_run_to_working() {
     let harness = Harness::start(|_| {}).await;
     let mut owner = omp_client(&harness, "omp-owner").await;
-    let (approval_id, run_id, _task_id) = seed_pending_approval(&harness, &mut owner, "omp-owner").await;
+    let (approval_id, run_id, _task_id) =
+        seed_pending_approval(&harness, &mut owner, "omp-owner").await;
 
     let result = owner
-        .call(5, "approval/decide", json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }))
+        .call(
+            5,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+        )
         .await;
     assert_eq!(result["result"]["outcome"], "decided");
 
-    let get = owner.call(6, "run/get", json!({ "runId": run_id.to_string() })).await;
+    let get = owner
+        .call(6, "run/get", json!({ "runId": run_id.to_string() }))
+        .await;
     assert_eq!(get["result"]["state"], "working");
     assert_eq!(get["result"]["flags"]["protocolUnhealthy"], false);
 }
@@ -379,25 +497,48 @@ async fn a_successful_callback_returns_the_run_to_working() {
 #[tokio::test]
 async fn identical_repeat_decision_never_re_invokes_the_adapter_callback() {
     let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let counting = Arc::new(CountingCallback { calls: calls.clone() });
+    let counting = Arc::new(CountingCallback {
+        calls: calls.clone(),
+    });
 
     let harness = Harness::start(|_| {}).await;
     let mut owner = omp_client(&harness, "omp-owner").await;
-    let (approval_id, _run_id, _task_id) = seed_pending_approval(&harness, &mut owner, "omp-owner").await;
+    let (approval_id, _run_id, _task_id) =
+        seed_pending_approval(&harness, &mut owner, "omp-owner").await;
 
     // Decide directly through a dedicated ApprovalService using the
     // counting callback, bypassing the RPC layer's own Noop-configured
     // service, to isolate the "no re-invocation" assertion.
-    let db = Arc::new(DatabaseHandle::start(harness.database.clone()).await.unwrap());
+    let db = Arc::new(
+        DatabaseHandle::start(harness.database.clone())
+            .await
+            .unwrap(),
+    );
     let (events_tx, _events_rx) = broadcast::channel(64);
     let service = ApprovalService::new(db, harness.project_id, counting, events_tx);
-    let first = service.decide(approval_id, "omp-owner", "approve", "ok").await.unwrap();
+    let first = service
+        .decide(approval_id, "omp-owner", "approve", "ok")
+        .await
+        .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(matches!(first, batman_runtime::approval::DecideOutcome::Decided));
+    assert!(matches!(
+        first,
+        batman_runtime::approval::DecideOutcome::Decided
+    ));
 
-    let second = service.decide(approval_id, "omp-owner", "approve", "ok").await.unwrap();
-    assert_eq!(calls.load(Ordering::SeqCst), 1, "the callback must not be invoked again");
-    assert!(matches!(second, batman_runtime::approval::DecideOutcome::AlreadyDecided));
+    let second = service
+        .decide(approval_id, "omp-owner", "approve", "ok")
+        .await
+        .unwrap();
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the callback must not be invoked again"
+    );
+    assert!(matches!(
+        second,
+        batman_runtime::approval::DecideOutcome::AlreadyDecided
+    ));
 }
 
 // --------------------------------------------------------- restart/reconcile
@@ -406,13 +547,18 @@ async fn identical_repeat_decision_never_re_invokes_the_adapter_callback() {
 async fn pending_request_survives_reconcile_and_only_the_rebound_owner_can_decide() {
     let harness = Harness::start(|_| {}).await;
     let mut original_owner = omp_client(&harness, "omp-1").await;
-    let (approval_id, _run_id, task_id) = seed_pending_approval(&harness, &mut original_owner, "omp-1").await;
+    let (approval_id, _run_id, task_id) =
+        seed_pending_approval(&harness, &mut original_owner, "omp-1").await;
 
     // A new OMP client instance connects and reconciles ownership of the
     // task at the matching revision.
     let mut new_owner = omp_client(&harness, "omp-2").await;
     let reconcile = new_owner
-        .call(2, "reconcile/omp", json!({ "taskId": task_id.to_string(), "revision": 1 }))
+        .call(
+            2,
+            "reconcile/omp",
+            json!({ "taskId": task_id.to_string(), "revision": 1 }),
+        )
         .await;
     assert!(reconcile.get("error").is_none(), "{reconcile:?}");
 
@@ -424,14 +570,25 @@ async fn pending_request_survives_reconcile_and_only_the_rebound_owner_can_decid
 
     // The stale disconnected owner can no longer decide.
     let stale_attempt = original_owner
-        .call(5, "approval/decide", json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }))
+        .call(
+            5,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+        )
         .await;
     assert_eq!(stale_attempt["error"]["code"], -32602, "{stale_attempt:?}");
 
     // Only the rebound owner can decide.
     let rebound_attempt = new_owner
-        .call(4, "approval/decide", json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }))
+        .call(
+            4,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+        )
         .await;
-    assert!(rebound_attempt.get("error").is_none(), "{rebound_attempt:?}");
+    assert!(
+        rebound_attempt.get("error").is_none(),
+        "{rebound_attempt:?}"
+    );
     assert_eq!(rebound_attempt["result"]["outcome"], "decided");
 }

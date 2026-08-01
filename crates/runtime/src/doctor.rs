@@ -14,8 +14,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use thiserror::Error;
 use serde::Serialize;
+use thiserror::Error;
 
 use crate::config::RuntimePolicy;
 use crate::db::DatabaseHandle;
@@ -41,10 +41,7 @@ pub enum DoctorError {
 
     /// An adapter is not available.
     #[error("adapter '{adapter}' is not available: {reason}")]
-    AdapterUnavailable {
-        adapter: String,
-        reason: String,
-    },
+    AdapterUnavailable { adapter: String, reason: String },
 }
 
 /// Result of a doctor check.
@@ -227,10 +224,7 @@ impl Doctor {
     }
 
     /// Checks state directory accessibility.
-    async fn check_state_dir(
-        &self,
-        state_dir: &Path,
-    ) -> Result<(), DoctorError> {
+    async fn check_state_dir(&self, state_dir: &Path) -> Result<(), DoctorError> {
         // This is a stub implementation. A full implementation would check
         // that the state directory exists and is writable.
         if !state_dir.exists() {

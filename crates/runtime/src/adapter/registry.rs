@@ -108,12 +108,10 @@ impl AdapterAuthorization for DenyByDefaultAuthorization {
         if self.dev_override {
             Ok(())
         } else {
-            Err(
-                "no production authorization policy is configured. Set \
+            Err("no production authorization policy is configured. Set \
                  BATMAN_DEV_ALLOW_ALL_WORKERS=1 for local development, or wait for the \
                  Hardening milestone's PolicyEvaluator."
-                    .to_string(),
-            )
+                .to_string())
         }
     }
 }
@@ -173,6 +171,8 @@ pub struct AdapterRegistry {
     /// existing `broker: None` behavior exactly.
     broker: Mutex<Option<Arc<CoordinationBroker>>>,
     running: Arc<Mutex<HashMap<RunId, Arc<dyn Adapter>>>>,
+    /// Org security patterns for redaction.
+    org_security_patterns: Vec<String>,
 }
 
 impl AdapterRegistry {
@@ -181,11 +181,13 @@ impl AdapterRegistry {
         authorization: Arc<dyn AdapterAuthorization>,
         repo_root: PathBuf,
         mcp: Option<AdapterMcpConfig>,
+        org_security_patterns: Vec<String>,
     ) -> Self {
         Self {
             authorization,
             repo_root,
             mcp,
+            org_security_patterns,
             broker: Mutex::new(None),
             running: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -193,7 +195,6 @@ impl AdapterRegistry {
 
     /// Supplies the real [`CoordinationBroker`] for this registry's
     /// OMP-RPC adapters' in-process host-tool bridge, once the caller
-    /// (necessarily, after `Server::bind`) has one. See the `broker`
     /// field's own doc comment for why this cannot be a constructor
     /// argument.
     pub fn set_broker(&self, broker: Arc<CoordinationBroker>) {
@@ -222,6 +223,7 @@ impl RunDriver for AdapterRegistry {
         let repo_root = self.repo_root.clone();
         let mcp = self.mcp.clone();
         let broker = self.broker.lock().clone();
+        let org_security_patterns = self.org_security_patterns.clone();
         let running = Arc::clone(&self.running);
 
         Box::pin(async move {
@@ -244,7 +246,16 @@ impl RunDriver for AdapterRegistry {
 
             let events_tx = ctx.events_tx.clone();
             let run_id = ctx.run_id;
-            match run_one(&ctx, &authorization, &repo_root, mcp, broker).await {
+            match run_one(
+                &ctx,
+                &authorization,
+                &repo_root,
+                mcp,
+                broker,
+                org_security_patterns,
+            )
+            .await
+            {
                 Ok(adapter) => {
                     running.lock().insert(run_id, adapter);
                     // Evicts and disposes this run's adapter once its
@@ -290,16 +301,12 @@ impl RunDriver for AdapterRegistry {
         let running = Arc::clone(&self.running);
 
         Box::pin(async move {
-            let adapter = running
-                .lock()
-                .get(&run_id)
-                .cloned()
-                .ok_or_else(|| <RegistryError as Into<String>>::into(RegistryError::NoRunningAdapter(run_id)))?;
+            let adapter = running.lock().get(&run_id).cloned().ok_or_else(|| {
+                <RegistryError as Into<String>>::into(RegistryError::NoRunningAdapter(run_id))
+            })?;
 
             adapter
-                .send(AdapterMessage::FollowUp {
-                    text: prompt,
-                })
+                .send(AdapterMessage::FollowUp { text: prompt })
                 .await
                 .map_err(|err| err.to_string())
         })
@@ -343,9 +350,10 @@ async fn run_one(
     repo_root: &std::path::Path,
     mcp: Option<AdapterMcpConfig>,
     broker: Option<Arc<CoordinationBroker>>,
+    org_security_patterns: Vec<String>,
 ) -> Result<Arc<dyn Adapter>, String> {
     let profile = resolve_profile(ctx).await.map_err(String::from)?;
-    
+
     // Handle TerminalDegraded specially (it has no adapter kind)
     let effective_capabilities = if profile.adapter_kind().is_none() {
         // TerminalDegraded uses the terminal adapter with degraded capabilities
@@ -359,19 +367,30 @@ async fn run_one(
         let Some(kind) = profile.adapter_kind() else {
             return Err("no adapter kind".to_string());
         };
-        conformance::run_fixture_conformance(kind).await.effective_capabilities
+        conformance::run_fixture_conformance(kind)
+            .await
+            .effective_capabilities
     };
     authorization
         .authorize(&profile, &effective_capabilities)
         .map_err(RegistryError::AuthorizationDenied)
         .map_err(String::from)?;
 
-    let adapter = build_adapter(&profile, repo_root, ctx.run_id, ctx.task_id, ctx.worker_id, mcp, broker)
-        .map_err(String::from)?;
+    let adapter = build_adapter(
+        &profile,
+        repo_root,
+        ctx.run_id,
+        ctx.task_id,
+        ctx.worker_id,
+        mcp,
+        broker,
+    )
+    .map_err(String::from)?;
     let sink = Arc::new(DomainAdapterEventSink::new(
         Arc::clone(&ctx.db),
         ctx.project_id,
         ctx.events_tx.clone(),
+        org_security_patterns,
     ));
     adapter
         .start(
@@ -452,7 +471,8 @@ fn build_adapter(
             broker,
         )),
         StartupOptions::TerminalDegraded(opts) => {
-            Arc::new(super::terminal::TerminalAdapter::new(opts.backend.clone())) as Arc<dyn super::r#trait::Adapter>
+            Arc::new(super::terminal::TerminalAdapter::new(opts.backend.clone()))
+                as Arc<dyn super::r#trait::Adapter>
         }
     };
     Ok(adapter)
@@ -476,7 +496,9 @@ mod build_adapter_tests {
     //! `mcp_injection_appends_mcp_config_after_native_discovery_args...`
     //! and `mcp_injection_env_carries_only_the_scope_token`).
     use super::*;
-    use crate::adapter::profile::{ClaudeStartupOptions, CodexStartupOptions, CopilotStartupOptions};
+    use crate::adapter::profile::{
+        ClaudeStartupOptions, CodexStartupOptions, CopilotStartupOptions,
+    };
     use crate::coordination::ScopeTokenStore;
 
     fn mcp_config() -> AdapterMcpConfig {
@@ -513,7 +535,11 @@ mod build_adapter_tests {
             Some(mcp_config()),
             None,
         );
-        assert!(result.is_ok(), "Claude branch must accept Some(mcp): {}", result.err().map(|e| e.to_string()).unwrap_or_default());
+        assert!(
+            result.is_ok(),
+            "Claude branch must accept Some(mcp): {}",
+            result.err().map(|e| e.to_string()).unwrap_or_default()
+        );
     }
 
     #[test]
@@ -528,7 +554,11 @@ mod build_adapter_tests {
             Some(mcp_config()),
             None,
         );
-        assert!(result.is_ok(), "Codex branch must accept Some(mcp): {}", result.err().map(|e| e.to_string()).unwrap_or_default());
+        assert!(
+            result.is_ok(),
+            "Codex branch must accept Some(mcp): {}",
+            result.err().map(|e| e.to_string()).unwrap_or_default()
+        );
     }
 
     #[test]
@@ -543,6 +573,10 @@ mod build_adapter_tests {
             Some(mcp_config()),
             None,
         );
-        assert!(result.is_ok(), "Copilot branch must accept Some(mcp): {}", result.err().map(|e| e.to_string()).unwrap_or_default());
+        assert!(
+            result.is_ok(),
+            "Copilot branch must accept Some(mcp): {}",
+            result.err().map(|e| e.to_string()).unwrap_or_default()
+        );
     }
 }

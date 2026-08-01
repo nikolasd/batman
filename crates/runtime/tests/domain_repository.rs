@@ -4,7 +4,9 @@
 //! projection-update in a single SQLite transaction, enforcing all
 //! invariants (foreign keys, lifecycle transitions, rollback on failure).
 
-use batman_protocol::{EventEnvelope, RuntimeEvent, RuntimeEventKind, TaskRef, Timestamp, WorkerProfileRef};
+use batman_protocol::{
+    EventEnvelope, RuntimeEvent, RuntimeEventKind, TaskRef, Timestamp, WorkerProfileRef,
+};
 use rusqlite::Connection;
 
 /// A minimal in-memory database with foundation + orchestration migrations.
@@ -243,11 +245,7 @@ fn illegal_transition_appends_no_event() {
     )
     .expect("insert task");
 
-    let profile = make_profile(
-        worker_id.to_string().as_str(),
-        "fake",
-        "test",
-    );
+    let profile = make_profile(worker_id.to_string().as_str(), "fake", "test");
     conn.execute(
         "INSERT INTO worker_profiles (id, fingerprint, adapter, model, permission_envelope)
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -301,12 +299,17 @@ fn illegal_transition_appends_no_event() {
     // failing the write and rolling back. Assert that the run
     // state remains "working" (the transition was rejected).
     let current_state: String = conn
-        .query_row("SELECT state FROM runs WHERE run_id = ?1", [run_id.to_string()], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT state FROM runs WHERE run_id = ?1",
+            [run_id.to_string()],
+            |row| row.get(0),
+        )
         .expect("read run");
 
-    assert_eq!(current_state, "working", "illegal transition must be rejected");
+    assert_eq!(
+        current_state, "working",
+        "illegal transition must be rejected"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -369,7 +372,8 @@ fn projection_failure_rolls_back_event() {
     // custom CHECK constraint to simulate this.
 
     // Add a CHECK constraint that rejects "invalid" state.
-    conn.execute_batch("CREATE TABLE runs2 AS SELECT * FROM runs;").expect("copy runs");
+    conn.execute_batch("CREATE TABLE runs2 AS SELECT * FROM runs;")
+        .expect("copy runs");
 
     // Attempt to insert a run with state "invalid" which would fail a
     // CHECK constraint (simulating a projection update failure).
@@ -393,7 +397,10 @@ fn projection_failure_rolls_back_event() {
         .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
         .expect("count events");
 
-    assert_eq!(event_count, 1, "one event should exist before projection failure");
+    assert_eq!(
+        event_count, 1,
+        "one event should exist before projection failure"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -425,11 +432,7 @@ fn rebuild_run_from_events_matches_projection() {
     )
     .expect("insert task");
 
-    let profile = make_profile(
-        worker_id.to_string().as_str(),
-        "fake",
-        "test",
-    );
+    let profile = make_profile(worker_id.to_string().as_str(), "fake", "test");
     conn.execute(
         "INSERT INTO worker_profiles (id, fingerprint, adapter, model, permission_envelope)
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -531,9 +534,13 @@ fn rebuild_run_from_events_matches_projection() {
     // Rebuild the run from events: replay all RunEvent entries in order
     // and compute the final state.
     let events: Vec<(u64, String)> = conn
-        .prepare("SELECT sequence, event_json FROM events WHERE run_id IS NOT NULL ORDER BY sequence")
+        .prepare(
+            "SELECT sequence, event_json FROM events WHERE run_id IS NOT NULL ORDER BY sequence",
+        )
         .expect("prepare")
-        .query_map([], |row| Ok((row.get::<_, u64>(0)?, row.get::<_, String>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, u64>(0)?, row.get::<_, String>(1)?))
+        })
         .expect("query_map")
         .collect::<Result<Vec<_>, _>>()
         .expect("collect events");
@@ -542,13 +549,13 @@ fn rebuild_run_from_events_matches_projection() {
     let _rebuilt_started_at: Option<String> = None;
 
     for (_seq, event_json) in &events {
-        let envelope: EventEnvelope =
-            serde_json::from_str(event_json).expect("event deserializes");
+        let envelope: EventEnvelope = serde_json::from_str(event_json).expect("event deserializes");
         if let Some(run_id_ref) = envelope.run_id
             && run_id_ref == run_id
-                && let RuntimeEvent::RunEvent { state, .. } = &envelope.event {
-                    rebuilt_state = Some(state.clone());
-                }
+            && let RuntimeEvent::RunEvent { state, .. } = &envelope.event
+        {
+            rebuilt_state = Some(state.clone());
+        }
     }
 
     // Read the stored projection.
@@ -574,10 +581,7 @@ fn rebuild_run_from_events_matches_projection() {
         Some("working"),
         "rebuilt state from events must match stored projection",
     );
-    assert_eq!(
-        stored_state, "working",
-        "stored state must be 'working'",
-    );
+    assert_eq!(stored_state, "working", "stored state must be 'working'",);
 }
 
 // ---------------------------------------------------------------------------
@@ -609,11 +613,7 @@ fn transactional_append_and_projection() {
     )
     .expect("insert task");
 
-    let profile = make_profile(
-        worker_id.to_string().as_str(),
-        "fake",
-        "test",
-    );
+    let profile = make_profile(worker_id.to_string().as_str(), "fake", "test");
     conn.execute(
         "INSERT INTO worker_profiles (id, fingerprint, adapter, model, permission_envelope)
          VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -712,9 +712,11 @@ fn transactional_append_and_projection() {
 
     // Verify the run state is "queued".
     let state: String = conn
-        .query_row("SELECT state FROM runs WHERE run_id = ?1", [run_id.to_string()], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT state FROM runs WHERE run_id = ?1",
+            [run_id.to_string()],
+            |row| row.get(0),
+        )
         .expect("read state");
     assert_eq!(state, "queued", "run state must be 'queued'");
 }

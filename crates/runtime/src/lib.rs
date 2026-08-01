@@ -14,12 +14,13 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod adapter;
 pub mod approval;
 pub mod audit;
+pub mod config;
 pub mod conformance;
 pub mod coordination;
 pub mod db;
+pub mod display;
 pub mod doctor;
 pub mod domain;
-pub mod display;
 pub mod ipc;
 pub mod lifecycle;
 pub mod paths;
@@ -29,7 +30,6 @@ pub mod security;
 pub mod service;
 pub mod supervisor;
 pub mod workspace;
-pub mod config;
 
 pub use approval::{
     ApprovalCallback, ApprovalError, ApprovalService, DecideOutcome, NoopApprovalCallback,
@@ -45,4 +45,3 @@ pub use paths::{PathError, RuntimePaths, repository_id_from_canonical_root};
 pub use recovery::{RecoveryConfig, RecoveryCoordinator, RecoveryError, RecoveryResult};
 pub use security::{SecurityError, StateRoot};
 pub use service::{FakeRunDriver, OrchestrationService, RunDriver, RunDriverContext, ServiceError};
-

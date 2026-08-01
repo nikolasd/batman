@@ -1,8 +1,6 @@
 //! Workspace apply integration tests.
 
-use batman_protocol::{
-    ApplyRequest, ApplyStrategy, Artifact, ArtifactId, ArtifactKind, ProjectId,
-};
+use batman_protocol::{ApplyRequest, ApplyStrategy, Artifact, ArtifactId, ArtifactKind, ProjectId};
 use batman_runtime::workspace::{ArtifactStore, WorkspaceApplier, WorkspaceInspector};
 use std::path::PathBuf;
 use std::process::Command;
@@ -97,23 +95,28 @@ async fn workspace_apply_with_real_patch() {
     Command::new("git")
         .current_dir(&source)
         .args(["init"])
-        .output().ok();
+        .output()
+        .ok();
     Command::new("git")
         .current_dir(&source)
         .args(["config", "user.email", "test@test.com"])
-        .output().ok();
+        .output()
+        .ok();
     Command::new("git")
         .current_dir(&source)
         .args(["config", "user.name", "Test User"])
-        .output().ok();
+        .output()
+        .ok();
     Command::new("git")
         .current_dir(&source)
         .args(["add", "."])
-        .output().ok();
+        .output()
+        .ok();
     Command::new("git")
         .current_dir(&source)
         .args(["commit", "-m", "Initial"])
-        .output().ok();
+        .output()
+        .ok();
 
     // Modify the source and generate a patch
     std::fs::write(source.join("file1.txt"), "modified content\n").unwrap();
@@ -144,12 +147,11 @@ async fn workspace_apply_with_real_patch() {
         .args(["rev-parse", "HEAD"])
         .output()
         .expect("Failed to get HEAD");
-    let expected_head = String::from_utf8_lossy(&head_output.stdout).trim().to_string();
+    let expected_head = String::from_utf8_lossy(&head_output.stdout)
+        .trim()
+        .to_string();
 
-    let applier = WorkspaceApplier::from_store(
-        repo.clone(),
-        std::sync::Arc::new(store.clone()),
-    );
+    let applier = WorkspaceApplier::from_store(repo.clone(), std::sync::Arc::new(store.clone()));
 
     let request = ApplyRequest {
         lease_id: "test-lease".to_string(),
@@ -178,23 +180,28 @@ async fn workspace_apply_stale_revision_returns_conflict() {
     Command::new("git")
         .current_dir(&source)
         .args(["init"])
-        .output().ok();
+        .output()
+        .ok();
     Command::new("git")
         .current_dir(&source)
         .args(["config", "user.email", "test@test.com"])
-        .output().ok();
+        .output()
+        .ok();
     Command::new("git")
         .current_dir(&source)
         .args(["config", "user.name", "Test User"])
-        .output().ok();
+        .output()
+        .ok();
     Command::new("git")
         .current_dir(&source)
         .args(["add", "."])
-        .output().ok();
+        .output()
+        .ok();
     Command::new("git")
         .current_dir(&source)
         .args(["commit", "-m", "Initial"])
-        .output().ok();
+        .output()
+        .ok();
 
     // Modify the source and generate a patch
     std::fs::write(source.join("file1.txt"), "modified content\n").unwrap();
@@ -218,10 +225,7 @@ async fn workspace_apply_stale_revision_returns_conflict() {
     // Use a STALE revision (not the current HEAD)
     let stale_revision = "0000000000000000000000000000000000000000";
 
-    let applier = WorkspaceApplier::from_store(
-        repo.clone(),
-        std::sync::Arc::new(store.clone()),
-    );
+    let applier = WorkspaceApplier::from_store(repo.clone(), std::sync::Arc::new(store.clone()));
 
     let request = ApplyRequest {
         lease_id: "test-lease".to_string(),
@@ -251,10 +255,8 @@ async fn workspace_inspect_captures_real_evidence() {
     // Create an untracked file
     std::fs::write(repo.join("untracked.txt"), "untracked\n").unwrap();
 
-    let inspector = WorkspaceInspector::with_store(
-        repo.clone(),
-        std::sync::Arc::new(store.clone()),
-    );
+    let inspector =
+        WorkspaceInspector::with_store(repo.clone(), std::sync::Arc::new(store.clone()));
 
     let request = batman_protocol::InspectRequest {
         lease_id: "test-lease".to_string(),
@@ -265,10 +267,19 @@ async fn workspace_inspect_captures_real_evidence() {
     // Verify real evidence was captured
     assert_eq!(result.lease_id, "test-lease");
     assert!(result.dirty_file_count > 0, "should have dirty files");
-    assert!(result.untracked_file_count > 0, "should have untracked files");
+    assert!(
+        result.untracked_file_count > 0,
+        "should have untracked files"
+    );
     assert!(!result.commit_ids.is_empty(), "should have commits");
-    assert!(!result.base_revision.is_empty(), "should have base revision");
-    assert!(!result.patch_artifact_id.to_string().is_empty(), "should have patch artifact ID");
+    assert!(
+        !result.base_revision.is_empty(),
+        "should have base revision"
+    );
+    assert!(
+        !result.patch_artifact_id.to_string().is_empty(),
+        "should have patch artifact ID"
+    );
 
     // Verify the patch was stored
     let list = store.list(None).await;

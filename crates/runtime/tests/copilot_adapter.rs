@@ -498,9 +498,10 @@ async fn respond_permission_answers_a_real_pending_request_over_the_wire() {
     let written = timeout(Duration::from_secs(5), async {
         loop {
             if let Ok(text) = std::fs::read_to_string(&output_path)
-                && !text.is_empty() {
-                    return text;
-                }
+                && !text.is_empty()
+            {
+                return text;
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })

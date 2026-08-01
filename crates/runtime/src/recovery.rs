@@ -165,9 +165,7 @@ impl RecoveryCoordinator {
     /// - If [`RecoveryConfig::recover_waiting`] is `false`, runs in
     ///   `waitingUser` or `waitingPeer` state are excluded
     #[allow(dead_code)]
-    async fn find_stuck_runs(
-        &self,
-    ) -> Result<Vec<StuckRun>, RecoveryError> {
+    async fn find_stuck_runs(&self) -> Result<Vec<StuckRun>, RecoveryError> {
         // This is a stub implementation. A full implementation would query
         // the database for runs in non-terminal states with last_activity
         // older than the stuck_threshold.

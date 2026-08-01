@@ -5,8 +5,10 @@ use std::process::ExitStatus;
 use std::sync::{Arc, Mutex};
 
 use batman_protocol::{RunId, TaskId, WorkerId};
-use batman_runtime::adapter::{Adapter, AdapterEvent, AdapterEventSink, AdapterErrorCode, ProtocolKind, StartSpec};
 use batman_runtime::adapter::terminal::{CommandRunner, TerminalAdapter};
+use batman_runtime::adapter::{
+    Adapter, AdapterErrorCode, AdapterEvent, AdapterEventSink, ProtocolKind, StartSpec,
+};
 
 /// Mock command runner that records invocations and returns controlled outputs.
 struct MockCommandRunner {
@@ -40,8 +42,7 @@ impl MockCommandRunner {
     }
 
     fn push_spawn_error(&mut self, msg: &str) {
-        self.results
-            .push(MockOutput::SpawnError(msg.to_string()));
+        self.results.push(MockOutput::SpawnError(msg.to_string()));
     }
 
     fn recorded_calls(&self) -> Vec<(String, Vec<String>)> {
@@ -60,7 +61,9 @@ impl MockCommandRunner {
                         .all(|(a, e)| *a == **e)
             }),
             "Expected command '{}' with args {:?}, but recorded calls were: {:?}",
-            cmd, expected_args, calls
+            cmd,
+            expected_args,
+            calls
         );
     }
 }
@@ -74,7 +77,8 @@ impl CommandRunner for MockCommandRunner {
         Box<dyn std::future::Future<Output = std::io::Result<std::process::Output>> + Send>,
     > {
         let idx = self.call_count.load(std::sync::atomic::Ordering::Relaxed);
-        self.call_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.call_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         {
             let mut calls = self.calls.lock().unwrap();
             calls.push((
@@ -126,9 +130,7 @@ impl CommandRunner for MockCommandRunner {
                 Some(MockOutput::SpawnError(msg)) => {
                     Err(io::Error::new(io::ErrorKind::NotFound, msg.as_str()))
                 }
-                None => Err(io::Error::other(
-                    "no more results",
-                )),
+                None => Err(io::Error::other("no more results")),
             }
         })
     }
@@ -230,10 +232,7 @@ async fn terminal_adapter_capabilities() {
 struct NullSink;
 
 impl AdapterEventSink for NullSink {
-    fn emit(
-        &self,
-        _event: AdapterEvent,
-    ) -> batman_runtime::adapter::AdapterFuture<'_, u64> {
+    fn emit(&self, _event: AdapterEvent) -> batman_runtime::adapter::AdapterFuture<'_, u64> {
         Box::pin(async { Ok(0) })
     }
 }

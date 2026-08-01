@@ -168,11 +168,15 @@ impl PolicyEvaluator {
         // Atomic check-and-increment: CAS loop to avoid TOCTOU race
         // between reading `active` and booking a slot.
         let ceiling = self.policy.concurrency_ceiling;
-        let booked = self
-            .active_runs
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
-                if active < ceiling { Some(active + 1) } else { None }
-            });
+        let booked =
+            self.active_runs
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
+                    if active < ceiling {
+                        Some(active + 1)
+                    } else {
+                        None
+                    }
+                });
 
         match booked {
             Ok(_) => Ok(()),
@@ -319,7 +323,10 @@ mod tests {
 
         let result = evaluator.evaluate(&profile, &caps, false);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), PolicyError::ModelNotAllowed { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            PolicyError::ModelNotAllowed { .. }
+        ));
         assert_eq!(evaluator.active_runs(), 0);
     }
 
@@ -376,7 +383,10 @@ mod tests {
 
         let result = evaluator.evaluate(&profile, &caps, true);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), PolicyError::NestedWorkerDenied { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            PolicyError::NestedWorkerDenied { .. }
+        ));
         assert_eq!(evaluator.active_runs(), 0);
     }
 

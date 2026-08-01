@@ -515,11 +515,12 @@ impl CoordinationBroker {
             .await?;
         let swept = result["swept"].as_u64().unwrap_or(0);
         if let Some(envelopes) = result.as_object_mut().and_then(|m| m.remove("__envelopes"))
-            && let Ok(envelopes) = serde_json::from_value::<Vec<EventEnvelope>>(envelopes) {
-                for envelope in envelopes {
-                    let _ = self.events_tx.send(envelope);
-                }
+            && let Ok(envelopes) = serde_json::from_value::<Vec<EventEnvelope>>(envelopes)
+        {
+            for envelope in envelopes {
+                let _ = self.events_tx.send(envelope);
             }
+        }
         Ok(swept)
     }
 

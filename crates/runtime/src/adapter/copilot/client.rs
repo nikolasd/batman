@@ -186,11 +186,12 @@ impl CopilotAcpClient {
         let process_pid = process.pid();
 
         let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    #[allow(clippy::type_complexity)]
+        #[allow(clippy::type_complexity)]
         let (events_tx, events_rx) = mpsc::unbounded_channel::<CopilotClientEvent>();
         #[allow(clippy::type_complexity)]
-        let pending_responses: Arc<StdMutex<HashMap<i64, oneshot::Sender<Result<Value, Value>>>>> =
-            Arc::new(StdMutex::new(HashMap::new()));
+        let pending_responses: Arc<
+            StdMutex<HashMap<i64, oneshot::Sender<Result<Value, Value>>>>,
+        > = Arc::new(StdMutex::new(HashMap::new()));
         let pending_permissions: Arc<StdMutex<HashMap<i64, CopilotPermissionRequest>>> =
             Arc::new(StdMutex::new(HashMap::new()));
         let shutdown = Arc::new(Notify::new());
@@ -576,7 +577,7 @@ fn parse_permission_request(msg: &Value) -> Option<CopilotPermissionRequest> {
 /// rather than answered inline; any other unimplemented incoming request
 /// gets an explicit JSON-RPC error response so Copilot is never left
 /// waiting indefinitely for one this client will never send.
-    #[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity)]
 fn handle_frame(
     frame: &[u8],
     pending_responses: &Arc<StdMutex<HashMap<i64, oneshot::Sender<Result<Value, Value>>>>>,

@@ -69,7 +69,6 @@ struct AdapterState {
     event_drain: Option<JoinHandle<()>>,
 }
 
-
 /// The `copilot` worker adapter: one supervised `copilot --acp` process
 /// per [`CopilotAdapter`] instance, reached only over NDJSON stdio.
 ///
@@ -239,22 +238,23 @@ impl CopilotAdapter {
         }
         let negotiated = client.initialize().await?;
         if let Some(version) = &negotiated.agent_version
-            && !copilot_cli_version_known(version) {
-                client.shutdown().await;
-                return Err(AdapterError::incompatible_version(
-                    "copilot",
-                    "initialize",
-                    format!(
-                        "installed Copilot CLI {version} has not been verified by this adapter \
+            && !copilot_cli_version_known(version)
+        {
+            client.shutdown().await;
+            return Err(AdapterError::incompatible_version(
+                "copilot",
+                "initialize",
+                format!(
+                    "installed Copilot CLI {version} has not been verified by this adapter \
                          (known versions: {:?}); no CopilotStartupOptions field currently opts \
                          into an unverified version",
-                        COPILOT_KNOWN_CLI_VERSIONS
-                            .iter()
-                            .map(|entry| entry.cli_version)
-                            .collect::<Vec<_>>()
-                    ),
-                ));
-            }
+                    COPILOT_KNOWN_CLI_VERSIONS
+                        .iter()
+                        .map(|entry| entry.cli_version)
+                        .collect::<Vec<_>>()
+                ),
+            ));
+        }
         let client = Arc::new(client);
         state.client = Some(client.clone());
         Ok(client)

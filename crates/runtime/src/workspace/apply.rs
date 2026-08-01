@@ -30,13 +30,13 @@ pub struct WorkspaceApplier {
 
 impl WorkspaceApplier {
     pub fn new(path: std::path::PathBuf) -> Self {
-        WorkspaceApplier {
-            path,
-            store: None,
-        }
+        WorkspaceApplier { path, store: None }
     }
 
-    pub fn from_store(path: std::path::PathBuf, store: Arc<crate::workspace::ArtifactStore>) -> Self {
+    pub fn from_store(
+        path: std::path::PathBuf,
+        store: Arc<crate::workspace::ArtifactStore>,
+    ) -> Self {
         WorkspaceApplier {
             path,
             store: Some(store),
@@ -46,11 +46,14 @@ impl WorkspaceApplier {
     /// Applies a workspace change using the specified strategy.
     /// Validates `expected_target_revision` before mutating.
     pub async fn apply(&self, request: &ApplyRequest) -> Result<ApplyResult, ApplyError> {
-        let store = self.store.as_ref()
+        let store = self
+            .store
+            .as_ref()
             .ok_or_else(|| ApplyError::ArtifactNotFound("no artifact store".to_string()))?;
 
         // Fetch the artifact content
-        let content = store.fetch_content(&request.artifact_id)
+        let content = store
+            .fetch_content(&request.artifact_id)
             .await
             .map_err(|e| ApplyError::ArtifactNotFound(e.to_string()))?;
 
@@ -67,12 +70,8 @@ impl WorkspaceApplier {
         }
 
         match request.strategy {
-            ApplyStrategy::ApplyPatch => {
-                self.apply_patch(&content, &request.lease_id)
-            }
-            ApplyStrategy::CherryPick => {
-                self.cherry_pick(&content, &request.lease_id)
-            }
+            ApplyStrategy::ApplyPatch => self.apply_patch(&content, &request.lease_id),
+            ApplyStrategy::CherryPick => self.cherry_pick(&content, &request.lease_id),
         }
     }
 
@@ -107,7 +106,7 @@ impl WorkspaceApplier {
         if !status.success() {
             let _ = std::fs::remove_file(&patch_path);
             return Err(ApplyError::Conflict(
-                "Patch does not apply cleanly".to_string()
+                "Patch does not apply cleanly".to_string(),
             ));
         }
 
@@ -121,9 +120,7 @@ impl WorkspaceApplier {
         let _ = std::fs::remove_file(&patch_path);
 
         if !status.success() {
-            return Err(ApplyError::Conflict(
-                "Patch application failed".to_string()
-            ));
+            return Err(ApplyError::Conflict("Patch application failed".to_string()));
         }
 
         // Get the new HEAD
@@ -139,13 +136,14 @@ impl WorkspaceApplier {
     }
 
     /// Cherry-picks commits from the artifact.
-    fn cherry_pick(&self, commit_content: &[u8], lease_id: &str) -> Result<ApplyResult, ApplyError> {
+    fn cherry_pick(
+        &self,
+        commit_content: &[u8],
+        lease_id: &str,
+    ) -> Result<ApplyResult, ApplyError> {
         // The artifact should contain commit IDs to cherry-pick
         let content_str = String::from_utf8_lossy(commit_content);
-        let commit_ids: Vec<&str> = content_str
-            .lines()
-            .filter(|l| !l.is_empty())
-            .collect();
+        let commit_ids: Vec<&str> = content_str.lines().filter(|l| !l.is_empty()).collect();
 
         if commit_ids.is_empty() {
             return Err(ApplyError::Git("No commit IDs in artifact".to_string()));

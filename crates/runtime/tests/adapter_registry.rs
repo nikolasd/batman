@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use batman_protocol::{ProjectId, RunId, TaskId, WorkerId};
 use batman_runtime::adapter::{
-    AdapterKind, AdapterRegistry, FixtureAuthorization, OmpRpcStartupOptions,
-    StartupOptions, WorkerProfile,
+    AdapterKind, AdapterRegistry, FixtureAuthorization, OmpRpcStartupOptions, StartupOptions,
+    WorkerProfile,
 };
 use batman_runtime::db::DatabaseHandle;
 use batman_runtime::service::{RunDriver, RunDriverContext};
@@ -137,6 +137,7 @@ async fn a_terminal_profile_uses_terminal_adapter() {
         Arc::new(FixtureAuthorization { allow: true }),
         PathBuf::from("/tmp"),
         None,
+        vec![],
     );
 
     // Terminal profile should use terminal adapter
@@ -157,6 +158,7 @@ async fn a_terminal_degraded_profile_uses_terminal_adapter() {
         Arc::new(FixtureAuthorization { allow: true }),
         PathBuf::from("/tmp"),
         None,
+        vec![],
     );
 
     // TerminalDegraded now constructs a terminal adapter (may succeed or fail based on host)
@@ -189,6 +191,7 @@ async fn authorization_denial_prevents_the_adapter_from_ever_starting() {
         Arc::new(FixtureAuthorization { allow: false }),
         PathBuf::from("/tmp"),
         None,
+        vec![],
     );
 
     let err = registry
@@ -214,6 +217,7 @@ async fn duplicate_start_is_rejected() {
         Arc::new(FixtureAuthorization { allow: true }),
         PathBuf::from("/tmp"),
         None,
+        vec![],
     );
 
     // First start should succeed (or fail based on host, but not with "duplicate" error)
@@ -243,6 +247,7 @@ async fn running_count_tracks_active_adapters() {
         Arc::new(FixtureAuthorization { allow: true }),
         PathBuf::from("/tmp"),
         None,
+        vec![],
     );
 
     assert_eq!(registry.running_count(), 0);

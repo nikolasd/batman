@@ -23,13 +23,13 @@ pub struct WorkspaceInspector {
 
 impl WorkspaceInspector {
     pub fn new(path: std::path::PathBuf) -> Self {
-        WorkspaceInspector {
-            path,
-            store: None,
-        }
+        WorkspaceInspector { path, store: None }
     }
 
-    pub fn with_store(path: std::path::PathBuf, store: Arc<crate::workspace::ArtifactStore>) -> Self {
+    pub fn with_store(
+        path: std::path::PathBuf,
+        store: Arc<crate::workspace::ArtifactStore>,
+    ) -> Self {
         WorkspaceInspector {
             path,
             store: Some(store),
@@ -68,7 +68,9 @@ impl WorkspaceInspector {
                 storage_path: format!("patches/{}.patch", patch_content.len()),
                 run_id: None,
             };
-            store.store(artifact, patch_content).await
+            store
+                .store(artifact, patch_content)
+                .await
                 .map_err(|e| InspectError::Git(format!("Failed to store patch: {}", e)))?
         } else {
             ArtifactId::new()
@@ -150,10 +152,13 @@ impl WorkspaceInspector {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(stdout.lines().filter_map(|l| {
-            let parts: Vec<&str> = l.splitn(2, ' ').collect();
-            parts.first().map(|s| s.to_string())
-        }).collect())
+        Ok(stdout
+            .lines()
+            .filter_map(|l| {
+                let parts: Vec<&str> = l.splitn(2, ' ').collect();
+                parts.first().map(|s| s.to_string())
+            })
+            .collect())
     }
 
     /// Generates a patch by running `git diff`.

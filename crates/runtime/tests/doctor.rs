@@ -105,7 +105,9 @@ fn doctor_with_nonexistent_state_dir() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("does not exist") || stderr.contains("state directory") || stderr.contains("No such file"),
+        stderr.contains("does not exist")
+            || stderr.contains("state directory")
+            || stderr.contains("No such file"),
         "Expected state directory or file error, got: {stderr}"
     );
 }

@@ -379,6 +379,7 @@ async fn nested_worker_observed_emits_without_upgrading_declared_capability() {
         harness.db.clone(),
         harness.project_id,
         events_tx,
+        vec![],
     );
 
     let sequence = sink

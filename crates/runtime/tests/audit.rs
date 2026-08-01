@@ -1,6 +1,5 @@
 //! Integration tests for audit module.
 
-
 #[tokio::test]
 async fn retention_prunes_old_events() {
     // TODO: Implement retention pruning test

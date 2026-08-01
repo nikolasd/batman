@@ -632,10 +632,12 @@ impl Adapter for CodexAdapter {
             let artifacts: Vec<serde_json::Value> = run
                 .pending_approvals
                 .values()
-                .map(|approval| serde_json::json!({
-                    "kind": approval.kind,
-                    "summary": approval.summary,
-                }))
+                .map(|approval| {
+                    serde_json::json!({
+                        "kind": approval.kind,
+                        "summary": approval.summary,
+                    })
+                })
                 .collect();
             Ok(AdapterSnapshot {
                 state_summary: format!("thread {}", run.thread_id),

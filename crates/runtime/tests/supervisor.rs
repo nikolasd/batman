@@ -98,9 +98,10 @@ async fn cancellation_terminates_a_worker_and_its_grandchild() {
     let grandchild_pid: i32 = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if let Ok(text) = std::fs::read_to_string(&pidfile)
-                && let Ok(pid) = text.trim().parse() {
-                    return pid;
-                }
+                && let Ok(pid) = text.trim().parse()
+            {
+                return pid;
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })

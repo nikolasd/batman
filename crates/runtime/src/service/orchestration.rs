@@ -397,7 +397,10 @@ impl OrchestrationService {
     async fn run_submit(&self, params: &Value) -> Result<Value, ServiceError> {
         let task_id = parse_task_id(params.get("taskId"))?;
         let worker_id = parse_worker_id(params.get("workerId"))?;
-        let prompt = params.get("prompt").and_then(Value::as_str).map(str::to_string);
+        let prompt = params
+            .get("prompt")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         // Cross-project rejection: the task must exist in this project.
         self.db
             .run_domain_op(query::task_get_op(task_id))
@@ -615,23 +618,23 @@ impl OrchestrationService {
             && let Err(err) = driver
                 .send_follow_up(run_id, task_id, sender_worker_id, follow_up_payload)
                 .await
-            {
-                let mut diagnostic = self
-                    .db
-                    .run_domain_op(Box::new(move |conn| {
-                        let mut repo = DomainRepository::new(conn, project_id);
-                        repo.record_diagnostic(
-                            run_id,
-                            batman_protocol::DiagnosticLevel::Warning,
-                            "follow_up_delivery_failed",
-                            format!("run {run_id}: {err}"),
-                        )
-                        .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
-                    }))
-                    .await
-                    .map_err(ServiceError::from)?;
-                self.broadcast(&mut diagnostic);
-            }
+        {
+            let mut diagnostic = self
+                .db
+                .run_domain_op(Box::new(move |conn| {
+                    let mut repo = DomainRepository::new(conn, project_id);
+                    repo.record_diagnostic(
+                        run_id,
+                        batman_protocol::DiagnosticLevel::Warning,
+                        "follow_up_delivery_failed",
+                        format!("run {run_id}: {err}"),
+                    )
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+                }))
+                .await
+                .map_err(ServiceError::from)?;
+            self.broadcast(&mut diagnostic);
+        }
 
         Ok(json!({
             "messageId": message_id.to_string(),

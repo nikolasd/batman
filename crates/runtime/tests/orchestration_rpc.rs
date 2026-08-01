@@ -68,7 +68,9 @@ impl RunDriver for RecordingRunDriver {
         worker_id: WorkerId,
         prompt: String,
     ) -> AdapterFuture<'static, Result<(), String>> {
-        self.follow_ups.lock().push((run_id, task_id, worker_id, prompt));
+        self.follow_ups
+            .lock()
+            .push((run_id, task_id, worker_id, prompt));
         Box::pin(async { Ok(()) })
     }
 }
@@ -172,7 +174,12 @@ impl Client {
         serde_json::from_str(line.trim_end()).unwrap()
     }
 
-    async fn initialize(&mut self, role: &str, instance_id: &str, agent_dir: Option<&str>) -> Value {
+    async fn initialize(
+        &mut self,
+        role: &str,
+        instance_id: &str,
+        agent_dir: Option<&str>,
+    ) -> Value {
         let auth = match role {
             "ompExtension" => json!({
                 "role": "ompExtension",
@@ -227,13 +234,19 @@ async fn task_upsert_then_get_round_trips() {
     let mut client = omp_client(&harness, "omp-1").await;
 
     let upsert = client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
         .await;
     assert!(upsert.get("error").is_none(), "upsert failed: {upsert:?}");
     let task_id = upsert["result"]["taskId"].as_str().unwrap().to_string();
     assert!(upsert["result"]["sequence"].as_u64().is_some());
 
-    let get = client.call(3, "task/get", json!({ "taskId": task_id })).await;
+    let get = client
+        .call(3, "task/get", json!({ "taskId": task_id }))
+        .await;
     assert_eq!(get["result"]["ownerClientInstanceId"], "omp-1");
     assert_eq!(get["result"]["revision"], 1);
 }
@@ -251,21 +264,38 @@ async fn events_replay_round_trips_committed_mutation_events() {
     let mut client = omp_client(&harness, "omp-1").await;
 
     let upsert = client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
         .await;
     assert!(upsert.get("error").is_none(), "upsert failed: {upsert:?}");
     let task_id = upsert["result"]["taskId"].as_str().unwrap().to_string();
 
-    let replay = client.call(3, "events/replay", json!({ "afterSequence": 0 })).await;
-    assert!(replay.get("error").is_none(), "events/replay failed: {replay:?}");
-    let events = replay["result"].as_array().expect("events/replay returns an array");
-    assert!(!events.is_empty(), "the committed task/upsert event must be replayable");
+    let replay = client
+        .call(3, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    assert!(
+        replay.get("error").is_none(),
+        "events/replay failed: {replay:?}"
+    );
+    let events = replay["result"]
+        .as_array()
+        .expect("events/replay returns an array");
+    assert!(
+        !events.is_empty(),
+        "the committed task/upsert event must be replayable"
+    );
     let task_event = events
         .iter()
         .find(|e| e["event"]["type"] == "taskEvent")
         .expect("a taskEvent must be present in the replayed events");
     assert_eq!(task_event["event"]["payload"]["taskId"], task_id);
-    assert_eq!(task_event["event"]["payload"]["ownerClientInstanceId"], "omp-1");
+    assert_eq!(
+        task_event["event"]["payload"]["ownerClientInstanceId"],
+        "omp-1"
+    );
 }
 
 #[tokio::test]
@@ -278,12 +308,19 @@ async fn events_subscribe_delivers_live_notifications_for_orchestration_mutation
     let harness = Harness::start(|_| {}).await;
     let mut subscriber = omp_client(&harness, "omp-sub").await;
     let sub = subscriber.call(2, "events/subscribe", json!({})).await;
-    assert!(sub.get("error").is_none(), "events/subscribe failed: {sub:?}");
+    assert!(
+        sub.get("error").is_none(),
+        "events/subscribe failed: {sub:?}"
+    );
     assert_eq!(sub["result"]["active"], true);
 
     let mut mutator = omp_client(&harness, "omp-mut").await;
     let upsert = mutator
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-mut", "revision": 1 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-mut", "revision": 1 }),
+        )
         .await;
     assert!(upsert.get("error").is_none(), "upsert failed: {upsert:?}");
     let task_id = upsert["result"]["taskId"].as_str().unwrap().to_string();
@@ -291,7 +328,10 @@ async fn events_subscribe_delivers_live_notifications_for_orchestration_mutation
     let notification = subscriber.recv().await;
     assert_eq!(notification["method"], "events/event");
     assert_eq!(notification["params"]["event"]["type"], "taskEvent");
-    assert_eq!(notification["params"]["event"]["payload"]["taskId"], task_id);
+    assert_eq!(
+        notification["params"]["event"]["payload"]["taskId"],
+        task_id
+    );
 }
 
 #[tokio::test]
@@ -300,7 +340,11 @@ async fn task_upsert_is_idempotent_for_same_revision() {
     let mut client = omp_client(&harness, "omp-1").await;
 
     let first = client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 5 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 5 }),
+        )
         .await;
     let task_id = first["result"]["taskId"].as_str().unwrap().to_string();
 
@@ -311,9 +355,14 @@ async fn task_upsert_is_idempotent_for_same_revision() {
             json!({ "taskId": task_id, "ownerClientInstanceId": "omp-1", "revision": 5 }),
         )
         .await;
-    assert!(second.get("error").is_none(), "same-revision upsert must succeed: {second:?}");
+    assert!(
+        second.get("error").is_none(),
+        "same-revision upsert must succeed: {second:?}"
+    );
 
-    let get = client.call(4, "task/get", json!({ "taskId": task_id })).await;
+    let get = client
+        .call(4, "task/get", json!({ "taskId": task_id }))
+        .await;
     assert_eq!(get["result"]["revision"], 5);
 }
 
@@ -323,7 +372,11 @@ async fn task_upsert_rejects_lower_revision() {
     let mut client = omp_client(&harness, "omp-1").await;
 
     let first = client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 5 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 5 }),
+        )
         .await;
     let task_id = first["result"]["taskId"].as_str().unwrap().to_string();
 
@@ -334,7 +387,10 @@ async fn task_upsert_rejects_lower_revision() {
             json!({ "taskId": task_id, "ownerClientInstanceId": "omp-1", "revision": 3 }),
         )
         .await;
-    assert_eq!(lower["error"]["code"], -32602, "lower revision must be INVALID_PARAMS: {lower:?}");
+    assert_eq!(
+        lower["error"]["code"], -32602,
+        "lower revision must be INVALID_PARAMS: {lower:?}"
+    );
 }
 
 // ------------------------------------------------------------ worker CRUD
@@ -351,7 +407,10 @@ async fn worker_create_then_list_and_get() {
             json!({ "fingerprint": "sha256:fake", "adapter": "fake", "model": "test-model" }),
         )
         .await;
-    assert!(create.get("error").is_none(), "worker/create failed: {create:?}");
+    assert!(
+        create.get("error").is_none(),
+        "worker/create failed: {create:?}"
+    );
     let worker_id = create["result"]["workerId"].as_str().unwrap().to_string();
     assert!(create["result"]["sequence"].as_u64().is_some());
 
@@ -360,7 +419,9 @@ async fn worker_create_then_list_and_get() {
     assert_eq!(workers.len(), 1);
     assert_eq!(workers[0]["workerId"], worker_id);
 
-    let get = client.call(4, "worker/get", json!({ "workerId": worker_id })).await;
+    let get = client
+        .call(4, "worker/get", json!({ "workerId": worker_id }))
+        .await;
     assert_eq!(get["result"]["profileRef"]["adapter"], "fake");
 }
 
@@ -372,21 +433,35 @@ async fn run_submit_without_driver_reports_adapter_unavailable_but_preserves_que
     let mut client = omp_client(&harness, "omp-1").await;
 
     let task = client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
         .await;
     let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
     let worker = client
-        .call(3, "worker/create", json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }))
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
         .await;
     let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
 
     let submit = client
-        .call(4, "run/submit", json!({ "taskId": task_id, "workerId": worker_id }))
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id }),
+        )
         .await;
     assert_eq!(submit["error"]["message"], "adapter_unavailable");
 
     // The run itself is still queued, not silently dropped.
-    let list = client.call(5, "run/list", json!({ "taskId": task_id })).await;
+    let list = client
+        .call(5, "run/list", json!({ "taskId": task_id }))
+        .await;
     let runs = list["result"]["runs"].as_array().unwrap();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0]["state"], "queued");
@@ -401,34 +476,64 @@ async fn run_submit_with_fake_driver_reaches_working_and_retry_creates_new_run()
     let mut client = omp_client(&harness, "omp-1").await;
 
     let task = client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
         .await;
     let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
     let worker = client
-        .call(3, "worker/create", json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }))
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
         .await;
     let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
 
     let submit = client
-        .call(4, "run/submit", json!({ "taskId": task_id, "workerId": worker_id }))
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id }),
+        )
         .await;
-    assert!(submit.get("error").is_none(), "run/submit failed: {submit:?}");
+    assert!(
+        submit.get("error").is_none(),
+        "run/submit failed: {submit:?}"
+    );
     let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
 
     let get = client.call(5, "run/get", json!({ "runId": run_id })).await;
-    assert_eq!(get["result"]["state"], "working", "fake driver must reach working: {get:?}");
+    assert_eq!(
+        get["result"]["state"], "working",
+        "fake driver must reach working: {get:?}"
+    );
 
     // Cancel the run to reach a terminal state before retrying.
-    let cancel = client.call(6, "run/cancel", json!({ "runId": run_id })).await;
-    assert!(cancel.get("error").is_none(), "run/cancel failed: {cancel:?}");
+    let cancel = client
+        .call(6, "run/cancel", json!({ "runId": run_id }))
+        .await;
+    assert!(
+        cancel.get("error").is_none(),
+        "run/cancel failed: {cancel:?}"
+    );
 
     let retry = client
-        .call(7, "run/retry", json!({ "priorRunId": run_id, "workerId": worker_id }))
+        .call(
+            7,
+            "run/retry",
+            json!({ "priorRunId": run_id, "workerId": worker_id }),
+        )
         .await;
     assert!(retry.get("error").is_none(), "run/retry failed: {retry:?}");
     let new_run_id = retry["result"]["runId"].as_str().unwrap();
     assert_ne!(new_run_id, run_id, "retry must create a distinct RunId");
-    assert_eq!(retry["result"]["taskId"], task_id, "retry must retain the same TaskId");
+    assert_eq!(
+        retry["result"]["taskId"], task_id,
+        "retry must retain the same TaskId"
+    );
 }
 
 #[tokio::test]
@@ -440,25 +545,44 @@ async fn run_cancel_on_settled_run_is_illegal_transition() {
     let mut client = omp_client(&harness, "omp-1").await;
 
     let task = client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
         .await;
     let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
     let worker = client
-        .call(3, "worker/create", json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }))
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
         .await;
     let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
     let submit = client
-        .call(4, "run/submit", json!({ "taskId": task_id, "workerId": worker_id }))
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id }),
+        )
         .await;
     let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
 
     // First cancel succeeds (working -> cancelled).
-    let cancel = client.call(5, "run/cancel", json!({ "runId": run_id })).await;
+    let cancel = client
+        .call(5, "run/cancel", json!({ "runId": run_id }))
+        .await;
     assert!(cancel.get("error").is_none());
 
     // Second cancel on an already-terminal run is illegal.
-    let second_cancel = client.call(6, "run/cancel", json!({ "runId": run_id })).await;
-    assert_eq!(second_cancel["error"]["code"], -32100, "expected ILLEGAL_TRANSITION: {second_cancel:?}");
+    let second_cancel = client
+        .call(6, "run/cancel", json!({ "runId": run_id }))
+        .await;
+    assert_eq!(
+        second_cancel["error"]["code"], -32100,
+        "expected ILLEGAL_TRANSITION: {second_cancel:?}"
+    );
 }
 
 #[tokio::test]
@@ -467,16 +591,27 @@ async fn run_submit_rejects_task_outside_project() {
     let mut client = omp_client(&harness, "omp-1").await;
 
     let worker = client
-        .call(2, "worker/create", json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }))
+        .call(
+            2,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
         .await;
     let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
 
     // A well-formed but nonexistent taskId.
     let fake_task_id = "018f0000-0000-7000-8000-000000000000";
     let submit = client
-        .call(3, "run/submit", json!({ "taskId": fake_task_id, "workerId": worker_id }))
+        .call(
+            3,
+            "run/submit",
+            json!({ "taskId": fake_task_id, "workerId": worker_id }),
+        )
         .await;
-    assert_eq!(submit["error"]["code"], -32602, "expected INVALID_PARAMS for unknown task: {submit:?}");
+    assert_eq!(
+        submit["error"]["code"], -32602,
+        "expected INVALID_PARAMS for unknown task: {submit:?}"
+    );
 }
 
 // -------------------------------------------------------- message/approval
@@ -490,15 +625,27 @@ async fn message_send_then_list() {
     let mut client = omp_client(&harness, "omp-1").await;
 
     let task = client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
         .await;
     let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
     let worker = client
-        .call(3, "worker/create", json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }))
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
         .await;
     let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
     let submit = client
-        .call(4, "run/submit", json!({ "taskId": task_id, "workerId": worker_id }))
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id }),
+        )
         .await;
     let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
 
@@ -517,7 +664,9 @@ async fn message_send_then_list() {
         .await;
     assert!(send.get("error").is_none(), "message/send failed: {send:?}");
 
-    let list = client.call(6, "message/list", json!({ "runId": run_id })).await;
+    let list = client
+        .call(6, "message/list", json!({ "runId": run_id }))
+        .await;
     let messages = list["result"]["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["kind"], "question");
@@ -537,15 +686,27 @@ async fn message_send_on_a_run_with_no_running_adapter_still_succeeds_and_journa
     let mut client = omp_client(&harness, "omp-1").await;
 
     let task = client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
         .await;
     let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
     let worker = client
-        .call(3, "worker/create", json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }))
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
         .await;
     let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
     let submit = client
-        .call(4, "run/submit", json!({ "taskId": task_id, "workerId": worker_id }))
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id }),
+        )
         .await;
     let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
 
@@ -562,21 +723,40 @@ async fn message_send_on_a_run_with_no_running_adapter_still_succeeds_and_journa
             }),
         )
         .await;
-    assert!(send.get("error").is_none(), "message/send must succeed despite delivery failure: {send:?}");
+    assert!(
+        send.get("error").is_none(),
+        "message/send must succeed despite delivery failure: {send:?}"
+    );
 
-    let list = client.call(6, "message/list", json!({ "runId": run_id })).await;
+    let list = client
+        .call(6, "message/list", json!({ "runId": run_id }))
+        .await;
     let messages = list["result"]["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 1, "the message must still be durably recorded");
+    assert_eq!(
+        messages.len(),
+        1,
+        "the message must still be durably recorded"
+    );
 
-    let replay = client.call(7, "events/replay", json!({ "afterSequence": 0 })).await;
-    let events = replay["result"].as_array().expect("events/replay returns an array");
+    let replay = client
+        .call(7, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    let events = replay["result"]
+        .as_array()
+        .expect("events/replay returns an array");
     let diagnostic = events
         .iter()
         .find(|e| e["event"]["type"] == "diagnostic")
         .expect("a diagnostic event must be journaled for the failed follow-up delivery");
-    assert_eq!(diagnostic["event"]["payload"]["code"], "follow_up_delivery_failed");
+    assert_eq!(
+        diagnostic["event"]["payload"]["code"],
+        "follow_up_delivery_failed"
+    );
     assert_eq!(diagnostic["event"]["payload"]["level"], "warning");
-    assert_eq!(diagnostic["runId"], run_id, "the diagnostic must be scoped to the run");
+    assert_eq!(
+        diagnostic["runId"], run_id,
+        "the diagnostic must be scoped to the run"
+    );
 }
 
 #[tokio::test]
@@ -589,15 +769,27 @@ async fn message_send_on_a_driver_backed_run_reaches_send_follow_up_exactly_once
     let mut client = omp_client(&harness, "omp-1").await;
 
     let task = client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
         .await;
     let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
     let worker = client
-        .call(3, "worker/create", json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }))
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
         .await;
     let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
     let submit = client
-        .call(4, "run/submit", json!({ "taskId": task_id, "workerId": worker_id }))
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id }),
+        )
         .await;
     let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
 
@@ -617,7 +809,11 @@ async fn message_send_on_a_driver_backed_run_reaches_send_follow_up_exactly_once
     assert!(send.get("error").is_none(), "message/send failed: {send:?}");
 
     let follow_ups = driver.follow_ups.lock();
-    assert_eq!(follow_ups.len(), 1, "send_follow_up must be called exactly once");
+    assert_eq!(
+        follow_ups.len(),
+        1,
+        "send_follow_up must be called exactly once"
+    );
     let (recorded_run, recorded_task, recorded_worker, recorded_payload) = &follow_ups[0];
     assert_eq!(recorded_run.to_string(), run_id);
     assert_eq!(recorded_task.to_string(), task_id);
@@ -633,15 +829,26 @@ async fn every_mutation_returns_a_strictly_increasing_sequence() {
     let mut client = omp_client(&harness, "omp-1").await;
 
     let first = client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
         .await;
     let second = client
-        .call(3, "worker/create", json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }))
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
         .await;
 
     let seq1 = first["result"]["sequence"].as_u64().unwrap();
     let seq2 = second["result"]["sequence"].as_u64().unwrap();
-    assert!(seq2 > seq1, "sequence numbers must strictly increase: {seq1} then {seq2}");
+    assert!(
+        seq2 > seq1,
+        "sequence numbers must strictly increase: {seq1} then {seq2}"
+    );
 }
 
 // ----------------------------------------------------------- role gating
@@ -653,9 +860,16 @@ async fn display_principal_cannot_call_orchestration_mutation_methods() {
     client.initialize("display", "display-1", None).await;
 
     let attempt = client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
         .await;
-    assert_eq!(attempt["error"]["code"], -32601, "display must get METHOD_NOT_FOUND: {attempt:?}");
+    assert_eq!(
+        attempt["error"]["code"], -32601,
+        "display must get METHOD_NOT_FOUND: {attempt:?}"
+    );
 }
 
 // ------------------------------------------------------------- reconcile
@@ -666,19 +880,32 @@ async fn reconcile_omp_rebinds_task_ownership_on_matching_revision() {
     let mut first_client = omp_client(&harness, "omp-1").await;
 
     let created = first_client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 7 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 7 }),
+        )
         .await;
     let task_id = created["result"]["taskId"].as_str().unwrap().to_string();
 
     // A second OMP instance connects and cannot mutate the task without reconciling.
     let mut second_client = omp_client(&harness, "omp-2").await;
     let reconcile = second_client
-        .call(2, "reconcile/omp", json!({ "taskId": task_id, "revision": 7 }))
+        .call(
+            2,
+            "reconcile/omp",
+            json!({ "taskId": task_id, "revision": 7 }),
+        )
         .await;
-    assert!(reconcile.get("error").is_none(), "reconcile/omp failed: {reconcile:?}");
+    assert!(
+        reconcile.get("error").is_none(),
+        "reconcile/omp failed: {reconcile:?}"
+    );
     assert_eq!(reconcile["result"]["newOwnerClientInstanceId"], "omp-2");
 
-    let get = second_client.call(3, "task/get", json!({ "taskId": task_id })).await;
+    let get = second_client
+        .call(3, "task/get", json!({ "taskId": task_id }))
+        .await;
     assert_eq!(get["result"]["ownerClientInstanceId"], "omp-2");
 }
 
@@ -688,13 +915,24 @@ async fn reconcile_omp_rejects_mismatched_revision() {
     let mut first_client = omp_client(&harness, "omp-1").await;
 
     let created = first_client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "omp-1", "revision": 7 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 7 }),
+        )
         .await;
     let task_id = created["result"]["taskId"].as_str().unwrap().to_string();
 
     let mut second_client = omp_client(&harness, "omp-2").await;
     let reconcile = second_client
-        .call(2, "reconcile/omp", json!({ "taskId": task_id, "revision": 99 }))
+        .call(
+            2,
+            "reconcile/omp",
+            json!({ "taskId": task_id, "revision": 99 }),
+        )
         .await;
-    assert_eq!(reconcile["error"]["code"], -32602, "mismatched revision must be INVALID_PARAMS: {reconcile:?}");
+    assert_eq!(
+        reconcile["error"]["code"], -32602,
+        "mismatched revision must be INVALID_PARAMS: {reconcile:?}"
+    );
 }

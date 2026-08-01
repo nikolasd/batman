@@ -138,7 +138,18 @@ pub async fn run() -> ExitCode {
             org_config,
             repo_config,
             user_config,
-        } => run_serve(state_dir, repo, idle_seconds, foreground, org_config, repo_config, user_config).await,
+        } => {
+            run_serve(
+                state_dir,
+                repo,
+                idle_seconds,
+                foreground,
+                org_config,
+                repo_config,
+                user_config,
+            )
+            .await
+        }
         Command::Status {
             wait_seconds,
             state_dir,
@@ -156,13 +167,14 @@ pub async fn run() -> ExitCode {
         }
         Command::Schema => run_schema().await,
         Command::Audit {
-            command: AuditCommand::Export {
-                state_dir,
-                repo,
-                from,
-                to,
-                output,
-            },
+            command:
+                AuditCommand::Export {
+                    state_dir,
+                    repo,
+                    from,
+                    to,
+                    output,
+                },
         } => run_audit_export(state_dir, repo, from, to, output).await,
         Command::Doctor {
             state_dir,
@@ -238,7 +250,10 @@ async fn run_status(
 
     match lifecycle::status(&options).await {
         Ok(value) => {
-            println!("{}", serde_json::to_string(&value).expect("status serializes"));
+            println!(
+                "{}",
+                serde_json::to_string(&value).expect("status serializes")
+            );
             ExitCode::SUCCESS
         }
         Err(err) => fail(&err),
@@ -320,8 +335,8 @@ async fn run_audit_export(
     output: PathBuf,
 ) -> ExitCode {
     // Use the audit export module (currently a stub that returns Ok(()))
-    let state_dir_resolved = resolve_state_dir(state_dir)
-        .unwrap_or_else(|_| PathBuf::from(".batman"));
+    let state_dir_resolved =
+        resolve_state_dir(state_dir).unwrap_or_else(|_| PathBuf::from(".batman"));
 
     let mut export = batman_runtime::audit::Export::new(
         repo.to_string_lossy().to_string(),
@@ -352,7 +367,10 @@ fn resolve_state_dir(state_dir: Option<PathBuf>) -> Result<PathBuf, String> {
             if default.exists() {
                 Ok(default)
             } else {
-                Err("state directory `.batman` does not exist; use --state-dir to specify it".to_string())
+                Err(
+                    "state directory `.batman` does not exist; use --state-dir to specify it"
+                        .to_string(),
+                )
             }
         }
     }
@@ -368,18 +386,19 @@ async fn run_doctor(state_dir: Option<PathBuf>, repo: PathBuf, json: bool) -> Ex
     };
 
     // Try to open a database handle for the repo
-    let db = match batman_runtime::db::DatabaseHandle::start(
-        state_dir_resolved.join("runtime.db"),
-    )
-    .await
+    let db = match batman_runtime::db::DatabaseHandle::start(state_dir_resolved.join("runtime.db"))
+        .await
     {
         Ok(handle) => Some(std::sync::Arc::new(handle)),
         Err(err) => {
             if json {
-                println!("{}", serde_json::json!({
-                    "healthy": false,
-                    "error": format!("failed to open database: {err}")
-                }));
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "healthy": false,
+                        "error": format!("failed to open database: {err}")
+                    })
+                );
             } else {
                 eprintln!("failed to open database: {err}");
             }
@@ -397,10 +416,13 @@ async fn run_doctor(state_dir: Option<PathBuf>, repo: PathBuf, json: bool) -> Ex
             Ok(policy) => Some(policy),
             Err(err) => {
                 if json {
-                    println!("{}", serde_json::json!({
-                        "healthy": false,
-                        "error": format!("failed to merge config: {err}")
-                    }));
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "healthy": false,
+                            "error": format!("failed to merge config: {err}")
+                        })
+                    );
                 } else {
                     eprintln!("failed to merge config: {err}");
                 }
@@ -409,10 +431,13 @@ async fn run_doctor(state_dir: Option<PathBuf>, repo: PathBuf, json: bool) -> Ex
         },
         Err(err) => {
             if json {
-                println!("{}", serde_json::json!({
-                    "healthy": false,
-                    "error": format!("failed to load config: {err}")
-                }));
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "healthy": false,
+                        "error": format!("failed to load config: {err}")
+                    })
+                );
             } else {
                 eprintln!("failed to load config: {err}");
             }
@@ -425,9 +450,15 @@ async fn run_doctor(state_dir: Option<PathBuf>, repo: PathBuf, json: bool) -> Ex
     match doctor.check().await {
         Ok(result) => {
             if json {
-                println!("{}", serde_json::to_string(&result).expect("DoctorResult serializes"));
+                println!(
+                    "{}",
+                    serde_json::to_string(&result).expect("DoctorResult serializes")
+                );
             } else {
-                println!("doctor check: {}", if result.healthy { "healthy" } else { "failed" });
+                println!(
+                    "doctor check: {}",
+                    if result.healthy { "healthy" } else { "failed" }
+                );
                 if !result.failed_checks.is_empty() {
                     eprintln!("failed checks:");
                     for check in &result.failed_checks {

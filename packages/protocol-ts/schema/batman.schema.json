@@ -112,7 +112,8 @@
         "workspace/inspect",
         "workspace/apply",
         "artifact/list",
-        "artifact/fetch"
+        "artifact/fetch",
+        "policy/violation/decide"
       ]
     },
     "BinarySource": {

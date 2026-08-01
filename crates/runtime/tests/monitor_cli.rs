@@ -40,7 +40,13 @@ impl PeerCredentialReader for FakeReader {
 /// task until the returned sender is dropped or sent to. Returns the
 /// state/repo directories `batcave monitor`'s own independent
 /// `RuntimePaths::resolve` call will use to find the same socket.
-async fn start_daemon() -> (PathBuf, PathBuf, tempfile::TempDir, tempfile::TempDir, oneshot::Sender<()>) {
+async fn start_daemon() -> (
+    PathBuf,
+    PathBuf,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    oneshot::Sender<()>,
+) {
     let state = tempfile::Builder::new()
         .prefix("bat-mon-state-")
         .tempdir_in("/tmp")
@@ -150,15 +156,25 @@ async fn monitor_renders_a_committed_run_and_exits_cleanly_on_sigint() {
     let repo_str = repo_dir.to_str().unwrap();
 
     let mut client = Client::connect(&paths.socket).await;
-    let init = client.initialize("ompExtension", "monitor-test", repo_str).await;
+    let init = client
+        .initialize("ompExtension", "monitor-test", repo_str)
+        .await;
     assert!(init.get("error").is_none(), "initialize failed: {init:?}");
 
     let task = client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "monitor-test", "revision": 1 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "monitor-test", "revision": 1 }),
+        )
         .await;
     let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
     let worker = client
-        .call(3, "worker/create", json!({ "fingerprint": "sha256:mon", "adapter": "fake", "model": "m" }))
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:mon", "adapter": "fake", "model": "m" }),
+        )
         .await;
     let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
     // `run/submit`'s own RPC response may report an error (no resolved
@@ -169,11 +185,20 @@ async fn monitor_renders_a_committed_run_and_exits_cleanly_on_sigint() {
     // which is exactly the real, replayable `RunEvent` this test needs
     // `batcave monitor` to render.
     let _submit = client
-        .call(4, "run/submit", json!({ "taskId": task_id, "workerId": worker_id }))
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id }),
+        )
         .await;
 
-    let list = client.call(5, "run/list", json!({ "taskId": task_id })).await;
-    let run_id = list["result"]["runs"][0]["runId"].as_str().unwrap().to_string();
+    let list = client
+        .call(5, "run/list", json!({ "taskId": task_id }))
+        .await;
+    let run_id = list["result"]["runs"][0]["runId"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Spawn the real compiled `batcave monitor` subcommand, pointed at
     // the same on-disk socket via its own independent
@@ -234,7 +259,11 @@ async fn a_display_role_monitor_cannot_call_orchestration_mutation_methods() {
     assert!(init.get("error").is_none(), "initialize failed: {init:?}");
 
     let attempt = client
-        .call(2, "task/upsert", json!({ "ownerClientInstanceId": "x", "revision": 1 }))
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "x", "revision": 1 }),
+        )
         .await;
     assert_eq!(
         attempt["error"]["code"], -32601,

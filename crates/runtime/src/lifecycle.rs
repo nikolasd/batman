@@ -37,12 +37,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 use crate::VERSION;
-use crate::db::DatabaseHandle;
-use crate::ipc::{self, Server, ServerConfig};
 use crate::adapter::mcp_config::AdapterMcpConfig;
 use crate::adapter::registry::AdapterRegistry;
-use crate::paths::{PathError, RuntimePaths};
 use crate::coordination::{ScopeTokenStore, ScopeTokenVerifier};
+use crate::db::DatabaseHandle;
+use crate::ipc::{self, Server, ServerConfig};
+use crate::paths::{PathError, RuntimePaths};
 use crate::security::redaction::{RawEventKind, RawRuntimeEvent, Redactor};
 use crate::security::{SecurityError, ensure_private_dir, ensure_private_file};
 
@@ -142,7 +142,23 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
 
     let db = Arc::new(DatabaseHandle::start(paths.database.clone()).await?);
 
-    let redactor = Redactor::new();
+    // Use the config paths from ServeOptions (passed through from CLI).
+    let policy = crate::config::resolve_effective_policy(
+        opts.org_config.as_deref(),
+        opts.repo_config.as_deref(),
+        opts.user_config.as_deref(),
+        None,
+    )
+    .map_err(|e| ServeError::ConfigError(e.to_string()))?;
+
+    // Build the redactor with org security patterns (fall back to built-in only on invalid pattern).
+    let redactor = Redactor::with_org_rules(&policy.org_security_patterns).unwrap_or_else(|e| {
+        tracing::warn!(
+            "Failed to compile org security patterns: {e}; falling back to built-in rules only"
+        );
+        Redactor::new()
+    });
+
     let started = redactor.sanitize(RawRuntimeEvent {
         timestamp: batman_protocol::Timestamp::now(),
         project_id: paths.project_id,
@@ -194,19 +210,12 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
             None
         }
     };
-
-    // Use the config paths from ServeOptions (passed through from CLI).
-    let policy = crate::config::resolve_effective_policy(
-        opts.org_config.as_deref(),
-        opts.repo_config.as_deref(),
-        opts.user_config.as_deref(),
-        None,
-    )
-    .map_err(|e| ServeError::ConfigError(e.to_string()))?;
+    let org_security_patterns = policy.org_security_patterns.clone();
     let registry = Arc::new(AdapterRegistry::new(
         Arc::new(PolicyEvaluator::new(policy)),
         repo_root,
         mcp,
+        org_security_patterns,
     ));
     let config = ServerConfig {
         binary_source: opts.binary_source,
@@ -580,13 +589,18 @@ fn wire_str<T: Serialize>(value: &T) -> String {
 /// activity update. Extends the embedded TypeScript monitor's own
 /// `eventPatch` (which predates the adapter/workspace event kinds) with
 /// the mappings this daemon-side monitor can additionally see.
-fn apply_and_render(rows: &mut HashMap<String, MonitorRow>, envelope: &EventEnvelope) -> Option<String> {
+fn apply_and_render(
+    rows: &mut HashMap<String, MonitorRow>,
+    envelope: &EventEnvelope,
+) -> Option<String> {
     let run_id = envelope.run_id.as_ref()?.to_string();
     let (state, activity): (Option<String>, Option<String>) = match &envelope.event {
         RuntimeEvent::RunEvent { state, .. } => (Some(state.clone()), Some(format!("run {state}"))),
-        RuntimeEvent::MessageEvent { kind, delivery_state, .. } => {
-            (None, Some(format!("{} {delivery_state}", wire_str(kind))))
-        }
+        RuntimeEvent::MessageEvent {
+            kind,
+            delivery_state,
+            ..
+        } => (None, Some(format!("{} {delivery_state}", wire_str(kind)))),
         RuntimeEvent::ApprovalEvent { kind, action, .. } => (
             None,
             Some(
@@ -600,7 +614,10 @@ fn apply_and_render(rows: &mut HashMap<String, MonitorRow>, envelope: &EventEnve
         RuntimeEvent::ChildEvent { kind, .. } => (
             None,
             Some(
-                if matches!(kind, batman_protocol::RuntimeEventKind::ChildWorkerRequested) {
+                if matches!(
+                    kind,
+                    batman_protocol::RuntimeEventKind::ChildWorkerRequested
+                ) {
                     "child worker requested".to_string()
                 } else {
                     "child worker request denied".to_string()
@@ -608,12 +625,20 @@ fn apply_and_render(rows: &mut HashMap<String, MonitorRow>, envelope: &EventEnve
             ),
         ),
         RuntimeEvent::AdapterMessageEvent { .. } => (None, Some("adapter message".to_string())),
-        RuntimeEvent::AdapterToolEvent { kind, .. } => (None, Some(format!("tool {}", wire_str(kind)))),
+        RuntimeEvent::AdapterToolEvent { kind, .. } => {
+            (None, Some(format!("tool {}", wire_str(kind))))
+        }
         RuntimeEvent::AdapterUsageEvent { .. } => (None, Some("usage reported".to_string())),
         RuntimeEvent::AdapterArtifactEvent { .. } => (None, Some("artifact produced".to_string())),
-        RuntimeEvent::AdapterNestedWorkerEvent { .. } => (None, Some("nested worker observed".to_string())),
-        RuntimeEvent::AdapterProtocolHealthEvent { .. } => (None, Some("protocol health changed".to_string())),
-        RuntimeEvent::WorkspaceEvent { kind, .. } => (None, Some(format!("workspace {}", wire_str(kind)))),
+        RuntimeEvent::AdapterNestedWorkerEvent { .. } => {
+            (None, Some("nested worker observed".to_string()))
+        }
+        RuntimeEvent::AdapterProtocolHealthEvent { .. } => {
+            (None, Some("protocol health changed".to_string()))
+        }
+        RuntimeEvent::WorkspaceEvent { kind, .. } => {
+            (None, Some(format!("workspace {}", wire_str(kind))))
+        }
         _ => return None,
     };
 
@@ -754,7 +779,9 @@ async fn connect_and_catch_up(
             "lastSequence": null
         }
     });
-    send_frame(&mut write, &init).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    send_frame(&mut write, &init)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let init_response = read_frame(&mut reader).await?;
     if init_response.get("error").is_some() {
         anyhow::bail!("initialize failed: {init_response}");
@@ -766,7 +793,9 @@ async fn connect_and_catch_up(
         "method": "events/replay",
         "params": { "afterSequence": after_sequence }
     });
-    send_frame(&mut write, &replay_request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    send_frame(&mut write, &replay_request)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let replay_response = read_frame(&mut reader).await?;
     if let Some(error) = replay_response.get("error") {
         anyhow::bail!("events/replay failed: {error}");
@@ -795,7 +824,9 @@ async fn connect_and_catch_up(
         "method": "events/subscribe",
         "params": {}
     });
-    send_frame(&mut write, &subscribe_request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    send_frame(&mut write, &subscribe_request)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let subscribe_response = read_frame(&mut reader).await?;
     if let Some(error) = subscribe_response.get("error") {
         anyhow::bail!("events/subscribe failed: {error}");

@@ -31,7 +31,10 @@ impl OrgRedactionRule {
     pub fn new(id: String, pattern: &str) -> Result<Self, String> {
         let compiled =
             Regex::new(pattern).map_err(|e| format!("invalid regex '{pattern}': {e}"))?;
-        Ok(Self { id, pattern: compiled })
+        Ok(Self {
+            id,
+            pattern: compiled,
+        })
     }
 
     /// Returns the rule's human-readable identifier.
@@ -49,7 +52,7 @@ impl OrgRedactionRule {
     /// Applies this rule to the given text, returning the redacted text.
     pub fn apply(&self, text: &str) -> String {
         self.pattern
-            .replace_all(text, "[REDACTED]")
+            .replace_all(text, format!("[REDACTED:{}]", self.id).as_str())
             .to_string()
     }
 }
@@ -61,9 +64,7 @@ impl OrgRedactionRule {
 /// Returns an error if:
 /// - The document does not contain a `security.patterns` array.
 /// - Any pattern string is not a valid regex.
-pub fn load_org_rules(
-    document: &serde_json::Value,
-) -> Result<Vec<OrgRedactionRule>, String> {
+pub fn load_org_rules(document: &serde_json::Value) -> Result<Vec<OrgRedactionRule>, String> {
     let patterns = document
         .get("security")
         .and_then(|s| s.get("patterns"))
@@ -148,7 +149,11 @@ mod tests {
 
         let result = load_org_rules(&doc);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("missing security.patterns array"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("missing security.patterns array")
+        );
     }
 
     #[test]
@@ -156,7 +161,7 @@ mod tests {
         let rule = OrgRedactionRule::new("test".to_string(), r"AKIA[0-9A-Z]{16}").unwrap();
         let text = "my key is AKIA1234567890ABCDEF end";
         let redacted = rule.apply(text);
-        assert_eq!(redacted, "my key is [REDACTED] end");
+        assert_eq!(redacted, "my key is [REDACTED:test] end");
     }
 
     #[test]

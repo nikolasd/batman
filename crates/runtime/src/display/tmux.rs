@@ -7,7 +7,9 @@ use batman_protocol::{DisplayBackend, DisplayConfig, DisplayPlacement, DisplaySt
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-use super::{CommandExecutor, CommandResult, DisplayBackendTrait, RealCommandExecutor, version_gte};
+use super::{
+    CommandExecutor, CommandResult, DisplayBackendTrait, RealCommandExecutor, version_gte,
+};
 
 #[derive(Debug, Clone)]
 struct OwnedPane {
@@ -24,7 +26,8 @@ struct OwnedPane {
 /// enabled only inside a valid session; this backend never starts an
 /// ambient server as a side effect of a mere availability check.
 pub struct TmuxDisplay {
-    #[allow(dead_code)] // carried for parity with HerdrDisplay/TerminalDisplay; no field of it is read yet
+    #[allow(dead_code)]
+    // carried for parity with HerdrDisplay/TerminalDisplay; no field of it is read yet
     config: DisplayConfig,
     min_version: String,
     session_active: bool,
@@ -83,14 +86,18 @@ impl TmuxDisplay {
     /// not create one.
     fn inside_a_real_session(&self) -> bool {
         matches!(
-            self.executor.execute("tmux", &["display-message", "-p", "#{session_id}"]),
+            self.executor
+                .execute("tmux", &["display-message", "-p", "#{session_id}"]),
             Ok(CommandResult { success: true, .. })
         )
     }
 
     /// Activates tmux by attaching to a session using the injected executor.
     fn activate_tmux(&self, session_name: &str) -> Result<(), String> {
-        match self.executor.execute("tmux", &["new-session", "-d", "-s", session_name]) {
+        match self
+            .executor
+            .execute("tmux", &["new-session", "-d", "-s", session_name])
+        {
             Ok(result) if result.success => Ok(()),
             Ok(result) => {
                 let stderr = String::from_utf8_lossy(&result.stderr);
@@ -141,7 +148,9 @@ impl TmuxDisplay {
         let subcommand = match placement {
             DisplayPlacement::Tab => "new-window",
             DisplayPlacement::SplitRight | DisplayPlacement::SplitDown => "split-window",
-            DisplayPlacement::Embedded | DisplayPlacement::Workspace => unreachable!("handled above"),
+            DisplayPlacement::Embedded | DisplayPlacement::Workspace => {
+                unreachable!("handled above")
+            }
         };
         let mut argv: Vec<String> = vec![subcommand.to_string()];
         match placement {
@@ -157,9 +166,11 @@ impl TmuxDisplay {
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
 
         let pane_id = match self.executor.execute("tmux", &argv_refs) {
-            Ok(CommandResult { success: true, stdout, .. }) => {
-                String::from_utf8_lossy(&stdout).trim().to_string()
-            }
+            Ok(CommandResult {
+                success: true,
+                stdout,
+                ..
+            }) => String::from_utf8_lossy(&stdout).trim().to_string(),
             Ok(CommandResult { stderr, .. }) => {
                 return Err(format!(
                     "tmux {subcommand} exited with error: {}",
@@ -172,14 +183,18 @@ impl TmuxDisplay {
             return Err(format!("tmux {subcommand} produced no pane id"));
         }
 
-        if let Err(err) = self.execute_or_err(&["select-pane", "-t", &pane_id, "-T", "batman"], "select-pane") {
+        if let Err(err) = self.execute_or_err(
+            &["select-pane", "-t", &pane_id, "-T", "batman"],
+            "select-pane",
+        ) {
             let _ = self.execute_or_err(&["kill-pane", "-t", &pane_id], "cleanup kill-pane");
             return Err(err);
         }
 
-        self.owned_panes
-            .lock()
-            .push(OwnedPane { pane_id: pane_id.clone(), run_id: run_id.to_string() });
+        self.owned_panes.lock().push(OwnedPane {
+            pane_id: pane_id.clone(),
+            run_id: run_id.to_string(),
+        });
         Ok(pane_id)
     }
 
@@ -207,15 +222,20 @@ impl TmuxDisplay {
     /// diagnostics.
     #[must_use]
     pub fn owned_pane_ids(&self) -> Vec<String> {
-        self.owned_panes.lock().iter().map(|p| p.pane_id.clone()).collect()
+        self.owned_panes
+            .lock()
+            .iter()
+            .map(|p| p.pane_id.clone())
+            .collect()
     }
 
     fn execute_or_err(&self, args: &[&str], what: &str) -> Result<(), String> {
         match self.executor.execute("tmux", args) {
             Ok(CommandResult { success: true, .. }) => Ok(()),
-            Ok(CommandResult { stderr, .. }) => {
-                Err(format!("tmux {what} exited with error: {}", String::from_utf8_lossy(&stderr)))
-            }
+            Ok(CommandResult { stderr, .. }) => Err(format!(
+                "tmux {what} exited with error: {}",
+                String::from_utf8_lossy(&stderr)
+            )),
             Err(e) => Err(format!("failed to run tmux {what}: {e}")),
         }
     }

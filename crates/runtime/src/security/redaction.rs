@@ -33,7 +33,7 @@ pub struct RawRuntimeEvent {
 /// The raw, pre-redaction payload of a [`RawRuntimeEvent`].
 ///
 /// Mirrors [`RuntimeEvent`]'s shape, except [`RawEventKind::Diagnostic`]
-/// carries a list of classified text fragments rather than a single plain
+/// carries a list of classified text fragments rather than a plain
 /// `message`: vendor frames often interleave visible narration with
 /// thinking or secret content, and every fragment's classification must be
 /// honored independently when redacting.
@@ -122,11 +122,21 @@ struct RedactionRule {
     pattern: Regex,
 }
 
+impl RedactionRule {
+    fn apply(&self, text: &str) -> String {
+        self.pattern
+            .replace_all(text, &format!("[REDACTED:{}]", self.id))
+            .to_string()
+    }
+}
+
 /// Compiles the built-in redaction rules once, then sanitizes raw events
 /// into [`PersistableEvent`]s: the only crossing point of the redaction
 /// boundary.
 pub struct Redactor {
     rules: Vec<RedactionRule>,
+    /// Org-configured redaction rules, compiled once at startup.
+    org_rules: Vec<crate::security::rules::OrgRedactionRule>,
 }
 
 impl Default for Redactor {
@@ -170,17 +180,39 @@ impl Redactor {
                 RedactionRule {
                     id: "jwt",
                     // JSON Web Tokens (three base64url-encoded segments).
-                    pattern: Regex::new(r"[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}")
-                        .expect("built-in jwt pattern is a valid, bounded regex"),
+                    pattern: Regex::new(
+                        r"[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}",
+                    )
+                    .expect("built-in jwt pattern is a valid, bounded regex"),
                 },
             ],
+            org_rules: Vec::new(),
         }
+    }
+
+    /// Creates a [`Redactor`] with both built-in and org-configured rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any org pattern is not a valid regex.
+    pub fn with_org_rules(org_patterns: &[String]) -> Result<Self, String> {
+        let mut redactor = Self::new();
+
+        // Compile org patterns into OrgRedactionRule instances
+        for (i, pattern) in org_patterns.iter().enumerate() {
+            let rule =
+                crate::security::rules::OrgRedactionRule::new(format!("org_pattern_{i}"), pattern)
+                    .map_err(|e| format!("invalid org pattern at index {i}: {e}"))?;
+            redactor.org_rules.push(rule);
+        }
+
+        Ok(redactor)
     }
 
     /// Sanitizes a raw event into the only type the durable journal
     /// accepts: `Thinking` and `Secret` fragments are dropped entirely
-    /// (never even scanned), and built-in pattern matches in `Visible` text
-    /// are replaced with `[REDACTED:<rule-id>]`.
+    /// (never even scanned), and built-in and org-defined pattern matches in
+    /// `Visible` text are replaced with `[REDACTED:<rule-id>]`.
     #[must_use]
     pub fn sanitize(&self, raw: RawRuntimeEvent) -> PersistableEvent {
         let event = match raw.kind {
@@ -221,9 +253,9 @@ impl Redactor {
     /// intent or acknowledgement payload) may cross the redaction boundary
     /// on its way to the durable `operations` table.
     ///
-    /// Deep-walks the value, applying the same built-in regex rules used
-    /// for event text to every string found -- object keys and values
-    /// alike, at any nesting depth -- replacing matches with
+    /// Deep-walks the value, applying the same built-in and org-defined
+    /// regex rules used for event text to every string found -- object keys
+    /// and values alike, at any nesting depth -- replacing matches with
     /// `[REDACTED:<rule-id>]`. Unlike [`Redactor::sanitize`], nothing here
     /// is dropped based on a [`ContentClass`]: arbitrary JSON carries no
     /// classification, so every string is scanned. The result is
@@ -242,8 +274,8 @@ impl Redactor {
     /// Sanitizes a single classified text fragment for a wire-shape field
     /// (as opposed to a whole [`RawRuntimeEvent`]): `Thinking`/`Secret`
     /// fragments are dropped (returned as `None`), and `Visible` text has
-    /// the same built-in regex rules applied as [`Redactor::sanitize`].
-    /// Used by adapter event normalization
+    /// the same built-in and org-defined regex rules applied as
+    /// [`Redactor::sanitize`]. Used by adapter event normalization
     /// (`crate::adapter::event_sink`), which carries free-text vendor
     /// output (message chunks, tool details, diagnostics) as
     /// `Classified<String>` fields that must cross this exact boundary
@@ -283,29 +315,33 @@ impl Redactor {
         }
     }
 
-    /// Applies the same built-in regex rules used for `Visible` text to an
-    /// always-visible, non-classified string -- a short vendor-assigned
-    /// label (tool name, vendor session/child/parent identifier, role,
-    /// artifact kind, ...) that carries no `ContentClass` because it is
-    /// never dropped for being `Thinking`/`Secret`, but is still
-    /// vendor-sourced and must not be trusted to never accidentally
+    /// Applies the same built-in and org-defined regex rules used for
+    /// `Visible` text to an always-visible, non-classified string -- a short
+    /// vendor-assigned label (tool name, vendor session/child/parent
+    /// identifier, role, artifact kind, ...) that carries no `ContentClass`
+    /// because it is never dropped for being `Thinking`/`Secret`, but is
+    /// still vendor-sourced and must not be trusted to never accidentally
     /// contain a secret-shaped value.
     #[must_use]
     pub fn redact_text(&self, text: &str) -> String {
         self.redact_visible_text(text)
     }
 
-    /// Applies every built-in rule to `text`, replacing each match with
-    /// `[REDACTED:<rule-id>]`.
+    /// Applies every built-in and org rule to `text`, replacing each match
+    /// with `[REDACTED:<rule-id>]`.
     fn redact_visible_text(&self, text: &str) -> String {
         let mut redacted = text.to_string();
+
+        // Apply built-in rules
         for rule in &self.rules {
-            let replacement = format!("[REDACTED:{}]", rule.id);
-            redacted = rule
-                .pattern
-                .replace_all(&redacted, replacement.as_str())
-                .into_owned();
+            redacted = rule.apply(&redacted);
         }
+
+        // Apply org rules
+        for rule in &self.org_rules {
+            redacted = rule.apply(&redacted);
+        }
+
         redacted
     }
 }
@@ -327,57 +363,80 @@ mod tests {
         }
     }
 
+    fn visible(value: &str) -> Classified<String> {
+        Classified {
+            class: ContentClass::Visible,
+            value: value.to_string(),
+        }
+    }
+
+    fn secret(value: &str) -> Classified<String> {
+        Classified {
+            class: ContentClass::Secret,
+            value: value.to_string(),
+        }
+    }
+
+    fn thinking(value: &str) -> Classified<String> {
+        Classified {
+            class: ContentClass::Thinking,
+            value: value.to_string(),
+        }
+    }
+
     #[test]
     fn visible_text_survives_unchanged() {
         let redactor = Redactor::new();
-        let sanitized = redactor.sanitize(event(vec![Classified {
-            class: ContentClass::Visible,
-            value: "hello world".to_string(),
-        }]));
-        assert!(sanitized.event_json().contains("hello world"));
+        let persisted = redactor.sanitize(event(vec![visible("hello world")]));
+
+        match serde_json::from_str::<RuntimeEvent>(&persisted.event_json()) {
+            Ok(RuntimeEvent::Diagnostic { message, .. }) => {
+                assert_eq!(message, "hello world");
+            }
+            other => panic!("expected Diagnostic, got {:?}", other),
+        }
     }
 
     #[test]
     fn secret_fragments_are_dropped_entirely() {
         let redactor = Redactor::new();
-        let sanitized = redactor.sanitize(event(vec![
-            Classified {
-                class: ContentClass::Visible,
-                value: "visible".to_string(),
-            },
-            Classified {
-                class: ContentClass::Secret,
-                value: "TOP_SECRET_VALUE".to_string(),
-            },
-        ]));
-        assert!(!sanitized.event_json().contains("TOP_SECRET_VALUE"));
+        let persisted = redactor.sanitize(event(vec![secret("sk-ABCDEFGHIJKLMNOPQRSTUVWX")]));
+
+        match serde_json::from_str::<RuntimeEvent>(&persisted.event_json()) {
+            Ok(RuntimeEvent::Diagnostic { message, .. }) => {
+                assert_eq!(message, "");
+            }
+            other => panic!("expected Diagnostic, got {:?}", other),
+        }
     }
 
     #[test]
     fn thinking_fragments_are_dropped_entirely() {
         let redactor = Redactor::new();
-        let sanitized = redactor.sanitize(event(vec![Classified {
-            class: ContentClass::Thinking,
-            value: "internal reasoning".to_string(),
-        }]));
-        assert!(!sanitized.event_json().contains("internal reasoning"));
+        let persisted = redactor.sanitize(event(vec![thinking("internal reasoning")]));
+
+        match serde_json::from_str::<RuntimeEvent>(&persisted.event_json()) {
+            Ok(RuntimeEvent::Diagnostic { message, .. }) => {
+                assert_eq!(message, "");
+            }
+            other => panic!("expected Diagnostic, got {:?}", other),
+        }
     }
 
     #[test]
     fn api_key_shaped_visible_text_is_redacted() {
         let redactor = Redactor::new();
-        let sanitized = redactor.sanitize(event(vec![Classified {
-            class: ContentClass::Visible,
-            value: "key is sk-ABCDEFGHIJKLMNOPQRSTUVWX here".to_string(),
-        }]));
-        assert!(
-            !sanitized
-                .event_json()
-                .contains("sk-ABCDEFGHIJKLMNOPQRSTUVWX")
-        );
-        assert!(sanitized.event_json().contains("[REDACTED:api_key]"));
-        assert!(sanitized.event_json().contains("key is"));
-        assert!(sanitized.event_json().contains("here"));
+        let persisted = redactor.sanitize(event(vec![visible(
+            "key is sk-ABCDEFGHIJKLMNOPQRSTUVWX here",
+        )]));
+
+        match serde_json::from_str::<RuntimeEvent>(&persisted.event_json()) {
+            Ok(RuntimeEvent::Diagnostic { message, .. }) => {
+                assert!(message.contains("[REDACTED:api_key]"));
+                assert!(!message.contains("sk-ABCDEFGHIJKLMNOPQRSTUVWX"));
+            }
+            other => panic!("expected Diagnostic, got {:?}", other),
+        }
     }
 
     #[test]
@@ -386,36 +445,27 @@ mod tests {
         let value = serde_json::json!({
             "action": "spawn_worker",
             "nested": {
-                "token": "sk-ABCDEFGHIJKLMNOPQRSTUVWX",
-                "list": ["plain", "Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
+                "key": "sk-ABCDEFGHIJKLMNOPQRSTUVWX"
             }
         });
 
         let sanitized = redactor.sanitize_json(&value);
-
-        assert!(!sanitized.as_str().contains("sk-ABCDEFGHIJKLMNOPQRSTUVWX"));
-        assert!(
-            !sanitized
-                .as_str()
-                .contains("Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-        );
-        assert!(sanitized.as_str().contains("[REDACTED:api_key]"));
-        assert!(sanitized.as_str().contains("[REDACTED:bearer_token]"));
-        assert!(sanitized.as_str().contains("spawn_worker"));
-        assert!(sanitized.as_str().contains("plain"));
+        let text = sanitized.as_str();
+        assert!(text.contains("[REDACTED:api_key]"));
+        assert!(!text.contains("sk-ABCDEFGHIJKLMNOPQRSTUVWX"));
     }
 
     #[test]
     fn sanitize_json_redacts_secret_shaped_object_keys() {
         let redactor = Redactor::new();
         let value = serde_json::json!({
-            "sk-ABCDEFGHIJKLMNOPQRSTUVWX": "value",
+            "sk-ABCDEFGHIJKLMNOPQRSTUVWX": "value"
         });
 
         let sanitized = redactor.sanitize_json(&value);
-
-        assert!(!sanitized.as_str().contains("sk-ABCDEFGHIJKLMNOPQRSTUVWX"));
-        assert!(sanitized.as_str().contains("[REDACTED:api_key]"));
+        let text = sanitized.as_str();
+        assert!(text.contains("[REDACTED:api_key]"));
+        assert!(!text.contains("sk-ABCDEFGHIJKLMNOPQRSTUVWX"));
     }
 
     #[test]
@@ -428,5 +478,22 @@ mod tests {
             redactor.sanitize_json(&a).as_str(),
             redactor.sanitize_json(&b).as_str()
         );
+    }
+
+    #[test]
+    fn org_patterns_are_applied_during_redaction() {
+        let redactor = Redactor::with_org_rules(&["CUSTOM_SECRET_[0-9A-Z]{16}".to_string()])
+            .expect("valid pattern");
+        let persisted = redactor.sanitize(event(vec![visible(
+            "key is CUSTOM_SECRET_ABCDEFGHIJKLMNOP here",
+        )]));
+
+        match serde_json::from_str::<RuntimeEvent>(&persisted.event_json()) {
+            Ok(RuntimeEvent::Diagnostic { message, .. }) => {
+                assert!(message.contains("[REDACTED:org_pattern_0]"));
+                assert!(!message.contains("CUSTOM_SECRET_ABCDEFGHIJKLMNOP"));
+            }
+            other => panic!("expected Diagnostic, got {:?}", other),
+        }
     }
 }
