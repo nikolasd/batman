@@ -20,35 +20,38 @@ impl Retention {
     pub async fn prune(&self, db_handle: &DatabaseHandle) -> Result<(), String> {
         let period = parse_period(&self.period)?;
         
-        // Calculate the cutoff timestamp (cast to i64 for rusqlite compatibility)
-        let cutoff: i64 = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| format!("failed to get current time: {e}"))?
-            .as_secs()
-            .checked_sub(period)
+        // Calculate the cutoff timestamp as RFC3339 text matching how `timestamp` is stored
+        let cutoff_text = time::OffsetDateTime::now_utc()
+            .checked_sub(time::Duration::seconds(period as i64))
             .ok_or_else(|| "retention period exceeds system time".to_string())?
-            .try_into()
-                .map_err(|_| "retention period exceeds i64::MAX seconds".to_string())?;
-        
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|e| format!("failed to format cutoff timestamp: {e}"))?;
+
         // Build the closure to delete events older than the cutoff (bounded batch + active-run protection)
         let closure = Box::new(move |conn: &mut rusqlite::Connection| -> Result<serde_json::Value, crate::domain::DomainError> {
-            // Delete events older than the cutoff in batches (1000 per batch), excluding events belonging to non-terminal runs
-            let mut deleted = 0;
+            // Delete events for runs that are terminal (succeeded, failed, cancelled, lost) or unassociated
+            // Bounded batch with LIMIT 1000 to avoid locking the events table for long periods
             loop {
-                let affected = conn
-                    .execute(
-                        "DELETE FROM events WHERE sequence IN (SELECT sequence FROM events WHERE timestamp < ?1 AND (run_id IS NULL OR run_id NOT IN (SELECT run_id FROM runs WHERE state NOT IN ('completed','failed','cancelled'))) LIMIT 1000)",
-                        rusqlite::params![cutoff],
-                    )
-                    .map_err(crate::domain::DomainError::Sqlite)?;
+                let deleted = conn.execute(
+                    "DELETE FROM events 
+                     WHERE sequence IN (
+                       SELECT sequence FROM events 
+                       WHERE timestamp < ?1 
+                         AND (run_id IS NULL OR run_id IN (
+                           SELECT run_id FROM runs 
+                           WHERE state IN ('succeeded', 'failed', 'cancelled', 'lost')
+                         ))
+                       LIMIT 1000
+                     )",
+                    rusqlite::params![cutoff_text.as_str()],
+                )?;
                 
-                if affected == 0 {
+                if deleted == 0 {
                     break;
                 }
-                deleted += affected;
             }
-            
-            Ok(serde_json::json!({"deleted": deleted}))
+
+            Ok(serde_json::Value::Object(Default::default()))
         }) as DomainClosure;
         
         // Use the existing run_domain_op method to execute the closure
