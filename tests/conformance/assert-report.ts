@@ -1,16 +1,3 @@
-// Conformance report completeness validator.
-//
-// Validates that a conformance report contains all expected adapters and
-// that each adapter's report has the required fields.
-
-import { readFileSync } from "node:fs";
-// Conformance report completeness validator.
-//
-// STUB: Validates that a conformance report contains all expected adapters and
-// that each adapter's report has the required fields. Does NOT verify that
-// scenarios actually ran or passed — only checks field presence.
-
-import { readFileSync } from "node:fs";
 
 // Conformance report types (mirror of Rust struct)
 interface ScenarioResult {
