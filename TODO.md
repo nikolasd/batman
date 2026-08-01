@@ -169,7 +169,7 @@ The Hardening plan (Task 5) requires a `.github/workflows/ci.yml` separate from 
 
 ### 14. Releases are not gated on adapter conformance — the root-level conformance/install test suites don't exist
 
-**Status:** Open  
+**Status:** Implemented (COMPLETED 2026-08-01)
 **Priority:** High  
 **Labels:** ci, testing, conformance, release
 
@@ -187,7 +187,7 @@ The Hardening plan (Task 6) requires `tests/conformance/run.ts`, `tests/conforma
 
 ### 15. `batcave doctor` CLI command and `/batman-doctor` OMP command implemented
 
-**Status:** Implemented  
+**Status:** Implemented (COMPLETED 2026-08-01)
 **Priority:** Medium  
 **Labels:** cli, doctor, extension
 
@@ -209,7 +209,7 @@ The Hardening plan (Task 4) specifies `batcave doctor --json` as a standalone CL
 
 ### 16. Operator-facing docs (Tasks 7-8) aren't split out as the plan specifies, and no release-candidate checklist exists
 
-**Status:** Open  
+**Status:** Implemented (COMPLETED 2026-08-01)
 **Priority:** Low  
 **Labels:** documentation, release
 
