@@ -1,5 +1,6 @@
 //! The `batcave` command-line interface: `serve`, `status`, `stop`,
-//! `version`, `schema`, `monitor`, and `audit`. This layer only
+//! `version`, `schema`, `monitor`, `audit`, `doctor`, and
+//! `coordination-mcp`. This layer only
 //! parses arguments, resolves the state root when `--state-dir` is omitted,
 //! and maps [`crate::lifecycle`] outcomes to process exit codes; all
 //! behaviour lives in the library.
@@ -101,6 +102,18 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Serve the worker-coordination MCP proxy for one run over stdio.
+    CoordinationMcp {
+        /// The BATMAN state root. Defaults to the resolved state root.
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+        /// The repository this run belongs to.
+        #[arg(long)]
+        repo: PathBuf,
+        /// The run this MCP proxy is scoped to.
+        #[arg(long)]
+        run_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -181,6 +194,11 @@ pub async fn run() -> ExitCode {
             repo,
             json,
         } => run_doctor(state_dir, repo, json).await,
+        Command::CoordinationMcp {
+            state_dir,
+            repo,
+            run_id,
+        } => run_coordination_mcp(state_dir, repo, run_id).await,
     }
 }
 
@@ -472,6 +490,31 @@ async fn run_doctor(state_dir: Option<PathBuf>, repo: PathBuf, json: bool) -> Ex
             eprintln!("doctor check failed: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Runs `batcave coordination-mcp`: proxies MCP `initialize`/`tools/list`/
+/// `tools/call` on stdio to the worker coordination tools over the
+/// runtime socket, authenticated with `BATMAN_WORKER_SCOPE_TOKEN` read
+/// from (and removed from) this process's own inherited environment. All
+/// protocol/auth behavior lives in `batman_runtime::coordination::mcp`;
+/// this function only resolves CLI arguments into that call.
+async fn run_coordination_mcp(state_dir: Option<PathBuf>, repo: PathBuf, run_id: String) -> ExitCode {
+    use batman_protocol::RunId;
+    use batman_runtime::coordination::mcp::{self, ProcessEnvironment};
+
+    let state_dir = match resolve_state_dir(state_dir) {
+        Ok(dir) => dir,
+        Err(err) => return fail(&err),
+    };
+    let run_id = match RunId::parse(&run_id) {
+        Ok(id) => id,
+        Err(err) => return fail(&err),
+    };
+
+    match mcp::run(&state_dir, &repo, run_id, &ProcessEnvironment).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => fail(&err),
     }
 }
 /// Prints an error to stderr and returns `ExitCode::FAILURE`.
