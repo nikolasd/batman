@@ -362,7 +362,7 @@ graph TB
 
 #### Configuration and Policy
 - **Config Merge** ([`crates/runtime/src/config/merge.rs`](crates/runtime/src/config/merge.rs)): Layers org/repo/user/per-run YAML with strict unknown-key rejection into an immutable, SHA-256-fingerprinted `RuntimePolicy`
-- **Policy Evaluator** ([`crates/runtime/src/policy/evaluate.rs`](crates/runtime/src/policy/evaluate.rs)): `PolicyEvaluator` implements `AdapterAuthorization` against a `RuntimePolicy` (model allowlist, concurrency ceiling) — exists and is tested, but production `ServerConfig::default()` still uses `DenyByDefaultAuthorization` until this is wired in (see [known-limitations.md](known-limitations.md))
+- **Policy Evaluator** ([`crates/runtime/src/policy/evaluate.rs`](crates/runtime/src/policy/evaluate.rs)): `PolicyEvaluator` implements `AdapterAuthorization` against a `RuntimePolicy` (model allowlist, concurrency ceiling) — wired into production via `lifecycle::serve()` (see [TODO.md](../TODO.md) for remaining gaps, e.g. the `workerMcp` credential store still defaulting to reject-all)
 
 ## Level 4: Code (C4-4)
 
@@ -693,9 +693,9 @@ sequenceDiagram
 
 ## Known Deferred Items
 
-Consciously deferred as non-blocking after review (tracked for later milestones). See [Known Limitations](known-limitations.md) for the full catalog with status updates.
+Consciously deferred as non-blocking after review (tracked for later milestones). See [`TODO.md`](../TODO.md) for the full, verified catalog with status updates.
 
-**Status:** All items tracked in [Known Limitations](known-limitations.md).
+**Status:** All items tracked in [`TODO.md`](../TODO.md).
 
 ## Appendix A: Quick Reference
 

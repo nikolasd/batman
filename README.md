@@ -92,14 +92,15 @@ This project is licensed under the [MIT License](LICENSE). See the LICENSE file 
 
 ## Known Limitations
 
-This is a pre-1.0 project. Some things don't work yet:
+This is a pre-1.0 project. Some things don't work yet — see [`TODO.md`](TODO.md) for the full, verified, prioritized list. Highlights:
 
-- **No adapter is wired in production.** The `AdapterRegistry` exists, but production config uses `DenyByDefaultAuthorization`. You can't actually run a model call through this repo — only simulate with fixtures.
-- **Credential store for `workerMcp` is not implemented.** `RejectAllWorkerVerifier` is the default.
+- **Worker MCP tool access is broken end-to-end.** No CLI entry point exists for the `coordination-mcp` subcommand every adapter's MCP config expects.
+- **Nested-worker policy violations aren't enforced.** Journaled but never quarantined, cancelled, or reported; `policy/violation/decide` is a stub.
+- **Crash recovery isn't wired in.** `RecoveryCoordinator` is dead code, never called from `serve()`.
+- **`workerMcp` credential store is reject-all by default.** `RejectAllWorkerVerifier` denies worker MCP connections until a real credential store is implemented.
 - **OMP-RPC approval flow is not normalized.** The adapter's `extension_ui_request` frame is silently dropped.
 - **No artifact tracking for OMP-RPC.** The `ArtifactProduced` payload is never constructed.
-- **PolicyViolationDecide is a stub.** `OrchestrationService` has no `policy` field; quarantine-decision logic deferred.
 - **Conformance tests are stubs.** `tests/conformance/run.ts` and `assert-report.ts` write empty reports; the conformance gate in `release.yml` always passes.
 - **No JS/TS formatter.** CI format job only checks Rust (`cargo fmt`).
 
-These are tracked in [`docs/known-limitations.md`](docs/known-limitations.md) and [`TODO.md`](TODO.md). If you're evaluating BATMAN for production, review those first.
+These are tracked in [`TODO.md`](TODO.md) — the single source of truth for implementation gaps, verified against the current codebase and prioritized by severity.

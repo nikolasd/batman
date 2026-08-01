@@ -305,4 +305,4 @@ Before upgrading:
 - Check adapter-specific logs
 - Verify vendor CLI is installed and accessible
 
-For more help, see [known-limitations.md](./known-limitations.md) or open an issue on GitHub.
+For more help, see [`TODO.md`](../TODO.md) or open an issue on GitHub.
