@@ -125,6 +125,7 @@ impl Doctor {
     /// # Examples
     ///
     /// ```no_run
+    /// # use std::sync::Arc;
     /// # use batman_runtime::db::DatabaseHandle;
     /// # use batman_runtime::doctor::Doctor;
     /// # async fn example(db: Arc<DatabaseHandle>) -> Result<(), Box<dyn std::error::Error>> {

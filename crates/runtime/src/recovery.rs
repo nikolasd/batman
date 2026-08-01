@@ -135,6 +135,7 @@ impl RecoveryCoordinator {
     /// # Examples
     ///
     /// ```no_run
+    /// # use std::sync::Arc;
     /// # use batman_runtime::db::DatabaseHandle;
     /// # use batman_runtime::recovery::RecoveryCoordinator;
     /// # async fn example(db: Arc<DatabaseHandle>) -> Result<(), Box<dyn std::error::Error>> {
