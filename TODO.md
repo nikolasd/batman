@@ -169,19 +169,14 @@ The Hardening plan (Task 5) requires a `.github/workflows/ci.yml` separate from 
 
 ### 14. Releases are not gated on adapter conformance — the root-level conformance/install test suites don't exist
 
-**Status:** Implemented (COMPLETED 2026-08-01)
+**Status:** Partially implemented — structural gate wired, but conformance runner is a stub that doesn't invoke real adapter checks  
 **Priority:** High  
 **Labels:** ci, testing, conformance, release
 
 **Description:**
-The Hardening plan (Task 6) requires `tests/conformance/run.ts`, `tests/conformance/assert-report.ts`, and `tests/install/private-registry.test.ts` at the repo root, wired into `release.yml` so the workflow "refuses publish unless every advertised capability has a passing scenario on the target build." **Verified 2026-07-31:** none of these three files/directories exist (confirmed via glob). Per-adapter conformance logic does exist and is tested (`crates/runtime/src/conformance/`, `crates/runtime/tests/conformance.rs`), but nothing aggregates those results into a release-blocking gate, and nothing tests that the correct platform leaf actually installs and launches from the private registry before a release ships.
+The Hardening plan (Task 6) requires `tests/conformance/run.ts`, `tests/conformance/assert-report.ts`, and `tests/install/private-registry.test.ts` at the repo root, wired into `release.yml` so the workflow "refuses publish unless every advertised capability has a passing scenario on the target build." **Implemented 2026-08-01 (partial):** `tests/conformance/run.ts` and `tests/conformance/assert-report.ts` exist as **non-functional stubs** that write empty reports and only check field presence (not that scenarios actually ran or passed). `tests/install/private-registry.test.ts` is also a stub. The conformance job is wired into `release.yml` before publish, but it always passes because the stubs never fail. Real implementation would spawn `batcave conformance` commands and validate actual scenario results. Marked as "implemented but unverified in CI" per partial-verification approach.
 
-**Implementation:**
-- Add `tests/conformance/run.ts` (fixture-mode aggregate runner) and `tests/conformance/assert-report.ts` (fails on any missing/failing scenario ID)
-- Add `tests/install/private-registry.test.ts` verifying the correct platform leaf installs and launches
-- Wire both into `release.yml` as a required step before the publish job
-
-**References:** `.../2026-07-22-batman-hardening-release.md` (Task 6), `crates/runtime/src/conformance/`, `.github/workflows/release.yml`
+**References:** `.../2026-07-22-batman-hardening-release.md` (Task 6), `tests/conformance/run.ts`, `tests/conformance/assert-report.ts`, `tests/install/private-registry.test.ts`, `.github/workflows/release.yml`
 
 ---
 
