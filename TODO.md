@@ -1,32 +1,12 @@
 # BATMAN TODO
 
-Every item below was verified against the current codebase (not inferred from prior docs). Superseded/false claims from earlier sessions are corrected inline. Priority order reflects what blocks core functionality first, then Hardening/release readiness, then polish. Last full re-verification pass: 2026-08-02 (coordination-mcp CLI fix + cross-spec review).
-
----
-
-## Critical — breaks core functionality end-to-end
-
-### 1. `adapter_registry.rs` integration test suite fails — `workers` table schema mismatch
-
-**Status:** Open (confirmed pre-existing, not introduced by recent sessions — present since commit `90aa259`, 2026-07-25)
-**Priority:** Critical
-**Labels:** bug, testing, schema-drift
-
-**Description:**
-`cargo test -p batman-runtime` fails 5 tests in `crates/runtime/tests/adapter_registry.rs` with `Sqlite(SqliteFailure(... "table workers has no column named task_id"))`. Verified root cause: the actual `workers` table migration (`crates/runtime/src/db/migrations.rs:51-57`) has columns `worker_id, project_id, profile_id, parent_worker_id, created_at, resolved_profile_json` — but `adapter_registry.rs::seed_worker_and_run` (line 53) inserts `INSERT INTO workers (worker_id, task_id, adapter_kind, profile_kind, resolved_profile_json, status, created_at, updated_at)`, none of `task_id`/`adapter_kind`/`profile_kind`/`status`/`updated_at` exist in the real schema. Confirmed via `git show HEAD~1` (and `git show 90aa259~1`) that this INSERT already referenced these non-existent columns before any recent edit — this test file was written against an assumed schema shape that was never migrated. Every test in the file (`a_terminal_profile_uses_terminal_adapter`, `a_terminal_degraded_profile_uses_terminal_adapter`, `authorization_denial_prevents_the_adapter_from_ever_starting`, `duplicate_start_is_rejected`, `running_count_tracks_active_adapters`) fails at the shared setup helper.
-
-**Implementation:**
-- Rewrite `seed_worker_and_run`'s `INSERT INTO workers` to match the real schema (`worker_id, project_id, profile_id, parent_worker_id, created_at`), inserting a matching row into `adapter_profiles`/`worker_profiles` first for the `profile_id` foreign key
-- Decide whether `tasks`/`runs` inserts in the same helper need equivalent correction (`runs` schema requires `task_id`, `worker_id`, `state`, not `status`)
-- Re-run `cargo test -p batman-runtime --test adapter_registry` until all 5 tests pass
-
-**References:** `crates/runtime/tests/adapter_registry.rs`, `crates/runtime/src/db/migrations.rs:51-73`
+Every item below was verified against the current codebase (not inferred from prior docs). Superseded/false claims from earlier sessions are corrected inline. Priority order reflects what blocks core functionality first, then Hardening/release readiness, then polish. Last full re-verification pass: 2026-08-02 (adapter-registry schema fix + cross-spec review). No Critical-severity items remain open.
 
 ---
 
 ## High — blocks Hardening (M4) readiness
 
-### 2. Nested-worker policy violations are journaled but never quarantined, cancelled, or reported to OMP — `policy/violation/decide` is a stub
+### 1. Nested-worker policy violations are journaled but never quarantined, cancelled, or reported to OMP — `policy/violation/decide` is a stub
 
 **Status:** Open
 **Priority:** High
@@ -50,7 +30,7 @@ Verified current state:
 
 ---
 
-### 3. Crash recovery is dead code — never invoked at daemon startup, and implements neither the kill-point matrix nor the mutation barrier the plan requires
+### 2. Crash recovery is dead code — never invoked at daemon startup, and implements neither the kill-point matrix nor the mutation barrier the plan requires
 
 **Status:** Open
 **Priority:** High
@@ -70,7 +50,7 @@ This also falls far short of the Hardening plan's Task 3 specification: no `Reco
 
 ---
 
-### 4. Events table missing `task_id`/`worker_id`/`parent_worker_id`/`vendor_event_ref` columns
+### 3. Events table missing `task_id`/`worker_id`/`parent_worker_id`/`vendor_event_ref` columns
 
 **Status:** Open
 **Priority:** High
@@ -90,7 +70,7 @@ The monitor is unaffected because it reads the inner `RuntimeEvent` variant's ow
 
 ---
 
-### 5. `batcave display probe` subcommand does not exist despite the M2/M3 gap-closure doc marking it "Closed"
+### 4. `batcave display probe` subcommand does not exist despite the M2/M3 gap-closure doc marking it "Closed"
 
 **Status:** Open (documentation discrepancy confirmed — a fourth false "Closed" claim in that doc)
 **Priority:** High
@@ -109,7 +89,7 @@ The backend logic this subcommand would call is real and ready: `crates/runtime/
 
 ---
 
-### 6. `batcave conformance` and `batcave adapters` CLI subcommands don't exist — a Worker Adapters plan Task 8 requirement, and a prerequisite for item 8 below
+### 5. `batcave conformance` and `batcave adapters` CLI subcommands don't exist — a Worker Adapters plan Task 8 requirement, and a prerequisite for item 8 below
 
 **Status:** Open — newly discovered 2026-08-02 while running the full workspace suite with `--no-fail-fast` during the coordination-mcp cross-spec review
 **Priority:** High
@@ -118,7 +98,7 @@ The backend logic this subcommand would call is real and ready: `crates/runtime/
 **Description:**
 The Worker Adapters plan's Task 8 explicitly specifies both commands as real CLI surfaces: its own verification step is `cargo run -p batman-runtime -- adapters --json`, and the Hardening plan's live-gate runbook (`docs/manual-testing.md`, mirrored in the M2/M3 gap-closure doc) repeatedly invokes `./target/debug/batcave conformance --adapter <name> [--fixture|--live] --output <path>`. Neither exists: `crates/runtime/tests/conformance.rs` (a real, already-written integration test suite exercising the compiled binary) fails 5 of 6 tests with `error: unrecognized subcommand 'conformance'` / `error: unrecognized subcommand 'adapters'` — confirmed via `cli.rs`'s full `Command` enum (9 variants, verified 2026-08-02: `Serve`, `Status`, `Stop`, `Monitor`, `Version`, `Schema`, `Audit`, `Doctor`, `CoordinationMcp` — no `Conformance`/`Adapters`).
 
-Confirmed this is not caused by any change made in this session: reproduces identically with `git stash` reverting every uncommitted file in the tree (`cargo test -p batman-runtime --test conformance` → same 5 failures, same messages).
+Confirmed this is not caused by any change made in this or the prior session: reproduces identically with `git stash` reverting every uncommitted file in the tree (`cargo test -p batman-runtime --test conformance` → same 5 failures, same messages), both before and after the `coordination-mcp` and `adapter_registry.rs` fixes.
 
 This blocks item 8 below at the root: item 8's own fix ("replace `runAllFixtures`'s stub loop with real `batcave conformance --adapter <name> --output <path>` subprocess invocations") cannot be implemented until this CLI surface exists to invoke.
 
@@ -131,9 +111,9 @@ This blocks item 8 below at the root: item 8's own fix ("replace `runAllFixtures
 
 ---
 
-### 7. Claude/Codex/Copilot conformance reports omit the canonical `result_usage_artifacts` scenario
+### 6. Claude/Codex/Copilot conformance reports omit the canonical `result_usage_artifacts` scenario
 
-**Status:** Open — newly discovered 2026-08-02 during the same workspace-wide test pass as item 6
+**Status:** Open — newly discovered 2026-08-02 during the same workspace-wide test pass as item 5
 **Priority:** High
 **Labels:** bug, adapter, conformance
 
@@ -143,7 +123,7 @@ This blocks item 8 below at the root: item 8's own fix ("replace `runAllFixtures
 - `codex_adapter.rs::fixture_conformance_report_covers_every_canonical_scenario_exactly_once`: same panic message
 - `copilot_adapter.rs::fixture_conformance_report_covers_every_canonical_scenario_and_provable_ones_pass`: `assertion left == right failed: expected exactly 14 scenarios, got: [...13 listed, result_usage_artifacts absent...]`
 
-Confirmed not caused by any change made in this session (reproduces identically via `git stash` of every uncommitted file).
+Confirmed not caused by any change made in this or the prior session (reproduces identically via `git stash` of every uncommitted file, both before and after the `coordination-mcp` and `adapter_registry.rs` fixes).
 
 **Implementation:**
 - Audit each of the three adapters' `conformance.rs` scenario-list construction (`claude/conformance.rs`, `codex/conformance.rs`, `copilot/conformance.rs`) for why `result_usage_artifacts` is missing or misnamed relative to the canonical constant
@@ -153,9 +133,31 @@ Confirmed not caused by any change made in this session (reproduces identically 
 
 ---
 
+### 7. `tests/domain_repository.rs` never actually exercises `DomainRepository` — it maintains a separate, drifted, hand-copied schema
+
+**Status:** Open — newly discovered 2026-08-02 during the adapter_registry.rs cross-spec review
+**Priority:** High
+**Labels:** bug, testing, schema-drift, documentation-correction
+
+**Description:**
+`crates/runtime/tests/domain_repository.rs` (723 lines) opens its own standalone in-memory SQLite connection via `open_test_db()`, hand-writing a complete, separate copy of the orchestration schema directly in the test file rather than using the real `crates/runtime/src/db/migrations.rs` migrations via `DatabaseHandle`. This copy has drifted significantly from the real schema: its `workers` table uses `profile_ref_id`/`profile_ref_fingerprint`/`profile_ref_adapter`/`profile_ref_model`/`profile_ref_permission_envelope` columns that do not exist anywhere in the real, migrated `workers` table (which has a single `profile_id` foreign key into `worker_profiles` instead — see item 19); its `tasks` table adds `goal`/`status` columns the real `tasks` table doesn't have at all.
+
+More significantly: the file's own module doc claims "Verifies that `DomainRepository` commands execute event-append + projection-update in a single SQLite transaction" — but a full grep of the file for `DomainRepository`/`use batman_runtime::domain` finds **zero** references. This test file never imports or calls the real `DomainRepository` type at all; it reimplements similar-looking transaction/rollback/foreign-key-enforcement logic by hand against its own drifted schema. Its 6 tests (`run_submission_requires_task_and_worker`, `transactional_append_and_projection`, `worker_creation_requires_profile`, `illegal_transition_appends_no_event`, `rebuild_run_from_events_matches_projection`, `projection_failure_rolls_back_event`) all pass, but prove nothing about whether the real `DomainRepository` implementation behaves correctly — that real behavior is actually covered elsewhere, by `crates/runtime/src/domain/repository.rs`'s own inline `#[cfg(test)] mod tests` (confirmed passing, using the real migrated schema) and by `orchestration_rpc.rs`'s full RPC-to-repository integration tests (also passing).
+
+Net effect: no functional bug in `DomainRepository` itself (it genuinely is tested correctly elsewhere), but this specific file's name and doc comment actively mislead about what it covers, and its schema will keep drifting further from reality with every future migration since nothing keeps the two copies in sync.
+
+**Implementation:**
+- Decide the file's actual purpose: if it's meant to test `DomainRepository` behavior, rewrite it to import and call the real type via `DatabaseHandle`/the real migrations (matching the pattern already used successfully by `coordination_mcp.rs` and the now-fixed `adapter_registry.rs`)
+- If it's intentionally a lower-level, schema-agnostic transaction/rollback/foreign-key invariant test unrelated to `DomainRepository`'s specific implementation, rename the file and correct its module doc to stop claiming it verifies `DomainRepository` commands
+- Either way, remove the duplicated hand-written schema or clearly mark it as intentionally synthetic/minimal, not a mirror of production
+
+**References:** `crates/runtime/tests/domain_repository.rs`, `crates/runtime/src/domain/repository.rs`, `crates/runtime/src/db/migrations.rs`, `crates/runtime/tests/orchestration_rpc.rs`
+
+---
+
 ### 8. Release conformance gate is a non-functional stub — writes empty reports, never invokes real adapter checks
 
-**Status:** Blocked on item 6 (the `batcave conformance` CLI subcommand this fix needs to invoke does not exist yet)
+**Status:** Blocked on item 5 (the `batcave conformance` CLI subcommand this fix needs to invoke does not exist yet)
 **Priority:** High
 **Labels:** ci, testing, conformance, release
 
@@ -165,9 +167,9 @@ The Hardening plan (Task 6) requires `tests/conformance/run.ts`, `tests/conforma
 This currently means the conformance job in `release.yml` cannot yet fail a release for a real regression — although the *empty-report* shape is intentionally rejected by `assert-report.ts`'s stricter validators elsewhere, so this is a release-blocking gate by omission rather than a false-pass.
 
 **Implementation:**
-- **First close item 6** — `batcave conformance` must exist as a real CLI subcommand before this stub can be replaced with real subprocess invocations
+- **First close item 5** — `batcave conformance` must exist as a real CLI subcommand before this stub can be replaced with real subprocess invocations
 - Then replace `runAllFixtures`'s stub loop with real `batcave conformance --adapter <name> --output <path>` subprocess invocations, one per adapter, and merge the resulting reports
-- Replace `assertReportComplete` with real scenario-level assertions (every declared capability has a corresponding passed scenario, per item 7's fix)
+- Replace `assertReportComplete` with real scenario-level assertions (every declared capability has a corresponding passed scenario, per item 6's fix)
 - Implement `private-registry.test.ts` for real: publish to a mock registry, install, verify the binary launches
 
 **References:** `tests/conformance/run.ts`, `tests/conformance/assert-report.ts`, `tests/install/private-registry.test.ts`, `.github/workflows/release.yml`, `.../2026-07-22-batman-hardening-release.md` (Task 6)
@@ -188,7 +190,7 @@ The Hardening plan's Tasks 7-8 specify six standalone operator docs. Verified vi
 **Implementation:**
 - Once items 1-8 above close, regenerate `docs/compatibility.md` from a real passing conformance report
 - Decide whether to finish splitting `getting-started.md`'s installation/configuration/security/recovery sections into the four remaining named files, or formally amend the plan's expectation to "consolidated, cross-referenced" — currently neither has happened
-- Regenerate `release/0.1.0-checklist.json` once the Critical/High items above close, since its current gate evidence predates several of them
+- Regenerate `release/0.1.0-checklist.json` once the High-priority items above close, since its current gate evidence predates several of them
 
 **References:** `.../2026-07-22-batman-hardening-release.md` (Task 7, Task 8), `docs/getting-started.md`, `docs/compatibility.md`, `docs/operations.md`, `release/0.1.0-checklist.json`
 
@@ -201,7 +203,7 @@ The Hardening plan's Tasks 7-8 specify six standalone operator docs. Verified vi
 **Labels:** display, rpc, deferred
 
 **Description:**
-The Workspaces/Displays plan's Task 5 specifies canonical `display/*` RPC methods (register/heartbeat/unregister/list) as the mechanism for a display client to announce itself. Verified via grep of `crates/protocol/src/method.rs`: none of these four methods exist in `BatmanMethod` at all. The M2/M3 gap-closure doc's Decision #6 explicitly chose this: "Monitor: minimal `batcave monitor` on existing Display-role methods; the four `display/*` RPC methods and registry-over-RPC are explicitly deferred." `batcave monitor` (item 5's sibling, already implemented) works entirely on top of existing `runtime/status`/`events/replay`/`events/subscribe` methods instead.
+The Workspaces/Displays plan's Task 5 specifies canonical `display/*` RPC methods (register/heartbeat/unregister/list) as the mechanism for a display client to announce itself. Verified via grep of `crates/protocol/src/method.rs`: none of these four methods exist in `BatmanMethod` at all. The M2/M3 gap-closure doc's Decision #6 explicitly chose this: "Monitor: minimal `batcave monitor` on existing Display-role methods; the four `display/*` RPC methods and registry-over-RPC are explicitly deferred." `batcave monitor` (item 4's sibling, already implemented) works entirely on top of existing `runtime/status`/`events/replay`/`events/subscribe` methods instead.
 
 This is not a functional bug today, but it means a *third-party* display client (one not shipping as part of `batcave monitor`/Herdr/tmux) has no way to register itself, appear in a future `display/list`, or heartbeat its liveness. Tracking it here so it doesn't silently disappear from scope.
 
@@ -250,7 +252,7 @@ Two previously-open claims about this area, both now verified false/resolved:
 **Labels:** ci, testing, release
 
 **Description:**
-Previously open: no `.github/workflows/ci.yml` existed. Verified: `.github/workflows/ci.yml` now exists with five jobs — `format` (`cargo fmt --all --check`), `clippy` (`-D warnings`), `test` (matrix `ubuntu-latest`/`macos-latest`, `cargo test --workspace` + `bun test`), `generate-check` (`bun run generate --check`), and `security` (`cargo audit` + `gitleaks-action`). Runs on push/PR to `main`/`master`. One residual gap: no JS/TS formatter is configured (tracked separately below, item 19).
+Previously open: no `.github/workflows/ci.yml` existed. Verified: `.github/workflows/ci.yml` now exists with five jobs — `format` (`cargo fmt --all --check`), `clippy` (`-D warnings`), `test` (matrix `ubuntu-latest`/`macos-latest`, `cargo test --workspace` + `bun test`), `generate-check` (`bun run generate --check`), and `security` (`cargo audit` + `gitleaks-action`). Runs on push/PR to `main`/`master`. One residual gap: no JS/TS formatter is configured (tracked separately below, item 20).
 
 **References:** `.github/workflows/ci.yml`
 
@@ -308,7 +310,7 @@ Fixed by adding `Command::CoordinationMcp { state_dir, repo, run_id }`, dispatch
 
 **Verification:**
 - `crates/runtime/tests/coordination_mcp.rs` (9 pre-existing tests, unmodified): now 9/9 pass. 4 tests that previously failed with "closed the connection before responding" (EOF — clap never reached the real proxy) now succeed because the proxy actually serves stdio. The other 5 (missing/expired/mismatched/revoked-token rejection) were coincidentally passing before against clap's own unrecognized-subcommand exit code; manually verified via direct binary invocation that they now fail for the real reason (`McpProxyError::MissingScopeToken`'s actual message confirmed on stderr, not just a non-zero exit code).
-- Full workspace regression check (`--no-fail-fast`): every pre-existing failure (item 1, item 6, item 7, and the drift fixed in item 18) reproduces identically with this change reverted via `git stash` — none are caused by it.
+- Full workspace regression check (`--no-fail-fast`): every pre-existing failure reproduces identically with this change reverted via `git stash` — none are caused by it.
 
 **References:** `crates/runtime/src/cli.rs`, `crates/runtime/src/main.rs`, `crates/runtime/src/coordination/mcp.rs`, `crates/runtime/tests/coordination_mcp.rs`, `.../2026-07-22-batman-worker-adapters.md` (Task 7), `docs/superpowers/plans/2026-08-01-coordination-mcp-cli-subcommand.md`
 
@@ -322,7 +324,7 @@ Fixed by adding `Command::CoordinationMcp { state_dir, repo, run_id }`, dispatch
 
 **Description:**
 Running the full workspace suite with `--no-fail-fast` (rather than the default fail-fast, which had been silently hiding these) surfaced three small, unrelated, pre-existing bugs, all confirmed via `git stash` to predate and be independent of item 17's fix:
-- `crates/runtime/tests/ipc.rs::omp_extension_receives_all_mutation_methods`: hardcoded expected method list was missing `policy/violation/decide`, added to `BatmanMethod` and the `ompExtension` dispatch table in a prior session (see item 2) but never reflected in this test's assertion.
+- `crates/runtime/tests/ipc.rs::omp_extension_receives_all_mutation_methods`: hardcoded expected method list was missing `policy/violation/decide`, added to `BatmanMethod` and the `ompExtension` dispatch table in a prior session (see item 1) but never reflected in this test's assertion.
 - `crates/runtime/src/recovery.rs` and `crates/runtime/src/doctor.rs`: both rustdoc examples used `Arc<DatabaseHandle>` without a hidden `# use std::sync::Arc;` import, failing `cargo test --doc`.
 
 All three fixed with one-line changes; no design decisions involved.
@@ -331,7 +333,27 @@ All three fixed with one-line changes; no design decisions involved.
 
 ---
 
-### 19. No JS/TS formatter configured in CI
+### 19. `adapter_registry.rs` integration test suite — RESOLVED
+
+**Status:** Closed (fixed and verified 2026-08-02)
+**Priority:** — (was Critical)
+**Labels:** bug, testing, schema-drift
+
+**Description:**
+Was: `seed_worker_and_run`'s raw SQL `INSERT`s referenced columns that were never migrated (`workers.task_id`/`adapter_kind`/`profile_kind`/`status`; `runs.status`/`updated_at`) and omitted two `NOT NULL` columns the real schema requires (`workers.project_id`, `workers.profile_id` — a foreign key into `worker_profiles`, not `adapter_profiles` as this item's own original implementation note mis-stated). All 5 tests failed at the shared setup helper before ever reaching their own assertions. Confirmed pre-existing since commit `90aa259` (2026-07-25).
+
+Fixed by aligning every `INSERT` to the real schema (`crates/runtime/src/db/migrations.rs`) and adding one `worker_profiles` row per fixture to satisfy the foreign key under `foreign_keys=ON`. Fixing the shared setup helper exposed a second, previously fully latent bug: `duplicate_start_is_rejected` asserted `err.contains("already started") || err.contains("duplicate")`, but `RegistryError::DuplicateStart`'s actual message is "run {id} already has a running adapter instance" — never matching either substring. This assertion had never actually been exercised before (every test crashed in the shared fixture first); fixed to match the real error text.
+
+**Verification:**
+- `crates/runtime/tests/adapter_registry.rs`: 5/5 passing (was 0/5), confirmed stable across 3 repeated runs.
+- Full workspace `--no-fail-fast` regression check: only the already-tracked pre-existing gaps remain (items 5, 6, 25); `lifecycle`'s one failure did not reproduce on rerun — confirmed flaky, consistent with the prior session's finding.
+- Cross-spec review of the fix's raw-SQL-fixture approach confirmed consistent with the file's own documented convention (mirrors `coordination_mcp.rs`'s `seed_run`, explicitly described as intentional in both files' doc comments); surfaced a separate, larger, unrelated finding now tracked as item 7.
+
+**References:** `crates/runtime/tests/adapter_registry.rs`, `crates/runtime/src/db/migrations.rs:51-73`, `docs/superpowers/plans/2026-08-02-adapter-registry-schema-fix.md`
+
+---
+
+### 20. No JS/TS formatter configured in CI
 
 **Status:** Open
 **Priority:** Low
@@ -347,7 +369,7 @@ All three fixed with one-line changes; no design decisions involved.
 
 ---
 
-### 20. Subscription forwarder reaping
+### 21. Subscription forwarder reaping
 
 **Status:** Open (low priority, harmless)
 **Priority:** Low
@@ -363,7 +385,7 @@ Subscription forwarder tasks for closed connections are reaped lazily on the nex
 
 ---
 
-### 21. Copilot adapter: ACP v1 protocol limitation on usage reporting
+### 22. Copilot adapter: ACP v1 protocol limitation on usage reporting
 
 **Status:** Permanent (protocol wall, not a code bug)
 **Priority:** Low
@@ -376,20 +398,20 @@ ACP v1 does not transmit token usage/cost in its session update frames. The adap
 
 ---
 
-### 22. Copilot `unexpected_child_observation`: permanent ACP v1 protocol wall
+### 23. Copilot `unexpected_child_observation`: permanent ACP v1 protocol wall
 
 **Status:** Permanent (protocol wall, not a code bug)
 **Priority:** Low
 **Labels:** adapter, copilot, protocol
 
 **Description:**
-ACP protocol v1 has no `session/update` variant for a vendor-spawned subagent at all. `adapter/copilot/compatibility.rs` pins `COPILOT_MIN/MAX_ACP_PROTOCOL_VERSION = 1`; the verified CLI table (`1.0.73`, `1.0.75`, `1.0.77` — see item 24) is all v1. `normalize.rs` correctly drops unrecognized updates to zero events rather than fabricate a `NestedWorkerObserved`. A test (`copilot_adapter.rs`) already asserts this stays true if `COPILOT_MAX_ACP_PROTOCOL_VERSION` is ever raised without adding the mapping. Resolvable only by a Copilot ACP v2 release.
+ACP protocol v1 has no `session/update` variant for a vendor-spawned subagent at all. `adapter/copilot/compatibility.rs` pins `COPILOT_MIN/MAX_ACP_PROTOCOL_VERSION = 1`; the verified CLI table (`1.0.73`, `1.0.75`, `1.0.77` — see item 25) is all v1. `normalize.rs` correctly drops unrecognized updates to zero events rather than fabricate a `NestedWorkerObserved`. A test (`copilot_adapter.rs`) already asserts this stays true if `COPILOT_MAX_ACP_PROTOCOL_VERSION` is ever raised without adding the mapping. Resolvable only by a Copilot ACP v2 release.
 
 **References:** `crates/runtime/src/adapter/copilot/compatibility.rs`, `crates/runtime/tests/copilot_adapter.rs`
 
 ---
 
-### 23. Copilot live test requires an authenticated CLI session
+### 24. Copilot live test requires an authenticated CLI session
 
 **Status:** Environment dependency, not a code gap
 **Priority:** Low
@@ -405,14 +427,14 @@ ACP protocol v1 has no `session/update` variant for a vendor-spawned subagent at
 
 ---
 
-### 24. Installed Copilot CLI 1.0.77 is not in the known-versions compatibility table
+### 25. Installed Copilot CLI 1.0.77 is not in the known-versions compatibility table
 
 **Status:** Open — newly discovered 2026-08-02
 **Priority:** Low
 **Labels:** adapter, copilot, environment, maintenance
 
 **Description:**
-`copilot_adapter.rs::real_binary_initialize_and_session_list_never_invoke_a_model` fails on this workstation with: "installed copilot CLI 1.0.77 is not in `COPILOT_KNOWN_CLI_VERSIONS`; reprobe and add it after confirming it negotiates the same ACP v1 shape." This is distinct from item 23 (which is about the live-model test lacking auth): this test runs unconditionally against whatever Copilot CLI is actually installed, and fails purely because the version-compatibility table hasn't been updated since `1.0.77` shipped. Confirmed not caused by any change made this session (reproduces identically via `git stash`).
+`copilot_adapter.rs::real_binary_initialize_and_session_list_never_invoke_a_model` fails on this workstation with: "installed copilot CLI 1.0.77 is not in `COPILOT_KNOWN_CLI_VERSIONS`; reprobe and add it after confirming it negotiates the same ACP v1 shape." This is distinct from item 24 (which is about the live-model test lacking auth): this test runs unconditionally against whatever Copilot CLI is actually installed, and fails purely because the version-compatibility table hasn't been updated since `1.0.77` shipped. Confirmed not caused by any change made this or the prior session (reproduces identically via `git stash`).
 
 **Implementation:**
 - Confirm `1.0.77` negotiates the same ACP v1 shape as `1.0.73`/`1.0.75`
@@ -422,7 +444,7 @@ ACP protocol v1 has no `session/update` variant for a vendor-spawned subagent at
 
 ---
 
-### 25. OMP-RPC: approval and artifact normalization gaps
+### 26. OMP-RPC: approval and artifact normalization gaps
 
 **Status:** Open
 **Priority:** Low
@@ -441,7 +463,7 @@ Two genuine (non-vendor-imposed) gaps:
 
 ---
 
-### 26. Codex/Copilot: several capabilities are unprovable in fixture mode — not a bug, requires a gated live run to confirm the positive case
+### 27. Codex/Copilot: several capabilities are unprovable in fixture mode — not a bug, requires a gated live run to confirm the positive case
 
 **Status:** Open (expected — resolvable only via a real, billed model call)
 **Priority:** Low
@@ -459,7 +481,7 @@ Both are real properties of the installed vendor binary, not bugs in this codeba
 
 ---
 
-### 27. OMP-RPC conformance: `probe`/`cancellation_scope`/`follow_up` depend on a genuinely reachable local model, not just a listed one — expect flakiness, not a code defect
+### 28. OMP-RPC conformance: `probe`/`cancellation_scope`/`follow_up` depend on a genuinely reachable local model, not just a listed one — expect flakiness, not a code defect
 
 **Status:** Open (environment/infrastructure dependency, not fixable in this codebase)
 **Priority:** Low

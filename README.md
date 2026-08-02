@@ -94,11 +94,11 @@ This project is licensed under the [MIT License](LICENSE). See the LICENSE file 
 
 This is a pre-1.0 project. Some things don't work yet — see [`TODO.md`](TODO.md) for the full, verified, prioritized list. Highlights:
 
-- **`adapter_registry.rs` test suite fails.** Pre-existing `workers` table schema mismatch (5 tests).
 - **Nested-worker policy violations aren't enforced.** Journaled but never quarantined, cancelled, or reported; `policy/violation/decide` is a stub.
 - **Crash recovery isn't wired in.** `RecoveryCoordinator` is dead code, never called from `serve()`.
 - **`batcave conformance`/`batcave adapters` CLI subcommands don't exist.** Blocks the release conformance gate and the Worker Adapters plan's own Task 8 verification.
 - **Claude/Codex/Copilot conformance reports omit a canonical scenario.** `result_usage_artifacts` is defined but missing from all three adapters' generated reports.
+- **`tests/domain_repository.rs` never actually exercises `DomainRepository`.** It maintains a separate, drifted, hand-copied schema and never imports the real type — the real repository is genuinely tested elsewhere, but this file's coverage is misleading.
 - **OMP-RPC approval flow is not normalized.** The adapter's `extension_ui_request` frame is silently dropped.
 - **No artifact tracking for OMP-RPC.** The `ArtifactProduced` payload is never constructed.
 - **Conformance tests are stubs.** `tests/conformance/run.ts` and `assert-report.ts` write empty reports; the conformance gate in `release.yml` always passes.
