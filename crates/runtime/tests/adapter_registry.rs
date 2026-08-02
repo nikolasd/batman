@@ -13,8 +13,7 @@ use std::sync::Arc;
 
 use batman_protocol::{ProjectId, RunId, TaskId, WorkerId};
 use batman_runtime::adapter::{
-    AdapterKind, AdapterRegistry, FixtureAuthorization, OmpRpcStartupOptions, StartupOptions,
-    WorkerProfile,
+    AdapterRegistry, FixtureAuthorization, OmpRpcStartupOptions, StartupOptions, WorkerProfile,
 };
 use batman_runtime::db::DatabaseHandle;
 use batman_runtime::service::{RunDriver, RunDriverContext};
@@ -42,6 +41,7 @@ async fn seed_worker_and_run(
     let task_id = TaskId::new();
     let worker_id = WorkerId::new();
     let run_id = RunId::new();
+    let profile_row_id = WorkerId::new().to_string();
     let resolved_profile_json = profile.map(|p| serde_json::to_string(p).unwrap());
     db.run_domain_op(Box::new(move |conn| {
         conn.execute(
@@ -50,20 +50,24 @@ async fn seed_worker_and_run(
             rusqlite::params![task_id.to_string(), project_id.to_string(), "test-owner", "2026-01-01T00:00:00Z"],
         )?;
         conn.execute(
-            "INSERT INTO workers (worker_id, task_id, adapter_kind, profile_kind, resolved_profile_json, status, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?6)",
+            "INSERT INTO worker_profiles (id, fingerprint, adapter, model, permission_envelope)
+             VALUES (?1, 'sha256:test', 'fake', 'test-model', '{}')",
+            rusqlite::params![profile_row_id],
+        )?;
+        conn.execute(
+            "INSERT INTO workers (worker_id, project_id, profile_id, resolved_profile_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![
                 worker_id.to_string(),
-                task_id.to_string(),
-                AdapterKind::OmpRpc.wire_name(),
-                "ompRpc",
+                project_id.to_string(),
+                profile_row_id,
                 resolved_profile_json,
                 "2026-01-01T00:00:00Z",
             ],
         )?;
         conn.execute(
-            "INSERT INTO runs (run_id, task_id, worker_id, status, created_at, updated_at)
-             VALUES (?1, ?2, ?3, 'queued', ?4, ?4)",
+            "INSERT INTO runs (run_id, task_id, worker_id, state, created_at)
+             VALUES (?1, ?2, ?3, 'queued', ?4)",
             rusqlite::params![run_id.to_string(), task_id.to_string(), worker_id.to_string(), "2026-01-01T00:00:00Z"],
         )?;
         Ok(serde_json::Value::Null)
@@ -231,7 +235,7 @@ async fn duplicate_start_is_rejected() {
         .await
         .expect_err("duplicate start must be rejected");
     assert!(
-        err.contains("already started") || err.contains("duplicate"),
+        err.contains("already has a running adapter instance"),
         "unexpected error message: {err}"
     );
     // The first start must still be running (or have failed cleanly).
