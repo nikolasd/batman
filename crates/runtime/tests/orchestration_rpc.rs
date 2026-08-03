@@ -12,7 +12,11 @@ use batman_protocol::{RunId, TaskId, WorkerId};
 use batman_runtime::db::DatabaseHandle;
 use batman_runtime::ipc::{PeerCredentialReader, PeerCredentials, Server, ServerConfig};
 use batman_runtime::paths::RuntimePaths;
-use batman_runtime::adapter::{Adapter, CancelScope};
+use batman_runtime::adapter::{
+    Adapter, AdapterEvent, AdapterEventPayload, AdapterEventSink, CancelScope, OmpRpcAdapter,
+    OmpRpcAdapterOptions, OmpRpcStartupOptions, ProfileId, StartSpec, StartupOptions, WorkerProfile,
+};
+use std::time::Duration;
 use batman_runtime::service::{AdapterFuture, FakeRunDriver, RunDriver, RunDriverContext};
 use nix::unistd::Uid;
 use serde_json::{Value, json};
@@ -1105,4 +1109,254 @@ async fn workspace_acquire_returns_lease_for_valid_run() {
         &run_id,
         "runId mismatch in response"
     );
+}
+// ---------------------------------------------------------------- item 33: real adapter cancel
+
+/// Locates the `fake-worker` binary, building it if necessary. Each
+/// `tests/*.rs` file is a separate compilation unit, so this cannot be
+/// shared with `tests/supervisor.rs`'s or `tests/omp_rpc_adapter.rs`'s own
+/// copies of this same helper.
+fn fake_worker_path() -> PathBuf {
+    static PATH: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(build_fake_worker_once);
+    PATH.clone()
+}
+
+fn build_fake_worker_once() -> PathBuf {
+    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("parent of runtime crate");
+    let status = std::process::Command::new(env!("CARGO"))
+        .args(["build", "--quiet", "-p", "fake-worker"])
+        .current_dir(workspace_root)
+        .status()
+        .expect("cargo build -p fake-worker must be runnable");
+    assert!(status.success(), "cargo build -p fake-worker failed");
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root.join("target"));
+    let profile_dir = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
+    let binary = target_dir.join(profile_dir).join("fake-worker");
+    assert!(
+        binary.is_file(),
+        "expected fake-worker binary at {}",
+        binary.display()
+    );
+    binary
+}
+
+/// Collects every `AdapterEvent` a real adapter emits, so the test can
+/// read back the OS pid `OmpRpcAdapter::start` reports via
+/// `AdapterEventPayload::ProcessStarted` -- the adapter itself exposes no
+/// pid accessor, this is the only observable path to it.
+#[derive(Default)]
+struct TestSink {
+    events: tokio::sync::Mutex<Vec<AdapterEvent>>,
+}
+
+impl TestSink {
+    async fn process_started_pid(&self) -> Option<u32> {
+        self.events.lock().await.iter().find_map(|event| match &event.payload {
+            AdapterEventPayload::ProcessStarted { pid } => Some(*pid),
+            _ => None,
+        })
+    }
+}
+
+impl AdapterEventSink for TestSink {
+    fn emit(&self, event: AdapterEvent) -> batman_runtime::adapter::AdapterFuture<'_, u64> {
+        Box::pin(async move {
+            let mut events = self.events.lock().await;
+            events.push(event);
+            Ok(events.len() as u64)
+        })
+    }
+}
+
+/// A `RunDriver` that constructs a real `OmpRpcAdapter` (via
+/// `OmpRpcAdapter::with_binary`, pointed at the `fake-worker` fixture) and
+/// stores it, delegating `running_adapter`/`cancel_run` to the adapter's
+/// own methods exactly as `AdapterRegistry` does -- exercising the real
+/// `Adapter::cancel` implementation (`run_pump`'s
+/// `client.process_mut().terminate().await`), not a hand-rolled stand-in.
+struct RealAdapterRunDriver {
+    adapter: parking_lot::Mutex<Option<Arc<OmpRpcAdapter>>>,
+    sink: Arc<TestSink>,
+}
+
+impl Default for RealAdapterRunDriver {
+    fn default() -> Self {
+        Self {
+            adapter: parking_lot::Mutex::new(None),
+            sink: Arc::new(TestSink::default()),
+        }
+    }
+}
+
+impl RealAdapterRunDriver {
+    /// The fake-worker's real OS pid, once `OmpRpcAdapter::start` has
+    /// emitted `ProcessStarted` (always true by the time `start` returns).
+    async fn pid(&self) -> Option<u32> {
+        self.sink.process_started_pid().await
+    }
+}
+
+impl RunDriver for RealAdapterRunDriver {
+    fn start(&self, ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
+        let adapter = Arc::new(OmpRpcAdapter::with_binary(
+            fake_worker_path().to_string_lossy().into_owned(),
+            WorkerProfile {
+                id: ProfileId::new(),
+                adapter: "ompRpc".to_string(),
+                model: "lm-studio/x".to_string(),
+                permission_envelope: serde_json::json!({}),
+                startup_options: StartupOptions::OmpRpc(OmpRpcStartupOptions {
+                    profile: None,
+                    host_tools: None,
+                }),
+                environment_allowlist: Vec::new(),
+                source: "test".to_string(),
+            },
+            OmpRpcAdapterOptions::default(),
+            None,
+        ));
+        *self.adapter.lock() = Some(Arc::clone(&adapter));
+        let sink = Arc::clone(&self.sink) as Arc<dyn AdapterEventSink>;
+        Box::pin(async move {
+            adapter
+                .start(
+                    StartSpec {
+                        run_id: ctx.run_id,
+                        task_id: ctx.task_id,
+                        worker_id: ctx.worker_id,
+                        prompt: ctx.prompt.clone().unwrap_or_default(),
+                        resume: None,
+                    },
+                    sink,
+                )
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    fn send_follow_up(
+        &self,
+        _run_id: RunId,
+        _task_id: TaskId,
+        _worker_id: WorkerId,
+        _prompt: String,
+    ) -> AdapterFuture<'static, Result<(), String>> {
+        Box::pin(async { Err("not supported".to_string()) })
+    }
+
+    fn running_adapter(&self, _run_id: RunId) -> Option<Arc<dyn Adapter>> {
+        self.adapter
+            .lock()
+            .as_ref()
+            .map(|a| Arc::clone(a) as Arc<dyn Adapter>)
+    }
+
+    fn cancel_run(
+        &self,
+        _run_id: RunId,
+        scope: CancelScope,
+    ) -> AdapterFuture<'static, Result<(), String>> {
+        let adapter = Arc::clone(self.adapter.lock().as_ref().unwrap());
+        Box::pin(async move { adapter.cancel(scope).await.map_err(|e| e.to_string()) })
+    }
+}
+
+/// Closes item 33's remaining gap: proves `run/cancel` reaches the *real*
+/// `AdapterRegistry`-equivalent chain -- `RunDriver::cancel_run` ->
+/// `OmpRpcAdapter::cancel()` -> `run_pump`'s
+/// `client.process_mut().terminate().await` -- and the OS-level vendor
+/// subprocess actually dies, not merely that the run's database state
+/// becomes `"cancelled"`.
+///
+/// Uses `OmpRpcAdapter::with_binary` pointed at the `fake-worker` fixture
+/// (its `--mode rpc` argv, always sent verbatim by `OmpRpcAdapter::start`,
+/// is aliased to fake-worker's `omp-rpc-host-tool` mode -- see
+/// `fake-worker/src/main.rs`'s `Mode::OmpRpcHostTool`), so this exercises
+/// the adapter's real, production `cancel()` implementation end to end.
+///
+/// This does not itself prove SIGKILL escalation (fake-worker's
+/// `omp-rpc-host-tool` mode does not ignore SIGINT/SIGTERM, so
+/// `ManagedProcess::terminate` is expected to succeed on its first
+/// signal) -- that coverage remains `supervisor.rs`'s `ignore-term` test.
+#[tokio::test]
+async fn run_cancel_reaches_real_omprpc_adapter_and_kills_process() {
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+
+    let driver = Arc::new(RealAdapterRunDriver::default());
+
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::clone(&driver) as Arc<dyn RunDriver>);
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let task = client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+
+    let worker = client
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+
+    let submit = client
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id }),
+        )
+        .await;
+    assert!(submit.get("error").is_none(), "run/submit failed: {submit:?}");
+    let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
+
+    // OmpRpcAdapter::start emits ProcessStarted (carrying the fake-worker's
+    // real OS pid) synchronously, before start() ever returns -- so it must
+    // already be recorded by the time run/submit's RPC response arrives.
+    let pid = driver
+        .pid()
+        .await
+        .expect("OmpRpcAdapter must have emitted ProcessStarted with a real pid");
+    let os_pid = Pid::from_raw(pid as i32);
+    assert!(
+        kill(os_pid, None).is_ok(),
+        "fake-worker process (pid {pid}) must be alive right after run/submit"
+    );
+
+    let cancel = client
+        .call(5, "run/cancel", json!({ "runId": run_id }))
+        .await;
+    assert!(cancel.get("error").is_none(), "run/cancel failed: {cancel:?}");
+
+    // OmpRpcAdapter::cancel() only queues Outbound::Terminate on
+    // run_pump's channel and returns immediately -- it does not itself
+    // await ManagedProcess::terminate() completing. Poll for the process
+    // to actually die, bounded well past escalation's worst case at
+    // production EscalationTimings::default() (5s + 5s).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if kill(os_pid, None).is_err() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "process (pid {pid}) must be dead after run/cancel reaches the real \
+             OmpRpcAdapter::cancel() -> run_pump's ManagedProcess::terminate()"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }

@@ -226,7 +226,7 @@ Secondary gap found while auditing the module in isolation: `LeaseService::acqui
 
 ### 33. `run/cancel` never terminates the actual vendor subprocess — it is a database-state-only no-op
 
-**Status:** Partially complete (2026-08-03) — wiring implemented, integration test for cancel_run invocation added, subprocess termination test deferred
+**Status:** ✅ Complete (2026-08-03) — wiring implemented, cancel_run invocation test added, real-adapter subprocess termination test added
 **Priority:** High
 **Labels:** bug, adapter, lifecycle, hardening
 
@@ -241,7 +241,7 @@ Secondary gap found while auditing the module in isolation: `LeaseService::acqui
 - ✅ Added proper error logging for cancel failures (via `tracing::warn!`)
 - ✅ Added integration test `run_cancel_calls_adapter_cancel_run_with_worker_scope` that verifies `cancel_run` is called with `CancelScope::Worker` via a RunDriver double (subprocess termination test deferred — requires real subprocess simulation)
 
-**Remaining:** Add integration test using a real (or realistically fake) long-running process to assert the OS-level process actually terminates after `run/cancel` (core wiring test added; subprocess termination test deferred).
+- ✅ Added integration test `run_cancel_reaches_real_omprpc_adapter_and_kills_process` using `OmpRpcAdapter::with_binary()` pointed at the `fake-worker` fixture (omp-rpc-host-tool mode) — proves the full chain reaches the real adapter's `cancel()` and the OS subprocess actually dies (polls `kill(pid, 0)` until process is dead). Does not prove SIGKILL escalation (fake-worker's omp-rpc-host-tool mode dies on the first SIGINT, no escalation exercised here — that coverage remains `supervisor.rs`'s `ignore-term` test, which is orthogonal).
 
 **References:** `crates/runtime/src/service/orchestration.rs:545-560`, `crates/runtime/src/adapter/registry.rs:208`, `crates/runtime/src/adapter/trait.rs:129`, `crates/runtime/tests/orchestration_rpc.rs`
 
