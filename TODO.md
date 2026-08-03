@@ -325,6 +325,30 @@ This compounds with a second bug: `doctor.ts:112-135`'s early-failure handling. 
 
 ---
 
+### 43. No OMP tool wraps `profile/register`, and `batman_worker`'s tool schema has no `profileId` field — a real Claude/Codex/Copilot worker cannot be created from a live OMP chat session at all
+
+**Status:** Open (newly discovered 2026-08-04)
+**Priority:** High
+**Labels:** bug, tooling, adapter, worker-profiles, extension
+
+**Description:**
+`worker/create`'s RPC handler (`crates/runtime/src/service/orchestration.rs:295-376`) is fully implemented and requires a resolved `profileId` for any of the three reserved adapter kinds (`claude`, `codex`, `copilot`, plus `ompRpc`) — passing `adapter: "claude"` with the legacy `fingerprint`/`model`/`permissionEnvelope` fields directly is explicitly rejected with `PROFILE_REQUIRED` and the message "adapter requires a resolved profileId; register one via profile/register" (line 371). The `profile/register` RPC method itself is also fully implemented and routed (`BatmanMethod::ProfileRegister => self.profile_register(params).await`, line 227; handler at lines 419-448) — it validates a `WorkerProfile` (adapter, model, `startupOptions`, `environmentAllowlist`, `permissionEnvelope`), fingerprints it, and persists it via `ProfileStore::register`.
+
+None of this is reachable from a live OMP chat session. `packages/extension/src/tools/index.ts` registers exactly six tools (`batman_task`, `batman_worker`, `batman_run`, `batman_message`, `batman_approval`, `batman_reconcile`) — none of them call `profile/register`. And even if a profile existed, `batman_worker`'s zod parameter schema (`packages/extension/src/tools/workers.ts`) has no `profileId` field at all — only `fingerprint`/`adapter`/`model`/`permissionEnvelope`/`parentWorkerId`/`workerId` — so its `create` op can never pass one through to `worker/create`, even though the RPC method already accepts `profileId` as an alternative to those legacy fields (`orchestration.rs:307-358`).
+
+Net effect: the model can create a `"fake"` (or `"ompNative"`) worker via `batman_worker`, but can never create a real, adapter-backed Claude/Codex/Copilot worker through the tool surface — only through a raw JSON-RPC call to the daemon's socket or via `cargo test`. This blocks any live demo or real usage of "OMP controls real Claude/Codex/Copilot workers" end to end, despite the runtime-side machinery (`AdapterRegistry`, `PolicyEvaluator`, per-adapter spawn/env-filtering logic) being fully built and tested.
+
+Secondary, narrower nuance found while auditing this: `profile_register` always validates against a hardcoded `EffectivePolicy::baseline()` (`orchestration.rs:426`) — `HOME, PATH, LANG, LC_ALL, TERM, TZ, SHELL, USER, LOGNAME` only, no org/repo/user config wiring into it at all. A profile that lists a secret-shaped name (e.g. `OPENAI_API_KEY`) in `environmentAllowlist` will always fail registration with `ProfileError::EnvironmentNotAllowed`, regardless of org policy. Not a blocker for adapters authenticated via their own on-disk CLI session (`codex login`/`claude auth`/`copilot` login all read `$HOME`-relative files, and `HOME` is already baseline-allowed), but it means there is currently no config-driven way to approve a secret-shaped env var name for a supervised process at all.
+
+**Implementation:**
+- Add a `batman_profile` tool (e.g. op `"register"`) wrapping `profile/register`, with a zod schema mirroring `WorkerProfile` (`adapter`, `model`, `startupOptions` as a per-adapter tagged union, `environmentAllowlist`, `permissionEnvelope`, `source`), registered in `packages/extension/src/tools/index.ts` alongside the existing six
+- Add an optional `profileId` field to `batman_worker`'s `create` op params (`workers.ts`), passed straight through to `worker/create`, mutually exclusive with the legacy `fingerprint`/`adapter`/`model`/`permissionEnvelope` fields (matching the RPC's own mutual-exclusivity check at `orchestration.rs:308-312`)
+- Separately, if secret-shaped env var names ever need config-driven approval: derive `profile_register`'s `EffectivePolicy` from the layered `RuntimePolicy`/org config instead of always constructing `EffectivePolicy::baseline()`
+
+**References:** `crates/runtime/src/service/orchestration.rs:295-376,419-448`, `crates/runtime/src/adapter/profile.rs:301-322,381-393`, `packages/extension/src/tools/index.ts`, `packages/extension/src/tools/workers.ts`
+
+---
+
 ## Medium
 
 ### 10. Operator-facing docs only partially split; `docs/installation.md`, `configuration.md`, `security.md`, `recovery.md` still don't exist as standalone files
