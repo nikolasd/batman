@@ -11,7 +11,9 @@ use time::format_description::well_known::Rfc3339;
 use ts_rs::TS;
 
 use crate::display::{DisplayBackend, DisplayPlacement};
-use crate::ids::{ApprovalId, ArtifactId, MessageId, ProjectId, RunId, TaskId, WorkerId};
+use crate::ids::{
+    ApprovalId, ArtifactId, MessageId, PolicyViolationId, ProjectId, RunId, TaskId, WorkerId,
+};
 use crate::workspace::WorkspaceEvent;
 
 /// Canonical UTC RFC 3339 timestamp text, as carried on the wire.
@@ -302,6 +304,23 @@ pub enum RuntimeEventKind {
         reason: String,
         is_nested: bool,
     },
+    /// A policy violation was recorded for an already-running worker (mid-run
+    /// violation, not pre-authorization). Quarantine/cancel state is tracked
+    /// in `Run.flags.policy_quarantined`.
+    #[serde(rename = "policyViolationRecorded")]
+    PolicyViolationRecorded {
+        violation_id: PolicyViolationId,
+        vendor_child_id: String,
+        vendor_parent_ref: String,
+        action: String,
+    },
+    /// A policy violation was resolved (decided) by the owning OMP client.
+    #[serde(rename = "policyViolationDecided")]
+    PolicyViolationDecided {
+        violation_id: PolicyViolationId,
+        resolution: String,
+        resolved_by: String,
+    },
 }
 
 /// A sanitized, durable runtime event. Fields are plain, already-sanitized
@@ -470,6 +489,18 @@ pub enum RuntimeEvent {
         worker_id: WorkerId,
         vendor_child_id: String,
         vendor_parent_ref: String,
+    },
+    PolicyViolationRecorded {
+        kind: RuntimeEventKind,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+    },
+    PolicyViolationDecided {
+        kind: RuntimeEventKind,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
     },
     /// A display backend attached or detached a Batman-owned pane.
     DisplayEvent {

@@ -135,11 +135,28 @@ impl Server {
         );
         let artifact_store = Arc::new(crate::workspace::ArtifactStore::new());
 
+        // The mid-run nested-worker policy violation service (Hardening
+        // plan Task 1). Constructed here (not in `lifecycle::serve()`
+        // alongside `AdapterRegistry`) because it needs the real
+        // `events_tx`, which only exists once `Server::bind` creates it
+        // above -- the same ordering constraint documented on
+        // `Server::coordination_broker`. `config.run_driver` is already
+        // available (constructed by the caller before `bind`), so this
+        // has no construction-order cycle with `AdapterRegistry`.
+        let violation_service = Arc::new(crate::policy::ViolationService::new(
+            db.clone(),
+            project_id,
+            events_tx.clone(),
+            config.run_driver.clone(),
+            config.nested_violation_action,
+        ));
+
         let orchestration = Arc::new(crate::service::OrchestrationService::new(
             db.clone(),
             project_id,
             config.run_driver.clone(),
             config.approval_callback.clone(),
+            violation_service,
             events_tx.clone(),
             lease_service,
             artifact_store,

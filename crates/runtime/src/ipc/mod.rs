@@ -168,6 +168,11 @@ pub struct ServerConfig {
     /// decision. Defaults to [`crate::approval::NoopApprovalCallback`],
     /// which acknowledges immediately.
     pub approval_callback: std::sync::Arc<dyn crate::approval::ApprovalCallback>,
+    /// How to handle a mid-run nested-worker policy violation
+    /// (Hardening plan Task 1) -- `quarantine`, `cancel`, or
+    /// `quarantineAndCancel` (the default). Applied by
+    /// [`crate::policy::ViolationService::record`].
+    pub nested_violation_action: crate::config::NestedViolationAction,
 }
 
 impl Default for ServerConfig {
@@ -182,6 +187,7 @@ impl Default for ServerConfig {
             owner_only_override: None,
             binary_source: batman_protocol::BinarySource::Unknown,
             approval_callback: Arc::new(crate::approval::NoopApprovalCallback),
+            nested_violation_action: crate::config::NestedViolationAction::default(),
         }
     }
 }

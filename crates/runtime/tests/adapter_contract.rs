@@ -18,6 +18,7 @@ use batman_runtime::adapter::{
 use batman_runtime::db::DatabaseHandle;
 use batman_runtime::ipc::{PeerCredentialReader, PeerCredentials, Server, ServerConfig};
 use batman_runtime::paths::RuntimePaths;
+use batman_runtime::policy::ViolationService;
 use nix::unistd::Uid;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -375,11 +376,20 @@ async fn nested_worker_observed_emits_without_upgrading_declared_capability() {
     // 3's exact failure mode) hangs the test loudly rather than passing
     // silently.
     let (events_tx, mut events_rx) = tokio::sync::broadcast::channel(16);
+    let violation_service = std::sync::Arc::new(ViolationService::new(
+        harness.db.clone(),
+        harness.project_id,
+        events_tx.clone(),
+        None,
+        batman_runtime::config::NestedViolationAction::default(),
+    ));
     let sink = batman_runtime::adapter::DomainAdapterEventSink::new(
         harness.db.clone(),
         harness.project_id,
         events_tx,
         vec![],
+        false,
+        violation_service,
     );
 
     let sequence = sink

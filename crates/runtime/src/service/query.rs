@@ -34,6 +34,25 @@ pub fn task_get_op(task_id: TaskId) -> DomainClosure {
     })
 }
 
+/// Reads a run's `policyQuarantined` flag, for the shared quarantine gate
+/// `message/send`/`workspace/apply`/`coordination/publishArtifact` each
+/// apply before mutating.
+pub fn run_flags_op(run_id: RunId) -> DomainClosure {
+    Box::new(move |conn| {
+        conn.query_row(
+            "SELECT flags_policy_quarantined FROM runs WHERE run_id = ?1",
+            [run_id.to_string()],
+            |row| Ok(json!({ "policyQuarantined": row.get::<_, i64>(0)? != 0 })),
+        )
+        .optional()
+        .map_err(DomainError::Sqlite)?
+        .ok_or(DomainError::NotFound {
+            kind: "run",
+            id: run_id.to_string(),
+        })
+    })
+}
+
 pub fn worker_get_op(worker_id: WorkerId) -> DomainClosure {
     Box::new(move |conn| {
         conn.query_row(

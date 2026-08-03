@@ -117,6 +117,10 @@ uuid_id!(
     /// Identifies an artifact produced by a run.
     ArtifactId
 );
+uuid_id!(
+    /// Identifies a mid-run nested-worker policy violation.
+    PolicyViolationId
+);
 
 #[cfg(test)]
 mod tests {

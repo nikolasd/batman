@@ -187,6 +187,388 @@ async fn run_cancel_calls_adapter_cancel_run_with_worker_scope() {
     assert_eq!(*scope, CancelScope::Worker, "cancel_run called with wrong CancelScope");
 }
 
+// ------------------------------------------------------- policy violation
+
+/// Simulates what a real adapter/`AdapterRegistry` does when its
+/// effective `nested` capability is not `Managed`: emits a
+/// `NestedWorkerObserved` event through a real
+/// [`batman_runtime::adapter::DomainAdapterEventSink`] constructed with
+/// `nested_not_managed: true`, exercising the full
+/// `ViolationService::record` pipeline (Hardening plan Task 1) without
+/// spawning any vendor process. Captures its own `RunDriverContext` so a
+/// test can trigger a *second* `NestedWorkerObserved` later (for the
+/// idempotency case), reusing the same `db`/`events_tx`/`violation_service`
+/// a real second observation on the same run would.
+#[derive(Default)]
+struct ViolationTriggeringRunDriver {
+    cancel_calls: parking_lot::Mutex<Vec<(RunId, CancelScope)>>,
+    captured: parking_lot::Mutex<Option<RunDriverContext>>,
+}
+
+impl ViolationTriggeringRunDriver {
+    fn cancel_calls(&self) -> Vec<(RunId, CancelScope)> {
+        self.cancel_calls.lock().clone()
+    }
+
+    async fn emit_nested_worker_observed(
+        &self,
+        vendor_child_id: &str,
+        vendor_parent_ref: &str,
+    ) -> Result<u64, String> {
+        let ctx = self
+            .captured
+            .lock()
+            .clone()
+            .expect("start() must run before emit_nested_worker_observed");
+        let sink = batman_runtime::adapter::DomainAdapterEventSink::new(
+            ctx.db.clone(),
+            ctx.project_id,
+            ctx.events_tx.clone(),
+            vec![],
+            true,
+            Arc::clone(&ctx.violation_service),
+        );
+        sink.emit(AdapterEvent {
+            run_id: ctx.run_id,
+            task_id: ctx.task_id,
+            worker_id: ctx.worker_id,
+            payload: AdapterEventPayload::NestedWorkerObserved {
+                vendor_child_id: vendor_child_id.to_string(),
+                vendor_parent_ref: vendor_parent_ref.to_string(),
+            },
+        })
+        .await
+        .map_err(|e| e.to_string())
+    }
+}
+
+impl RunDriver for ViolationTriggeringRunDriver {
+    fn start(&self, ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
+        *self.captured.lock() = Some(ctx.clone());
+        Box::pin(async move {
+            let sink = batman_runtime::adapter::DomainAdapterEventSink::new(
+                ctx.db.clone(),
+                ctx.project_id,
+                ctx.events_tx.clone(),
+                vec![],
+                true,
+                Arc::clone(&ctx.violation_service),
+            );
+            sink.emit(AdapterEvent {
+                run_id: ctx.run_id,
+                task_id: ctx.task_id,
+                worker_id: ctx.worker_id,
+                payload: AdapterEventPayload::NestedWorkerObserved {
+                    vendor_child_id: "child-vendor-1".to_string(),
+                    vendor_parent_ref: "parent-vendor-1".to_string(),
+                },
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    }
+
+    fn send_follow_up(
+        &self,
+        _run_id: RunId,
+        _task_id: TaskId,
+        _worker_id: WorkerId,
+        _prompt: String,
+    ) -> AdapterFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn running_adapter(&self, _run_id: RunId) -> Option<Arc<dyn Adapter>> {
+        None
+    }
+
+    fn cancel_run(&self, run_id: RunId, scope: CancelScope) -> AdapterFuture<'static, Result<(), String>> {
+        self.cancel_calls.lock().push((run_id, scope));
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// Submits a task/worker/run with `driver` as the injected `RunDriver`
+/// (which emits the first `NestedWorkerObserved` from inside `start()`),
+/// returning `(task_id, worker_id, run_id)`.
+async fn submit_run_with_driver(client: &mut Client, owner: &str) -> (String, String, String) {
+    let task = client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": owner, "revision": 1 }),
+        )
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+    let worker = client
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+    let submit = client
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id }),
+        )
+        .await;
+    assert!(submit.get("error").is_none(), "run/submit failed: {submit:?}");
+    let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
+    (task_id, worker_id, run_id)
+}
+
+#[tokio::test]
+async fn nested_worker_observed_quarantines_run_and_blocks_message_send_until_released() {
+    let driver = Arc::new(ViolationTriggeringRunDriver::default());
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::clone(&driver) as Arc<dyn RunDriver>);
+        c.nested_violation_action = batman_runtime::config::NestedViolationAction::Quarantine;
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let (task_id, worker_id, run_id) = submit_run_with_driver(&mut client, "omp-1").await;
+
+    // The pure-Quarantine action never cancels: the run stays non-terminal.
+    let get = client.call(5, "run/get", json!({ "runId": run_id })).await;
+    assert_eq!(
+        get["result"]["flags"]["policyQuarantined"], true,
+        "run must be quarantined after NestedWorkerObserved: {get:?}"
+    );
+    assert_ne!(
+        get["result"]["state"], "cancelled",
+        "Quarantine-only action must never cancel the run"
+    );
+    assert!(
+        driver.cancel_calls().is_empty(),
+        "Quarantine-only action must never call cancel_run"
+    );
+
+    // message/send is blocked while quarantined.
+    let blocked_send = client
+        .call(
+            6,
+            "message/send",
+            json!({
+                "runId": run_id,
+                "senderWorkerId": worker_id,
+                "taskId": task_id,
+                "kind": "question",
+                "payload": "should be blocked"
+            }),
+        )
+        .await;
+    assert_eq!(
+        blocked_send["error"]["code"], -32101,
+        "expected POLICY_QUARANTINED: {blocked_send:?}"
+    );
+
+    // Find the recorded violation's id from the replayed event.
+    let replay = client
+        .call(7, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    let events = replay["result"].as_array().unwrap();
+    let recorded = events
+        .iter()
+        .find(|e| e["event"]["type"] == "policyViolationRecorded")
+        .expect("a policyViolationRecorded event must be journaled");
+    let violation_id = recorded["event"]["payload"]["kind"]["policyViolationRecorded"]["violation_id"]
+        .as_str()
+        .expect("violation_id must be present on the recorded event")
+        .to_string();
+
+    // The owning client releases the quarantine.
+    let decide = client
+        .call(
+            8,
+            "policy/violation/decide",
+            json!({ "violationId": violation_id, "resolution": "release" }),
+        )
+        .await;
+    assert!(decide.get("error").is_none(), "decide failed: {decide:?}");
+    assert_eq!(decide["result"]["outcome"], "decided");
+
+    let get_after = client.call(9, "run/get", json!({ "runId": run_id })).await;
+    assert_eq!(
+        get_after["result"]["flags"]["policyQuarantined"], false,
+        "release must clear the quarantine flag: {get_after:?}"
+    );
+
+    // message/send now succeeds.
+    let unblocked_send = client
+        .call(
+            10,
+            "message/send",
+            json!({
+                "runId": run_id,
+                "senderWorkerId": worker_id,
+                "taskId": task_id,
+                "kind": "question",
+                "payload": "should now succeed"
+            }),
+        )
+        .await;
+    assert!(
+        unblocked_send.get("error").is_none(),
+        "message/send must succeed once released: {unblocked_send:?}"
+    );
+}
+
+#[tokio::test]
+async fn policy_violation_decide_is_forbidden_for_a_non_owning_client() {
+    let driver = Arc::new(ViolationTriggeringRunDriver::default());
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::clone(&driver) as Arc<dyn RunDriver>);
+        c.nested_violation_action = batman_runtime::config::NestedViolationAction::Quarantine;
+    })
+    .await;
+    let mut owner_client = omp_client(&harness, "omp-owner").await;
+    let (_, _, run_id) = submit_run_with_driver(&mut owner_client, "omp-owner").await;
+
+    let replay = owner_client
+        .call(5, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    let events = replay["result"].as_array().unwrap();
+    let recorded = events
+        .iter()
+        .find(|e| e["event"]["type"] == "policyViolationRecorded")
+        .expect("a policyViolationRecorded event must be journaled");
+    let violation_id = recorded["event"]["payload"]["kind"]["policyViolationRecorded"]["violation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let mut other_client = omp_client(&harness, "omp-other").await;
+    let decide = other_client
+        .call(
+            2,
+            "policy/violation/decide",
+            json!({ "violationId": violation_id, "resolution": "release" }),
+        )
+        .await;
+    assert_eq!(
+        decide["error"]["code"], -32602,
+        "a non-owning client must be rejected: {decide:?}"
+    );
+
+    // The quarantine must remain untouched by the rejected attempt.
+    let get = owner_client
+        .call(6, "run/get", json!({ "runId": run_id }))
+        .await;
+    assert_eq!(get["result"]["flags"]["policyQuarantined"], true);
+}
+
+#[tokio::test]
+async fn policy_violation_decide_release_is_refused_on_an_already_terminal_run() {
+    let driver = Arc::new(ViolationTriggeringRunDriver::default());
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::clone(&driver) as Arc<dyn RunDriver>);
+        // Default action is QuarantineAndCancel: the violation itself
+        // cancels the run.
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+    let (_, _, run_id) = submit_run_with_driver(&mut client, "omp-1").await;
+
+    let get = client.call(5, "run/get", json!({ "runId": run_id })).await;
+    assert_eq!(
+        get["result"]["state"], "cancelled",
+        "QuarantineAndCancel must cancel the run: {get:?}"
+    );
+    assert_eq!(
+        driver.cancel_calls().len(),
+        1,
+        "cancel_run must be called exactly once"
+    );
+
+    let replay = client
+        .call(6, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    let events = replay["result"].as_array().unwrap();
+    let recorded = events
+        .iter()
+        .find(|e| e["event"]["type"] == "policyViolationRecorded")
+        .expect("a policyViolationRecorded event must be journaled");
+    let violation_id = recorded["event"]["payload"]["kind"]["policyViolationRecorded"]["violation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Releasing quarantine on an already-terminal (cancelled) run must
+    // never revive it.
+    let decide = client
+        .call(
+            7,
+            "policy/violation/decide",
+            json!({ "violationId": violation_id, "resolution": "release" }),
+        )
+        .await;
+    assert!(
+        decide.get("error").is_some(),
+        "releasing quarantine on a terminal run must be refused: {decide:?}"
+    );
+
+    let get_after = client.call(8, "run/get", json!({ "runId": run_id })).await;
+    assert_eq!(
+        get_after["result"]["state"], "cancelled",
+        "the refused release must never revive the run"
+    );
+}
+
+#[tokio::test]
+async fn second_nested_worker_observed_on_an_already_actioned_run_never_double_cancels() {
+    let driver = Arc::new(ViolationTriggeringRunDriver::default());
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::clone(&driver) as Arc<dyn RunDriver>);
+        // Default QuarantineAndCancel: the first observation cancels the
+        // run (terminal), so the idempotency guard is state-based here.
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+    let (_, _, run_id) = submit_run_with_driver(&mut client, "omp-1").await;
+
+    assert_eq!(driver.cancel_calls().len(), 1, "first observation must cancel once");
+
+    // A second, independent NestedWorkerObserved on the same (now
+    // terminal) run -- e.g. the adapter reports a further unexpected
+    // child before it is torn down.
+    driver
+        .emit_nested_worker_observed("child-vendor-2", "parent-vendor-2")
+        .await
+        .expect("a second NestedWorkerObserved must still be journaled");
+
+    // Still exactly one cancel_run call: the second observation must not
+    // create a second cancellation intent or call cancel_run again.
+    assert_eq!(
+        driver.cancel_calls().len(),
+        1,
+        "an already-actioned run must not be cancelled twice"
+    );
+
+    // But both observations are durably recorded (Option B: still
+    // journal, just skip re-applying the action) -- OMP can see that a
+    // run was hit by more than one unexpected child.
+    let replay = client
+        .call(6, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    let events = replay["result"].as_array().unwrap();
+    let recorded_count = events
+        .iter()
+        .filter(|e| e["event"]["type"] == "policyViolationRecorded")
+        .count();
+    assert_eq!(
+        recorded_count, 2,
+        "both NestedWorkerObserved events must produce a durable policyViolationRecorded"
+    );
+
+    let get = client.call(7, "run/get", json!({ "runId": run_id })).await;
+    assert_eq!(get["result"]["state"], "cancelled");
+}
+
 // --------------------------------------------------------------- harness
 struct Harness {
     socket: PathBuf,

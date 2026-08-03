@@ -33,7 +33,10 @@ pub use event::{
     Classified, ContentClass, DiagnosticLevel, EventEnvelope, EventSource, RuntimeEvent,
     RuntimeEventKind, Timestamp, TimestampParseError,
 };
-pub use ids::{ApprovalId, ArtifactId, MessageId, OperationId, ProjectId, RunId, TaskId, WorkerId};
+pub use ids::{
+    ApprovalId, ArtifactId, MessageId, OperationId, PolicyViolationId, ProjectId, RunId, TaskId,
+    WorkerId,
+};
 pub use message::{DeliveryState, MessageKind, RunMessage};
 pub use method::BatmanMethod;
 pub use rpc::{

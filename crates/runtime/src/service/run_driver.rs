@@ -30,6 +30,10 @@ pub struct RunDriverContext {
     pub worker_id: WorkerId,
     pub prompt: Option<String>,
     pub events_tx: broadcast::Sender<EventEnvelope>,
+    /// The mid-run nested-worker policy violation service (Hardening plan
+    /// Task 1), for [`crate::adapter::registry::AdapterRegistry`] to wire
+    /// into each run's [`crate::adapter::event_sink::DomainAdapterEventSink`].
+    pub violation_service: Arc<crate::policy::ViolationService>,
 }
 
 /// Seam for starting an adapter-backed run. The (later) adapter registry

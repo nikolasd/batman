@@ -11,9 +11,9 @@
 //! before its event is appended.
 
 use batman_protocol::{
-    ApprovalRequest, DeliveryState, EventEnvelope, EventSource, ProjectId, Run, RunFlags, RunId,
-    RunMessage, RunState, RuntimeEvent, RuntimeEventKind, TaskId, TaskRef, Timestamp, Worker,
-    WorkerId,
+    ApprovalRequest, DeliveryState, EventEnvelope, EventSource, PolicyViolationId, ProjectId, Run,
+    RunFlags, RunId, RunMessage, RunState, RuntimeEvent, RuntimeEventKind, TaskId, TaskRef,
+    Timestamp, Worker, WorkerId,
 };
 use rusqlite::Connection;
 use serde_json::Value;
@@ -48,6 +48,21 @@ pub enum DomainError {
 pub struct Committed {
     pub sequence: u64,
     pub envelope: EventEnvelope,
+}
+
+/// A policy violation's correlating ids, current resolution (`None` if
+/// unresolved), owning run's state, and owning task's
+/// `owner_client_instance_id` -- everything [`crate::policy::ViolationService`]
+/// needs to enforce ownership, idempotency, and the
+/// never-revive-a-terminal-run invariant before deciding.
+#[derive(Debug, Clone)]
+pub struct PolicyViolationSnapshot {
+    pub run_id: String,
+    pub task_id: String,
+    pub worker_id: String,
+    pub resolution: Option<String>,
+    pub run_state: String,
+    pub owner_client_instance_id: String,
 }
 
 /// Embeds `envelope` into `value` under a reserved key so it survives the
@@ -708,6 +723,149 @@ impl<'c> DomainRepository<'c> {
             )?;
             Ok(())
         })
+    }
+
+    /// Records a mid-run nested-worker policy violation: inserts the
+    /// [`policy_violations`] row and appends a `PolicyViolationRecorded`
+    /// event. Does not touch `Run.flags` -- callers apply the quarantine
+    /// flag via [`DomainRepository::set_run_flags`] as a separate commit,
+    /// so existing `RunFlagsChanged` consumers see it without new code.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::NotFound`] if `run_id` does not exist.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_policy_violation(
+        &mut self,
+        violation_id: PolicyViolationId,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        vendor_child_id: &str,
+        vendor_parent_ref: &str,
+        action: &str,
+    ) -> Result<Committed, DomainError> {
+        let event = RuntimeEvent::PolicyViolationRecorded {
+            kind: RuntimeEventKind::PolicyViolationRecorded {
+                violation_id,
+                vendor_child_id: vendor_child_id.to_string(),
+                vendor_parent_ref: vendor_parent_ref.to_string(),
+                action: action.to_string(),
+            },
+            run_id,
+            task_id,
+            worker_id,
+        };
+        let vendor_child_id = vendor_child_id.to_string();
+        let vendor_parent_ref = vendor_parent_ref.to_string();
+        let action = action.to_string();
+        self.append_and_apply(
+            &event,
+            Some(task_id),
+            Some(worker_id),
+            Some(run_id),
+            move |tx| {
+                let now = Timestamp::now();
+                tx.execute(
+                    "INSERT INTO policy_violations (violation_id, run_id, task_id, worker_id,
+                       vendor_child_id, vendor_parent_ref, action, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    rusqlite::params![
+                        violation_id.to_string(),
+                        run_id.to_string(),
+                        task_id.to_string(),
+                        worker_id.to_string(),
+                        vendor_child_id,
+                        vendor_parent_ref,
+                        action,
+                        now.as_str(),
+                    ],
+                )?;
+                Ok(())
+            },
+        )
+    }
+
+    /// Looks up a policy violation's `run_id`/`task_id`/`worker_id`,
+    /// `resolution` (`None` if unresolved), and owning task's
+    /// `owner_client_instance_id`, for [`crate::policy::ViolationService`]
+    /// to enforce ownership and idempotency before deciding.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::NotFound`] if `violation_id` does not exist.
+    pub fn policy_violation_snapshot(
+        &mut self,
+        violation_id: PolicyViolationId,
+    ) -> Result<PolicyViolationSnapshot, DomainError> {
+        self.conn
+            .query_row(
+                "SELECT v.run_id, v.task_id, v.worker_id, v.resolution, r.state,
+                        t.owner_client_instance_id
+                 FROM policy_violations v
+                 JOIN runs r ON v.run_id = r.run_id
+                 JOIN tasks t ON v.task_id = t.task_id
+                 WHERE v.violation_id = ?1",
+                [violation_id.to_string()],
+                |row| {
+                    Ok(PolicyViolationSnapshot {
+                        run_id: row.get::<_, String>(0)?,
+                        task_id: row.get::<_, String>(1)?,
+                        worker_id: row.get::<_, String>(2)?,
+                        resolution: row.get::<_, Option<String>>(3)?,
+                        run_state: row.get::<_, String>(4)?,
+                        owner_client_instance_id: row.get::<_, String>(5)?,
+                    })
+                },
+            )
+            .map_err(|_| DomainError::NotFound {
+                kind: "policy-violation",
+                id: violation_id.to_string(),
+            })
+    }
+
+    /// Resolves a previously-recorded policy violation: records
+    /// `resolution`/`resolved_by` and appends a `PolicyViolationDecided`
+    /// event. Does not touch `Run.flags` or run state -- callers apply
+    /// those via [`DomainRepository::set_run_flags`]/
+    /// [`DomainRepository::transition_run`] as separate commits.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::NotFound`] if `violation_id` does not exist.
+    pub fn resolve_policy_violation(
+        &mut self,
+        violation_id: PolicyViolationId,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        resolution: &str,
+        resolved_by: &str,
+    ) -> Result<Committed, DomainError> {
+        let event = RuntimeEvent::PolicyViolationDecided {
+            kind: RuntimeEventKind::PolicyViolationDecided {
+                violation_id,
+                resolution: resolution.to_string(),
+                resolved_by: resolved_by.to_string(),
+            },
+            run_id,
+            task_id,
+            worker_id,
+        };
+        let resolution = resolution.to_string();
+        let resolved_by = resolved_by.to_string();
+        self.append_and_apply(
+            &event,
+            Some(task_id),
+            Some(worker_id),
+            Some(run_id),
+            move |tx| {
+                let now = Timestamp::now();
+                tx.execute(
+                    "UPDATE policy_violations SET resolution = ?1, resolved_by = ?2, resolved_at = ?3
+                     WHERE violation_id = ?4",
+                    rusqlite::params![resolution, resolved_by, now.as_str(), violation_id.to_string()],
+                )?;
+                Ok(())
+            },
+        )
     }
 
     /// Rebinds a task's owning OMP client instance during reconciliation.

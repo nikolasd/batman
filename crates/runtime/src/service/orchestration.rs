@@ -49,6 +49,15 @@ impl ServiceError {
             message: msg.into(),
         }
     }
+
+    fn policy_quarantined(run_id: RunId) -> Self {
+        Self {
+            code: error_code::POLICY_QUARANTINED,
+            message: format!(
+                "run {run_id} is quarantined pending policy/violation/decide; messages and workspace apply are blocked"
+            ),
+        }
+    }
 }
 
 impl From<DomainError> for ServiceError {
@@ -88,6 +97,30 @@ impl From<crate::approval::ApprovalError> for ServiceError {
     }
 }
 
+impl From<crate::policy::ViolationError> for ServiceError {
+    fn from(err: crate::policy::ViolationError) -> Self {
+        use crate::policy::ViolationError;
+        match err {
+            ViolationError::Forbidden { .. } => Self {
+                code: error_code::INVALID_PARAMS,
+                message: err.to_string(),
+            },
+            ViolationError::Conflict { .. }
+            | ViolationError::RunSettled { .. }
+            | ViolationError::InvalidResolution { .. } => Self {
+                code: error_code::INVALID_PARAMS,
+                message: err.to_string(),
+            },
+            ViolationError::NotFound { .. } => Self {
+                code: error_code::INVALID_PARAMS,
+                message: err.to_string(),
+            },
+            ViolationError::Domain(domain_err) => Self::from(domain_err),
+            ViolationError::Db(db_err) => Self::internal(db_err.to_string()),
+        }
+    }
+}
+
 /// Routes every orchestration method to the domain repository. Holds no
 /// mutable state itself; every command borrows the shared
 /// [`DatabaseHandle`] and commits on the actor thread.
@@ -96,6 +129,7 @@ pub struct OrchestrationService {
     project_id: ProjectId,
     run_driver: Option<Arc<dyn RunDriver>>,
     approval: Arc<crate::approval::ApprovalService>,
+    violation: Arc<crate::policy::ViolationService>,
     events_tx: broadcast::Sender<EventEnvelope>,
     lease_service: Arc<crate::workspace::LeaseService>,
     artifact_store: Arc<crate::workspace::ArtifactStore>,
@@ -103,12 +137,14 @@ pub struct OrchestrationService {
 }
 
 impl OrchestrationService {
+    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
         db: Arc<DatabaseHandle>,
         project_id: ProjectId,
         run_driver: Option<Arc<dyn RunDriver>>,
         approval_callback: Arc<dyn crate::approval::ApprovalCallback>,
+        violation: Arc<crate::policy::ViolationService>,
         events_tx: broadcast::Sender<EventEnvelope>,
         lease_service: Arc<crate::workspace::LeaseService>,
         artifact_store: Arc<crate::workspace::ArtifactStore>,
@@ -125,6 +161,7 @@ impl OrchestrationService {
             project_id,
             run_driver,
             approval,
+            violation,
             events_tx,
             lease_service,
             artifact_store,
@@ -139,6 +176,22 @@ impl OrchestrationService {
         if let Some(envelope) = take_envelope(value) {
             let _ = self.events_tx.send(envelope);
         }
+    }
+
+    /// Rejects `message/send`/`workspace/apply` against a run currently
+    /// quarantined by [`crate::policy::ViolationService`] (Hardening plan
+    /// Task 1's mid-run nested-worker policy violation) -- only lifted via
+    /// `policy/violation/decide`.
+    async fn ensure_not_quarantined(&self, run_id: RunId) -> Result<(), ServiceError> {
+        let flags = self
+            .db
+            .run_domain_op(query::run_flags_op(run_id))
+            .await
+            .map_err(ServiceError::from)?;
+        if flags["policyQuarantined"].as_bool().unwrap_or(false) {
+            return Err(ServiceError::policy_quarantined(run_id));
+        }
+        Ok(())
     }
 
     /// Dispatches one already role-authorized orchestration method.
@@ -172,9 +225,9 @@ impl OrchestrationService {
             }
             BatmanMethod::CoordinationChildDecide => self.coordination_child_decide(params).await,
             BatmanMethod::ProfileRegister => self.profile_register(params).await,
-            BatmanMethod::PolicyViolationDecide => Err(ServiceError::internal(
-                "method is not routed through OrchestrationService",
-            )),
+            BatmanMethod::PolicyViolationDecide => {
+                self.policy_violation_decide(principal, params).await
+            }
             BatmanMethod::WorkspaceAcquire => self.workspace_acquire(params).await,
             BatmanMethod::WorkspaceGet => self.workspace_get(params).await,
             BatmanMethod::WorkspaceRelease => self.workspace_release(params).await,
@@ -467,6 +520,7 @@ impl OrchestrationService {
             worker_id,
             prompt,
             events_tx: self.events_tx.clone(),
+            violation_service: Arc::clone(&self.violation),
         };
         // Orchestration-test-scope: awaited synchronously so the caller
         // observes the final committed state deterministically.
@@ -670,6 +724,7 @@ impl OrchestrationService {
             .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
         let lease = self.lease_service.get(request.lease_id.clone())
             .map_err(|e| ServiceError::internal(e.to_string()))?;
+        self.ensure_not_quarantined(lease.run_id).await?;
 
         let applier = crate::workspace::WorkspaceApplier::from_store(
             std::path::PathBuf::from(&lease.path),
@@ -726,6 +781,7 @@ impl OrchestrationService {
 
     async fn message_send(&self, params: &Value) -> Result<Value, ServiceError> {
         let run_id = parse_run_id(params.get("runId"))?;
+        self.ensure_not_quarantined(run_id).await?;
         let sender_worker_id = parse_worker_id(params.get("senderWorkerId"))?;
         let task_id = parse_task_id(params.get("taskId"))?;
         let kind = parse_message_kind(params.get("kind"))?;
@@ -861,6 +917,40 @@ impl OrchestrationService {
                 crate::approval::DecideOutcome::Decided => "decided",
                 crate::approval::DecideOutcome::DecidedCallbackFailed => "decidedCallbackFailed",
                 crate::approval::DecideOutcome::AlreadyDecided => "alreadyDecided",
+            },
+        }))
+    }
+
+    /// `policy/violation/decide`: resolves a mid-run nested-worker policy
+    /// violation as `"release"` or `"cancel"`, restricted to the owning
+    /// `ompExtension` client (the violation's task's
+    /// `owner_client_instance_id`) by [`crate::policy::ViolationService::decide`].
+    async fn policy_violation_decide(
+        &self,
+        principal: &crate::ipc::ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
+        let violation_id = params
+            .get("violationId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ServiceError::invalid_params("violationId is required"))
+            .and_then(|s| {
+                batman_protocol::PolicyViolationId::parse(s)
+                    .map_err(|_| ServiceError::invalid_params("violationId is not a valid id"))
+            })?;
+        let resolution = str_field(params, "resolution")?;
+
+        let outcome = self
+            .violation
+            .decide(violation_id, &principal.instance_id, &resolution)
+            .await
+            .map_err(ServiceError::from)?;
+
+        Ok(json!({
+            "violationId": violation_id.to_string(),
+            "outcome": match outcome {
+                crate::policy::DecideOutcome::Decided => "decided",
+                crate::policy::DecideOutcome::AlreadyDecided => "alreadyDecided",
             },
         }))
     }

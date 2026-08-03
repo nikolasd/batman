@@ -126,6 +126,14 @@ pub struct DomainAdapterEventSink {
     project_id: ProjectId,
     events_tx: broadcast::Sender<EventEnvelope>,
     redactor: Arc<Redactor>,
+    /// Whether this run's effective `nested` capability is anything other
+    /// than `NestedCapability::Managed` -- per that type's own doc
+    /// comment, "only `Managed` permits nesting at all", so `None` and
+    /// `Observable` are both ungoverned: `NestedWorkerObserved` firing
+    /// while this is `true` is a mid-run policy violation (Hardening
+    /// plan Task 1), not merely a journaled observation.
+    nested_not_managed: bool,
+    violation_service: Arc<crate::policy::ViolationService>,
 }
 
 impl DomainAdapterEventSink {
@@ -135,6 +143,8 @@ impl DomainAdapterEventSink {
         project_id: ProjectId,
         events_tx: broadcast::Sender<EventEnvelope>,
         org_security_patterns: Vec<String>,
+        nested_not_managed: bool,
+        violation_service: Arc<crate::policy::ViolationService>,
     ) -> Self {
         Self {
             db,
@@ -144,6 +154,8 @@ impl DomainAdapterEventSink {
                 tracing::warn!(error = %e, "org security patterns failed to compile; using built-in rules only");
                 Redactor::new()
             })),
+            nested_not_managed,
+            violation_service,
         }
     }
 
@@ -308,6 +320,24 @@ impl AdapterEventSink for DomainAdapterEventSink {
         let project_id = self.project_id;
         let events_tx = self.events_tx.clone();
         let db = self.db.clone();
+        // Extract the already-redacted (`self.label`-passed) vendor
+        // fields from the just-built event, rather than the original
+        // raw `AdapterEventPayload` -- the durable `policy_violations`
+        // table must never receive unsanitized vendor-subprocess text,
+        // matching every other adapter-sourced field this sink journals.
+        let nested_violation = if self.nested_not_managed {
+            match &runtime_event {
+                RuntimeEvent::AdapterNestedWorkerEvent {
+                    vendor_child_id,
+                    vendor_parent_ref,
+                    ..
+                } => Some((vendor_child_id.clone(), vendor_parent_ref.clone())),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let violation_service = Arc::clone(&self.violation_service);
         Box::pin(async move {
             let mut result = db
                 .run_domain_op(Box::new(move |conn| {
@@ -317,8 +347,22 @@ impl AdapterEventSink for DomainAdapterEventSink {
                 }))
                 .await
                 .map_err(|e| AdapterError::process("sink", "emit", e.to_string()))?;
-            crate::domain::broadcast_committed(&events_tx, &mut result)
-                .ok_or_else(|| AdapterError::process("sink", "emit", "no envelope committed"))
+            let sequence = crate::domain::broadcast_committed(&events_tx, &mut result)
+                .ok_or_else(|| AdapterError::process("sink", "emit", "no envelope committed"))?;
+
+            if let Some((vendor_child_id, vendor_parent_ref)) = nested_violation
+                && let Err(err) = violation_service
+                    .record(run_id, task_id, worker_id, &vendor_child_id, &vendor_parent_ref)
+                    .await
+            {
+                tracing::warn!(
+                    error = %err,
+                    run_id = %run_id,
+                    "failed to record mid-run nested-worker policy violation"
+                );
+            }
+
+            Ok(sequence)
         })
     }
 }

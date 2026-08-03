@@ -46,6 +46,15 @@ impl CoordinationError {
             message: format!("run {run_id} has already settled; cannot address it"),
         }
     }
+
+    fn policy_quarantined(run_id: RunId) -> Self {
+        Self {
+            code: error_code::POLICY_QUARANTINED,
+            message: format!(
+                "run {run_id} is quarantined pending policy/violation/decide; artifact publication is blocked"
+            ),
+        }
+    }
 }
 
 impl From<crate::domain::DomainError> for CoordinationError {
@@ -126,6 +135,35 @@ impl CoordinationBroker {
             .map_err(|_| CoordinationError::invalid_params("stored run has an invalid state"))?;
         if run_state.is_terminal() {
             return Err(CoordinationError::run_settled(run_id));
+        }
+        Ok(())
+    }
+
+    /// Rejects `coordination/publishArtifact` against a run currently
+    /// quarantined by [`crate::policy::ViolationService`] (Hardening plan
+    /// Task 1's mid-run nested-worker policy violation) -- only lifted via
+    /// `policy/violation/decide`.
+    async fn require_not_quarantined(&self, run_id: RunId) -> Result<(), CoordinationError> {
+        let quarantined: bool = self
+            .db
+            .run_domain_op(Box::new(move |conn| {
+                conn.query_row(
+                    "SELECT flags_policy_quarantined FROM runs WHERE run_id = ?1",
+                    [run_id.to_string()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|flag: i64| json!({ "quarantined": flag != 0 }))
+                .map_err(|_| crate::domain::DomainError::NotFound {
+                    kind: "run",
+                    id: run_id.to_string(),
+                })
+            }))
+            .await?
+            .get("quarantined")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if quarantined {
+            return Err(CoordinationError::policy_quarantined(run_id));
         }
         Ok(())
     }
@@ -352,6 +390,7 @@ impl CoordinationBroker {
         description: Option<String>,
     ) -> Result<Value, CoordinationError> {
         self.require_live_run(run_id).await?;
+        self.require_not_quarantined(run_id).await?;
         let sender_and_task = self.run_participants(run_id).await?;
         let project_id = self.project_id;
         let (task_id, worker_id) = sender_and_task;

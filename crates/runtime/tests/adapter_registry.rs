@@ -16,6 +16,7 @@ use batman_runtime::adapter::{
     AdapterRegistry, FixtureAuthorization, OmpRpcStartupOptions, StartupOptions, WorkerProfile,
 };
 use batman_runtime::db::DatabaseHandle;
+use batman_runtime::policy::ViolationService;
 use batman_runtime::service::{RunDriver, RunDriverContext};
 
 async fn harness() -> (Arc<DatabaseHandle>, tempfile::TempDir, ProjectId) {
@@ -121,6 +122,13 @@ fn ctx(
     worker_id: WorkerId,
 ) -> RunDriverContext {
     let (events_tx, _events_rx) = tokio::sync::broadcast::channel(100);
+    let violation_service = Arc::new(ViolationService::new(
+        Arc::clone(&db),
+        project_id,
+        events_tx.clone(),
+        None,
+        batman_runtime::config::NestedViolationAction::default(),
+    ));
     RunDriverContext {
         db,
         project_id,
@@ -129,6 +137,7 @@ fn ctx(
         worker_id,
         events_tx,
         prompt: None,
+        violation_service,
     }
 }
 

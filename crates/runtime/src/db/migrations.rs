@@ -124,6 +124,29 @@ CREATE TABLE adapter_profiles (
 ALTER TABLE workers ADD COLUMN resolved_profile_json TEXT;
 ";
 
+/// Migration 4: mid-run nested-worker policy violations (Hardening plan
+/// Task 1). Distinct from the pre-authorization `PolicyViolation` runtime
+/// event -- this table tracks a worker that was already running and then
+/// unexpectedly reported a child, through to its resolution via
+/// `policy/violation/decide`. `action` is the `NestedViolationAction`
+/// applied at record time (`quarantine`/`cancel`/`quarantineAndCancel`);
+/// `resolution` is `release`/`cancel`, set only once `resolved_at` is set.
+const MIGRATION_4: &str = "
+CREATE TABLE policy_violations (
+  violation_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES runs(run_id),
+  task_id TEXT NOT NULL,
+  worker_id TEXT NOT NULL,
+  vendor_child_id TEXT NOT NULL,
+  vendor_parent_ref TEXT NOT NULL,
+  action TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  resolution TEXT,
+  resolved_by TEXT
+);
+";
+
 /// Opens `path` as a private (mode `0600`) SQLite database, configures its
 /// PRAGMAs (`journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`,
 /// `synchronous=FULL`), and migrates it to the latest schema. Migrations
@@ -146,6 +169,7 @@ pub(super) fn open_and_migrate(path: &Path) -> Result<Connection, DbError> {
         M::up(MIGRATION_1),
         M::up(MIGRATION_2),
         M::up(MIGRATION_3),
+        M::up(MIGRATION_4),
     ]);
     migrations.to_latest(&mut conn)?;
 

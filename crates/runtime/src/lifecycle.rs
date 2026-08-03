@@ -211,6 +211,7 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
         }
     };
     let org_security_patterns = policy.org_security_patterns.clone();
+    let nested_violation_action = policy.rollout_gates.nested_violation_action;
     let registry = Arc::new(AdapterRegistry::new(
         Arc::new(PolicyEvaluator::new(policy)),
         repo_root.clone(),
@@ -222,6 +223,7 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
         run_driver: Some(Arc::clone(&registry) as Arc<dyn crate::service::RunDriver>),
         repository: repo_root.clone(),
         worker_verifier: Arc::new(ScopeTokenVerifier::new(Arc::clone(&scope_tokens))),
+        nested_violation_action,
         ..ServerConfig::default()
     };
     let server = Server::bind(

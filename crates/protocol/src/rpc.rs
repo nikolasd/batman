@@ -204,6 +204,10 @@ pub mod error_code {
     /// Reserved application error range per JSON-RPC 2.0: an invalid
     /// lifecycle-state transition was requested.
     pub const ILLEGAL_TRANSITION: i32 = -32100;
+    /// The addressed run is quarantined pending `policy/violation/decide`
+    /// -- messages, artifact publication, and workspace apply are blocked
+    /// until the owning `ompExtension` client resolves the violation.
+    pub const POLICY_QUARANTINED: i32 = -32101;
 }
 
 /// The fixed `jsonrpc` version string used on every envelope.

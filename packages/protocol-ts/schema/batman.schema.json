@@ -713,6 +713,10 @@
       "description": "Identifies a single message within a run's transcript.",
       "type": "string"
     },
+    "PolicyViolationId": {
+      "description": "Identifies a mid-run nested-worker policy violation.",
+      "type": "string"
+    },
     "ProjectId": {
       "description": "Identifies a repository/project managed by the BATMAN runtime.",
       "type": "string"
@@ -1662,6 +1666,82 @@
           ]
         },
         {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "runId",
+                "taskId",
+                "workerId"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "policyViolationRecorded"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "runId",
+                "taskId",
+                "workerId"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "policyViolationDecided"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
           "description": "A display backend attached or detached a Batman-owned pane.",
           "type": "object",
           "properties": {
@@ -1882,6 +1962,68 @@
           "additionalProperties": false,
           "required": [
             "policyViolation"
+          ]
+        },
+        {
+          "description": "A policy violation was recorded for an already-running worker (mid-run\nviolation, not pre-authorization). Quarantine/cancel state is tracked\nin `Run.flags.policy_quarantined`.",
+          "type": "object",
+          "properties": {
+            "policyViolationRecorded": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "vendor_child_id": {
+                  "type": "string"
+                },
+                "vendor_parent_ref": {
+                  "type": "string"
+                },
+                "violation_id": {
+                  "$ref": "#/$defs/PolicyViolationId"
+                }
+              },
+              "required": [
+                "violation_id",
+                "vendor_child_id",
+                "vendor_parent_ref",
+                "action"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "policyViolationRecorded"
+          ]
+        },
+        {
+          "description": "A policy violation was resolved (decided) by the owning OMP client.",
+          "type": "object",
+          "properties": {
+            "policyViolationDecided": {
+              "type": "object",
+              "properties": {
+                "resolution": {
+                  "type": "string"
+                },
+                "resolved_by": {
+                  "type": "string"
+                },
+                "violation_id": {
+                  "$ref": "#/$defs/PolicyViolationId"
+                }
+              },
+              "required": [
+                "violation_id",
+                "resolution",
+                "resolved_by"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "policyViolationDecided"
           ]
         }
       ]

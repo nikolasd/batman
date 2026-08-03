@@ -31,7 +31,7 @@ use parking_lot::Mutex;
 
 use batman_protocol::{RunId, TaskId, WorkerId};
 
-use super::capability::AdapterCapabilities;
+use super::capability::{AdapterCapabilities, NestedCapability};
 use super::event_sink::DomainAdapterEventSink;
 use super::mcp_config::AdapterMcpConfig;
 use super::profile::{StartupOptions, WorkerProfile};
@@ -409,6 +409,8 @@ async fn run_one(
         ctx.project_id,
         ctx.events_tx.clone(),
         org_security_patterns,
+        effective_capabilities.nested != NestedCapability::Managed,
+        Arc::clone(&ctx.violation_service),
     ));
     adapter
         .start(

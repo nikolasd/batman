@@ -10,25 +10,22 @@ Every item below was verified against the current codebase (not inferred from pr
 
 ### 1. Nested-worker policy violations are journaled but never quarantined, cancelled, or reported to OMP — `policy/violation/decide` is a stub
 
-**Status:** Open (re-verified 2026-08-03, unchanged)
+**Status:** Closed 2026-08-04
 **Priority:** High
 **Labels:** security, policy, hardening
 
 **Description:**
-The Hardening plan's Task 1 requires: on `NestedWorkerObserved` while the effective capability is `nested:none`, the runtime must atomically persist a `PolicyViolation`, set `policyQuarantined`, block messages/artifact publication/workspace apply, create an audited worker-cancellation intent, and notify the owning OMP client — resolvable only via `policy/violation/decide`, exposed to the owning `ompExtension` client as `batman_worker op:"resolvePolicyViolation"`.
-
-Verified current state:
-- `AdapterEventSink::build_runtime_event` (`event_sink.rs:288`) maps `NestedWorkerObserved` straight to `RuntimeEvent::AdapterNestedWorkerEvent` for the journal — no policy hook, no `PolicyViolation` record, no quarantine flag, no cancellation, no OMP notification.
-- `PolicyEvaluator` (`policy/evaluate.rs`) only enforces nested-worker policy at **pre-authorization** time (`authorize()` rejects `is_nested && !self.allow_nested` before a worker starts) — this is a different mechanism from the plan's requirement, which is about a worker that is *already running* and then unexpectedly reports a child mid-run.
-- `nested_violation_action` (the config knob controlling `quarantine`/`cancel`/`quarantineAndCancel`) appears exactly once in the entire runtime crate — a hardcoded default in `evaluate.rs:270` — with no consumer.
-- `OrchestrationService::dispatch` explicitly stubs the method: `BatmanMethod::PolicyViolationDecide => Err(ServiceError::internal("method is not routed through OrchestrationService"))` (`orchestration.rs:165-167`). `OrchestrationService` has no `policy` field and no `decide_violation` function. The method IS registered and routable for `ompExtension` clients (confirmed present in `InitializeResult.allowedMethods` — see item 19 below), it simply errors when called.
-
-**Implementation:**
-- Add a policy-violation service (analogous to `approval::ApprovalService`) that `AdapterEventSink`/`OrchestrationService` calls on `NestedWorkerObserved` when the run's effective `nested` capability is `none`
-- Apply `nestedViolationAction`, set `Run.flags.policyQuarantined`, block messages/artifacts/workspace-apply while quarantined, and create an audited cancellation intent
-- Implement `policy/violation/decide` for real, restricted to the owning `ompExtension` client; releasing quarantine must never revive a cancelled/terminal run
-
-**References:** `crates/runtime/src/adapter/event_sink.rs:288`, `crates/runtime/src/policy/evaluate.rs`, `crates/runtime/src/service/orchestration.rs:165-167`, `.../2026-07-22-batman-hardening-release.md` (Task 1)
+**Resolution (2026-08-04):**
+- ✅ Implemented `ViolationService` (`crates/runtime/src/policy/violation.rs`) with `record()` (idempotent per Option B — quarantine/cancel applied once, `PolicyViolationRecorded` journaled every time) and `decide()` (ownership check, conflict/idempotency, refuses `release` on a terminal run)
+- ✅ Added `MIGRATION_4` creating `policy_violations` table with `violation_id`, `run_id`, `task_id`, `worker_id`, `vendor_child_id`, `vendor_parent_ref`, `action`, `created_at`, `resolved_at`, `resolution`, `resolved_by`
+- ✅ Added `PolicyViolationRecorded` and `PolicyViolationDecided` to `RuntimeEventKind` (Kind enum) and `RuntimeEvent` (outer enum); added `PolicyViolationId` (UUIDv7 newtype) to `crates/protocol/src/ids.rs`
+- ✅ Wired `DomainAdapterEventSink` to call `ViolationService::record` on `NestedWorkerObserved` when `effective_capabilities.nested != NestedCapability::Managed` (covers both `None` and `Observable`)
+- ✅ Implemented `policy/violation/decide` RPC — real implementation replaces the stub, restricted to `ompExtension` client with per-resource ownership check
+- ✅ Added enforcement gates: `message/send`, `workspace/apply` (`OrchestrationService`), `coordination/publishArtifact` (`CoordinationBroker`) — all check `Run.flags.policyQuarantined`, error code `POLICY_QUARANTINED` (-32101)
+- ✅ Added `nested_violation_action` config knob (3 variants: `Quarantine`/`Cancel`/`QuarantineAndCancel`) threaded from `RuntimePolicy.rollout_gates` through `ServerConfig` into `ViolationService`
+- ✅ Added 4 new integration tests in `orchestration_rpc.rs`: quarantine blocks `message/send` until released, `decide` forbidden for non-owning client, `release` refused on terminal run, second observation on already-actioned run never double-cancels
+- ✅ Generated protocol-ts bindings updated (`batman.schema.json`, `RuntimeEvent.ts`, `RuntimeEventKind.ts`, new `PolicyViolationId.ts`)
+- ✅ All 24 orchestration_rpc tests pass (20 existing + 4 new); all other test suites pass
 
 ---
 
@@ -786,6 +783,36 @@ The module doc (lines 1-5) claims it "resolv[es] org → repo → user → per-r
 - Fold this into item 5/8's scope once `batcave conformance` exists, or remove it as dead code if `tests/conformance/run.ts` is meant to remain the single implementation
 
 **References:** `packages/extension/src/conformance/index.ts:106-175`, `tests/conformance/run.ts`
+
+---
+
+### 42. Rename npm package scope from `@satori/batman` to `@nikolasd/batman`
+
+**Status:** Open (newly added 2026-08-03)
+**Priority:** Low
+**Labels:** packaging, branding, ci
+
+**Description:**
+The npm package name/scope is hardcoded as `@satori/*` across the workspace and needs renaming to `@nikolasd/*`. Confirmed occurrences:
+- 6 `packages/*/package.json` files (`packages/extension`, `packages/protocol-ts`, and the 4 platform leaf packages `packages/batman-{darwin-arm64,darwin-x64,linux-arm64-gnu,linux-x64-gnu}`), plus the root workspace package name, plus every workspace cross-reference (`@satori/batman-protocol` as a dependency of `packages/extension`, `@satori/batman-*` as `optionalDependencies`)
+- `bun.lock` (generated — regenerate via `bun install` rather than hand-editing)
+- `.npmrc`'s registry scope line (`@satori:registry=...`)
+- `crates/xtask/src/main.rs::leaf_package_name` (`format!("@satori/batman-{target}")`) and its test assertions/fixtures (`main.rs:429,478`)
+- `.github/workflows/release.yml`'s `SATORI_NPM_TOKEN` secret reference (decide whether to rename the GitHub secret itself or keep the env var name and just repoint its value)
+- `README.md`, `CONTRIBUTING.md`, `docs/architecture.md`, `docs/code-walkthrough.md`, `docs/adr/0010-platform-binaries-as-npm-optional-leaf-packages.md`
+- The JSON-RPC `initialize` handshake's `client.name`/`clientInfo.name` literal `"@satori/batman"`, sent by the extension and asserted by ~10 Rust test/fixture files (`crates/protocol/tests/{fixtures,wire_contract}.rs`, `crates/runtime/tests/{adapter_contract,approval,codex_adapter,coordination,ipc,monitor_cli,orchestration_rpc}.rs`, `crates/runtime/src/adapter/codex/{conformance,mod}.rs`) — this is a protocol identity string, not strictly the npm package name, so decide explicitly whether it should track the rename (recommended, for consistency) or stay independent
+- `crates/runtime/src/coordination/mcp.rs:261`'s separate `"@satori/batman-coordination-mcp"` client name (same handshake-identity question)
+
+**Implementation:**
+- Update every `package.json` `name`/dependency field listed above, then regenerate `bun.lock` via `bun install`
+- Update `.npmrc`'s scope line and confirm the target registry still resolves `@nikolasd/*` (private registry scope mapping is registry-side config, out of this repo's control)
+- Update `leaf_package_name` and its tests in `crates/xtask/src/main.rs`; re-run `cargo test -p batman-xtask`
+- Update `release.yml`; decide on the `SATORI_NPM_TOKEN` secret name (rename vs. keep name/repoint value) and update the workflow + any org secrets accordingly
+- Update the client-identity literals (handshake `clientInfo.name`, coordination-mcp client name) and every test asserting them, once the naming decision above is made
+- Update README/CONTRIBUTING/docs/ADR prose references
+- Re-run `bun run check` (generate + build + full test suite) to catch any remaining stale reference
+
+**References:** `.npmrc`, `bun.lock`, `packages/*/package.json`, `crates/xtask/src/main.rs:314-318,428-431,477-481`, `.github/workflows/release.yml:114-115`, `README.md`, `CONTRIBUTING.md`, `docs/architecture.md`, `docs/code-walkthrough.md`, `docs/adr/0010-platform-binaries-as-npm-optional-leaf-packages.md`, `crates/protocol/tests/fixtures.rs:22`, `crates/protocol/tests/wire_contract.rs:10`, `crates/runtime/src/coordination/mcp.rs:261`
 
 ---
 

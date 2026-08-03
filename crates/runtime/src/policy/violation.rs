@@ -1,0 +1,440 @@
+//! The mid-run nested-worker policy violation flow (Hardening plan Task 1).
+//!
+//! Distinct from [`super::evaluate::PolicyEvaluator`], which only enforces
+//! nested-worker policy at pre-authorization time (before a worker starts).
+//! [`ViolationService`] handles the complementary case: a worker that is
+//! already running and then unexpectedly reports a child mid-run, via
+//! `AdapterEventPayload::NestedWorkerObserved` while the run's effective
+//! `nested` capability is `NestedCapability::None`.
+//!
+//! On [`ViolationService::record`]: atomically persists a
+//! [`batman_protocol::RuntimeEvent::PolicyViolationRecorded`], then applies
+//! the configured [`NestedViolationAction`] -- `Quarantine` sets
+//! `Run.flags.policyQuarantined` (blocking `message/send`,
+//! `workspace/apply`, and `coordination/publishArtifact` -- see
+//! `crate::service::orchestration`/`crate::coordination::broker`);
+//! `Cancel` creates an audited cancellation intent and cancels the run
+//! directly; `QuarantineAndCancel` (the default) does both. Idempotent:
+//! a run already quarantined or already terminal still gets a durable
+//! `PolicyViolationRecorded` event (so OMP sees every subsequent
+//! unexpected child), but the action is applied at most once.
+//!
+//! [`ViolationService::decide`] resolves a violation via
+//! `policy/violation/decide`, restricted to the violation's task's
+//! `owner_client_instance_id` (the owning `ompExtension` client) -- the
+//! same ownership pattern as [`crate::approval::ApprovalService::decide`].
+//! Releasing quarantine on an already-terminal/cancelled run is refused;
+//! it must never be revived.
+
+use std::sync::Arc;
+
+use batman_protocol::{
+    EventEnvelope, PolicyViolationId, ProjectId, RunFlags, RunId, RunState, TaskId, WorkerId,
+};
+use serde_json::{Value, json};
+use tokio::sync::broadcast;
+
+use crate::config::NestedViolationAction;
+use crate::db::{DatabaseHandle, DbError};
+use crate::domain::{DomainError, DomainRepository, embed_envelope, take_envelope};
+use crate::security::redaction::Redactor;
+use crate::service::RunDriver;
+
+/// Errors returned by [`ViolationService`] operations.
+#[derive(Debug, thiserror::Error)]
+pub enum ViolationError {
+    /// A database operation failed.
+    #[error(transparent)]
+    Domain(DomainError),
+    /// `principal_instance_id` does not own the violation's task.
+    #[error("client {instance_id} does not own the task for policy violation {violation_id}")]
+    Forbidden {
+        instance_id: String,
+        violation_id: PolicyViolationId,
+    },
+    /// The violation was already decided with a different resolution.
+    #[error("policy violation {violation_id} was already decided with a different resolution")]
+    Conflict { violation_id: PolicyViolationId },
+    /// Releasing quarantine on an already-terminal run would revive it.
+    #[error("run {run_id} has already settled; cannot release its quarantine")]
+    RunSettled {
+        violation_id: PolicyViolationId,
+        run_id: RunId,
+    },
+    /// `resolution` was not `"release"` or `"cancel"`.
+    #[error("invalid resolution {resolution:?}; expected \"release\" or \"cancel\"")]
+    InvalidResolution { resolution: String },
+    /// No violation exists with the given id.
+    #[error("policy violation {violation_id} not found")]
+    NotFound { violation_id: PolicyViolationId },
+    /// Recording the audited cancellation intent failed.
+    #[error(transparent)]
+    Db(#[from] DbError),
+}
+
+/// The outcome of [`ViolationService::decide`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecideOutcome {
+    /// The violation was newly resolved.
+    Decided,
+    /// The violation was already resolved with this same resolution.
+    AlreadyDecided,
+}
+
+/// Records and resolves mid-run nested-worker policy violations.
+pub struct ViolationService {
+    db: Arc<DatabaseHandle>,
+    project_id: ProjectId,
+    events_tx: broadcast::Sender<EventEnvelope>,
+    run_driver: Option<Arc<dyn RunDriver>>,
+    /// The configured `nestedViolationAction`, applied uniformly to every
+    /// violation this daemon instance records (a single runtime-policy
+    /// value, not per-run).
+    action: NestedViolationAction,
+}
+
+impl ViolationService {
+    #[must_use]
+    pub fn new(
+        db: Arc<DatabaseHandle>,
+        project_id: ProjectId,
+        events_tx: broadcast::Sender<EventEnvelope>,
+        run_driver: Option<Arc<dyn RunDriver>>,
+        action: NestedViolationAction,
+    ) -> Self {
+        Self {
+            db,
+            project_id,
+            events_tx,
+            run_driver,
+            action,
+        }
+    }
+
+    /// Broadcasts the envelope embedded by a mutation's `run_domain_op`
+    /// closure to live subscribers, if present, then strips it so the
+    /// caller's JSON-RPC response never carries the internal key.
+    fn broadcast(&self, value: &mut Value) {
+        if let Some(envelope) = take_envelope(value) {
+            let _ = self.events_tx.send(envelope);
+        }
+    }
+
+    /// Loads a run's current `state` and full `flags`, for the
+    /// idempotency check in [`ViolationService::record`] and to
+    /// read-modify-write a single flag via
+    /// [`DomainRepository::set_run_flags`].
+    async fn load_run_state_and_flags(
+        &self,
+        run_id: RunId,
+    ) -> Result<(RunState, RunFlags), ViolationError> {
+        let value = self
+            .db
+            .run_domain_op(Box::new(move |conn| {
+                conn.query_row(
+                    "SELECT state, flags_degraded_control, flags_needs_reconciliation,
+                            flags_protocol_unhealthy, flags_policy_quarantined,
+                            flags_workspace_dirty, flags_children_active
+                     FROM runs WHERE run_id = ?1",
+                    [run_id.to_string()],
+                    |row| {
+                        Ok(json!({
+                            "state": row.get::<_, String>(0)?,
+                            "flags": {
+                                "degradedControl": row.get::<_, i64>(1)? != 0,
+                                "needsReconciliation": row.get::<_, i64>(2)? != 0,
+                                "protocolUnhealthy": row.get::<_, i64>(3)? != 0,
+                                "policyQuarantined": row.get::<_, i64>(4)? != 0,
+                                "workspaceDirty": row.get::<_, i64>(5)? != 0,
+                                "childrenActive": row.get::<_, i64>(6)? != 0,
+                            }
+                        }))
+                    },
+                )
+                .map_err(|_| DomainError::NotFound {
+                    kind: "run",
+                    id: run_id.to_string(),
+                })
+            }))
+            .await
+            .map_err(ViolationError::Domain)?;
+        let state = RunState::try_from(value["state"].as_str().unwrap_or_default())
+            .map_err(|_| ViolationError::Domain(DomainError::NotFound {
+                kind: "run-state",
+                id: value["state"].to_string(),
+            }))?;
+        let flags = RunFlags {
+            degraded_control: value["flags"]["degradedControl"].as_bool().unwrap_or(false),
+            needs_reconciliation: value["flags"]["needsReconciliation"]
+                .as_bool()
+                .unwrap_or(false),
+            protocol_unhealthy: value["flags"]["protocolUnhealthy"].as_bool().unwrap_or(false),
+            policy_quarantined: value["flags"]["policyQuarantined"].as_bool().unwrap_or(false),
+            workspace_dirty: value["flags"]["workspaceDirty"].as_bool().unwrap_or(false),
+            children_active: value["flags"]["childrenActive"].as_bool().unwrap_or(false),
+        };
+        Ok((state, flags))
+    }
+
+    /// Called by [`crate::adapter::event_sink::DomainAdapterEventSink`]
+    /// when `NestedWorkerObserved` fires while the run's effective
+    /// `nested` capability is `NestedCapability::None`.
+    ///
+    /// Idempotent: if the run is already quarantined or already terminal
+    /// (a prior call already applied `action`), this still journals
+    /// `PolicyViolationRecorded` -- so OMP sees every subsequent
+    /// unexpected child -- but does not re-apply the quarantine flag,
+    /// create a second cancellation intent, or call `cancel_run` again.
+    ///
+    /// # Errors
+    /// Returns [`ViolationError::Domain`] if `run_id` does not exist.
+    pub async fn record(
+        &self,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        vendor_child_id: &str,
+        vendor_parent_ref: &str,
+    ) -> Result<(), ViolationError> {
+        let (state, mut flags) = self.load_run_state_and_flags(run_id).await?;
+        let already_actioned = flags.policy_quarantined || state.is_terminal();
+
+        let violation_id = PolicyViolationId::new();
+        let project_id = self.project_id;
+        let vendor_child_id_owned = vendor_child_id.to_string();
+        let vendor_parent_ref_owned = vendor_parent_ref.to_string();
+        let action_str = self.action.to_string();
+        let mut result = self
+            .db
+            .run_domain_op(Box::new(move |conn| {
+                let mut repo = DomainRepository::new(conn, project_id);
+                repo.record_policy_violation(
+                    violation_id,
+                    run_id,
+                    task_id,
+                    worker_id,
+                    &vendor_child_id_owned,
+                    &vendor_parent_ref_owned,
+                    &action_str,
+                )
+                .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+            }))
+            .await
+            .map_err(ViolationError::Domain)?;
+        self.broadcast(&mut result);
+
+        if already_actioned {
+            return Ok(());
+        }
+
+        match self.action {
+            NestedViolationAction::Quarantine => {
+                self.set_quarantined(run_id, &mut flags, true).await?;
+            }
+            NestedViolationAction::Cancel => {
+                self.create_cancellation_intent(run_id, worker_id, vendor_child_id, vendor_parent_ref)
+                    .await?;
+                self.cancel_and_transition(run_id).await?;
+            }
+            NestedViolationAction::QuarantineAndCancel => {
+                self.set_quarantined(run_id, &mut flags, true).await?;
+                self.create_cancellation_intent(run_id, worker_id, vendor_child_id, vendor_parent_ref)
+                    .await?;
+                self.cancel_and_transition(run_id).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Sets `flags.policy_quarantined = quarantined` via
+    /// [`DomainRepository::set_run_flags`] (read-modify-write on the
+    /// already-loaded `flags`), so existing `RunFlagsChanged` consumers
+    /// see the change without new dispatch logic.
+    async fn set_quarantined(
+        &self,
+        run_id: RunId,
+        flags: &mut RunFlags,
+        quarantined: bool,
+    ) -> Result<(), ViolationError> {
+        flags.policy_quarantined = quarantined;
+        let project_id = self.project_id;
+        let flags_owned = flags.clone();
+        let mut result = self
+            .db
+            .run_domain_op(Box::new(move |conn| {
+                let mut repo = DomainRepository::new(conn, project_id);
+                repo.set_run_flags(run_id, &flags_owned)
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+            }))
+            .await
+            .map_err(ViolationError::Domain)?;
+        self.broadcast(&mut result);
+        Ok(())
+    }
+
+    /// Creates an audited cancellation intent in the `operations` table
+    /// (the same mechanism `crate::db::actor` uses elsewhere) before
+    /// actually cancelling, per the Hardening plan's requirement that the
+    /// nested-worker cancellation path be audited.
+    async fn create_cancellation_intent(
+        &self,
+        run_id: RunId,
+        worker_id: WorkerId,
+        vendor_child_id: &str,
+        vendor_parent_ref: &str,
+    ) -> Result<(), ViolationError> {
+        use batman_protocol::{OperationId, Timestamp};
+
+        let intent = json!({
+            "runId": run_id.to_string(),
+            "workerId": worker_id.to_string(),
+            "vendorChildId": vendor_child_id,
+            "vendorParentRef": vendor_parent_ref,
+            "reason": "nested-worker policy violation",
+        });
+        let sanitized = Redactor::new().sanitize_json(&intent);
+        self.db
+            .record_operation_intent(
+                OperationId::new(),
+                "policyViolationCancel",
+                sanitized,
+                Timestamp::now(),
+            )
+            .await
+            .map_err(ViolationError::Db)
+    }
+
+    /// Calls the live adapter's `cancel(CancelScope::Worker)` if one is
+    /// running (mirrors `OrchestrationService::run_cancel`'s subprocess
+    /// termination), then transitions the run to `cancelled`.
+    async fn cancel_and_transition(&self, run_id: RunId) -> Result<(), ViolationError> {
+        if let Some(driver) = &self.run_driver
+            && let Err(err) = driver
+                .cancel_run(run_id, crate::adapter::CancelScope::Worker)
+                .await
+        {
+            tracing::warn!(
+                error = %err,
+                run_id = %run_id,
+                "failed to cancel adapter subprocess for policy violation"
+            );
+        }
+
+        let project_id = self.project_id;
+        let to = RunState::try_from("cancelled").expect("cancelled is valid");
+        let mut result = self
+            .db
+            .run_domain_op(Box::new(move |conn| {
+                let mut repo = DomainRepository::new(conn, project_id);
+                repo.transition_run(run_id, &to)
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+            }))
+            .await
+            .map_err(ViolationError::Domain)?;
+        self.broadcast(&mut result);
+        Ok(())
+    }
+
+    /// `policy/violation/decide`: resolves `violation_id` as `resolution`
+    /// (`"release"` or `"cancel"`) after verifying `principal_instance_id`
+    /// owns the violation's task, the resolution does not conflict with a
+    /// prior one, and -- for `"release"` -- that the run has not already
+    /// settled.
+    ///
+    /// # Errors
+    /// Returns [`ViolationError::Forbidden`] if `principal_instance_id`
+    /// does not own the task, [`ViolationError::Conflict`] if a different
+    /// resolution is already on record, [`ViolationError::RunSettled`] if
+    /// `resolution` is `"release"` and the run has already reached a
+    /// terminal state, and [`ViolationError::InvalidResolution`] if
+    /// `resolution` is neither `"release"` nor `"cancel"`.
+    pub async fn decide(
+        &self,
+        violation_id: PolicyViolationId,
+        principal_instance_id: &str,
+        resolution: &str,
+    ) -> Result<DecideOutcome, ViolationError> {
+        if resolution != "release" && resolution != "cancel" {
+            return Err(ViolationError::InvalidResolution {
+                resolution: resolution.to_string(),
+            });
+        }
+
+        let project_id = self.project_id;
+        let snapshot = self
+            .db
+            .run_domain_op(Box::new(move |conn| {
+                let mut repo = DomainRepository::new(conn, project_id);
+                let s = repo.policy_violation_snapshot(violation_id)?;
+                Ok(json!({
+                    "runId": s.run_id,
+                    "taskId": s.task_id,
+                    "workerId": s.worker_id,
+                    "resolution": s.resolution,
+                    "runState": s.run_state,
+                    "ownerClientInstanceId": s.owner_client_instance_id,
+                }))
+            }))
+            .await
+            .map_err(|_| ViolationError::NotFound { violation_id })?;
+
+        let owner = snapshot["ownerClientInstanceId"].as_str().unwrap_or_default();
+        if owner != principal_instance_id {
+            return Err(ViolationError::Forbidden {
+                instance_id: principal_instance_id.to_string(),
+                violation_id,
+            });
+        }
+
+        if let Some(existing) = snapshot["resolution"].as_str() {
+            return if existing == resolution {
+                Ok(DecideOutcome::AlreadyDecided)
+            } else {
+                Err(ViolationError::Conflict { violation_id })
+            };
+        }
+
+        let run_id = RunId::parse(snapshot["runId"].as_str().unwrap_or_default())
+            .map_err(|_| ViolationError::NotFound { violation_id })?;
+        let task_id = TaskId::parse(snapshot["taskId"].as_str().unwrap_or_default())
+            .map_err(|_| ViolationError::NotFound { violation_id })?;
+        let worker_id = WorkerId::parse(snapshot["workerId"].as_str().unwrap_or_default())
+            .map_err(|_| ViolationError::NotFound { violation_id })?;
+        let run_state = RunState::try_from(snapshot["runState"].as_str().unwrap_or_default())
+            .map_err(|_| ViolationError::NotFound { violation_id })?;
+
+        if resolution == "release" && run_state.is_terminal() {
+            return Err(ViolationError::RunSettled { violation_id, run_id });
+        }
+
+        let resolved_by = principal_instance_id.to_string();
+        let resolution_owned = resolution.to_string();
+        let mut result = self
+            .db
+            .run_domain_op(Box::new(move |conn| {
+                let mut repo = DomainRepository::new(conn, project_id);
+                repo.resolve_policy_violation(
+                    violation_id,
+                    run_id,
+                    task_id,
+                    worker_id,
+                    &resolution_owned,
+                    &resolved_by,
+                )
+                .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+            }))
+            .await
+            .map_err(ViolationError::Domain)?;
+        self.broadcast(&mut result);
+
+        if resolution == "release" {
+            let (_, mut flags) = self.load_run_state_and_flags(run_id).await?;
+            self.set_quarantined(run_id, &mut flags, false).await?;
+        } else {
+            self.cancel_and_transition(run_id).await?;
+        }
+
+        Ok(DecideOutcome::Decided)
+    }
+}
