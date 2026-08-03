@@ -1,10 +1,10 @@
 # BATMAN TODO
 
-Every item below was verified against the current codebase (not inferred from prior docs). Superseded/false claims from earlier sessions are corrected inline. Priority order reflects what blocks core functionality first, then Hardening/release readiness, then polish. Last full re-verification pass: 2026-08-03 (full validation sweep of every open item, plus a fresh `bun test` run — not previously included in prior sweeps). No Critical-severity items remain open. Zero regressions found among previously-tracked items; one stale/false claim corrected (item 54); two new gaps discovered (items 9, 30); **item 6 root-cause corrected** (was misdiagnosed as an adapter-side omission; the actual bug is `scenario::ALL` omitting two constants plus Copilot missing the `unexpected_child_observation` scenario function); **item 3 cross-referenced** against `repository.rs:140` INSERT and `connection.rs:660-661` replay reconstruction; **item 53 confirmed** `1.0.77` still absent from `COPILOT_KNOWN_CLI_VERSIONS`.\n\n**Open test failures (current, 2026-08-03):**\n- Rust: 7 failing — `claude_adapter` (1, item 6), `codex_adapter` (1, item 6), `copilot_adapter` (2: item 6 + item 53), `conformance` (5, item 5); all others pass\n- Bun: 2 failing — `runtime.test.ts` (item 9), `index.test.ts` (item 57)
+Every item below was verified against the current codebase (not inferred from prior docs). Superseded/false claims from earlier sessions are corrected inline. Priority order reflects what blocks core functionality first, then Hardening/release readiness, then polish. Last full re-verification pass: 2026-08-03 (full validation sweep of every open item, plus a fresh `bun test` run — not previously included in prior sweeps). No Critical-severity items remain open. Zero regressions found among previously-tracked items; one stale/false claim corrected (item 54); two new gaps discovered (items 9, 57); **item 6 root-cause corrected** (was misdiagnosed as an adapter-side omission; the actual bug is `scenario::ALL` omitting two constants plus Copilot missing the `unexpected_child_observation` scenario function); **item 3 cross-referenced** against `repository.rs:140` INSERT and `connection.rs:660-661` replay reconstruction; **item 53 confirmed** `1.0.77` still absent from `COPILOT_KNOWN_CLI_VERSIONS`.\n\n**Open test failures (current, 2026-08-03):**\n- Rust: 7 failing — `claude_adapter` (1, item 6), `codex_adapter` (1, item 6), `copilot_adapter` (2: item 6 + item 53), `conformance` (5, item 5); all others pass\n- Bun: 2 failing — `runtime.test.ts` (item 9), `index.test.ts` (item 57)
 
-**Extended sweep (2026-08-03):** cross-referenced every item against the 8 planning documents in the Obsidian vault (`10 Projects/Batman/`) and did a deeper, file-by-file read of `workspace/`, `approval/`, `supervisor/`, `coordination/`, `service/`, `audit/`, `crates/protocol/`, `packages/protocol-ts/`, and `packages/extension/src/` than any prior sweep. This surfaced ten more previously-untracked gaps (items 32-41) and narrowed item 61's "Closed" claim (see item 59). Two issues from an earlier ad hoc review of `retention.rs` (a TEXT/INTEGER cutoff-comparison bug and a wrong terminal-state list) were re-checked here and found already fixed by commit `7c05d19` — not re-added. `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace --doc` were each re-run twice; no failures beyond the ones already tracked (items 5, 6, 26, and the documented `lifecycle` flake) were found.
+**Extended sweep (2026-08-03):** cross-referenced every item against the 8 planning documents in the Obsidian vault (`10 Projects/Batman/`) and did a deeper, file-by-file read of `workspace/`, `approval/`, `supervisor/`, `coordination/`, `service/`, `audit/`, `crates/protocol/`, `packages/protocol-ts/`, and `packages/extension/src/` than any prior sweep. This surfaced ten more previously-untracked gaps (items 10-14, 28-30, and 59-60) and narrowed item 42's "Closed" claim (see item 13). Two issues from an earlier ad hoc review of `retention.rs` (a TEXT/INTEGER cutoff-comparison bug and a wrong terminal-state list) were re-checked here and found already fixed by commit `7c05d19` — not re-added. `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace --doc` were each re-run twice; no failures beyond the ones already tracked (items 5, 6, 53, and the documented `lifecycle` flake) were found.
 
-**Second extended sweep (2026-08-04):** items 1, 32, and 33 closed since the prior sweep (nested-worker policy violations implemented; workspace/artifact RPC surface wired to real handlers; run/cancel now terminates the live vendor subprocess). Item 43 (no OMP tool wraps `profile/register`) discovered while preparing a live demo. A follow-up full re-read of all 8 Obsidian vault planning documents (each dispatched to an independent reviewer, cross-checked against the current code rather than trusting any plan doc's own prose) surfaced 18 further previously-untracked gaps (items 44-61) and one addendum to item 59. The Foundation (M0) plan doc was re-verified in full and confirmed to have no remaining gaps — everything in it is implemented. The most significant new finding: `PolicyEvaluator` enforces only 2 of the 6 authorization dimensions the Hardening plan and original design doc specify (cost ceilings and adapter-kind allowlisting have no implementation at all — see item 44), independently corroborated by three separate planning documents.
+**Second extended sweep (2026-08-04):** items 1, 10, and 11 closed since the prior sweep (nested-worker policy violations implemented; workspace/artifact RPC surface wired to real handlers; run/cancel now terminates the live vendor subprocess). Item 15 (no OMP tool wraps `profile/register`) discovered while preparing a live demo. A follow-up full re-read of all 8 Obsidian vault planning documents (each dispatched to an independent reviewer, cross-checked against the current code rather than trusting any plan doc's own prose) surfaced 18 further previously-untracked gaps (items 17-25, 31-38, and 62) and one addendum to item 59. The Foundation (M0) plan doc was re-verified in full and confirmed to have no remaining gaps — everything in it is implemented. The most significant new finding: `PolicyEvaluator` enforces only 2 of the 6 authorization dimensions the Hardening plan and original design doc specify (cost ceilings and adapter-kind allowlisting have no implementation at all — see item 18), independently corroborated by three separate planning documents.
 
 ---
 
@@ -271,9 +271,9 @@ No file is ever created, no event is ever read from the database, no redaction i
 
 ---
 
-### 13. `batcave doctor` crashes with a config-parse error instead of running its health checks, whenever the database opens successfully (i.e., the normal case after `serve` has run) — narrows item 61's "Closed" status
+### 13. `batcave doctor` crashes with a config-parse error instead of running its health checks, whenever the database opens successfully (i.e., the normal case after `serve` has run) — narrows item 42's "Closed" status
 
-**Status:** Open (newly discovered 2026-08-03; reproduced live) — **narrows item 61**, which verified the CLI subcommand exists and is wired but did not check this path
+**Status:** Open (newly discovered 2026-08-03; reproduced live) — **narrows item 42**, which verified the CLI subcommand exists and is wired but did not check this path
 **Priority:** High
 **Labels:** bug, cli, doctor, documentation-correction
 
@@ -286,14 +286,14 @@ $ ./target/debug/batcave doctor --state-dir <fresh-dir> --repo <real-repo-dir> -
 {"error":"failed to load config: YAML parse error in <repo-dir>: Is a directory (os error 21)","healthy":false}
 EXIT=1
 ```
-This happens before `Doctor::check()` ever runs — none of the actual health checks (rollout gates, binary source, etc.) execute. Item 15's 4 passing tests (`doctor_with_nonexistent_state_dir`, `doctor_with_missing_db_returns_failure`, `doctor_json_mode_with_missing_db`, `doctor_with_nonexistent_repo`) all fail earlier, at the database-open step — none of them reach the config-load step, so this bug has zero test coverage and was invisible to item 61's verification.
+This happens before `Doctor::check()` ever runs — none of the actual health checks (rollout gates, binary source, etc.) execute. Item 42's 4 passing tests (`doctor_with_nonexistent_state_dir`, `doctor_with_missing_db_returns_failure`, `doctor_json_mode_with_missing_db`, `doctor_with_nonexistent_repo`) all fail earlier, at the database-open step — none of them reach the config-load step, so this bug has zero test coverage and was invisible to item 42's verification.
 
 **Failure scenario:** every real invocation of `batcave doctor --repo <dir>` against an existing, already-`serve`d repository (the single most common real-world case) fails outright with a config-parse error instead of reporting the actual health status.
 
 **Implementation:**
 - Pass a real config *file* path (e.g. `repo.join("batman.yaml")` or whatever the repo-config filename convention is) to `LayeredConfig::load`, not the repo directory itself — matching how `run_serve` resolves `--repo-config`
 - Add a `doctor` test that uses a real, existing state dir + database (so it reaches the config-load step) to catch regressions here
-- Update item 61's status to reflect this narrower scope once fixed
+- Update item 42's status to reflect this narrower scope once fixed
 
 **References:** `crates/runtime/src/cli.rs:398-432`, `crates/runtime/src/config/merge.rs:56-72`, `crates/runtime/tests/doctor.rs`
 
@@ -315,7 +315,7 @@ function resolveStateDir(cwd: string): string {
 ```
 Every `batman_doctor` tool call and `/batman-doctor` command (`index.ts:100,109,116`) uses this. This is a completely different state-root scheme than the one the rest of the extension uses to actually spawn/connect to the real daemon: `packages/extension/src/state.ts::resolveStateRoot()` resolves `BATMAN_STATE_DIR` → `$XDG_STATE_HOME/omp/batman` → `$HOME/.omp/orchestrator`. `doctor.ts` never calls `resolveStateRoot` — it always passes the wrong explicit `--state-dir <repo>/.batman`, which essentially never coincides with a real deployment's actual state root.
 
-This compounds with a second bug: `doctor.ts:112-135`'s early-failure handling. When `batcave doctor --json` fails before running real checks (e.g. item 59's config-load error, or a db-open error), it prints `{"healthy": false, "error": "..."}` — a shape with no `passed_checks`/`failed_checks`. `formatDoctorOutput` unconditionally accesses `result.passed_checks.length`, throwing on this shape; the throw is caught by an outer `catch` that falls back to `failureResult(ctx, "doctor-failed", stderr || \`Doctor command exited with code ${exitCode}\`, ...)`. Since `batcave doctor`'s failure path writes to stdout (not stderr), `stderr` is empty, so the user only ever sees the generic "Doctor command exited with code 1" — the real diagnostic message the Rust CLI computed is silently discarded.
+This compounds with a second bug: `doctor.ts:112-135`'s early-failure handling. When `batcave doctor --json` fails before running real checks (e.g. item 13's config-load error, or a db-open error), it prints `{"healthy": false, "error": "..."}` — a shape with no `passed_checks`/`failed_checks`. `formatDoctorOutput` unconditionally accesses `result.passed_checks.length`, throwing on this shape; the throw is caught by an outer `catch` that falls back to `failureResult(ctx, "doctor-failed", stderr || \`Doctor command exited with code ${exitCode}\`, ...)`. Since `batcave doctor`'s failure path writes to stdout (not stderr), `stderr` is empty, so the user only ever sees the generic "Doctor command exited with code 1" — the real diagnostic message the Rust CLI computed is silently discarded.
 
 **Failure scenario:** any user of `/batman-doctor` or the `batman_doctor` tool against a repo whose runtime state lives at the real default (`~/.omp/orchestrator` or a `BATMAN_STATE_DIR`/`XDG_STATE_HOME` override) gets "Doctor command failed: Doctor command exited with code 1" regardless of whether the runtime is actually healthy, because the tool is checking a directory that was never created — and even once that's fixed, any remaining failure's real cause is thrown away by the JSON-shape mismatch.
 
@@ -418,7 +418,7 @@ The Hardening plan's Task 1 states `PolicyEvaluator` "validates model/adapter al
 Verified against the actual code: `crates/runtime/src/policy/evaluate.rs::evaluate` (lines 141-181) checks only model allowlist, nested-worker denial, and concurrency ceiling.
 - **Cost ceilings: zero implementation anywhere.** `RuntimePolicy` (`crates/runtime/src/config/merge.rs:391-410`) has no `cost` field at all; `RolloutGates` (`merge.rs:237-254`) has no cost-related gate either. A repo-wide grep for `cost_ceiling|CostCeiling|cost_limit|budget|CostProjection` across `crates/` returns no policy-relevant matches — `cost`/`cost_usd` appears only as reported *telemetry* in adapter normalizers (`adapter/event_sink.rs:92`, `claude/normalize.rs`, `codex/normalize.rs`, `omp_rpc/normalize.rs`), never compared against a limit.
 - **Adapter-kind allowlist: a permanent no-op, confirmed by the code's own comment** (`evaluate.rs:167-170`): `// Adapter kind is available for a future org-level denylist; no denylist is configured yet, so every adapter passes this check ... let _ = profile.adapter_kind();`
-- **Capability validation and native-discovery acknowledgement**: neither is checked by `evaluate()` at all. `native_discovery_reviewed` exists only as a `RolloutGates` field checked by `batcave doctor` (advisory-only, per item 59's clarified understanding of rollout gates), never by `PolicyEvaluator`.
+- **Capability validation and native-discovery acknowledgement**: neither is checked by `evaluate()` at all. `native_discovery_reviewed` exists only as a `RolloutGates` field checked by `batcave doctor` (advisory-only, per item 40's clarified understanding of rollout gates), never by `PolicyEvaluator`.
 
 **Failure scenario:** an org configures (or believes it has configured) a daily/per-run cost ceiling or an adapter-kind restriction expecting BATMAN to refuse runs that would violate it — there is no config key to even express that intent for cost, and adapter-kind restriction silently passes every adapter regardless of any future config. A Claude/Codex/Copilot run can accumulate unbounded spend with no enforcement path at all.
 
@@ -439,7 +439,7 @@ Verified against the actual code: `crates/runtime/src/policy/evaluate.rs::evalua
 **Labels:** bug, policy, persistence, hardening
 
 **Description:**
-`RuntimePolicy::compute_fingerprint` (`crates/runtime/src/config/merge.rs:427-432`) computes a real SHA-256 fingerprint of the merged policy, but it is never written anywhere: the `runs` table (`crates/runtime/src/db/migrations.rs:58-73`) has no `policy_fingerprint` column, and a repo-wide grep for "fingerprint" shows every other occurrence is the unrelated `WorkerProfile` fingerprint concept (see item 61). Separately, `PolicyViolationRecorded`'s actual fields (`crates/protocol/src/event.rs:311-316`) are only `violation_id, vendor_child_id, vendor_parent_ref, action` — missing `code`, `observedEventSequence`, and `policyFingerprint`, all three of which the Hardening plan's Task 1 explicitly specifies as canonical fields on this event, alongside `action` (which item 1's implementation did add).
+`RuntimePolicy::compute_fingerprint` (`crates/runtime/src/config/merge.rs:427-432`) computes a real SHA-256 fingerprint of the merged policy, but it is never written anywhere: the `runs` table (`crates/runtime/src/db/migrations.rs:58-73`) has no `policy_fingerprint` column, and a repo-wide grep for "fingerprint" shows every other occurrence is the unrelated `WorkerProfile` fingerprint concept (see item 15). Separately, `PolicyViolationRecorded`'s actual fields (`crates/protocol/src/event.rs:311-316`) are only `violation_id, vendor_child_id, vendor_parent_ref, action` — missing `code`, `observedEventSequence`, and `policyFingerprint`, all three of which the Hardening plan's Task 1 explicitly specifies as canonical fields on this event, alongside `action` (which item 1's implementation did add).
 
 **Failure scenario:** an operator investigating a policy violation after the fact cannot determine which policy snapshot (org/repo/user/per-run merge) was in effect when the violation occurred, nor correlate it to a specific prior event by sequence number — the violation record exists but is missing exactly the fields that would make it auditable against a specific policy version.
 
@@ -480,21 +480,21 @@ A broken or malformed org-supplied regex pattern silently degrades every subsequ
 
 ### 21. `batcave doctor`'s check catalog implements only 4 trivial checks (2 of which are stub no-ops); roughly 9 of the Hardening plan's ~13 required check categories don't exist at all
 
-**Status:** Open (newly discovered 2026-08-04) — broader in scope than items 9/35/36, which each describe a narrow bug in the existing 4 checks
+**Status:** Open (newly discovered 2026-08-04) — broader in scope than items 9/13/14, which each describe a narrow bug in the existing 4 checks
 **Priority:** High
 **Labels:** bug, doctor, observability, hardening
 
 **Description:**
 `crates/runtime/src/doctor.rs::check()` (lines 142-218) runs exactly four checks: database-connectivity, state-dir-exists, rollout-gates, configuration-valid. Two of the four are literal stub no-ops with their own disclaimer comments: `check_database` (lines 221-225) is `Ok(())` labeled "This is a stub implementation," and `check_configuration` (lines 241-246) is likewise `Ok(())` with the same disclaimer. None of the Hardening plan's Task 4 other required checks exist anywhere in the file: platform/libc/arch compatibility, socket peer security, binary integrity/version, per-adapter CLI version/auth-readiness/capability (fixture report) checks, generated-schema compatibility, display backend availability, disk space, and stale processes/workspaces.
 
-This is much broader than the already-tracked items 9 (missing `binary_source` in one existing check), 35 (a config-parse crash in the existing config-valid check), and 36 (the extension-side tool resolves the wrong state directory) — none of those three notes that most of the plan's required check catalog was never built in the first place, as opposed to being built but buggy.
+This is much broader than the already-tracked items 9 (missing `binary_source` in one existing check), 13 (a config-parse crash in the existing config-valid check), and 14 (the extension-side tool resolves the wrong state directory) — none of those three notes that most of the plan's required check catalog was never built in the first place, as opposed to being built but buggy.
 
 **Failure scenario:** an operator runs `batcave doctor` expecting a comprehensive pre-flight/health report per the Hardening plan's spec, and instead gets a report covering roughly 4 of ~13 intended categories — with no signal that the other categories were never implemented, since the tool reports "healthy" success for checks that were never run rather than reporting them as absent.
 
 **Implementation:**
 - Implement `check_database` and `check_configuration` for real (currently stub no-ops)
 - Add the remaining ~9 check categories per Task 4's spec: platform/libc/arch, socket peer security, binary integrity/version, per-adapter CLI auth-readiness/capability report, generated-schema compatibility, display availability, disk space, stale processes/workspaces
-- Once items 9, 35, and 36 are separately fixed, re-verify this item's remaining scope narrows to just "the missing categories," not the existing ones
+- Once items 9, 13, and 14 are separately fixed, re-verify this item's remaining scope narrows to just "the missing categories," not the existing ones
 
 **References:** `crates/runtime/src/doctor.rs:142-246`, `.../2026-07-22-batman-hardening-release.md` (Task 4)
 
@@ -502,7 +502,7 @@ This is much broader than the already-tracked items 9 (missing `binary_source` i
 
 ### 22. `coordination/child/list` and `coordination/child/decide` are fully implemented and OMP-authorized, but no OMP tool ever calls them — the entire accept/deny half of nested-worker spawning is unreachable from a live session
 
-**Status:** Open (newly discovered 2026-08-04) — same shape as item 61
+**Status:** Open (newly discovered 2026-08-04) — same shape as item 15
 **Priority:** High
 **Labels:** bug, tooling, coordination, extension
 
@@ -544,14 +544,14 @@ The Orchestration Extension plan's Task 5 Interfaces state the module "Calls `re
 
 ### 24. Workspace and artifact RPC handlers never emit a single runtime event — breaks the "everything is replayable via the event stream" architecture principle and leaves the monitor with nothing to render
 
-**Status:** Open (newly discovered 2026-08-04) — distinct from item 53 (which fixed RPC *routing*; this is about event *emission*, never covered by item 53's fix)
+**Status:** Open (newly discovered 2026-08-04) — distinct from item 10 (which fixed RPC *routing*; this is about event *emission*, never covered by item 10's fix)
 **Priority:** High
 **Labels:** bug, workspace, events, hardening
 
 **Description:**
 The Workspaces/Displays plan's Task 1 requires `LeaseRequested`/`LeaseAcquired`/`WorkspaceDirty`/`WorkspaceInspected`/`ApplyStarted`/`ApplyCompleted`/`ApplyConflict`/`LeaseReleased`/`CleanupFailed`/`ArtifactPublished` — all defined as `WorkspaceEvent` variants (`crates/protocol/src/workspace.rs:188-241`), wrapped by `RuntimeEvent::WorkspaceEvent` (`crates/protocol/src/event.rs`). Zero construction sites exist anywhere in `crates/runtime/src/` outside the protocol definitions themselves: `orchestration.rs`'s `workspace_acquire/get/release/inspect/apply` (lines 642-744) never call `self.broadcast`. `lifecycle.rs:642`'s `RuntimeEvent::WorkspaceEvent` match arm is dead code for real traffic — nothing ever produces the event it matches on.
 
-This breaks the plan's core architecture principle (display adapters subscribe to the same replayable runtime event stream as everything else) and the plan's Task 5 requirement that the monitor render "workspace evidence" — there is currently no workspace activity in the event journal at all, so nothing downstream (the monitor, `events/replay`, audit export once item 39 is fixed) can ever show it.
+This breaks the plan's core architecture principle (display adapters subscribe to the same replayable runtime event stream as everything else) and the plan's Task 5 requirement that the monitor render "workspace evidence" — there is currently no workspace activity in the event journal at all, so nothing downstream (the monitor, `events/replay`, audit export once item 12 is fixed) can ever show it.
 
 **Implementation:**
 - Add `self.broadcast(...)` calls to each workspace/artifact RPC handler in `orchestration.rs`, constructing the appropriate `WorkspaceEvent` variant for lease acquire/release, inspect, apply start/complete/conflict, cleanup failure, and artifact publish
@@ -626,7 +626,7 @@ This is not a functional bug today, but it means a *third-party* display client 
 **Labels:** bug, audit, persistence, hardening
 
 **Description:**
-`crates/runtime/src/audit/retention.rs`'s `Retention::prune` is a real, correct implementation (bounded-batch deletion, correct terminal-run-state filter, correct RFC3339 text cutoff comparison — no bugs found in the logic itself). But `crates/runtime/src/cli.rs`'s `AuditCommand` enum has only an `Export` variant, no `Prune`/`Retention` subcommand; `lifecycle.rs` has zero references to `Retention`/`prune`. A full-repo grep confirms `Retention::new`/`.prune(` are called only from `retention.rs`'s own `#[cfg(test)]` module (and referenced in a comment in the still-empty `tests/audit.rs`, see item 39). Separately, `retention.rs`'s own `test_retention_prune` doesn't actually exercise pruning — it only asserts the struct's field was set, per its own comment ("For now, just verify the struct can be created").
+`crates/runtime/src/audit/retention.rs`'s `Retention::prune` is a real, correct implementation (bounded-batch deletion, correct terminal-run-state filter, correct RFC3339 text cutoff comparison — no bugs found in the logic itself). But `crates/runtime/src/cli.rs`'s `AuditCommand` enum has only an `Export` variant, no `Prune`/`Retention` subcommand; `lifecycle.rs` has zero references to `Retention`/`prune`. A full-repo grep confirms `Retention::new`/`.prune(` are called only from `retention.rs`'s own `#[cfg(test)]` module (and referenced in a comment in the still-empty `tests/audit.rs`, see item 12). Separately, `retention.rs`'s own `test_retention_prune` doesn't actually exercise pruning — it only asserts the struct's field was set, per its own comment ("For now, just verify the struct can be created").
 
 **Failure scenario:** every real deployment's `events` table grows without bound indefinitely — there is no way, via CLI or automatic wiring, to ever invoke the retention logic that exists specifically to prevent that.
 
@@ -820,16 +820,16 @@ The Workspaces/Displays plan's Task 8 requires `DisplaySelector::attach(run_id, 
 
 ### 38. The TS monitor never renders artifact, usage, or workspace events — `model.ts`'s event switch has no case for any of them
 
-**Status:** Open (newly discovered 2026-08-04) — related to item 52 (no workspace events are emitted at all) but a distinct root cause in a different layer; fixing item 52 alone would still leave this gap for usage/artifact events, which already ARE emitted today
+**Status:** Open (newly discovered 2026-08-04) — related to item 24 (no workspace events are emitted at all) but a distinct root cause in a different layer; fixing item 24 alone would still leave this gap for usage/artifact events, which already ARE emitted today
 **Priority:** Medium
 **Labels:** bug, extension, monitor
 
 **Description:**
-The Workspaces/Displays plan's Task 5 requires the monitor to render "...usage, artifacts, and workspace evidence." `packages/extension/src/monitor/model.ts`'s `eventPatch` switch (lines 167-221) handles only `runEvent`/`runFlagsEvent`/`messageEvent`/`approvalEvent`/`childEvent` — there is no case for `workspaceEvent`, `adapterArtifactEvent`, or `adapterUsageEvent`. The latter two are already emitted today (confirmed via `crates/runtime/src/adapter/event_sink.rs:284`), so this is a real, independently-fixable rendering gap — it doesn't require item 52's backend fix to at least render usage/artifact evidence, only workspace evidence needs both fixed together.
+The Workspaces/Displays plan's Task 5 requires the monitor to render "...usage, artifacts, and workspace evidence." `packages/extension/src/monitor/model.ts`'s `eventPatch` switch (lines 167-221) handles only `runEvent`/`runFlagsEvent`/`messageEvent`/`approvalEvent`/`childEvent` — there is no case for `workspaceEvent`, `adapterArtifactEvent`, or `adapterUsageEvent`. The latter two are already emitted today (confirmed via `crates/runtime/src/adapter/event_sink.rs:284`), so this is a real, independently-fixable rendering gap — it doesn't require item 24's backend fix to at least render usage/artifact evidence, only workspace evidence needs both fixed together.
 
 **Implementation:**
 - Add `workspaceEvent`/`adapterArtifactEvent`/`adapterUsageEvent` cases to `model.ts`'s `eventPatch` switch, and corresponding render logic in `render.ts`
-- Usage/artifact rendering can ship independently of item 52; workspace-event rendering needs item 52's backend emission fixed first to have anything to render
+- Usage/artifact rendering can ship independently of item 24; workspace-event rendering needs item 24's backend emission fixed first to have anything to render
 
 **References:** `packages/extension/src/monitor/model.ts:167-221`, `crates/runtime/src/adapter/event_sink.rs:284`, `.../2026-07-22-batman-workspaces-displays.md` (Task 5)
 
@@ -880,12 +880,12 @@ Previously open: no `.github/workflows/ci.yml` existed. Re-verified: `.github/wo
 
 ### 42. `batcave doctor` CLI + `/batman-doctor` OMP command — CLI SURFACE RESOLVED, but narrowed 2026-08-03 — the command crashes on the most common real-world path
 
-**Status:** Closed for the original scope (the CLI subcommand exists, is wired, and its 4 existing tests pass) — but **narrowed 2026-08-03**: those 4 tests all fail before reaching config-load, so they never caught that `run_doctor` crashes on any repo where the database opens successfully. See new item 59 (Rust CLI bug) and item 60 (extension-side `doctor.ts` uses the wrong state directory entirely). Neither is a regression in this item's original fix — both are gaps this item's verification never exercised.
+**Status:** Closed for the original scope (the CLI subcommand exists, is wired, and its 4 existing tests pass) — but **narrowed 2026-08-03**: those 4 tests all fail before reaching config-load, so they never caught that `run_doctor` crashes on any repo where the database opens successfully. See new item 13 (Rust CLI bug) and item 14 (extension-side `doctor.ts` uses the wrong state directory entirely). Neither is a regression in this item's original fix — both are gaps this item's verification never exercised.
 **Priority:** — (was Medium)
 **Labels:** cli, doctor, extension, documentation-correction
 
 **Description:**
-Re-verified: `cli.rs` still has a `Doctor { state_dir, repo, json }` variant wired to `run_doctor()`. `cargo test -p batman-runtime --test doctor` still passes 4/4 (`doctor_with_nonexistent_state_dir`, `doctor_with_missing_db_returns_failure`, `doctor_json_mode_with_missing_db`, `doctor_with_nonexistent_repo`). `packages/extension/src/doctor.ts` and the `/batman-doctor` command remain in place. Note: the extension-side registration test for this feature has since drifted stale in an unrelated way — see item 57. **New finding:** all 4 passing tests fail at the database-open step, before `run_doctor` ever reaches `LayeredConfig::load` — so none of them exercise the path where the DB opens successfully and config-loading is reached, which is exactly where item 59's bug lives (the repo directory gets passed as if it were a config *file* path, always producing a parse error). This item's "Closed" verification was correct as far as it checked; it simply never checked that path.
+Re-verified: `cli.rs` still has a `Doctor { state_dir, repo, json }` variant wired to `run_doctor()`. `cargo test -p batman-runtime --test doctor` still passes 4/4 (`doctor_with_nonexistent_state_dir`, `doctor_with_missing_db_returns_failure`, `doctor_json_mode_with_missing_db`, `doctor_with_nonexistent_repo`). `packages/extension/src/doctor.ts` and the `/batman-doctor` command remain in place. Note: the extension-side registration test for this feature has since drifted stale in an unrelated way — see item 57. **New finding:** all 4 passing tests fail at the database-open step, before `run_doctor` ever reaches `LayeredConfig::load` — so none of them exercise the path where the DB opens successfully and config-loading is reached, which is exactly where item 13's bug lives (the repo directory gets passed as if it were a config *file* path, always producing a parse error). This item's "Closed" verification was correct as far as it checked; it simply never checked that path.
 
 **References:** `crates/runtime/src/cli.rs`, `crates/runtime/src/doctor.rs`, `crates/runtime/tests/doctor.rs`, `packages/extension/src/doctor.ts`
 
@@ -930,7 +930,7 @@ Fixed by adding `Command::CoordinationMcp { state_dir, repo, run_id }`, dispatch
 
 **Verification:**
 - `crates/runtime/tests/coordination_mcp.rs` (9 pre-existing tests, unmodified): still 9/9 passing as of 2026-08-03.
-- Full workspace regression check (`--no-fail-fast`), re-run 2026-08-03: every failure present is already tracked (items 5, 6, 26) — none are caused by this fix.
+- Full workspace regression check (`--no-fail-fast`), re-run 2026-08-03: every failure present is already tracked (items 5, 6, 53) — none are caused by this fix.
 
 **References:** `crates/runtime/src/cli.rs`, `crates/runtime/src/main.rs`, `crates/runtime/src/coordination/mcp.rs`, `crates/runtime/tests/coordination_mcp.rs`, `.../2026-07-22-batman-worker-adapters.md` (Task 7), `docs/superpowers/plans/2026-08-01-coordination-mcp-cli-subcommand.md`
 
@@ -966,7 +966,7 @@ Fixed by aligning every `INSERT` to the real schema (`crates/runtime/src/db/migr
 
 **Verification:**
 - `crates/runtime/tests/adapter_registry.rs`: still 5/5 passing as of 2026-08-03.
-- Full workspace `--no-fail-fast` regression check, re-run 2026-08-03: only the already-tracked pre-existing gaps remain (items 5, 6, 26); `lifecycle`'s one failure did not reproduce on this or the prior rerun — confirmed flaky, not a regression.
+- Full workspace `--no-fail-fast` regression check, re-run 2026-08-03: only the already-tracked pre-existing gaps remain (items 5, 6, 53); `lifecycle`'s one failure did not reproduce on this or the prior rerun — confirmed flaky, not a regression.
 
 **References:** `crates/runtime/tests/adapter_registry.rs`, `crates/runtime/src/db/migrations.rs:51-73`, `docs/superpowers/plans/2026-08-02-adapter-registry-schema-fix.md`
 
@@ -1126,9 +1126,9 @@ Both are real properties of the installed vendor binary, not bugs in this codeba
 **Labels:** testing, documentation-correction, extension
 
 **Description:**
-`bun test` (117 pass, 2 fail) surfaces one stale-list failure (the other, `runtime.test.ts`, is the real gap tracked as item 9): `packages/extension/src/index.test.ts::"registers batman_status plus every orchestration tool, and both slash commands"` asserts the exact registered-tools list equals `["batman_status", "batman_task", "batman_worker", "batman_run", "batman_message", "batman_approval", "batman_reconcile"]` — seven entries. The real extension registers an eighth tool, `batman_doctor` (confirmed real and intentional per item 61's resolution: `index.ts:113` registers both the `batman_doctor` tool and the `/batman-doctor` slash command). This test's expected list was simply never updated after that feature landed — the same class of bug as item 46's `ipc.rs` fix. The test's second assertion (`commands.keys()` equals `["batman-status", "batman"]`) is unreached in the current failure (the first `expect().toEqual()` throws before it runs) but is very likely also stale for the identical reason, since `index.ts:113` registers a `"batman-doctor"` command too — not independently confirmed by a passing/failing run, since the test never gets that far.
+`bun test` (117 pass, 2 fail) surfaces one stale-list failure (the other, `runtime.test.ts`, is the real gap tracked as item 9): `packages/extension/src/index.test.ts::"registers batman_status plus every orchestration tool, and both slash commands"` asserts the exact registered-tools list equals `["batman_status", "batman_task", "batman_worker", "batman_run", "batman_message", "batman_approval", "batman_reconcile"]` — seven entries. The real extension registers an eighth tool, `batman_doctor` (confirmed real and intentional per item 42's resolution: `index.ts:113` registers both the `batman_doctor` tool and the `/batman-doctor` slash command). This test's expected list was simply never updated after that feature landed — the same class of bug as item 46's `ipc.rs` fix. The test's second assertion (`commands.keys()` equals `["batman-status", "batman"]`) is unreached in the current failure (the first `expect().toEqual()` throws before it runs) but is very likely also stale for the identical reason, since `index.ts:113` registers a `"batman-doctor"` command too — not independently confirmed by a passing/failing run, since the test never gets that far.
 
-Git history on this test file's last substantive commit (`16f9a23`, an early "add orchestration tools" commit) confirms this predates the doctor-CLI feature (added far later, per item 61) — a long-standing gap, not a recent regression.
+Git history on this test file's last substantive commit (`16f9a23`, an early "add orchestration tools" commit) confirms this predates the doctor-CLI feature (added far later, per item 42) — a long-standing gap, not a recent regression.
 
 **Implementation:**
 - Add `"batman_doctor"` to the expected tools list in `index.test.ts`
@@ -1231,7 +1231,7 @@ The npm package name/scope is hardcoded as `@satori/*` across the workspace and 
 **Description:**
 The M2/M3 gap-closure doc's readiness matrix has a row: "`fixtures/displays/` does not exist ... Create `fixtures/displays/herdr/status-compatible.txt`, `status-mismatch.txt`, `fixtures/displays/tmux/list-panes.txt` ... Status: Closed (2026-07-27)." This is only partially true: `git ls-files fixtures/displays/` returns just `fixtures/displays/herdr/status-compatible.txt` and `fixtures/displays/herdr/status-mismatch.txt` — both real and referenced by `crates/runtime/tests/herdr_display.rs:16`. The `fixtures/displays/tmux/` directory exists on disk but is empty and untracked by git; `list-panes.txt` was never created. `crates/runtime/tests/tmux_display.rs` (444 lines) tests the tmux backend entirely via an in-code `MockCommandExecutor` with hardcoded results, never reading any fixture file — confirming the promised tmux fixture isn't just missing but unused by the test suite that actually shipped.
 
-This is the same class of documentation-correction as items 4 and 31 (both already tracked as false/stale claims from the same document), but a distinct row neither of those covers.
+This is the same class of documentation-correction as items 4 and 58 (both already tracked as false/stale claims from the same document), but a distinct row neither of those covers.
 
 **Implementation:**
 - Either create `fixtures/displays/tmux/list-panes.txt` and wire `tmux_display.rs` to use it (matching the herdr pattern), or correct the gap-closure doc's row to reflect that only the herdr fixtures were produced and the tmux fixture was descoped in favor of the mock-executor approach actually used
