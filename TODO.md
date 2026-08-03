@@ -14,7 +14,6 @@ Every item below was verified against the current codebase (not inferred from pr
 **Priority:** High
 **Labels:** security, policy, hardening
 
-**Description:**
 **Resolution (2026-08-04):**
 - ✅ Implemented `ViolationService` (`crates/runtime/src/policy/violation.rs`) with `record()` (idempotent per Option B — quarantine/cancel applied once, `PolicyViolationRecorded` journaled every time) and `decide()` (ownership check, conflict/idempotency, refuses `release` on a terminal run)
 - ✅ Added `MIGRATION_4` creating `policy_violations` table with `violation_id`, `run_id`, `task_id`, `worker_id`, `vendor_child_id`, `vendor_parent_ref`, `action`, `created_at`, `resolved_at`, `resolution`, `resolved_by`
