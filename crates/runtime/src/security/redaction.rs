@@ -388,8 +388,8 @@ mod tests {
     fn visible_text_survives_unchanged() {
         let redactor = Redactor::new();
         let persisted = redactor.sanitize(event(vec![visible("hello world")]));
-
-        match serde_json::from_str::<RuntimeEvent>(&persisted.event_json()) {
+        
+        match serde_json::from_str::<RuntimeEvent>(persisted.event_json()) {
             Ok(RuntimeEvent::Diagnostic { message, .. }) => {
                 assert_eq!(message, "hello world");
             }
@@ -400,9 +400,9 @@ mod tests {
     #[test]
     fn secret_fragments_are_dropped_entirely() {
         let redactor = Redactor::new();
-        let persisted = redactor.sanitize(event(vec![secret("sk-ABCDEFGHIJKLMNOPQRSTUVWX")]));
+        let persisted = redactor.sanitize(event(vec![secret("sk-ABC...UVWX")]));
 
-        match serde_json::from_str::<RuntimeEvent>(&persisted.event_json()) {
+        match serde_json::from_str::<RuntimeEvent>(persisted.event_json()) {
             Ok(RuntimeEvent::Diagnostic { message, .. }) => {
                 assert_eq!(message, "");
             }
@@ -415,7 +415,7 @@ mod tests {
         let redactor = Redactor::new();
         let persisted = redactor.sanitize(event(vec![thinking("internal reasoning")]));
 
-        match serde_json::from_str::<RuntimeEvent>(&persisted.event_json()) {
+        match serde_json::from_str::<RuntimeEvent>(persisted.event_json()) {
             Ok(RuntimeEvent::Diagnostic { message, .. }) => {
                 assert_eq!(message, "");
             }
@@ -430,7 +430,7 @@ mod tests {
             "key is sk-ABCDEFGHIJKLMNOPQRSTUVWX here",
         )]));
 
-        match serde_json::from_str::<RuntimeEvent>(&persisted.event_json()) {
+        match serde_json::from_str::<RuntimeEvent>(persisted.event_json()) {
             Ok(RuntimeEvent::Diagnostic { message, .. }) => {
                 assert!(message.contains("[REDACTED:api_key]"));
                 assert!(!message.contains("sk-ABCDEFGHIJKLMNOPQRSTUVWX"));
@@ -488,7 +488,7 @@ mod tests {
             "key is CUSTOM_SECRET_ABCDEFGHIJKLMNOP here",
         )]));
 
-        match serde_json::from_str::<RuntimeEvent>(&persisted.event_json()) {
+        match serde_json::from_str::<RuntimeEvent>(persisted.event_json()) {
             Ok(RuntimeEvent::Diagnostic { message, .. }) => {
                 assert!(message.contains("[REDACTED:org_pattern_0]"));
                 assert!(!message.contains("CUSTOM_SECRET_ABCDEFGHIJKLMNOP"));
