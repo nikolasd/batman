@@ -124,12 +124,26 @@ impl Server {
 
         let (events_tx, _events_rx) = broadcast::channel(64);
 
+        // Create workspace services.
+        let lease_db_path = socket
+            .parent()
+            .map(|p| p.join("workspace-leases.db"))
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp/workspace-leases.db"));
+        let lease_service = Arc::new(
+            crate::workspace::LeaseService::open(project_id, &lease_db_path)
+                .expect("failed to open lease service database"),
+        );
+        let artifact_store = Arc::new(crate::workspace::ArtifactStore::new());
+
         let orchestration = Arc::new(crate::service::OrchestrationService::new(
             db.clone(),
             project_id,
             config.run_driver.clone(),
             config.approval_callback.clone(),
             events_tx.clone(),
+            lease_service,
+            artifact_store,
+            config.repository.clone(),
         ));
         let coordination = Arc::new(crate::coordination::CoordinationBroker::new(
             db.clone(),

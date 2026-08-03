@@ -40,6 +40,7 @@ use crate::conformance;
 use crate::coordination::CoordinationBroker;
 use crate::domain::DomainRepository;
 use crate::service::{AdapterFuture as RunDriverFuture, RunDriver, RunDriverContext};
+use crate::adapter::CancelScope;
 /// adapter, given `effective_capabilities` -- always the conformance-
 /// filtered set, never the adapter's raw declared claims. Production
 /// construction of [`AdapterRegistry`] requires a real implementation;
@@ -309,6 +310,23 @@ impl RunDriver for AdapterRegistry {
                 .send(AdapterMessage::FollowUp { text: prompt })
                 .await
                 .map_err(|err| err.to_string())
+        })
+    }
+
+    fn running_adapter(&self, run_id: RunId) -> Option<Arc<dyn Adapter>> {
+        let running = Arc::clone(&self.running);
+        running.lock().get(&run_id).cloned()
+    }
+
+    fn cancel_run(&self, run_id: RunId, scope: CancelScope) -> RunDriverFuture<'static, Result<(), String>> {
+        let running = Arc::clone(&self.running);
+
+        Box::pin(async move {
+            let adapter = running.lock().get(&run_id).cloned().ok_or_else(|| {
+                RegistryError::NoRunningAdapter(run_id).to_string()
+            })?;
+
+            adapter.cancel(scope).await.map_err(|e| e.to_string())
         })
     }
 }

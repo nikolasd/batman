@@ -30,17 +30,16 @@ pub struct CreatedLease {
 }
 
 pub struct LeaseService {
-    _project_id: ProjectId,
     db_path: std::path::PathBuf,
 }
 
 impl LeaseService {
-    pub fn open_in_memory(project_id: ProjectId) -> Result<Self, LeaseError> {
+    pub fn open_in_memory(_project_id: ProjectId) -> Result<Self, LeaseError> {
         let db_path = std::env::temp_dir().join(format!("batman-lease-{}.db", Uuid::now_v7()));
-        Self::open(project_id, &db_path)
+        Self::open(_project_id, &db_path)
     }
 
-    pub fn open(project_id: ProjectId, db_path: &std::path::Path) -> Result<Self, LeaseError> {
+    pub fn open(_project_id: ProjectId, db_path: &std::path::Path) -> Result<Self, LeaseError> {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| LeaseError::Db(e.to_string()))?;
         }
@@ -62,7 +61,6 @@ impl LeaseService {
         let _ = conn.close();
 
         Ok(LeaseService {
-            _project_id: project_id,
             db_path: db_path.to_path_buf(),
         })
     }

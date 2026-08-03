@@ -12,6 +12,7 @@ use batman_protocol::{RunId, TaskId, WorkerId};
 use batman_runtime::db::DatabaseHandle;
 use batman_runtime::ipc::{PeerCredentialReader, PeerCredentials, Server, ServerConfig};
 use batman_runtime::paths::RuntimePaths;
+use batman_runtime::adapter::{Adapter, CancelScope};
 use batman_runtime::service::{AdapterFuture, FakeRunDriver, RunDriver, RunDriverContext};
 use nix::unistd::Uid;
 use serde_json::{Value, json};
@@ -73,6 +74,113 @@ impl RunDriver for RecordingRunDriver {
             .push((run_id, task_id, worker_id, prompt));
         Box::pin(async { Ok(()) })
     }
+
+    fn running_adapter(&self, _run_id: RunId) -> Option<Arc<dyn Adapter>> {
+        None
+    }
+
+    fn cancel_run(&self, _run_id: RunId, _scope: CancelScope) -> AdapterFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+/// Tracks whether cancel_run was called and with what scope.
+/// Used to verify item 33's wiring: OrchestrationService calls cancel_run on the live adapter.
+#[derive(Default)]
+struct CancelTrackingRunDriver {
+    cancel_calls: parking_lot::Mutex<Vec<(RunId, CancelScope)>>,
+    follow_ups: parking_lot::Mutex<Vec<(RunId, TaskId, WorkerId, String)>>,
+}
+
+impl CancelTrackingRunDriver {
+    fn cancel_calls(&self) -> Vec<(RunId, CancelScope)> {
+        self.cancel_calls.lock().clone()
+    }
+}
+
+impl RunDriver for CancelTrackingRunDriver {
+    fn start(&self, _ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn send_follow_up(
+        &self,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        prompt: String,
+    ) -> AdapterFuture<'static, Result<(), String>> {
+        self.follow_ups
+            .lock()
+            .push((run_id, task_id, worker_id, prompt));
+        Box::pin(async { Ok(()) })
+    }
+
+    fn running_adapter(&self, _run_id: RunId) -> Option<Arc<dyn Adapter>> {
+        None
+    }
+
+    fn cancel_run(&self, run_id: RunId, scope: CancelScope) -> AdapterFuture<'static, Result<(), String>> {
+        self.cancel_calls.lock().push((run_id, scope));
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+async fn run_cancel_calls_adapter_cancel_run_with_worker_scope() {
+    let driver = Arc::new(CancelTrackingRunDriver::default());
+
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::clone(&driver) as Arc<dyn RunDriver>);
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    // Create a task, worker, and run
+    let task = client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+
+    let worker = client
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+
+    let submit = client
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id }),
+        )
+        .await;
+    assert!(submit.get("error").is_none(), "run/submit failed: {submit:?}");
+
+    let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
+
+    // Now cancel the run
+    let cancel = client
+        .call(
+            5,
+            "run/cancel",
+            json!({ "runId": run_id }),
+        )
+        .await;
+    assert!(cancel.get("error").is_none(), "run/cancel failed: {cancel:?}");
+
+    // Verify cancel_run was called with CancelScope::Worker
+    let calls = driver.cancel_calls();
+    assert_eq!(calls.len(), 1, "expected exactly one cancel_run call");
+    let (called_run_id, scope) = &calls[0];
+    assert_eq!(called_run_id.to_string(), run_id, "cancel_run called with wrong run_id");
+    assert_eq!(*scope, CancelScope::Worker, "cancel_run called with wrong CancelScope");
 }
 
 // --------------------------------------------------------------- harness
@@ -934,5 +1042,67 @@ async fn reconcile_omp_rejects_mismatched_revision() {
     assert_eq!(
         reconcile["error"]["code"], -32602,
         "mismatched revision must be INVALID_PARAMS: {reconcile:?}"
+    );
+}
+#[tokio::test]
+async fn workspace_acquire_returns_lease_for_valid_run() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    // Create a task, worker, and run to get a run_id
+    let task = client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+
+    let worker = client
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+
+    let submit = client
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id }),
+        )
+        .await;
+    assert!(submit.get("error").is_none(), "run/submit failed: {submit:?}");
+
+    let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
+
+    // Now acquire a workspace for that run
+    let acquire = client
+        .call(
+            5,
+            "workspace/acquire",
+            json!({
+                "runId": run_id,
+                "mode": "readOnly",
+                "requestedIsolation": "shared"
+            }),
+        )
+        .await;
+
+    assert!(acquire.get("error").is_none(), "workspace/acquire failed: {acquire:?}");
+    assert!(
+        acquire["result"]["leaseId"].as_str().is_some(),
+        "leaseId missing in response: {acquire:?}"
+    );
+    assert_eq!(
+        acquire["result"]["runId"].as_str().unwrap(),
+        &run_id,
+        "runId mismatch in response"
     );
 }

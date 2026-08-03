@@ -14,6 +14,7 @@ use tokio::sync::broadcast;
 
 use crate::db::DatabaseHandle;
 use crate::domain::{DomainRepository, take_envelope};
+use crate::adapter::{Adapter, CancelScope};
 
 /// A boxed future returned by [`RunDriver::start`].
 pub type AdapterFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -49,6 +50,17 @@ pub trait RunDriver: Send + Sync {
         worker_id: WorkerId,
         prompt: String,
     ) -> AdapterFuture<'static, Result<(), String>>;
+
+    /// Returns the adapter currently running for `run_id`, if any.
+    fn running_adapter(&self, run_id: RunId) -> Option<Arc<dyn Adapter>>;
+
+    /// Cancels a running adapter at the given scope. Returns [`RegistryError::NoRunningAdapter`]
+    /// if no adapter is currently driving the run.
+    fn cancel_run(
+        &self,
+        run_id: RunId,
+        scope: CancelScope,
+    ) -> AdapterFuture<'static, Result<(), String>>;
 }
 
 /// A deterministic driver for orchestration tests and fixtures: acknowledges
@@ -74,6 +86,22 @@ impl RunDriver for FakeRunDriver {
         Box::pin(async move {
             Err(format!(
                 "fake driver does not support follow-up for run {run_id}"
+            ))
+        })
+    }
+
+    fn running_adapter(&self, _run_id: RunId) -> Option<Arc<dyn Adapter>> {
+        None
+    }
+
+    fn cancel_run(
+        &self,
+        run_id: RunId,
+        _scope: CancelScope,
+    ) -> AdapterFuture<'static, Result<(), String>> {
+        Box::pin(async move {
+            Err(format!(
+                "fake driver does not support cancel for run {run_id}"
             ))
         })
     }

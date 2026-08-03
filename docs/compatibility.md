@@ -104,7 +104,8 @@ The following RPC methods are implemented (per `crates/protocol/src/method.rs`):
 - `coordination/child/list`, `coordination/child/decide`, `coordination/task`, `coordination/peers`, `coordination/send`, `coordination/requestChild`, `coordination/publishArtifact`, `coordination/reportBlocked`, `coordination/askPolicy` - Multi-agent coordination
 - `reconcile/omp` - OMP reconciliation
 - `profile/register` - Profile registration
-- `workspace/acquire`, `workspace/get` - Workspace management
+- `workspace/acquire`, `workspace/get`, `workspace/release`, `workspace/inspect`, `workspace/apply` - Workspace management
+- `artifact/list`, `artifact/fetch` - Artifact management
 - `policy/violation/decide` - Policy violation decision (stub implementation)
 
 ## Backwards Compatibility

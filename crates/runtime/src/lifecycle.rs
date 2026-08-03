@@ -213,13 +213,14 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
     let org_security_patterns = policy.org_security_patterns.clone();
     let registry = Arc::new(AdapterRegistry::new(
         Arc::new(PolicyEvaluator::new(policy)),
-        repo_root,
+        repo_root.clone(),
         mcp,
         org_security_patterns,
     ));
     let config = ServerConfig {
         binary_source: opts.binary_source,
         run_driver: Some(Arc::clone(&registry) as Arc<dyn crate::service::RunDriver>),
+        repository: repo_root.clone(),
         worker_verifier: Arc::new(ScopeTokenVerifier::new(Arc::clone(&scope_tokens))),
         ..ServerConfig::default()
     };

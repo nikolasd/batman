@@ -25,6 +25,7 @@ use crate::ipc::ClientPrincipal;
 
 use super::query;
 use super::run_driver::{RunDriver, RunDriverContext};
+use crate::adapter::CancelScope;
 
 /// A JSON-RPC-shaped error: `(code, message)`, mapped directly onto the
 /// wire error object by the connection dispatch layer.
@@ -96,6 +97,9 @@ pub struct OrchestrationService {
     run_driver: Option<Arc<dyn RunDriver>>,
     approval: Arc<crate::approval::ApprovalService>,
     events_tx: broadcast::Sender<EventEnvelope>,
+    lease_service: Arc<crate::workspace::LeaseService>,
+    artifact_store: Arc<crate::workspace::ArtifactStore>,
+    repository: std::path::PathBuf,
 }
 
 impl OrchestrationService {
@@ -106,6 +110,9 @@ impl OrchestrationService {
         run_driver: Option<Arc<dyn RunDriver>>,
         approval_callback: Arc<dyn crate::approval::ApprovalCallback>,
         events_tx: broadcast::Sender<EventEnvelope>,
+        lease_service: Arc<crate::workspace::LeaseService>,
+        artifact_store: Arc<crate::workspace::ArtifactStore>,
+        repository: std::path::PathBuf,
     ) -> Self {
         let approval = Arc::new(crate::approval::ApprovalService::new(
             db.clone(),
@@ -119,6 +126,9 @@ impl OrchestrationService {
             run_driver,
             approval,
             events_tx,
+            lease_service,
+            artifact_store,
+            repository,
         }
     }
 
@@ -165,6 +175,13 @@ impl OrchestrationService {
             BatmanMethod::PolicyViolationDecide => Err(ServiceError::internal(
                 "method is not routed through OrchestrationService",
             )),
+            BatmanMethod::WorkspaceAcquire => self.workspace_acquire(params).await,
+            BatmanMethod::WorkspaceGet => self.workspace_get(params).await,
+            BatmanMethod::WorkspaceRelease => self.workspace_release(params).await,
+            BatmanMethod::WorkspaceInspect => self.workspace_inspect(params).await,
+            BatmanMethod::WorkspaceApply => self.workspace_apply(params).await,
+            BatmanMethod::ArtifactList => self.artifact_list(params).await,
+            BatmanMethod::ArtifactFetch => self.artifact_fetch(params).await,
             _ => Err(ServiceError::internal(
                 "method is not routed through OrchestrationService",
             )),
@@ -556,7 +573,153 @@ impl OrchestrationService {
             .await
             .map_err(ServiceError::from)?;
         self.broadcast(&mut result);
+
+        // Also terminate the actual vendor subprocess if one is running.
+        if let Some(driver) = &self.run_driver {
+            if let Err(err) = driver.cancel_run(run_id, CancelScope::Worker).await {
+                tracing::warn!(error = %err, run_id = %run_id, "failed to cancel running adapter subprocess");
+            }
+        }
+
         Ok(result)
+    }
+    // ------------------------------------------------------- workspace
+
+    async fn workspace_acquire(&self, params: &Value) -> Result<Value, ServiceError> {
+        use batman_protocol::LeaseRequest;
+        let request: LeaseRequest = serde_json::from_value(params.clone())
+            .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
+        let run_id = request.run_id;
+        let mode = request.mode;
+        let isolation = request.requested_isolation;
+
+        let lease = self.lease_service.acquire(run_id, mode, isolation)
+            .map_err(|e| ServiceError::internal(e.to_string()))?;
+
+        // Materialize the workspace using the materializer (constructed on-demand with the lease path)
+        let materializer = crate::workspace::WorkspaceMaterializer::new(
+            self.project_id,
+            self.repository.clone(),
+        ).map_err(|e| ServiceError::internal(e.to_string()))?;
+        let _ = materializer.materialize(run_id, lease.isolation_kind)
+            .map_err(|e| ServiceError::internal(e.to_string()))?;
+
+        Ok(json!({
+            "leaseId": lease.lease_id,
+            "runId": lease.run_id.to_string(),
+            "mode": match lease.mode { batman_protocol::LeaseMode::ReadOnly => "readOnly", batman_protocol::LeaseMode::Write => "write" },
+            "isolationKind": match lease.isolation_kind { batman_protocol::IsolationKind::Shared => "shared", batman_protocol::IsolationKind::GitWorktree => "gitWorktree", batman_protocol::IsolationKind::Copy => "copy" },
+            "path": lease.path,
+            "state": match lease.state { batman_protocol::WorkspaceState::Allocating => "allocating", batman_protocol::WorkspaceState::Active => "active", batman_protocol::WorkspaceState::Dirty => "dirty", batman_protocol::WorkspaceState::Released => "released", batman_protocol::WorkspaceState::CleanupFailed => "cleanupFailed" },
+            "baseRevision": lease.base_revision,
+            "acquisitionSequence": lease.acquisition_sequence,
+        }))
+    }
+
+    async fn workspace_get(&self, params: &Value) -> Result<Value, ServiceError> {
+        let lease_id = str_field(params, "leaseId")?;
+        let info = self.lease_service.get(lease_id)
+            .map_err(|e| ServiceError::internal(e.to_string()))?;
+
+        Ok(json!({
+            "leaseId": info.lease_id,
+            "runId": info.run_id.to_string(),
+            "mode": match info.mode { batman_protocol::LeaseMode::ReadOnly => "readOnly", batman_protocol::LeaseMode::Write => "write" },
+            "isolationKind": match info.isolation_kind { batman_protocol::IsolationKind::Shared => "shared", batman_protocol::IsolationKind::GitWorktree => "gitWorktree", batman_protocol::IsolationKind::Copy => "copy" },
+            "path": info.path,
+            "state": match info.state { batman_protocol::WorkspaceState::Allocating => "allocating", batman_protocol::WorkspaceState::Active => "active", batman_protocol::WorkspaceState::Dirty => "dirty", batman_protocol::WorkspaceState::Released => "released", batman_protocol::WorkspaceState::CleanupFailed => "cleanupFailed" },
+            "baseRevision": info.base_revision,
+        }))
+    }
+
+    async fn workspace_release(&self, params: &Value) -> Result<Value, ServiceError> {
+        let request: batman_protocol::ReleaseRequest = serde_json::from_value(params.clone())
+            .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
+        self.lease_service.release(request.lease_id)
+            .map_err(|e| ServiceError::internal(e.to_string()))?;
+        Ok(json!({ "released": true }))
+    }
+
+    async fn workspace_inspect(&self, params: &Value) -> Result<Value, ServiceError> {
+        use batman_protocol::InspectRequest;
+        let request: InspectRequest = serde_json::from_value(params.clone())
+            .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
+        let lease = self.lease_service.get(request.lease_id.clone())
+            .map_err(|e| ServiceError::internal(e.to_string()))?;
+
+        let inspector = crate::workspace::WorkspaceInspector::new(std::path::PathBuf::from(&lease.path));
+        let result = inspector.inspect(&request)
+            .await
+            .map_err(|e| ServiceError::internal(e.to_string()))?;
+
+        Ok(json!({
+            "leaseId": result.lease_id,
+            "patchArtifactId": result.patch_artifact_id.to_string(),
+            "commitCount": result.commit_count,
+            "commitIds": result.commit_ids,
+            "dirtyFileCount": result.dirty_file_count,
+            "untrackedFileCount": result.untracked_file_count,
+            "baseRevision": result.base_revision,
+            "currentRevision": result.current_revision,
+        }))
+    }
+
+    async fn workspace_apply(&self, params: &Value) -> Result<Value, ServiceError> {
+        use batman_protocol::ApplyRequest;
+        let request: ApplyRequest = serde_json::from_value(params.clone())
+            .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
+        let lease = self.lease_service.get(request.lease_id.clone())
+            .map_err(|e| ServiceError::internal(e.to_string()))?;
+
+        let applier = crate::workspace::WorkspaceApplier::from_store(
+            std::path::PathBuf::from(&lease.path),
+            self.artifact_store.clone(),
+        );
+        let result = applier.apply(&request)
+            .await
+            .map_err(|e| ServiceError::internal(e.to_string()))?;
+
+        Ok(json!({
+            "leaseId": result.lease_id,
+            "success": result.success,
+            "conflictArtifactId": result.conflict_artifact_id.as_ref().map(|id| id.to_string()),
+            "targetRevisionAfter": result.target_revision_after,
+            "errorCode": result.error_code,
+        }))
+    }
+
+    async fn artifact_list(&self, params: &Value) -> Result<Value, ServiceError> {
+        let kind_str = str_field(params, "kind").ok();
+        let kind = kind_str.as_ref().and_then(|k| match k.as_str() {
+            "patch" => Some(batman_protocol::ArtifactKind::Patch),
+            "commitList" => Some(batman_protocol::ArtifactKind::CommitList),
+            "conflictReport" => Some(batman_protocol::ArtifactKind::ConflictReport),
+            "workspaceManifest" => Some(batman_protocol::ArtifactKind::WorkspaceManifest),
+            _ => None,
+        });
+        let result = self.artifact_store.list(kind).await;
+        Ok(json!({
+            "artifacts": result.artifacts.iter().map(|a| serde_json::to_value(a).expect("Artifact is serializable")).collect::<Vec<_>>(),
+        }))
+    }
+
+    async fn artifact_fetch(&self, params: &Value) -> Result<Value, ServiceError> {
+        use batman_protocol::ArtifactId;
+        let artifact_id: ArtifactId = serde_json::from_value(params.get("artifactId").cloned().ok_or_else(|| ServiceError::invalid_params("artifactId is required"))?)
+            .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
+        let offset: u64 = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
+        let length: u64 = params.get("length").and_then(Value::as_u64).unwrap_or(1024 * 1024);
+
+        let result = self.artifact_store.fetch_chunked(&artifact_id, offset, length)
+            .await
+            .map_err(|e| ServiceError::internal(e.to_string()))?;
+
+        Ok(json!({
+            "artifact": serde_json::to_value(&result.artifact).expect("Artifact is serializable"),
+            "contentBase64": result.content_base64,
+            "nextOffset": result.next_offset,
+            "complete": result.complete,
+        }))
     }
 
     // ---------------------------------------------------------- message

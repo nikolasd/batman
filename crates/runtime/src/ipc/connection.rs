@@ -458,18 +458,25 @@ async fn dispatch(
                 Err(err) => error(&id, err.code, &err.message),
             }
         }
-        // Workspace and artifact methods: protocol-defined but not yet implemented
+        // Workspace and artifact methods: routed through OrchestrationService.
         BatmanMethod::WorkspaceAcquire
         | BatmanMethod::WorkspaceGet
         | BatmanMethod::WorkspaceRelease
         | BatmanMethod::WorkspaceInspect
         | BatmanMethod::WorkspaceApply
         | BatmanMethod::ArtifactList
-        | BatmanMethod::ArtifactFetch => error(
-            &id,
-            error_code::METHOD_NOT_FOUND,
-            "method is not available to this client",
-        ),
+        | BatmanMethod::ArtifactFetch => {
+            let resolved = method.expect("allowed implies a known method");
+            let params = message.get("params").cloned().unwrap_or(Value::Null);
+            match shared
+                .orchestration
+                .dispatch(resolved, principal, &params)
+                .await
+            {
+                Ok(value) => success(&id, value),
+                Err(err) => error(&id, err.code, &err.message),
+            }
+        }
     }
 }
 

@@ -162,6 +162,8 @@ pub struct ServerConfig {
     /// run and reports `adapter_unavailable` rather than pretending the run
     /// started.
     pub run_driver: Option<std::sync::Arc<dyn crate::service::RunDriver>>,
+    /// The repository root this server serves.
+    pub repository: std::path::PathBuf,
     /// The adapter-callback seam invoked after `approval/decide` records a
     /// decision. Defaults to [`crate::approval::NoopApprovalCallback`],
     /// which acknowledges immediately.
@@ -175,9 +177,10 @@ impl Default for ServerConfig {
             euid: nix::unistd::Uid::effective().as_raw(),
             credential_reader: Arc::new(SystemPeerCredentialReader),
             worker_verifier: Arc::new(RejectAllWorkerVerifier),
+            run_driver: None,
+            repository: std::path::PathBuf::new(),
             owner_only_override: None,
             binary_source: batman_protocol::BinarySource::Unknown,
-            run_driver: None,
             approval_callback: Arc::new(crate::approval::NoopApprovalCallback),
         }
     }
@@ -215,8 +218,10 @@ impl ClientPrincipal {
             CoordinationReportBlocked, CoordinationRequestChild, CoordinationSend,
             CoordinationTask, EventsReplay, EventsSubscribe, MessageList, MessageSend,
             PolicyViolationDecide, ProfileRegister, ReconcileOmp, RunCancel, RunGet, RunList,
-            RunRetry, RunSubmit, RuntimeShutdown, RuntimeStatus, TaskGet, TaskUpsert, WorkerCreate,
-            WorkerGet, WorkerList,
+            RunRetry, RunSubmit, RuntimeShutdown, RuntimeStatus, TaskGet, TaskUpsert,
+            WorkspaceAcquire, WorkspaceGet, WorkspaceRelease, WorkspaceInspect, WorkspaceApply,
+            ArtifactList, ArtifactFetch,
+            WorkerCreate, WorkerGet, WorkerList,
         };
         match self.role {
             ClientRole::OmpExtension => vec![
@@ -243,6 +248,13 @@ impl ClientPrincipal {
                 ReconcileOmp,
                 ProfileRegister,
                 PolicyViolationDecide,
+                WorkspaceAcquire,
+                WorkspaceGet,
+                WorkspaceRelease,
+                WorkspaceInspect,
+                WorkspaceApply,
+                ArtifactList,
+                ArtifactFetch,
             ],
             ClientRole::Display => {
                 vec![
