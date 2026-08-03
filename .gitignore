@@ -12,3 +12,7 @@ crates/protocol/bindings/
 # are release artifacts, never committed to source control.
 packages/batman-*/bin/
 packages/batman-*/manifest.json
+
+# Agent working plans/specs (superpowers skill) — ephemeral scratch docs,
+# never permanent project documentation.
+docs/superpowers/
