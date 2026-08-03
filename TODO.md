@@ -2,7 +2,9 @@
 
 Every item below was verified against the current codebase (not inferred from prior docs). Superseded/false claims from earlier sessions are corrected inline. Priority order reflects what blocks core functionality first, then Hardening/release readiness, then polish. Last full re-verification pass: 2026-08-03 (full validation sweep of every open item, plus a fresh `bun test` run — not previously included in prior sweeps). No Critical-severity items remain open. Zero regressions found among previously-tracked items; one stale/false claim corrected (item 27); two new gaps discovered (items 9, 30); **item 6 root-cause corrected** (was misdiagnosed as an adapter-side omission; the actual bug is `scenario::ALL` omitting two constants plus Copilot missing the `unexpected_child_observation` scenario function); **item 3 cross-referenced** against `repository.rs:140` INSERT and `connection.rs:660-661` replay reconstruction; **item 26 confirmed** `1.0.77` still absent from `COPILOT_KNOWN_CLI_VERSIONS`.\n\n**Open test failures (current, 2026-08-03):**\n- Rust: 7 failing — `claude_adapter` (1, item 6), `codex_adapter` (1, item 6), `copilot_adapter` (2: item 6 + item 26), `conformance` (5, item 5); all others pass\n- Bun: 2 failing — `runtime.test.ts` (item 9), `index.test.ts` (item 30)
 
-**Extended sweep (same date):** cross-referenced every item against the 8 planning documents in the Obsidian vault (`10 Projects/Batman/`) and did a deeper, file-by-file read of `workspace/`, `approval/`, `supervisor/`, `coordination/`, `service/`, `audit/`, `crates/protocol/`, `packages/protocol-ts/`, and `packages/extension/src/` than any prior sweep. This surfaced ten more previously-untracked gaps (items 32-41) and narrowed item 15's "Closed" claim (see item 35). Two issues from an earlier ad hoc review of `retention.rs` (a TEXT/INTEGER cutoff-comparison bug and a wrong terminal-state list) were re-checked here and found already fixed by commit `7c05d19` — not re-added. `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace --doc` were each re-run twice; no failures beyond the ones already tracked (items 5, 6, 26, and the documented `lifecycle` flake) were found.
+**Extended sweep (2026-08-03):** cross-referenced every item against the 8 planning documents in the Obsidian vault (`10 Projects/Batman/`) and did a deeper, file-by-file read of `workspace/`, `approval/`, `supervisor/`, `coordination/`, `service/`, `audit/`, `crates/protocol/`, `packages/protocol-ts/`, and `packages/extension/src/` than any prior sweep. This surfaced ten more previously-untracked gaps (items 32-41) and narrowed item 15's "Closed" claim (see item 35). Two issues from an earlier ad hoc review of `retention.rs` (a TEXT/INTEGER cutoff-comparison bug and a wrong terminal-state list) were re-checked here and found already fixed by commit `7c05d19` — not re-added. `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace --doc` were each re-run twice; no failures beyond the ones already tracked (items 5, 6, 26, and the documented `lifecycle` flake) were found.
+
+**Second extended sweep (2026-08-04):** items 1, 32, and 33 closed since the prior sweep (nested-worker policy violations implemented; workspace/artifact RPC surface wired to real handlers; run/cancel now terminates the live vendor subprocess). Item 43 (no OMP tool wraps `profile/register`) discovered while preparing a live demo. A follow-up full re-read of all 8 Obsidian vault planning documents (each dispatched to an independent reviewer, cross-checked against the current code rather than trusting any plan doc's own prose) surfaced 18 further previously-untracked gaps (items 44-61) and one addendum to item 40. The Foundation (M0) plan doc was re-verified in full and confirmed to have no remaining gaps — everything in it is implemented. The most significant new finding: `PolicyEvaluator` enforces only 2 of the 6 authorization dimensions the Hardening plan and original design doc specify (cost ceilings and adapter-kind allowlisting have no implementation at all — see item 45), independently corroborated by three separate planning documents.
 
 ---
 
@@ -349,6 +351,199 @@ Secondary, narrower nuance found while auditing this: `profile_register` always 
 
 ---
 
+### 44. The per-run policy layer — Hardening plan Task 1's highest-precedence config tier — is completely unwired; one static policy is resolved once at daemon startup and never overridden per run
+
+**Status:** Open (newly discovered 2026-08-04 during an Obsidian vault cross-reference sweep)
+**Priority:** High
+**Labels:** bug, policy, hardening
+
+**Description:**
+`crates/runtime/src/lifecycle.rs:146-152` calls `crate::config::resolve_effective_policy(org, repo, user, None)` exactly once, at daemon startup, with `per_run_params` hardcoded to `None`. The resulting single `RuntimePolicy` is wrapped in one `Arc<PolicyEvaluator>` (`lifecycle.rs:216`) shared for the entire daemon process lifetime. A repo-wide grep for `resolve_effective_policy`/`RuntimePolicy::` in `crates/runtime/src/service/orchestration.rs` returns zero matches — no RPC handler ever calls it with a live JSON-RPC call's params. `crates/runtime/tests/config.rs` only exercises `merge()` in isolation, never through a real RPC path.
+
+This makes the Hardening plan's Task 1 Step 1 fixture requirements impossible today: "per-run requests 2 workers... Assert result is 2," a per-run "embedded" display override winning, and "rebinding... never mutates an existing run's policy snapshot" — there is no per-run policy snapshot at all, just one static policy for the whole process.
+
+**Implementation:**
+- Thread per-run policy params from `run/submit` (or wherever the plan specifies per-run overrides enter) through to `resolve_effective_policy`, producing a per-run `RuntimePolicy` snapshot rather than reusing the single startup-time one
+- Add the fixture test from Task 1 Step 1 proving a per-run override (e.g. worker count, display preference) takes effect for that run only, without mutating any other run's policy
+
+**References:** `crates/runtime/src/lifecycle.rs:146-152,216`, `crates/runtime/src/service/orchestration.rs`, `crates/runtime/tests/config.rs`, `.../2026-07-22-batman-hardening-release.md` (Task 1)
+
+---
+
+### 45. `PolicyEvaluator` enforces only 2 of the 6 authorization dimensions the Hardening plan and original design doc both specify — cost ceilings, adapter-kind allowlisting, capability validation, and native-discovery acknowledgement are all unenforced
+
+**Status:** Open (newly discovered 2026-08-04, corroborated independently across three separate planning documents)
+**Priority:** High
+**Labels:** bug, security, policy, hardening
+
+**Description:**
+The Hardening plan's Task 1 states `PolicyEvaluator` "validates model/adapter allowlists, permission envelope, concurrency, cost, capability, and native-discovery acknowledgement" and requires "a run cannot start after the daily cost ceiling is reached; a usage event crossing a hard per-run ceiling emits a correlated policy violation and cancellation intent rather than merely logging" and "a profile with `usage:none` is rejected when an applicable hard cost ceiling cannot be enforced." The original design doc's Rollout Prerequisites section (line 589) likewise requires org policy to define "model allowlists, concurrency ceilings, and cost ceilings" as peer concepts. The implementation roadmap's Acceptance Coverage table (line 138) lists "Configuration precedence, model/adapter allowlists, concurrency and cost enforcement" as a named requirement. None of the three plan documents ever descopes or defers cost/adapter/capability/native-discovery enforcement.
+
+Verified against the actual code: `crates/runtime/src/policy/evaluate.rs::evaluate` (lines 141-181) checks only model allowlist, nested-worker denial, and concurrency ceiling.
+- **Cost ceilings: zero implementation anywhere.** `RuntimePolicy` (`crates/runtime/src/config/merge.rs:391-410`) has no `cost` field at all; `RolloutGates` (`merge.rs:237-254`) has no cost-related gate either. A repo-wide grep for `cost_ceiling|CostCeiling|cost_limit|budget|CostProjection` across `crates/` returns no policy-relevant matches — `cost`/`cost_usd` appears only as reported *telemetry* in adapter normalizers (`adapter/event_sink.rs:92`, `claude/normalize.rs`, `codex/normalize.rs`, `omp_rpc/normalize.rs`), never compared against a limit.
+- **Adapter-kind allowlist: a permanent no-op, confirmed by the code's own comment** (`evaluate.rs:167-170`): `// Adapter kind is available for a future org-level denylist; no denylist is configured yet, so every adapter passes this check ... let _ = profile.adapter_kind();`
+- **Capability validation and native-discovery acknowledgement**: neither is checked by `evaluate()` at all. `native_discovery_reviewed` exists only as a `RolloutGates` field checked by `batcave doctor` (advisory-only, per item 13's clarified understanding of rollout gates), never by `PolicyEvaluator`.
+
+**Failure scenario:** an org configures (or believes it has configured) a daily/per-run cost ceiling or an adapter-kind restriction expecting BATMAN to refuse runs that would violate it — there is no config key to even express that intent for cost, and adapter-kind restriction silently passes every adapter regardless of any future config. A Claude/Codex/Copilot run can accumulate unbounded spend with no enforcement path at all.
+
+**Implementation:**
+- Extend `RuntimePolicy`/`config/merge.rs` with a `cost` structure (daily + per-run ceilings), threaded through `LayeredConfig` the same way `concurrency.ceiling` is
+- Wire real adapter-kind, capability, and native-discovery-acknowledgement checks into `PolicyEvaluator::evaluate`, replacing the current no-op comment
+- Feed usage-event cost projections (already emitted as telemetry per adapter) back into the evaluator so a per-run/daily ceiling crossing emits a correlated policy violation and cancellation intent, per the Hardening plan's own test-scenario spec
+- Reject a profile with `usage:none` when an applicable hard cost ceiling can't be enforced, per the plan's explicit requirement
+
+**References:** `crates/runtime/src/policy/evaluate.rs:141-181`, `crates/runtime/src/config/merge.rs:391-410,237-254`, `.../2026-07-22-batman-hardening-release.md` (Task 1), `.../2026-07-22-omp-company-orchestration-design.md` (line 589), `.../2026-07-22-batman-implementation-roadmap.md` (line 138)
+
+---
+
+### 46. Policy fingerprint is computed but never persisted anywhere, and `PolicyViolationRecorded` is missing 3 of its 4 canonical spec'd fields — narrows item 1's "Closed" status
+
+**Status:** Open (newly discovered 2026-08-04) — narrows item 1, which implemented violation recording/decision but not these two sub-requirements
+**Priority:** High
+**Labels:** bug, policy, persistence, hardening
+
+**Description:**
+`RuntimePolicy::compute_fingerprint` (`crates/runtime/src/config/merge.rs:427-432`) computes a real SHA-256 fingerprint of the merged policy, but it is never written anywhere: the `runs` table (`crates/runtime/src/db/migrations.rs:58-73`) has no `policy_fingerprint` column, and a repo-wide grep for "fingerprint" shows every other occurrence is the unrelated `WorkerProfile` fingerprint concept (see item 43). Separately, `PolicyViolationRecorded`'s actual fields (`crates/protocol/src/event.rs:311-316`) are only `violation_id, vendor_child_id, vendor_parent_ref, action` — missing `code`, `observedEventSequence`, and `policyFingerprint`, all three of which the Hardening plan's Task 1 explicitly specifies as canonical fields on this event, alongside `action` (which item 1's implementation did add).
+
+**Failure scenario:** an operator investigating a policy violation after the fact cannot determine which policy snapshot (org/repo/user/per-run merge) was in effect when the violation occurred, nor correlate it to a specific prior event by sequence number — the violation record exists but is missing exactly the fields that would make it auditable against a specific policy version.
+
+**Implementation:**
+- Add a `policy_fingerprint` column to the `runs` table, populated at run-creation time from the resolved `RuntimePolicy`'s fingerprint
+- Add `code`, `observedEventSequence`, and `policyFingerprint` fields to `PolicyViolationRecorded` in `crates/protocol/src/event.rs`, populated by `ViolationService::record`
+- Regenerate protocol-ts bindings once the event shape changes
+
+**References:** `crates/runtime/src/config/merge.rs:427-432`, `crates/runtime/src/db/migrations.rs:58-73`, `crates/protocol/src/event.rs:311-316`, `.../2026-07-22-batman-hardening-release.md` (Task 1)
+
+---
+
+### 47. Organization redaction-rule compile failures silently fall back to built-in-only redaction instead of failing readiness — contradicts the Hardening plan's explicit fail-closed requirement
+
+**Status:** Open (newly discovered 2026-08-04)
+**Priority:** High
+**Labels:** bug, security, redaction, hardening
+
+**Description:**
+The Hardening plan's Task 2 Step 3 explicitly requires: "Compile organization rules during startup; invalid patterns fail readiness." The actual code does the opposite — `crates/runtime/src/lifecycle.rs:155-160`:
+```rust
+let redactor = Redactor::with_org_rules(&policy.org_security_patterns).unwrap_or_else(|e| {
+    tracing::warn!("Failed to compile org security patterns: {e}; falling back to built-in rules only");
+    Redactor::new()
+});
+```
+A broken or malformed org-supplied regex pattern silently degrades every subsequent redaction to built-in rules only, and the daemon starts and serves traffic anyway — the operator gets a `tracing::warn!` log line, not a startup failure. Since org security patterns exist specifically to catch org-specific secret shapes the built-in rules don't cover, this is a real security-relevant divergence: an org that believes its custom patterns are protecting a class of secret has no signal that they silently stopped applying, other than a warning log an operator may never see.
+
+**Failure scenario:** an org's `security.patterns` config contains a typo'd regex (or one incompatible with the regex engine's syntax). The daemon starts normally, appears healthy, and every redaction thereafter silently omits the org's intended custom protection — with no indication short of grepping runtime logs.
+
+**Implementation:**
+- In `lifecycle.rs`, propagate `Redactor::with_org_rules`'s error as a startup failure (matching how other Hardening-plan readiness checks are expected to behave) instead of logging a warning and falling back
+- Add a `doctor`/`rollout_gates`-visible signal if a fail-open path is ever intentionally kept for a lower-severity config layer, but the org layer specifically must fail closed per the plan
+
+**References:** `crates/runtime/src/lifecycle.rs:155-160`, `.../2026-07-22-batman-hardening-release.md` (Task 2, Step 3)
+
+---
+
+### 48. `batcave doctor`'s check catalog implements only 4 trivial checks (2 of which are stub no-ops); roughly 9 of the Hardening plan's ~13 required check categories don't exist at all
+
+**Status:** Open (newly discovered 2026-08-04) — broader in scope than items 9/35/36, which each describe a narrow bug in the existing 4 checks
+**Priority:** High
+**Labels:** bug, doctor, observability, hardening
+
+**Description:**
+`crates/runtime/src/doctor.rs::check()` (lines 142-218) runs exactly four checks: database-connectivity, state-dir-exists, rollout-gates, configuration-valid. Two of the four are literal stub no-ops with their own disclaimer comments: `check_database` (lines 221-225) is `Ok(())` labeled "This is a stub implementation," and `check_configuration` (lines 241-246) is likewise `Ok(())` with the same disclaimer. None of the Hardening plan's Task 4 other required checks exist anywhere in the file: platform/libc/arch compatibility, socket peer security, binary integrity/version, per-adapter CLI version/auth-readiness/capability (fixture report) checks, generated-schema compatibility, display backend availability, disk space, and stale processes/workspaces.
+
+This is much broader than the already-tracked items 9 (missing `binary_source` in one existing check), 35 (a config-parse crash in the existing config-valid check), and 36 (the extension-side tool resolves the wrong state directory) — none of those three notes that most of the plan's required check catalog was never built in the first place, as opposed to being built but buggy.
+
+**Failure scenario:** an operator runs `batcave doctor` expecting a comprehensive pre-flight/health report per the Hardening plan's spec, and instead gets a report covering roughly 4 of ~13 intended categories — with no signal that the other categories were never implemented, since the tool reports "healthy" success for checks that were never run rather than reporting them as absent.
+
+**Implementation:**
+- Implement `check_database` and `check_configuration` for real (currently stub no-ops)
+- Add the remaining ~9 check categories per Task 4's spec: platform/libc/arch, socket peer security, binary integrity/version, per-adapter CLI auth-readiness/capability report, generated-schema compatibility, display availability, disk space, stale processes/workspaces
+- Once items 9, 35, and 36 are separately fixed, re-verify this item's remaining scope narrows to just "the missing categories," not the existing ones
+
+**References:** `crates/runtime/src/doctor.rs:142-246`, `.../2026-07-22-batman-hardening-release.md` (Task 4)
+
+---
+
+### 49. `coordination/child/list` and `coordination/child/decide` are fully implemented and OMP-authorized, but no OMP tool ever calls them — the entire accept/deny half of nested-worker spawning is unreachable from a live session
+
+**Status:** Open (newly discovered 2026-08-04) — same shape as item 43
+**Priority:** High
+**Labels:** bug, tooling, coordination, extension
+
+**Description:**
+`crates/protocol/src/method.rs:70-73` defines `CoordinationChildList`/`CoordinationChildDecide`. `crates/runtime/src/ipc/mod.rs:252-253` lists both in `ClientRole::OmpExtension`'s `allowed_methods()` — the OMP extension is explicitly authorized to call them. `crates/runtime/src/service/orchestration.rs:1003-1099` fully implements both handlers (`coordination_child_list`, `coordination_child_decide`), including accept/deny branches that supply child task/worker/run IDs or a denial reason.
+
+None of this is reachable from a live OMP chat session: a repo-wide grep for `coordination/child|CoordinationChild` in `packages/extension/src` returns zero matches in any tool, command, or monitor file — the only hit anywhere in the TS tree is the generated binding. `packages/extension/src/monitor/render.ts:227` only ever surfaces the boolean `childrenActive` flag as a label; it never lists a pending child-worker request or lets the model decide one.
+
+The Worker Adapters plan's Task 1 method list explicitly includes `coordination/child/list, coordination/child/decide`; Task 6 Step 3 spells out the workflow — `coordination/requestChild` marks the parent `waitingPeer` and notifies OMP, which answers through `coordination/child/decide`. There is currently no way for the OMP agent to see or answer a child-worker request at all.
+
+**Implementation:**
+- Add a `batman_child` (or extend `batman_worker`) tool op wrapping `coordination/child/list` and `coordination/child/decide`, registered in `packages/extension/src/tools/index.ts`
+- Extend the monitor (`render.ts`) to surface a pending child-worker request beyond the current boolean `childrenActive` flag
+
+**References:** `crates/protocol/src/method.rs:70-73`, `crates/runtime/src/ipc/mod.rs:252-253`, `crates/runtime/src/service/orchestration.rs:1003-1099`, `packages/extension/src/monitor/render.ts:227`, `.../2026-07-22-batman-worker-adapters.md` (Task 1, Task 6 Step 3)
+
+---
+
+### 51. OMP-native reconciliation (`reconcileWithRuntime`, `reconcileAcrossRestart`) is fully written and unit-tested but never called from the running extension — `reconcile/omp` never fires, and runs orphaned by a process restart are never marked `lost`
+
+**Status:** Open (newly discovered 2026-08-04)
+**Priority:** High
+**Labels:** bug, extension, reconciliation, correctness
+
+**Description:**
+`packages/extension/src/omp-native/reconcile.ts` exports `reconcileWithRuntime` (line 113, calls `reconcile/omp`) and `reconcileAcrossRestart` (line 90, transitions omitted parent-scoped runs to `lost`). Both are exercised only by `reconcile.test.ts` (lines 166-241) with fake clients/fixtures. `packages/extension/src/index.ts` only ever calls `reconciler.record(...)` (lines 141, 145, 151) and `reconciler.dispose()` (line 164) on the `OmpNativeReconciler` instance built at line 130 — a repo-wide grep for `reconcileWithRuntime|reconcileAcrossRestart` outside test files returns no results. `OmpNativeReconciler`'s constructor (`reconcile.ts:29`) defaults `onChange` to a no-op, and `index.ts:130` constructs it with no callback argument, so every recorded fact is written into an in-memory `Map` that nothing else ever reads.
+
+The Orchestration Extension plan's Task 5 Interfaces state the module "Calls `reconcile/omp` with a snapshot..." and Step 3 requires "On reconnect call `reconcile/omp` before rendering prior parent-scoped runs as live." Step 1's acceptance criterion is "Simulate a new OMP process epoch that omits a prior parent-scoped run and assert reconciliation transitions it to `lost`." The logic is written and unit-tested in isolation, but production never calls it.
+
+**Failure scenario:** OMP restarts (a new process epoch) while a parent-scoped run is in flight. The real daemon has no way to learn this happened — task ownership is never rebound via `reconcile/omp`, and the orphaned run is never marked `lost`; it simply sits unreconciled forever, with nothing tracking that its owning OMP process is gone.
+
+**Implementation:**
+- Call `reconcileWithRuntime`/`reconcileAcrossRestart` from `index.ts`'s session-start path (the same place `OmpNativeReconciler` is constructed), wiring a real `onChange` callback instead of the default no-op
+- Add an integration-level test (not just the existing unit test against fakes) proving a real reconnect triggers `reconcile/omp` and a real restart marks an orphaned run `lost`
+
+**References:** `packages/extension/src/omp-native/reconcile.ts:29,90,113`, `packages/extension/src/index.ts:130,141,145,151,164`, `.../2026-07-22-batman-orchestration-extension.md` (Task 5)
+
+---
+
+### 53. Workspace and artifact RPC handlers never emit a single runtime event — breaks the "everything is replayable via the event stream" architecture principle and leaves the monitor with nothing to render
+
+**Status:** Open (newly discovered 2026-08-04) — distinct from item 32 (which fixed RPC *routing*; this is about event *emission*, never covered by item 32's fix)
+**Priority:** High
+**Labels:** bug, workspace, events, hardening
+
+**Description:**
+The Workspaces/Displays plan's Task 1 requires `LeaseRequested`/`LeaseAcquired`/`WorkspaceDirty`/`WorkspaceInspected`/`ApplyStarted`/`ApplyCompleted`/`ApplyConflict`/`LeaseReleased`/`CleanupFailed`/`ArtifactPublished` — all defined as `WorkspaceEvent` variants (`crates/protocol/src/workspace.rs:188-241`), wrapped by `RuntimeEvent::WorkspaceEvent` (`crates/protocol/src/event.rs`). Zero construction sites exist anywhere in `crates/runtime/src/` outside the protocol definitions themselves: `orchestration.rs`'s `workspace_acquire/get/release/inspect/apply` (lines 642-744) never call `self.broadcast`. `lifecycle.rs:642`'s `RuntimeEvent::WorkspaceEvent` match arm is dead code for real traffic — nothing ever produces the event it matches on.
+
+This breaks the plan's core architecture principle (display adapters subscribe to the same replayable runtime event stream as everything else) and the plan's Task 5 requirement that the monitor render "workspace evidence" — there is currently no workspace activity in the event journal at all, so nothing downstream (the monitor, `events/replay`, audit export once item 34 is fixed) can ever show it.
+
+**Implementation:**
+- Add `self.broadcast(...)` calls to each workspace/artifact RPC handler in `orchestration.rs`, constructing the appropriate `WorkspaceEvent` variant for lease acquire/release, inspect, apply start/complete/conflict, cleanup failure, and artifact publish
+- Verify `lifecycle.rs:642`'s existing `RuntimeEvent::WorkspaceEvent` match arm actually receives and journals these once emitted
+
+**References:** `crates/protocol/src/workspace.rs:188-241`, `crates/runtime/src/service/orchestration.rs:642-744`, `crates/runtime/src/lifecycle.rs:642`, `.../2026-07-22-batman-workspaces-displays.md` (Task 1, Task 5)
+
+---
+
+### 54. Released workspace leases never clean up their materialized directory — every write/isolated lease leaks a git worktree or copy directory permanently
+
+**Status:** Open (newly discovered 2026-08-04)
+**Priority:** High
+**Labels:** bug, workspace, resource-leak, hardening
+
+**Description:**
+The Workspaces/Displays plan's Task 3 requires a `cleanup(lease_id)` function paired with `materialize()`. No `fn cleanup` exists anywhere in `crates/runtime/src/workspace/`. `GitWorktree::remove` (`git.rs:59`) is marked `#[allow(dead_code)]` and has zero callers repo-wide. `workspace_release` (`orchestration.rs:689-695`) only flips the lease's DB state via `LeaseService::release` — it never touches the filesystem.
+
+**Failure scenario:** every real write or isolated workspace lease materializes a git worktree or copy directory, and releasing the lease never removes it — the materialized directory (and, for git worktrees, the associated worktree metadata) accumulates on disk forever across the lifetime of a real deployment.
+
+**Implementation:**
+- Call `GitWorktree::remove` (or the equivalent copy-mode cleanup) from `workspace_release`'s handler once the lease's DB state is flipped
+- Add a test proving a released lease's materialized directory no longer exists on disk afterward
+
+**References:** `crates/runtime/src/workspace/git.rs:59`, `crates/runtime/src/service/orchestration.rs:689-695`, `.../2026-07-22-batman-workspaces-displays.md` (Task 3)
+
+---
+
 ## Medium
 
 ### 10. Operator-facing docs only partially split; `docs/installation.md`, `configuration.md`, `security.md`, `recovery.md` still don't exist as standalone files
@@ -451,6 +646,156 @@ This is distinct from item 8 (the release *conformance* gate stub) — Task 5 is
 - Add `crates/xtask/tests/package.rs` per the plan's Step 1 (missing target, version mismatch, wrong binary name, missing executable bit, schema-fingerprint mismatch, bad checksum, explicit Windows/musl rejection)
 
 **References:** `crates/xtask/src/main.rs`, `.github/workflows/release.yml`, `.../2026-07-22-batman-hardening-release.md` (Task 5)
+
+---
+
+### 50. `batman_task` never exposes `task/get` — the tool can only upsert, and its approval tier is hardcoded `"write"` even for what should be a read
+
+**Status:** Open (newly discovered 2026-08-04)
+**Priority:** Medium
+**Labels:** bug, tooling, extension
+
+**Description:**
+`packages/extension/src/tools/tasks.ts`'s params schema (lines 14-17) has no `op` discriminator at all, unlike every other orchestration tool. `execute()` (lines 26-41) unconditionally calls `task/upsert`; there is no code path to call `task/get`. Approval tier is hardcoded to `"write"` for the whole tool (line 25) — never `"read"`. A repo-wide grep for `task/get|TaskGet` in `packages/extension/src` finds exactly one hit, a comment in `tasks.ts:2` describing intent, not code. `task/get` is fully implemented and OMP-authorized (`crates/protocol/src/method.rs:34`, listed in `ClientRole::OmpExtension`, dispatched at `orchestration.rs:207`).
+
+The Orchestration Extension plan's Task 4 Interfaces section states verbatim: "Registers `batman_task`... The extension-side `batman_task` fronts OMP-owner `task/upsert|get`." Task 4 Step 1 additionally requires "reads use tier `read`." Neither holds — there is no way for OMP to read back an existing task's stored revision/owner without going through upsert, which requires knowing the current revision to avoid a monotonicity rejection.
+
+**Implementation:**
+- Add an `op` discriminator (`"upsert"`/`"get"`) to `batman_task`'s params schema, mirroring the pattern already used by `batman_worker`/`batman_run`
+- Route `op: "get"` to `task/get`, and set its approval tier to `"read"` while `"upsert"` keeps `"write"`
+
+**References:** `packages/extension/src/tools/tasks.ts:2,14-17,25-41`, `crates/protocol/src/method.rs:34`, `crates/runtime/src/service/orchestration.rs:207`, `.../2026-07-22-batman-orchestration-extension.md` (Task 4)
+
+---
+
+### 52. `AdapterRegistry` authorizes every production run against the static fixture-conformance report, never a live probe of the actually-installed vendor CLI — `run_live_conformance` is dead code with zero callers
+
+**Status:** Open (newly discovered 2026-08-04)
+**Priority:** Medium
+**Labels:** bug, adapter, conformance, worker-adapters
+
+**Description:**
+`crates/runtime/src/adapter/registry.rs:376-391` (`run_one`, the function `RunDriver::start` invokes for every real run) computes `effective_capabilities` via `conformance::run_fixture_conformance(kind).await.effective_capabilities` (lines 388-390) unconditionally — no branch, environment check, or live-probe call anywhere in this path. `crates/runtime/src/conformance/mod.rs:23-49` defines both `run_fixture_conformance` (deterministic, fixture-driven, never a model call) and `run_live_conformance` (probes the real installed vendor CLI); a repo-wide grep for `run_live_conformance` shows it appears only in its own definition (`conformance/mod.rs:42`) — zero callers anywhere, including tests.
+
+The Worker Adapters plan's Task 8 Step 1 ("Write registry selection and false-advertising tests") requires: "Assert an unavailable CLI yields an unavailable profile, an unknown Copilot version yields degraded/unsupported rather than structured, and a capability whose scenario failed is removed from effective capabilities. Assert OMP scheduling queries receive the effective set, not raw initialize claims." None of this holds in production: a machine with no `codex`/`copilot`/`claude` binary on `PATH` at all still has its run authorized against the full fixture-derived capability set, only failing later at `adapter.start()`'s own process-spawn/initialize step, rather than being denied at the authorization gate itself.
+
+This is distinct from item 5 (missing `batcave conformance`/`adapters` CLI subcommands, a missing CLI entry point) and item 8 (release conformance gate CI stub) — this is about `AdapterRegistry`'s own production authorization path never substituting a live-probed capability set for scheduling/authorization decisions.
+
+**Implementation:**
+- Call `run_live_conformance` (or a cached, periodically-refreshed result of it) from `AdapterRegistry::run_one`'s authorization path instead of always using the fixture report
+- Add a test proving a missing/unsupported vendor CLI is denied at authorization time, not at spawn time
+
+**References:** `crates/runtime/src/adapter/registry.rs:376-391`, `crates/runtime/src/conformance/mod.rs:23-49`, `crates/runtime/tests/adapter_registry.rs`, `.../2026-07-22-batman-worker-adapters.md` (Task 8, Step 1)
+
+---
+
+### 55. Workspace lease arbitration ignores the requested isolation kind — parallel isolated writes can never coexist, and no `IsolationRequired` error exists
+
+**Status:** Open (newly discovered 2026-08-04)
+**Priority:** Medium
+**Labels:** bug, workspace, lease
+
+**Description:**
+The Workspaces/Displays plan's Task 2 test list requires "parallel write requests require isolation" and a returned `isolation_required` for a degraded/nested writer. `LeaseService::acquire` (`crates/runtime/src/workspace/lease.rs:88-91`) conflict-checks only on `mode`, never on `requested_isolation`. `LeaseError` (`lease.rs:8-18`) has no `IsolationRequired` variant — a repo-wide grep confirms zero matches. `crates/runtime/tests/workspace_lease.rs`'s `write_lease_excludes_all_others` never exercises isolation at all.
+
+**Implementation:**
+- Add an `IsolationRequired` variant to `LeaseError`, and have `LeaseService::acquire` consult `requested_isolation` when arbitrating a conflicting concurrent write request
+- Add a test proving two isolated write requests against the same workspace correctly coexist (or correctly reject with `IsolationRequired` if isolation can't be satisfied), per the plan's own test spec
+
+**References:** `crates/runtime/src/workspace/lease.rs:8-18,88-91`, `crates/runtime/tests/workspace_lease.rs`, `.../2026-07-22-batman-workspaces-displays.md` (Task 2)
+
+---
+
+### 56. Artifact fetch has no 256 KiB per-call cap and never verifies the digest it claims to publish
+
+**Status:** Open (newly discovered 2026-08-04)
+**Priority:** Medium
+**Labels:** bug, workspace, artifact, security
+
+**Description:**
+The Workspaces/Displays plan's Task 4 requires bounded fetch "capped at 256 KiB per call" plus digest verification. `ArtifactStore::fetch_chunked` (`crates/runtime/src/workspace/artifact_store.rs:107-142`) has no length clamp at all — a caller can request an entire artifact in one call regardless of size. A repo-wide grep for "256"/"262144" under `workspace/` returns no matches. There is no SHA-256 recomputation against `metadata.sha256` anywhere on fetch. `orchestration.rs:766` even defaults to 1 MiB when `length` is omitted from a request, not the plan's 256 KiB.
+
+**Failure scenario:** a caller (or a compromised/misbehaving worker) can request an arbitrarily large single chunk of an artifact, defeating the plan's intended bounded-transfer design; separately, a corrupted or tampered artifact on disk is served to a caller with no integrity check, silently contradicting the digest the store's own metadata claims for it.
+
+**Implementation:**
+- Clamp `fetch_chunked`'s per-call length to 256 KiB regardless of the caller's requested `length`
+- Recompute the SHA-256 of served bytes against `metadata.sha256` and reject the fetch (or flag the artifact) on mismatch
+
+**References:** `crates/runtime/src/workspace/artifact_store.rs:107-142`, `crates/runtime/src/service/orchestration.rs:766`, `.../2026-07-22-batman-workspaces-displays.md` (Task 4)
+
+---
+
+### 57. Copy-fallback workspace materialization enforces no byte/file ceiling
+
+**Status:** Open (newly discovered 2026-08-04)
+**Priority:** Medium
+**Labels:** bug, workspace, materialize
+
+**Description:**
+The Workspaces/Displays plan's Task 3 requires copy-mode materialization to enforce "a configurable byte/file ceiling." `CopyIsolation::copy()` (`crates/runtime/src/workspace/copy.rs:24-78`) has no counter, no limit field, and no rejection path. `crates/runtime/tests/workspace_materialize.rs` has zero ceiling-related tests.
+
+**Failure scenario:** a repository (or a maliciously large working tree) materialized via the copy fallback (used when a git worktree isn't applicable) can consume unbounded disk space and time with no configured limit to stop it, contrary to the plan's explicit requirement for a ceiling.
+
+**Implementation:**
+- Add a configurable byte/file ceiling to `CopyIsolation::copy()`, rejecting (or truncating, per the plan's intended semantics) a copy that would exceed it
+- Add a test proving the ceiling is enforced
+
+**References:** `crates/runtime/src/workspace/copy.rs:24-78`, `crates/runtime/tests/workspace_materialize.rs`, `.../2026-07-22-batman-workspaces-displays.md` (Task 3)
+
+---
+
+### 58. Workspace apply conflicts never produce a recorded conflict artifact — `conflict_artifact_id` is always `None`, and a failed cherry-pick never runs `--abort`
+
+**Status:** Open (newly discovered 2026-08-04)
+**Priority:** Medium
+**Labels:** bug, workspace, apply
+
+**Description:**
+The Workspaces/Displays plan's Task 4 requires apply conflicts to record a conflict artifact. All three `ApplyResult` construction sites in `crates/runtime/src/workspace/apply.rs` (lines 66, 132, 189) hardcode `conflict_artifact_id: None`. Both `apply_patch` and `cherry_pick` conflict paths return a bare `Err(ApplyError::Conflict(String))`, which `orchestration.rs` turns into a generic internal RPC error rather than the structured `ApplyResult { success: false, conflict_artifact_id: Some(...) }` the protocol defines. `ArtifactKind::ConflictReport` is referenced only as a list filter, never actually constructed anywhere. `crates/runtime/tests/workspace_apply.rs` has zero conflict tests beyond `workspace_apply_stale_revision_returns_conflict`. Separately, a failed cherry-pick never runs `git cherry-pick --abort`, leaving the workspace mid-conflict on the filesystem.
+
+**Failure scenario:** a worker's apply conflicts with the current workspace state. The caller receives a generic internal error instead of a structured, inspectable conflict artifact describing what conflicted, and the underlying git worktree is left in a mid-cherry-pick state that nothing cleans up.
+
+**Implementation:**
+- On conflict, construct a real `ConflictReport` artifact (via `ArtifactStore`) and return it as `conflict_artifact_id` in a structured `ApplyResult { success: false, ... }`, not a generic RPC error
+- Run `git cherry-pick --abort` when a cherry-pick conflicts, restoring the worktree to its pre-attempt state
+- Add conflict-path tests for both `apply_patch` and `cherry_pick`
+
+**References:** `crates/runtime/src/workspace/apply.rs:66,132,189`, `crates/runtime/tests/workspace_apply.rs`, `.../2026-07-22-batman-workspaces-displays.md` (Task 4)
+
+---
+
+### 59. `DisplaySelector` (Task 8) is never invoked in production — no `DisplaySelection`/`DisplayPreference` types exist, and display pane-attach/detach events are never constructed
+
+**Status:** Open (newly discovered 2026-08-04)
+**Priority:** Medium
+**Labels:** bug, display
+
+**Description:**
+The Workspaces/Displays plan's Task 8 requires `DisplaySelector::attach(run_id, preference)` returning `DisplaySelection { selected, placement, attempts }`, invoked from `orchestration.rs` and journaling the selection. The actual `DisplaySelector` (`crates/runtime/src/display/mod.rs:136-173`) is a synchronous "pick first available from a pre-registered list" helper referenced only by its own tests (`crates/runtime/tests/display_selector.rs`) — zero production callers. No `DisplaySelection`/`DisplayPreference` type exists anywhere in `crates/protocol/src/`. `RuntimeEvent::DisplayEvent`/`DisplayPaneAttached`/`DisplayPaneDetached` (`crates/protocol/src/event.rs:292,295,506`) are never constructed anywhere in the runtime. There is also no `EmbeddedDisplay` type — only `Herdr`/`Tmux`/`Terminal`.
+
+**Implementation:**
+- Add `DisplaySelection`/`DisplayPreference` types to `crates/protocol/src/`
+- Wire `DisplaySelector::attach` into `orchestration.rs` at run-start, journaling the selection via the existing (currently unconstructed) `DisplayEvent` variants
+- Decide whether `EmbeddedDisplay` is still in scope, or formally descope it if `Herdr`/`Tmux`/`Terminal` are considered sufficient
+
+**References:** `crates/runtime/src/display/mod.rs:136-173`, `crates/runtime/tests/display_selector.rs`, `crates/protocol/src/event.rs:292,295,506`, `.../2026-07-22-batman-workspaces-displays.md` (Task 8)
+
+---
+
+### 60. The TS monitor never renders artifact, usage, or workspace events — `model.ts`'s event switch has no case for any of them
+
+**Status:** Open (newly discovered 2026-08-04) — related to item 53 (no workspace events are emitted at all) but a distinct root cause in a different layer; fixing item 53 alone would still leave this gap for usage/artifact events, which already ARE emitted today
+**Priority:** Medium
+**Labels:** bug, extension, monitor
+
+**Description:**
+The Workspaces/Displays plan's Task 5 requires the monitor to render "...usage, artifacts, and workspace evidence." `packages/extension/src/monitor/model.ts`'s `eventPatch` switch (lines 167-221) handles only `runEvent`/`runFlagsEvent`/`messageEvent`/`approvalEvent`/`childEvent` — there is no case for `workspaceEvent`, `adapterArtifactEvent`, or `adapterUsageEvent`. The latter two are already emitted today (confirmed via `crates/runtime/src/adapter/event_sink.rs:284`), so this is a real, independently-fixable rendering gap — it doesn't require item 53's backend fix to at least render usage/artifact evidence, only workspace evidence needs both fixed together.
+
+**Implementation:**
+- Add `workspaceEvent`/`adapterArtifactEvent`/`adapterUsageEvent` cases to `model.ts`'s `eventPatch` switch, and corresponding render logic in `render.ts`
+- Usage/artifact rendering can ship independently of item 53; workspace-event rendering needs item 53's backend emission fixed first to have anything to render
+
+**References:** `packages/extension/src/monitor/model.ts:167-221`, `crates/runtime/src/adapter/event_sink.rs:284`, `.../2026-07-22-batman-workspaces-displays.md` (Task 5)
 
 ---
 
@@ -785,6 +1130,8 @@ Commit history resolves this: `042b8ab` ("docs: consolidate known-gaps into know
 **Description:**
 The module doc (lines 1-5) claims it "resolv[es] org → repo → user → per-run layers into an `EffectivePolicy` with a SHA-256 fingerprint," and `EffectivePolicy.fingerprint`'s own field doc says "SHA-256 fingerprint of the merged policy (hex-encoded)." The actual implementation (`mergeLayers` → `simpleHash`, lines 276-283) is a trivial rolling 32-bit hash (`hash = ((hash << 5) - hash + char) | 0`) producing an 8-hex-char string — not SHA-256 (64 hex chars), and explicitly non-cryptographic per its own inline comment. The real Rust side (`crates/runtime/src/config/merge.rs:427-429`) genuinely uses `sha2::Sha256`. Confirmed via grep that `mergeLayers`/`parseLayer`/`config.ts` are not imported anywhere else in the extension package (unlike `conformance/index.ts`, which is at least re-exported) and have no test file — this is unused dead code whose only documented claim is false.
 
+**Addendum (2026-08-04):** the Hardening plan's Task 1 file list explicitly requires `packages/extension/src/config.test.ts` to exist, with its own Step 2/Step 4 acceptance criteria depending on it passing. It does not exist at all — confirmed via `ls packages/extension/src/config.test.ts` (no such file) and a repo-wide filename grep. This isn't just dead code with no incidental tests; the plan specifically mandated a test file for this module that was never written, on top of the module's own false SHA-256 claim.
+
 **Implementation:**
 - If this module has no current purpose, delete it rather than leave a false claim in dead code
 - If it's meant to become a real client-side mirror of the Rust fingerprint, either call a real SHA-256 implementation or correct the doc comments to describe the actual (non-cryptographic) hash
@@ -836,6 +1183,24 @@ The npm package name/scope is hardcoded as `@satori/*` across the workspace and 
 - Re-run `bun run check` (generate + build + full test suite) to catch any remaining stale reference
 
 **References:** `.npmrc`, `bun.lock`, `packages/*/package.json`, `crates/xtask/src/main.rs:314-318,428-431,477-481`, `.github/workflows/release.yml:114-115`, `README.md`, `CONTRIBUTING.md`, `docs/architecture.md`, `docs/code-walkthrough.md`, `docs/adr/0010-platform-binaries-as-npm-optional-leaf-packages.md`, `crates/protocol/tests/fixtures.rs:22`, `crates/protocol/tests/wire_contract.rs:10`, `crates/runtime/src/coordination/mcp.rs:261`
+
+---
+
+### 61. `fixtures/displays/tmux/list-panes.txt` was never created despite the M2/M3 gap-closure doc marking that entire row "Closed" — a fifth false "Closed" claim in that document
+
+**Status:** Open (newly discovered 2026-08-04)
+**Priority:** Low
+**Labels:** documentation-correction, testing, display
+
+**Description:**
+The M2/M3 gap-closure doc's readiness matrix has a row: "`fixtures/displays/` does not exist ... Create `fixtures/displays/herdr/status-compatible.txt`, `status-mismatch.txt`, `fixtures/displays/tmux/list-panes.txt` ... Status: Closed (2026-07-27)." This is only partially true: `git ls-files fixtures/displays/` returns just `fixtures/displays/herdr/status-compatible.txt` and `fixtures/displays/herdr/status-mismatch.txt` — both real and referenced by `crates/runtime/tests/herdr_display.rs:16`. The `fixtures/displays/tmux/` directory exists on disk but is empty and untracked by git; `list-panes.txt` was never created. `crates/runtime/tests/tmux_display.rs` (444 lines) tests the tmux backend entirely via an in-code `MockCommandExecutor` with hardcoded results, never reading any fixture file — confirming the promised tmux fixture isn't just missing but unused by the test suite that actually shipped.
+
+This is the same class of documentation-correction as items 4 and 31 (both already tracked as false/stale claims from the same document), but a distinct row neither of those covers.
+
+**Implementation:**
+- Either create `fixtures/displays/tmux/list-panes.txt` and wire `tmux_display.rs` to use it (matching the herdr pattern), or correct the gap-closure doc's row to reflect that only the herdr fixtures were produced and the tmux fixture was descoped in favor of the mock-executor approach actually used
+
+**References:** `.../2026-07-27-batman-m2-m3-gap-closure.md`, `crates/runtime/tests/herdr_display.rs:16`, `crates/runtime/tests/tmux_display.rs`, `fixtures/displays/`
 
 ---
 
