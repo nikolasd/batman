@@ -188,7 +188,7 @@ impl LayeredConfig {
             .get("concurrency")
             .and_then(|c| c.get("ceiling"))
             .and_then(serde_json::Value::as_u64)
-            .map_or(2, |v| v as u32)
+            .map_or(8, |v| v as u32)
             .clamp(1, 16);
 
         // Extract model allowlist.
