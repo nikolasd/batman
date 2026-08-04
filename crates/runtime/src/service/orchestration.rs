@@ -10,9 +10,9 @@
 use std::sync::Arc;
 
 use batman_protocol::{
-    ApprovalId, ApprovalRequest, BatmanMethod, DeliveryState, EventEnvelope, MessageId,
-    MessageKind, ProjectId, Run, RunFlags, RunId, RunMessage, RunSpec, RunState, TaskId, TaskRef,
-    Timestamp, Worker, WorkerId, WorkerProfileRef, error_code,
+    ApprovalId, ApprovalRequest, BatmanMethod, DeliveryState, EventEnvelope, IsolationKind,
+    LeaseMode, MessageId, MessageKind, ProjectId, Run, RunFlags, RunId, RunMessage, RunSpec,
+    RunState, TaskId, TaskRef, Timestamp, Worker, WorkerId, WorkerProfileRef, error_code,
 };
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
@@ -471,6 +471,10 @@ impl OrchestrationService {
             .get("prompt")
             .and_then(Value::as_str)
             .map(str::to_string);
+        let workspace_mode = params
+            .get("workspaceMode")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         // Cross-project rejection: the task must exist in this project.
         self.db
             .run_domain_op(query::task_get_op(task_id))
@@ -512,6 +516,29 @@ impl OrchestrationService {
             });
         };
 
+        // Resolve workspace: if workspaceMode is "isolated", acquire an
+        // isolated lease; otherwise the adapter uses the repository root.
+        let workspace_path = if let Some(mode_str) = &workspace_mode {
+            if mode_str == "isolated" {
+                let isolation = Some(IsolationKind::GitWorktree);
+                let lease = self.lease_service.acquire(run_id, LeaseMode::Write, isolation)
+                    .map_err(|e| ServiceError::internal(e.to_string()))?;
+                let materializer = crate::workspace::WorkspaceMaterializer::new(
+                    self.project_id,
+                    self.repository.clone(),
+                ).map_err(|e| ServiceError::internal(e.to_string()))?;
+                let real_path = materializer.materialize(run_id, lease.isolation_kind)
+                    .map_err(|e| ServiceError::internal(e.to_string()))?;
+                self.lease_service.activate(lease.lease_id, real_path.to_string_lossy().to_string())
+                    .map_err(|e| ServiceError::internal(e.to_string()))?;
+                Some(real_path)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let ctx = RunDriverContext {
             db: self.db.clone(),
             project_id,
@@ -521,16 +548,22 @@ impl OrchestrationService {
             prompt,
             events_tx: self.events_tx.clone(),
             violation_service: Arc::clone(&self.violation),
+            workspace_path: workspace_path.clone(),
         };
         // Orchestration-test-scope: awaited synchronously so the caller
         // observes the final committed state deterministically.
         driver.start(ctx).await.map_err(ServiceError::internal)?;
 
-        Ok(json!({
+        let mut result = json!({
             "runId": run_id.to_string(),
             "taskId": task_id.to_string(),
             "sequence": submit_result["sequence"],
-        }))
+        });
+        if let Some(path) = &workspace_path {
+            result["workspacePath"] = json!(path.to_string_lossy().to_string());
+            result["workspaceMode"] = json!("isolated");
+        }
+        Ok(result)
     }
 
     async fn run_list(&self, params: &Value) -> Result<Value, ServiceError> {
@@ -548,10 +581,23 @@ impl OrchestrationService {
 
     async fn run_get(&self, params: &Value) -> Result<Value, ServiceError> {
         let run_id = parse_run_id(params.get("runId"))?;
-        self.db
+        let mut result = self.db
             .run_domain_op(query::run_get_op(run_id))
             .await
-            .map_err(ServiceError::from)
+            .map_err(ServiceError::from)?;
+
+        // Append workspace info if an active lease exists for this run
+        if let Ok(Some(info)) = self.lease_service.active_for_run(run_id) {
+            result["workspacePath"] = json!(info.path);
+            result["workspaceMode"] = json!(
+                match info.isolation_kind {
+                    IsolationKind::Shared => "shared",
+                    IsolationKind::GitWorktree => "isolated",
+                    IsolationKind::Copy => "isolated",
+                }
+            );
+        }
+        Ok(result)
     }
 
     /// `run/retry` takes the prior `RunId` and a new `WorkerId`; the result
@@ -647,15 +693,20 @@ impl OrchestrationService {
         let mode = request.mode;
         let isolation = request.requested_isolation;
 
+        // Phase 1: allocate the lease (state: allocating, path: empty)
         let lease = self.lease_service.acquire(run_id, mode, isolation)
             .map_err(|e| ServiceError::internal(e.to_string()))?;
 
-        // Materialize the workspace using the materializer (constructed on-demand with the lease path)
+        // Phase 2: materialize the workspace
         let materializer = crate::workspace::WorkspaceMaterializer::new(
             self.project_id,
             self.repository.clone(),
         ).map_err(|e| ServiceError::internal(e.to_string()))?;
-        let _ = materializer.materialize(run_id, lease.isolation_kind)
+        let real_path = materializer.materialize(run_id, lease.isolation_kind)
+            .map_err(|e| ServiceError::internal(e.to_string()))?;
+
+        // Phase 3: activate the lease with the real path
+        self.lease_service.activate(lease.lease_id.clone(), real_path.to_string_lossy().to_string())
             .map_err(|e| ServiceError::internal(e.to_string()))?;
 
         Ok(json!({
@@ -663,8 +714,8 @@ impl OrchestrationService {
             "runId": lease.run_id.to_string(),
             "mode": match lease.mode { batman_protocol::LeaseMode::ReadOnly => "readOnly", batman_protocol::LeaseMode::Write => "write" },
             "isolationKind": match lease.isolation_kind { batman_protocol::IsolationKind::Shared => "shared", batman_protocol::IsolationKind::GitWorktree => "gitWorktree", batman_protocol::IsolationKind::Copy => "copy" },
-            "path": lease.path,
-            "state": match lease.state { batman_protocol::WorkspaceState::Allocating => "allocating", batman_protocol::WorkspaceState::Active => "active", batman_protocol::WorkspaceState::Dirty => "dirty", batman_protocol::WorkspaceState::Released => "released", batman_protocol::WorkspaceState::CleanupFailed => "cleanupFailed" },
+            "path": real_path.to_string_lossy().to_string(),
+            "state": "active",
             "baseRevision": lease.base_revision,
             "acquisitionSequence": lease.acquisition_sequence,
         }))
