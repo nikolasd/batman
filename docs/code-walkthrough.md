@@ -121,7 +121,7 @@ binary into a leaf package with a deterministic manifest).
 
 | File | What lives there |
 |---|---|
-| `src/index.ts` | Default-export extension factory; registers `batman_status`, `/batman-status`, the six orchestration tools (via `tools/index.ts`), OMP-native lifecycle listeners (`omp-native/`), and the embedded monitor (`monitor/controller.ts`) |
+| `src/index.ts` | Default-export extension factory; registers `batman_status`, `/batman-status`, the eight orchestration tools (via `tools/index.ts`), OMP-native lifecycle listeners (`omp-native/`), and the embedded monitor (`monitor/controller.ts`) |
 | `src/config.ts` | Configuration layer management |
 | `src/status.ts` | `getRuntimeStatus(ctx)` — the one shared status path; sanitized failure results |
 | `src/client.ts` | `BatmanClient` — NDJSON framing, byte-exact caps, request correlation, Ajv validation of every inbound frame |

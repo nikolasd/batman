@@ -225,13 +225,11 @@ batcave audit export --state-dir ~/.batman/state --output /tmp/audit.jsonl
 
 ## Crash Recovery
 
-### RecoveryCoordinator (Dead Code)
+### RecoveryCoordinator
 
-**Note:** The `RecoveryCoordinator` and its associated crash recovery mechanism are currently **dead code** — they carry `#[expect(dead_code)]` annotations and are never invoked by `lifecycle::serve()`. This section documents the historical design but should not be relied upon for production behavior.
+`RecoveryCoordinator` is wired into `lifecycle::serve()` and runs automatically at daemon startup. It scans for runs stuck in non-terminal states past a configurable `stuck_threshold` (default: 5 minutes) and transitions them to terminal states. 13 kill-point tests verify the recovery matrix.
 
-**Status:** Open – crash recovery is not implemented. The `RecoveryCoordinator` struct exists with `#[expect(dead_code)]` and is never constructed by the daemon lifecycle.
-
-**References:** `crates/runtime/src/recovery.rs` (dead code), `crates/runtime/src/lifecycle.rs` (no references to RecoveryCoordinator)
+**References:** `crates/runtime/src/recovery.rs`, `crates/runtime/src/lifecycle.rs`
 
 ### Manual Recovery
 

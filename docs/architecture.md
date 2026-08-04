@@ -201,7 +201,7 @@ graph LR
 - **State root resolver** ([`packages/extension/src/state.ts`](packages/extension/src/state.ts)): `resolveStateRoot(env, home)` — must stay semantically identical to Rust's `StateRoot::resolve`
 - **Config** ([`packages/extension/src/config.ts`](packages/extension/src/config.ts)): Configuration layer management
 - **Approval UI** ([`packages/extension/src/approval-ui.ts`](packages/extension/src/approval-ui.ts)): Approval UI components
-- **Orchestration tools** ([`packages/extension/src/tools/`](packages/extension/src/tools/)): `batman_task`, `batman_worker`, `batman_run`, `batman_message`, `batman_approval`, `batman_reconcile`
+- **Orchestration tools** ([`packages/extension/src/tools/`](packages/extension/src/tools/)): `batman_task`, `batman_worker`, `batman_profile`, `batman_run`, `batman_workspace`, `batman_message`, `batman_approval`, `batman_reconcile`
 - **OMP-native reconciler** ([`packages/extension/src/omp-native/`](packages/extension/src/omp-native/)): Mirrors OMP bus events into Batman facts
 - **Embedded monitor** ([`packages/extension/src/monitor/`](packages/extension/src/monitor/)): `model.ts`, `render.ts`, `controller.ts`, `compat.ts`
 - **Conformance runner** ([`packages/extension/src/conformance/index.ts`](packages/extension/src/conformance/index.ts)): `runConformance`, `formatConformanceSummary` — external conformance test runner

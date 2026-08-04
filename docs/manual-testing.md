@@ -201,8 +201,7 @@ monitor but exposed as a CLI subcommand for direct testing.
 
 ## 3. The orchestration tools (needs a real model call)
 
-The six orchestration tools (`batman_task`, `batman_worker`, `batman_run`, `batman_message`,
-`batman_approval`, `batman_reconcile`) are regular OMP tools the model *chooses* to call — this
+The eight orchestration tools (`batman_task`, `batman_worker`, `batman_profile`, `batman_run`, `batman_workspace`, `batman_message`, `batman_approval`, `batman_reconcile`) are regular OMP tools the model *chooses* to call — this
 genuinely needs a model, and each step below takes something like ten seconds to a couple of
 minutes. Work in a scratch repository, never this one:
 
@@ -520,6 +519,99 @@ and verifies `batman_task`/`batman_peers`/`batman_send`/`batman_request_child`/
 (missing, expired, wrong-run, post-vendor-exit, or unrelated-process credentials all fail; a
 verified descendant of the same live vendor process may reconnect).
 
+
+## 5. Cross-agent workspace isolation (requires a real adapter)
+
+This section verifies that two parallel runs execute in separate git worktrees, each with its own
+isolated workspace. It exercises `run/submit` with `workspaceMode: "isolated"`, the two-phase lease
+acquisition (allocating → materialize → activate), and the `batman_peer_workspace` coordination
+tool for cross-workspace review.
+
+### 5a. Prerequisites
+
+Everything from [§4a](#4a-prerequisites) above, plus `BATMAN_DEV_ALLOW_ALL_WORKERS=1` (required
+for real adapter execution), and the daemon built and ready:
+
+```bash
+export BATMAN_DEV_ALLOW_ALL_WORKERS=1
+export OMP_BATMAN_BINARY="$PWD/target/debug/batcave"
+
+mkdir -p /tmp/batman-cross-agent && cd /tmp/batman-cross-agent && git init -q && git commit -q --allow-empty -m init
+```
+
+### 5b. Register profiles and create workers
+
+Use `batman_profile` to register two profiles (one per adapter), then `batman_worker` to create
+workers with those `profileId`s:
+
+```bash
+omp --extension "$EXT" --print \
+  'Use batman_profile to register a Claude profile with adapter "claude", model "<your model>",
+   source "manual-test", and startupOptions {"claude":{}}. Then register a second profile for
+   "codex" with startupOptions {"codex":{}}. Report both profileIds plainly.'
+```
+
+Then create two workers, each with one `profileId`:
+
+```bash
+omp --extension "$EXT" --print \
+  'Use batman_worker to create two workers, one with profileId "<profileId1>" and one with
+   profileId "<profileId2>". Report both workerIds plainly.'
+```
+
+### 5c. Submit two concurrent isolated runs
+
+Create a task, then submit two runs with `workspaceMode: "isolated"`:
+
+```bash
+omp --extension "$EXT" --print \
+  'Use batman_task to upsert a task with ownerClientInstanceId "cross-agent" and revision 0.
+   Then use batman_run to submit two runs: one for workerId "<workerId1>" and one for
+   workerId "<workerId2>", both with the same taskId, workspaceMode "isolated", and prompt
+   "Create a file hello.txt containing your adapter name". Report both runIds and workspacePaths
+   plainly.'
+```
+
+**Expected:** Both `run/submit` calls return `Ok` with distinct `runId`s and distinct
+`workspacePath`s, each of the form `/tmp/batman-workspace-<projectId>/<runId>`. Confirm on disk:
+
+```bash
+git -C /tmp/batman-cross-agent worktree list
+```
+
+Both workspace paths should appear as detached worktrees.
+
+### 5d. Poll runs to completion
+
+```bash
+omp --extension "$EXT" --print \
+  'Use batman_run with op "get" for runId "<runId1>" and runId "<runId2>". Report each run
+   state and workspacePath plainly.'
+```
+
+Each response must carry `workspacePath` and `workspaceMode: "gitWorktree"`.
+
+### 5e. Cross-workspace review via `batman_peer_workspace`
+
+Verify the worker coordination surface can resolve a peer's workspace. From the worker MCP side,
+`batman_peer_workspace { peerRunId: "<other runId>" }` returns the peer's `path`,
+`isolationKind`, and `state`. A call with a `runId` belonging to a different task fails with
+`"peerRunId is not a run on this task"`.
+
+### 5f. Clean up
+
+Release both workspaces via `batman_workspace` with `op: "release"`, then verify the worktrees
+are gone:
+
+```bash
+git -C /tmp/batman-cross-agent worktree list
+```
+
+The worktrees should no longer appear. Clean up the scratch directory:
+
+```bash
+rm -rf /tmp/batman-cross-agent
+```
 ## Reading the widget line
 
 The `/batman` widget is a rounded border (drawn by

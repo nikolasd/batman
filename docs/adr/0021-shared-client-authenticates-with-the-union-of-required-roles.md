@@ -6,7 +6,7 @@
 ## Context and Problem Statement
 
 `index.ts::getClient()` caches exactly one `BatmanClient` per extension session and hands it to
-every caller that needs one — `batman_status`, all six orchestration tools, and the monitor.
+every caller that needs one — `batman_status`, all eight orchestration tools, and the monitor.
 `ensureRuntime()` (written in Foundation, when `batman_status` was the only caller) authenticated
 that client as the read-only `display` role. Six commits later, every write-capable orchestration
 tool sharing that same client failed `method ... is not available to this client`, silently,
