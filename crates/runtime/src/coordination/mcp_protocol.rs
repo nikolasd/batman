@@ -82,7 +82,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "batman_peers",
-            description: "List sibling workers on the same task as this run.",
+            description: "List sibling workers on the same task as this run, including each peer's run id for use with batman_peer_workspace.",
             input_schema: json!({
                 "type": "object",
                 "properties": {},
@@ -98,12 +98,35 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                             "properties": {
                                 "workerId": { "type": "string" },
                                 "adapter": { "type": "string" },
+                                "runId": { "type": "string" },
                             },
-                            "required": ["workerId", "adapter"],
+                            "required": ["workerId", "adapter", "runId"],
                         },
                     },
                 },
                 "required": ["peers"],
+            }),
+        },
+        ToolSpec {
+            name: "batman_peer_workspace",
+            description: "Discover the workspace path of a peer agent on the same task, by the peer's run id (from batman_peers). Fails if the peer has no active workspace lease.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "peerRunId": { "type": "string", "maxLength": ID_MAX_CHARS },
+                },
+                "required": ["peerRunId"],
+                "additionalProperties": false,
+            }),
+            output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "mode": { "type": "string" },
+                    "isolationKind": { "type": "string" },
+                    "state": { "type": "string" },
+                },
+                "required": ["path", "mode", "isolationKind", "state"],
             }),
         },
         ToolSpec {
@@ -355,6 +378,13 @@ pub fn translate_tool_call(
                 json!({ "runId": run_id, "question": question }),
             ))
         }
+        "batman_peer_workspace" => {
+            let peer_run_id = required_bounded_str(arguments, "peerRunId", ID_MAX_CHARS)?;
+            Ok((
+                "coordination/peerWorkspace",
+                json!({ "runId": run_id, "peerRunId": peer_run_id }),
+            ))
+        }
         other => Err(ToolCallError::UnknownTool(other.to_string())),
     }
 }
@@ -498,7 +528,7 @@ mod tests {
     #[test]
     fn every_tool_spec_has_a_batman_prefixed_name_and_object_schema() {
         let specs = tool_specs();
-        assert_eq!(specs.len(), 7);
+        assert_eq!(specs.len(), 8);
         for spec in &specs {
             assert!(spec.name.starts_with("batman_"), "{}", spec.name);
             assert_eq!(spec.input_schema["type"], "object");

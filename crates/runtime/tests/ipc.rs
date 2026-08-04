@@ -517,7 +517,14 @@ async fn omp_extension_receives_all_mutation_methods() {
             "coordination/child/decide",
             "reconcile/omp",
             "profile/register",
-            "policy/violation/decide"
+            "policy/violation/decide",
+            "workspace/acquire",
+            "workspace/get",
+            "workspace/release",
+            "workspace/inspect",
+            "workspace/apply",
+            "artifact/list",
+            "artifact/fetch"
         ]
     );
 }
@@ -647,7 +654,8 @@ async fn worker_mcp_accepted_with_valid_credential_and_ancestry() {
             "coordination/publishArtifact",
             "coordination/reportBlocked",
             "coordination/askPolicy",
-            "coordination/child/list"
+            "coordination/child/list",
+            "coordination/peerWorkspace"
         ]
     );
 

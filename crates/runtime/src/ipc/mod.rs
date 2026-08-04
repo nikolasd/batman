@@ -220,11 +220,11 @@ impl ClientPrincipal {
     pub fn allowed_methods(&self) -> Vec<BatmanMethod> {
         use BatmanMethod::{
             ApprovalDecide, ApprovalList, CoordinationAskPolicy, CoordinationChildDecide,
-            CoordinationChildList, CoordinationPeers, CoordinationPublishArtifact,
-            CoordinationReportBlocked, CoordinationRequestChild, CoordinationSend,
-            CoordinationTask, EventsReplay, EventsSubscribe, MessageList, MessageSend,
-            PolicyViolationDecide, ProfileRegister, ReconcileOmp, RunCancel, RunGet, RunList,
-            RunRetry, RunSubmit, RuntimeShutdown, RuntimeStatus, TaskGet, TaskUpsert,
+            CoordinationChildList, CoordinationPeerWorkspace, CoordinationPeers,
+            CoordinationPublishArtifact, CoordinationReportBlocked, CoordinationRequestChild,
+            CoordinationSend, CoordinationTask, EventsReplay, EventsSubscribe, MessageList,
+            MessageSend, PolicyViolationDecide, ProfileRegister, ReconcileOmp, RunCancel, RunGet,
+            RunList, RunRetry, RunSubmit, RuntimeShutdown, RuntimeStatus, TaskGet, TaskUpsert,
             WorkspaceAcquire, WorkspaceGet, WorkspaceRelease, WorkspaceInspect, WorkspaceApply,
             ArtifactList, ArtifactFetch,
             WorkerCreate, WorkerGet, WorkerList,
@@ -287,6 +287,7 @@ impl ClientPrincipal {
                 CoordinationReportBlocked,
                 CoordinationAskPolicy,
                 CoordinationChildList,
+                CoordinationPeerWorkspace,
             ],
         }
     }

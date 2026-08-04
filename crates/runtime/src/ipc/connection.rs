@@ -14,7 +14,7 @@ use std::sync::Arc;
 use batman_protocol::{
     BatmanMethod, ClientAuth, ClientPrincipalSummary, EVENTS_EVENT_METHOD, EventEnvelope,
     EventSource, InitializeParams, InitializeResult, JsonRpcNotification, MessageId, MessageKind,
-    ProtocolVersion, RuntimeCapabilities, RuntimeEvent, RuntimeInfo, RuntimeStatus, TaskId,
+    ProtocolVersion, RunId, RuntimeCapabilities, RuntimeEvent, RuntimeInfo, RuntimeStatus, TaskId,
     WorkerId, error_code,
 };
 use futures_util::StreamExt;
@@ -450,7 +450,8 @@ async fn dispatch(
         | BatmanMethod::CoordinationRequestChild
         | BatmanMethod::CoordinationPublishArtifact
         | BatmanMethod::CoordinationReportBlocked
-        | BatmanMethod::CoordinationAskPolicy => {
+        | BatmanMethod::CoordinationAskPolicy
+        | BatmanMethod::CoordinationPeerWorkspace => {
             let resolved = method.expect("allowed implies a known method");
             let params = message.get("params").cloned().unwrap_or(Value::Null);
             match dispatch_coordination(resolved, principal, &params, shared).await {
@@ -581,6 +582,18 @@ async fn dispatch_coordination(
                 .ok_or_else(|| invalid_params("question is required"))?
                 .to_string();
             shared.coordination.ask_policy(run_id, question).await
+        }
+        BatmanMethod::CoordinationPeerWorkspace => {
+            let peer_run_id = params
+                .get("peerRunId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_params("peerRunId is required"))?;
+            let peer_run_id = RunId::parse(peer_run_id)
+                .map_err(|_| invalid_params("peerRunId is not a valid id"))?;
+            shared
+                .coordination
+                .peer_workspace(run_id, peer_run_id)
+                .await
         }
         _ => Err(crate::coordination::CoordinationError {
             code: error_code::METHOD_NOT_FOUND,

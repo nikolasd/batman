@@ -104,6 +104,7 @@
         "coordination/publishArtifact",
         "coordination/reportBlocked",
         "coordination/askPolicy",
+        "coordination/peerWorkspace",
         "reconcile/omp",
         "profile/register",
         "workspace/acquire",

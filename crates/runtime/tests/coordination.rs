@@ -17,6 +17,7 @@ use batman_runtime::db::DatabaseHandle;
 use batman_runtime::ipc::{PeerCredentialReader, PeerCredentials, Server, ServerConfig};
 use batman_runtime::paths::RuntimePaths;
 use batman_runtime::service::FakeRunDriver;
+use batman_runtime::workspace::LeaseService;
 use nix::unistd::Uid;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -143,7 +144,10 @@ impl Harness {
     async fn broker(&self) -> CoordinationBroker {
         let db = Arc::new(DatabaseHandle::start(self.database.clone()).await.unwrap());
         let (events_tx, _events_rx) = broadcast::channel(16);
-        CoordinationBroker::new(db, self.project_id, events_tx)
+        let lease_service = Arc::new(
+            LeaseService::open_in_memory(self.project_id).expect("in-memory lease service"),
+        );
+        CoordinationBroker::new(db, self.project_id, events_tx, lease_service)
     }
 }
 
@@ -869,7 +873,9 @@ async fn sweep_unacknowledged_as_unknown_settles_recorded_and_sent_messages() {
             .unwrap(),
     );
     let (events_tx, _events_rx) = broadcast::channel(64);
-    let broker = CoordinationBroker::new(db, ProjectId::new(), events_tx);
+    let lease_service =
+        Arc::new(LeaseService::open_in_memory(ProjectId::new()).expect("in-memory lease service"));
+    let broker = CoordinationBroker::new(db, ProjectId::new(), events_tx, lease_service);
     let swept = broker.sweep_unacknowledged_as_unknown().await.unwrap();
     assert_eq!(swept, 1);
 

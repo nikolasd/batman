@@ -158,7 +158,7 @@ impl Server {
             config.approval_callback.clone(),
             violation_service,
             events_tx.clone(),
-            lease_service,
+            lease_service.clone(),
             artifact_store,
             config.repository.clone(),
         ));
@@ -166,6 +166,7 @@ impl Server {
             db.clone(),
             project_id,
             events_tx.clone(),
+            lease_service,
         ));
 
         let shared = Arc::new(Shared {

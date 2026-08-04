@@ -74,6 +74,7 @@ pub struct CoordinationBroker {
     project_id: ProjectId,
     rate_limiter: RateLimiter,
     events_tx: broadcast::Sender<EventEnvelope>,
+    lease_service: Arc<crate::workspace::LeaseService>,
 }
 
 impl CoordinationBroker {
@@ -82,12 +83,14 @@ impl CoordinationBroker {
         db: Arc<DatabaseHandle>,
         project_id: ProjectId,
         events_tx: broadcast::Sender<EventEnvelope>,
+        lease_service: Arc<crate::workspace::LeaseService>,
     ) -> Self {
         Self {
             db,
             project_id,
             rate_limiter: RateLimiter::default(),
             events_tx,
+            lease_service,
         }
     }
 
@@ -338,7 +341,7 @@ impl CoordinationBroker {
                     })?;
 
                 let mut stmt = conn.prepare(
-                    "SELECT DISTINCT w.worker_id, p.adapter
+                    "SELECT DISTINCT w.worker_id, p.adapter, r.run_id
                      FROM runs r JOIN workers w ON r.worker_id = w.worker_id
                      JOIN worker_profiles p ON w.profile_id = p.id
                      WHERE r.task_id = ?1 AND r.run_id != ?2",
@@ -348,6 +351,7 @@ impl CoordinationBroker {
                         Ok(json!({
                             "workerId": row.get::<_, String>(0)?,
                             "adapter": row.get::<_, String>(1)?,
+                            "runId": row.get::<_, String>(2)?,
                         }))
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
@@ -355,6 +359,56 @@ impl CoordinationBroker {
             }))
             .await
             .map_err(Into::into)
+    }
+
+    /// `coordination/peerWorkspace`: discovers the workspace path of a
+    /// peer run on the same task, by the peer's run id. Rejects a peer on
+    /// a different task -- a worker may only discover workspaces of runs
+    /// coordinating on its own task, never an arbitrary run id.
+    pub async fn peer_workspace(
+        &self,
+        run_id: RunId,
+        peer_run_id: RunId,
+    ) -> Result<Value, CoordinationError> {
+        self.require_live_run(run_id).await?;
+        let (task_id, _) = self.run_participants(run_id).await?;
+        let (peer_task_id, _) = self.run_participants(peer_run_id).await?;
+        if peer_task_id != task_id {
+            return Err(CoordinationError::invalid_params(
+                "peerRunId does not belong to this run's task",
+            ));
+        }
+        let info = self
+            .lease_service
+            .active_for_run(peer_run_id)
+            .map_err(|e| CoordinationError {
+                code: error_code::INTERNAL_ERROR,
+                message: e.to_string(),
+            })?
+            .ok_or_else(|| {
+                CoordinationError::invalid_params(format!(
+                    "peer run {peer_run_id} has no active workspace lease"
+                ))
+            })?;
+        Ok(json!({
+            "path": info.path,
+            "mode": match info.mode {
+                batman_protocol::LeaseMode::ReadOnly => "readOnly",
+                batman_protocol::LeaseMode::Write => "write",
+            },
+            "isolationKind": match info.isolation_kind {
+                batman_protocol::IsolationKind::Shared => "shared",
+                batman_protocol::IsolationKind::GitWorktree => "gitWorktree",
+                batman_protocol::IsolationKind::Copy => "copy",
+            },
+            "state": match info.state {
+                batman_protocol::WorkspaceState::Allocating => "allocating",
+                batman_protocol::WorkspaceState::Active => "active",
+                batman_protocol::WorkspaceState::Dirty => "dirty",
+                batman_protocol::WorkspaceState::Released => "released",
+                batman_protocol::WorkspaceState::CleanupFailed => "cleanupFailed",
+            },
+        }))
     }
 
     /// `coordination/requestChild`: records intent only, transitions the
