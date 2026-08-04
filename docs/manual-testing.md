@@ -340,7 +340,8 @@ Everything above this line predates the Worker Adapters milestone and never spaw
 Codex/Copilot/OMP-RPC process. This section covers the four supervised adapters, their conformance
 suites, and the worker coordination MCP surface.
 
-**Critical note:** The `batcave conformance` and `batcave adapters` CLI subcommands do not exist.
+
+The `batcave conformance` and `batcave adapters` CLI subcommands are now wired to the tool registry. Run `batcave adapters --json` to verify the conformance CLI surfaces are available.
 Conformance testing is done through `cargo test` integration tests, not through a CLI command.
 
 ### 4a. Prerequisites

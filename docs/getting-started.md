@@ -225,20 +225,13 @@ batcave audit export --state-dir ~/.batman/state --output /tmp/audit.jsonl
 
 ## Crash Recovery
 
-### RecoveryCoordinator
+### RecoveryCoordinator (Dead Code)
 
-After an unclean shutdown (crash, OOM kill, SIGKILL), runs may be left in non-terminal states. The [`RecoveryCoordinator`] finds stuck runs and transitions them to appropriate terminal states:
+**Note:** The `RecoveryCoordinator` and its associated crash recovery mechanism are currently **dead code** — they carry `#[expect(dead_code)]` annotations and are never invoked by `lifecycle::serve()`. This section documents the historical design but should not be relied upon for production behavior.
 
-- `queued` → `failed`
-- `starting` → `failed`
-- `working` → `failed`
-- `waitingUser` → `cancelled` (if configured)
-- `waitingPeer` → `cancelled` (if configured)
-- `paused` → `cancelled` (if configured)
+**Status:** Open – crash recovery is not implemented. The `RecoveryCoordinator` struct exists with `#[expect(dead_code)]` and is never constructed by the daemon lifecycle.
 
-### Automatic Recovery
-
-Recovery runs automatically after each `serve` command.
+**References:** `crates/runtime/src/recovery.rs` (dead code), `crates/runtime/src/lifecycle.rs` (no references to RecoveryCoordinator)
 
 ### Manual Recovery
 

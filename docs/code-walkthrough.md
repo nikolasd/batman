@@ -40,7 +40,7 @@ Small, dependency-light, and the vocabulary for everything else.
 |---|---|
 | `src/main.rs` | Thin entry point; calls `cli::run()` |
 | `src/cli.rs` | clap definitions for `serve`/`status`/`stop`/`version`/`schema`/`monitor`/`audit`; maps outcomes to exit codes (73 = lost the singleton race) |
-| `src/lifecycle.rs` | `serve()`/`status()`/`stop()`: flock singleton, lock metadata, idle shutdown, graceful-stop ordering, log routing, recovery coordinator wiring, doctor integration |
+| `src/lifecycle.rs` | `serve()`/`status()`/`stop()`: flock singleton, lock metadata, idle shutdown, graceful-stop ordering, log routing, doctor integration |
 | `src/doctor.rs` | `Doctor` — health checking with rollout gates, adapter availability, configuration validity |
 | `src/recovery.rs` | `RecoveryCoordinator` — finds stuck runs after unclean shutdown, transitions to terminal states based on `stuck_threshold`, `recover_paused`, `recover_waiting` |
 | `src/paths.rs` | `RuntimePaths::resolve`, VCS-root discovery, `repository_id_from_canonical_root` |
@@ -171,8 +171,8 @@ Follow this once with the files open and you will have seen every layer.
    spawns `batcave serve --state-dir … --repo … --idle-seconds …` detached, and retries with
    backoff (≤5 s).
 4. **Daemon startup** — `cli.rs` parses args → `lifecycle.rs:serve` resolves `RuntimePaths`, takes
-   the flock (loser exits 73), opens `DatabaseHandle` (migrations + PRAGMAs), runs `RecoveryCoordinator`
-   (automatic after `serve`), runs `Doctor::check()` (rollout gates, adapter availability),
+   the flock (loser exits 73), opens `DatabaseHandle` (migrations + PRAGMAs)
+   runs `Doctor::check()` (rollout gates, adapter availability),
    appends a redacted `runtimeStarted` event through the `Redactor`, binds the owner-only socket
    (`ipc/server.rs:bind`), starts logging (`runtime.log` when detached).
 5. **Handshake** — the client sends `initialize` (first frame, 4 MiB bootstrap cap). The server
@@ -391,7 +391,7 @@ bun test packages/extension/src/client.test.ts -t "frame"              # TS test
   mutation. See §3 above before adding one. Full story:
   [`engineering-lessons.md`](engineering-lessons.md#durable-mutations-must-broadcast-the-same-event-they-just-committed).
 - **Recovery runs automatically after each `serve` command.** If you're debugging why a stuck
-  run transitions to `failed`/`cancelled`, check `recovery.rs:RecoveryCoordinator` — it runs
+  run transitions to `failed` `cancelled`, check `recovery.rs:recovery_test` for the stuck threshold configuration. RecoveryCoordinator is now dead code with `#[expect(dead_code)]`.
   before the daemon starts serving, based on `stuck_threshold` (default 5 minutes) and the
   `recover_paused`/`recover_waiting` config flags. Use `batcave status --recover` to trigger
   it manually for diagnostics.
