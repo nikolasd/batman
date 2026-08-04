@@ -53,7 +53,7 @@ function fakeExtensionContext(cwd: string): ExtensionContext {
 
 // ------------------------------------------------------- registration shape
 
-test("registers exactly the six orchestration tools with expected names", () => {
+test("registers exactly the eight orchestration tools with expected names", () => {
   const { api, tools } = createFakeApi();
   registerOrchestrationTools(api, {
     getClient: () => {
@@ -67,6 +67,8 @@ test("registers exactly the six orchestration tools with expected names", () => 
     "batman_message",
     "batman_approval",
     "batman_reconcile",
+    "batman_profile",
+    "batman_workspace",
   ]);
 });
 

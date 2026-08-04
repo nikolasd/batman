@@ -77,8 +77,11 @@ test("registers batman_status plus every orchestration tool, and both slash comm
     "batman_message",
     "batman_approval",
     "batman_reconcile",
+    "batman_profile",
+    "batman_workspace",
+    "batman_doctor",
   ]);
-  expect([...commands.keys()]).toEqual(["batman-status", "batman"]);
+  expect([...commands.keys()]).toEqual(["batman-status", "batman", "batman-doctor"]);
 });
 
 // ---- Live-daemon path: a real foreground `batcave` the tool must reach. ----

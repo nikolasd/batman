@@ -1,0 +1,61 @@
+// `batman_workspace`: acquires, inspects, and releases isolated (or shared)
+// working directories for a run. `acquire` is tier `exec` -- it materializes
+// a git worktree or copy on disk (or grants shared access to the repository
+// root) and activates the lease. `release` is tier `exec` -- it tears down
+// the lease's exclusivity so another run may acquire the same isolation.
+// `get` and `inspect` are read-only lookups against an already-acquired
+// lease.
+
+import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+
+import type { OrchestrationToolContext } from "./shared";
+import { callOrchestration } from "./shared";
+
+export const BATMAN_WORKSPACE_TOOL_NAME = "batman_workspace";
+
+export function registerWorkspaceTool(pi: ExtensionAPI, ctx: OrchestrationToolContext): void {
+  const params = pi.zod.object({
+    op: pi.zod.enum(["acquire", "get", "release", "inspect"]).describe("Which workspace operation to perform."),
+    runId: pi.zod.string().optional().describe("Required for acquire: the run this workspace lease belongs to."),
+    mode: pi.zod
+      .enum(["readOnly", "write"])
+      .optional()
+      .describe("Required for acquire: readOnly allows sharing with other readers, write requires isolation."),
+    requestedIsolation: pi.zod
+      .enum(["shared", "gitWorktree", "copy"])
+      .optional()
+      .describe(
+        "Optional for acquire: the isolation strategy to materialize. Defaults to shared. Use gitWorktree or copy when a peer agent will work on the same task concurrently.",
+      ),
+    leaseId: pi.zod.string().optional().describe("Required for get, release, and inspect: the lease id."),
+  });
+
+  pi.registerTool({
+    name: BATMAN_WORKSPACE_TOOL_NAME,
+    label: "BATMAN Workspace",
+    description:
+      "Use to acquire, inspect, or release an isolated (or shared) working directory for a run. Use op: 'acquire' before submitting a run that needs its own git worktree or copy (requires runId and mode; pass requestedIsolation: 'gitWorktree' for concurrent agents working on the same task in isolation), op: 'get' to fetch a lease's current path and state, op: 'inspect' to read the workspace's dirty/untracked file counts and diverged commits, or op: 'release' to tear down the lease once the run is done with it. A shared-mode write lease is exclusive across the whole project; isolated (gitWorktree or copy) leases never conflict with each other or with shared leases.",
+    parameters: params,
+    approval: (args) =>
+      typeof args === "object" && args !== null && "op" in args && (args.op === "acquire" || args.op === "release")
+        ? "exec"
+        : "read",
+    async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
+      const client = await ctx.getClient(extCtx.cwd);
+      switch (input.op) {
+        case "acquire":
+          return callOrchestration(client, "workspace/acquire", {
+            runId: input.runId,
+            mode: input.mode,
+            requestedIsolation: input.requestedIsolation,
+          });
+        case "get":
+          return callOrchestration(client, "workspace/get", { leaseId: input.leaseId });
+        case "release":
+          return callOrchestration(client, "workspace/release", { leaseId: input.leaseId });
+        case "inspect":
+          return callOrchestration(client, "workspace/inspect", { leaseId: input.leaseId });
+      }
+    },
+  });
+}
