@@ -77,49 +77,67 @@ impl LeaseService {
         conn.execute("BEGIN IMMEDIATE", params![])
             .map_err(|e| LeaseError::Db(e.to_string()))?;
 
-        let active_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM workspace_leases WHERE state IN ('allocating', 'active')",
-                params![],
-                |row| row.get(0),
-            )
-            .map_err(|e| LeaseError::Db(e.to_string()))?;
+        let isolation_kind = requested_isolation.unwrap_or(IsolationKind::Shared);
 
-        if mode == LeaseMode::Write && active_count > 0 {
-            let _ = conn.execute("ROLLBACK", params![]);
-            return Err(LeaseError::Conflict);
-        }
+        // Conflict rules: only Shared isolation is exclusive within a project.
+        // GitWorktree and Copy create independent workspaces that never conflict.
+        if isolation_kind == IsolationKind::Shared {
+            // Write mode is exclusive within shared: blocks any other shared lease
+            if mode == LeaseMode::Write {
+                let shared_active: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM workspace_leases
+                         WHERE isolation_kind = 'shared' AND state IN ('allocating', 'active')",
+                        params![],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| LeaseError::Db(e.to_string()))?;
+                if shared_active > 0 {
+                    let _ = conn.execute("ROLLBACK", params![]);
+                    return Err(LeaseError::Conflict);
+                }
+            }
 
-        if mode == LeaseMode::ReadOnly {
-            let write_count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM workspace_leases WHERE mode = 'write' AND state IN ('allocating', 'active')",
-                params![],
-                |row| row.get(0),
-            ).map_err(|e| LeaseError::Db(e.to_string()))?;
-
-            if write_count > 0 {
-                let _ = conn.execute("ROLLBACK", params![]);
-                return Err(LeaseError::Conflict);
+            // ReadOnly mode is blocked by an active shared Write lease
+            if mode == LeaseMode::ReadOnly {
+                let shared_write: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM workspace_leases
+                         WHERE isolation_kind = 'shared' AND mode = 'write' AND state IN ('allocating', 'active')",
+                        params![],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| LeaseError::Db(e.to_string()))?;
+                if shared_write > 0 {
+                    let _ = conn.execute("ROLLBACK", params![]);
+                    return Err(LeaseError::Conflict);
+                }
             }
         }
 
         let lease_id = Uuid::now_v7().to_string();
-        let ws_path = format!("/tmp/ws-{}", lease_id.clone());
         let now: OffsetDateTime = OffsetDateTime::now_utc();
         let now_str = now
             .format(&time::format_description::well_known::Rfc3339)
             .map_err(|e| LeaseError::Db(format!("time format: {}", e)))?;
 
+        // Two-phase: INSERT in 'allocating' with empty path.
+        // Caller materializes the workspace, then calls activate() with the real path.
         conn.execute(
-            "INSERT INTO workspace_leases (lease_id, run_id, mode, path, base_revision, state, acquired_at, acquisition_sequence)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO workspace_leases (lease_id, run_id, mode, isolation_kind, path, base_revision, state, acquired_at, acquisition_sequence)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 &lease_id,
                 &run_id.to_string(),
                 match mode { LeaseMode::ReadOnly => "readOnly", LeaseMode::Write => "write" },
-                &ws_path,
+                match isolation_kind {
+                    IsolationKind::Shared => "shared",
+                    IsolationKind::GitWorktree => "gitWorktree",
+                    IsolationKind::Copy => "copy",
+                },
+                "",
                 "HEAD",
-                "active",
+                "allocating",
                 now_str,
                 1u64,
             ],
@@ -132,12 +150,83 @@ impl LeaseService {
             lease_id,
             run_id,
             mode,
-            path: ws_path,
-            isolation_kind: requested_isolation.unwrap_or(IsolationKind::Shared),
+            path: String::new(),
+            isolation_kind,
             base_revision: "HEAD".to_string(),
-            state: WorkspaceState::Active,
+            state: WorkspaceState::Allocating,
             acquisition_sequence: 1,
         })
+    }
+
+    /// Transitions a lease from `allocating` to `active` with the real
+    /// workspace path, after the caller has materialized the workspace.
+    pub fn activate(&self, lease_id: String, path: String) -> Result<(), LeaseError> {
+        let conn =
+            rusqlite::Connection::open(&self.db_path).map_err(|e| LeaseError::Db(e.to_string()))?;
+
+        let rows_affected = conn
+            .execute(
+                "UPDATE workspace_leases SET state = 'active', path = ?1
+                 WHERE lease_id = ?2 AND state = 'allocating'",
+                params![path, lease_id],
+            )
+            .map_err(|e| LeaseError::Db(e.to_string()))?;
+
+        let _ = conn.close();
+
+        if rows_affected == 0 {
+            return Err(LeaseError::NotFound { lease_id });
+        }
+        Ok(())
+    }
+
+    /// Returns workspace info for an active lease bound to `run_id`.
+    /// Used by OMP to discover a peer agent's workspace path.
+    pub fn active_for_run(&self, run_id: RunId) -> Result<Option<WorkspaceInfo>, LeaseError> {
+        let conn =
+            rusqlite::Connection::open(&self.db_path).map_err(|e| LeaseError::Db(e.to_string()))?;
+
+        let result: Option<(String, String, String, String, String, String)> = conn
+            .query_row(
+                "SELECT run_id, mode, isolation_kind, path, state, base_revision
+                 FROM workspace_leases WHERE run_id = ?1 AND state = 'active'",
+                params![run_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .ok();
+
+        let _ = conn.close();
+
+        Ok(result.map(|(run_id_str, mode_str, isol_kind, path, _state, base_rev)| {
+            let mode = match mode_str.as_str() {
+                "readOnly" => LeaseMode::ReadOnly,
+                "write" => LeaseMode::Write,
+                _ => LeaseMode::ReadOnly,
+            };
+            WorkspaceInfo {
+                lease_id: String::new(),
+                run_id: run_id_from_str(&run_id_str).unwrap_or(run_id),
+                mode,
+                isolation_kind: match isol_kind.as_str() {
+                    "shared" => IsolationKind::Shared,
+                    "gitWorktree" => IsolationKind::GitWorktree,
+                    "copy" => IsolationKind::Copy,
+                    _ => IsolationKind::Shared,
+                },
+                path,
+                state: WorkspaceState::Active,
+                base_revision: base_rev,
+            }
+        }))
     }
 
     pub fn get(&self, lease_id: String) -> Result<WorkspaceInfo, LeaseError> {

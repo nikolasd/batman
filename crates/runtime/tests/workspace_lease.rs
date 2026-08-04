@@ -1,6 +1,6 @@
 //! Workspace lease arbitration tests.
 
-use batman_protocol::{LeaseMode, ProjectId, RunId};
+use batman_protocol::{IsolationKind, LeaseMode, ProjectId, RunId, WorkspaceState};
 use batman_runtime::workspace::LeaseService;
 
 fn test_project_id() -> ProjectId {
@@ -21,16 +21,21 @@ fn multiple_shared_readonly_leases_succeed() {
         .acquire(run1, LeaseMode::ReadOnly, None)
         .expect("first read-only lease");
     assert_eq!(lease1.mode, LeaseMode::ReadOnly);
+    assert_eq!(lease1.state, WorkspaceState::Allocating);
+    service.activate(lease1.lease_id.clone(), "/tmp/ws-1".to_string()).unwrap();
 
     let lease2 = service
         .acquire(run2, LeaseMode::ReadOnly, None)
         .expect("second read-only lease");
     assert_eq!(lease2.mode, LeaseMode::ReadOnly);
+    service.activate(lease2.lease_id.clone(), "/tmp/ws-2".to_string()).unwrap();
 
     let info1 = service.get(lease1.lease_id.clone()).unwrap();
     assert_eq!(info1.run_id, run1);
+    assert_eq!(info1.state, WorkspaceState::Active);
     let info2 = service.get(lease2.lease_id.clone()).unwrap();
     assert_eq!(info2.run_id, run2);
+    assert_eq!(info2.state, WorkspaceState::Active);
 
     service.release(lease1.lease_id).unwrap();
     service.release(lease2.lease_id).unwrap();
@@ -46,6 +51,7 @@ fn write_lease_excludes_all_others() {
         .acquire(run1, LeaseMode::Write, None)
         .expect("first write lease");
     assert_eq!(lease1.mode, LeaseMode::Write);
+    service.activate(lease1.lease_id.clone(), "/tmp/ws-1".to_string()).unwrap();
 
     let result = service.acquire(run2, LeaseMode::Write, None);
     assert!(
@@ -58,6 +64,7 @@ fn write_lease_excludes_all_others() {
         .acquire(run2, LeaseMode::Write, None)
         .expect("write lease after first released");
     assert_eq!(lease2.mode, LeaseMode::Write);
+    service.activate(lease2.lease_id.clone(), "/tmp/ws-2".to_string()).unwrap();
 }
 
 #[test]
@@ -69,6 +76,7 @@ fn write_lease_blocks_readonly() {
     let lease1 = service
         .acquire(run1, LeaseMode::Write, None)
         .expect("write lease");
+    service.activate(lease1.lease_id.clone(), "/tmp/ws-1".to_string()).unwrap();
 
     let result = service.acquire(run2, LeaseMode::ReadOnly, None);
     assert!(
@@ -85,7 +93,8 @@ fn readonly_lease_blocks_write() {
     let run1 = test_run_id(1);
     let run2 = test_run_id(2);
 
-    let _lease1 = service.acquire(run1, LeaseMode::ReadOnly, None).unwrap();
+    let lease1 = service.acquire(run1, LeaseMode::ReadOnly, None).unwrap();
+    service.activate(lease1.lease_id.clone(), "/tmp/ws-1".to_string()).unwrap();
 
     let result = service.acquire(run2, LeaseMode::Write, None);
     assert!(
@@ -105,6 +114,7 @@ fn released_lease_cannot_be_reused() {
         .expect("write lease");
     let lease1_id = lease1.lease_id.clone();
 
+    service.activate(lease1_id.clone(), "/tmp/ws-1".to_string()).unwrap();
     service.release(lease1_id.clone()).unwrap();
 
     let result = service.acquire(run2, LeaseMode::Write, None);
@@ -122,11 +132,69 @@ fn active_for_repository_returns_active_count() {
     assert_eq!(service.active_for_repository().unwrap(), 0);
 
     let lease1 = service.acquire(run1, LeaseMode::ReadOnly, None).unwrap();
+    // allocating state counts toward active_for_repository
     assert_eq!(service.active_for_repository().unwrap(), 1);
 
-    let _lease2 = service.acquire(run2, LeaseMode::ReadOnly, None).unwrap();
+    service.activate(lease1.lease_id.clone(), "/tmp/ws-1".to_string()).unwrap();
+    // still 1 after activating (state changed but still in allocating|active set)
+    assert_eq!(service.active_for_repository().unwrap(), 1);
+
+    let lease2 = service.acquire(run2, LeaseMode::ReadOnly, None).unwrap();
+    // second allocating lease bumps count
+    assert_eq!(service.active_for_repository().unwrap(), 2);
+
+    service.activate(lease2.lease_id.clone(), "/tmp/ws-2".to_string()).unwrap();
+    // still 2 after activating
     assert_eq!(service.active_for_repository().unwrap(), 2);
 
     service.release(lease1.lease_id).unwrap();
     assert_eq!(service.active_for_repository().unwrap(), 1);
+}
+
+#[test]
+fn activate_transitions_to_active() {
+    let service = LeaseService::open_in_memory(test_project_id()).unwrap();
+    let run1 = test_run_id(1);
+
+    let lease = service
+        .acquire(run1, LeaseMode::Write, None)
+        .expect("write lease");
+    assert_eq!(lease.state, WorkspaceState::Allocating);
+    assert_eq!(lease.path, "");
+
+    service.activate(lease.lease_id.clone(), "/tmp/real-workspace".to_string()).unwrap();
+
+    let info = service.get(lease.lease_id).unwrap();
+    assert_eq!(info.state, WorkspaceState::Active);
+    assert_eq!(info.path, "/tmp/real-workspace");
+}
+
+#[test]
+fn isolated_workspaces_dont_conflict() {
+    let service = LeaseService::open_in_memory(test_project_id()).unwrap();
+    let run1 = test_run_id(1);
+    let run2 = test_run_id(2);
+
+    let lease1 = service
+        .acquire(run1, LeaseMode::Write, Some(IsolationKind::GitWorktree))
+        .expect("first git worktree lease");
+    assert_eq!(lease1.isolation_kind, IsolationKind::GitWorktree);
+    service.activate(lease1.lease_id.clone(), "/tmp/ws-1".to_string()).unwrap();
+
+    let lease2 = service
+        .acquire(run2, LeaseMode::Write, Some(IsolationKind::GitWorktree))
+        .expect("second git worktree lease should not conflict");
+    assert_eq!(lease2.isolation_kind, IsolationKind::GitWorktree);
+    service.activate(lease2.lease_id.clone(), "/tmp/ws-2".to_string()).unwrap();
+
+    let info1 = service.get(lease1.lease_id.clone()).unwrap();
+    assert_eq!(info1.run_id, run1);
+    assert_eq!(info1.path, "/tmp/ws-1");
+
+    let info2 = service.get(lease2.lease_id.clone()).unwrap();
+    assert_eq!(info2.run_id, run2);
+    assert_eq!(info2.path, "/tmp/ws-2");
+
+    service.release(lease1.lease_id).unwrap();
+    service.release(lease2.lease_id).unwrap();
 }
