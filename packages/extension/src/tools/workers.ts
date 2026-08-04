@@ -15,6 +15,7 @@ export function registerWorkerTool(pi: ExtensionAPI, ctx: OrchestrationToolConte
     fingerprint: pi.zod.string().optional().describe("Required for create: a fingerprint of the harness binary + version."),
     adapter: pi.zod.string().optional().describe("Required for create: the adapter name, e.g. claude, codex, copilot, ompNative."),
     model: pi.zod.string().optional().describe("Required for create: the model identifier this worker uses."),
+    profileId: pi.zod.string().optional().describe("Optional profile id for the worker identity."),
     permissionEnvelope: pi.zod.record(pi.zod.string(), pi.zod.unknown()).optional(),
     parentWorkerId: pi.zod.string().optional().describe("Parent worker id, if spawned as a child."),
     workerId: pi.zod.string().optional().describe("Required for get: the worker id to fetch."),
@@ -35,10 +36,10 @@ export function registerWorkerTool(pi: ExtensionAPI, ctx: OrchestrationToolConte
             fingerprint: input.fingerprint,
             adapter: input.adapter,
             model: input.model,
+            profileId: input.profileId,
             permissionEnvelope: input.permissionEnvelope,
             parentWorkerId: input.parentWorkerId,
           });
-        case "list":
           return callOrchestration(client, "worker/list", {});
         case "get":
           return callOrchestration(client, "worker/get", { workerId: input.workerId });
