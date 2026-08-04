@@ -142,22 +142,28 @@ impl<'c> DomainRepository<'c> {
         let timestamp = Timestamp::now();
 
         // Build the envelope with a provisional sequence of 0; the real
-        // sequence is the rowid assigned on insert. Only the bare
-        // `RuntimeEvent` is persisted in `event_json` -- `sequence`,
-        // `timestamp`, `project_id`, and `run_id` are already durable in
-        // their own columns, and `replay()` (`ipc/connection.rs`)
-        // reconstructs the envelope from those columns plus this bare
-        // event. The full envelope is still returned here so callers can
-        // broadcast it to live subscribers.
+        // sequence is the rowid assigned on insert. The bare `RuntimeEvent`
+        // is persisted in `event_json`; `sequence`, `timestamp`,
+        // `project_id`, `run_id`, `task_id`, and `worker_id` are also
+        // durable in their own columns, so `replay()`
+        // (`ipc/connection.rs`) can reconstruct the full envelope from
+        // those columns plus the bare event. `parent_worker_id` and
+        // `vendor_event_ref` are not parameters here and remain NULL on
+        // disk; the full envelope built below (with those two fields set
+        // from context) is still returned so callers can broadcast it to
+        // live subscribers.
         let envelope = {
             // Insert with a placeholder, then rewrite with the real sequence.
             tx.execute(
-                "INSERT INTO events (timestamp, project_id, run_id, event_json) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO events (timestamp, project_id, run_id, event_json, task_id, worker_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![
                     timestamp.as_str(),
                     project_id.to_string(),
                     run_id.map(|r| r.to_string()),
                     "{}",
+                    task_id.map(|id| id.to_string()),
+                    worker_id.map(|id| id.to_string()),
                 ],
             )?;
             let sequence = tx.last_insert_rowid() as u64;

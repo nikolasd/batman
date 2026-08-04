@@ -2,7 +2,7 @@
 //! already-durable, already-sanitized data -- never raw or classified
 //! content.
 
-use batman_protocol::{OperationId, ProjectId, RunId, Timestamp};
+use batman_protocol::{OperationId, ProjectId, RunId, TaskId, Timestamp, WorkerId};
 
 /// A durable event fetched via [`crate::db::DatabaseHandle::replay_events`],
 /// exactly as it was stored.
@@ -11,6 +11,8 @@ pub struct ReplayedEvent {
     pub sequence: u64,
     pub timestamp: Timestamp,
     pub project_id: ProjectId,
+    pub task_id: Option<TaskId>,
+    pub worker_id: Option<WorkerId>,
     pub run_id: Option<RunId>,
     /// The sanitized event body, as JSON text (the `event_json` column).
     pub event_json: String,

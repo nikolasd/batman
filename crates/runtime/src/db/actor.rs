@@ -11,7 +11,7 @@ use std::thread;
 use rusqlite::Connection;
 use tokio::sync::{mpsc, oneshot};
 
-use batman_protocol::{OperationId, ProjectId, RunId, Timestamp};
+use batman_protocol::{OperationId, ProjectId, RunId, TaskId, Timestamp, WorkerId};
 
 use crate::security::redaction::{PersistableEvent, SanitizedJson};
 
@@ -439,12 +439,14 @@ struct RawEventRow {
     timestamp: String,
     project_id: String,
     run_id: Option<String>,
+    task_id: Option<String>,
+    worker_id: Option<String>,
     event_json: String,
 }
 
 fn tx_replay_events(conn: &Connection, after_sequence: u64) -> Result<Vec<ReplayedEvent>, DbError> {
     let mut statement = conn.prepare(
-        "SELECT sequence, timestamp, project_id, run_id, event_json \
+        "SELECT sequence, timestamp, project_id, run_id, task_id, worker_id, event_json \
          FROM events WHERE sequence > ?1 ORDER BY sequence ASC",
     )?;
     let after_sequence = i64::try_from(after_sequence).unwrap_or(i64::MAX);
@@ -454,7 +456,9 @@ fn tx_replay_events(conn: &Connection, after_sequence: u64) -> Result<Vec<Replay
             timestamp: row.get(1)?,
             project_id: row.get(2)?,
             run_id: row.get(3)?,
-            event_json: row.get(4)?,
+            task_id: row.get(4)?,
+            worker_id: row.get(5)?,
+            event_json: row.get(6)?,
         })
     })?;
 
@@ -479,6 +483,16 @@ fn parse_event_row(row: RawEventRow) -> Result<ReplayedEvent, DbError> {
         timestamp: Timestamp::parse(&row.timestamp)
             .map_err(|err| DbError::InvalidTimestamp(err.to_string()))?,
         project_id: ProjectId::parse(&row.project_id)
+            .map_err(|err| DbError::InvalidId(err.to_string()))?,
+        task_id: row
+            .task_id
+            .map(|value| TaskId::parse(&value))
+            .transpose()
+            .map_err(|err| DbError::InvalidId(err.to_string()))?,
+        worker_id: row
+            .worker_id
+            .map(|value| WorkerId::parse(&value))
+            .transpose()
             .map_err(|err| DbError::InvalidId(err.to_string()))?,
         run_id: row
             .run_id

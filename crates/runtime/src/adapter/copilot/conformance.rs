@@ -16,8 +16,8 @@ use tokio::time::timeout;
 use batman_runtime::ScopeTokenStore;
 use batman_runtime::adapter::mcp_config::AdapterMcpConfig;
 use batman_runtime::adapter::{
-    Adapter, AdapterError, AdapterEventPayload, AdapterKind, CopilotStartupOptions,
-    NestedCapability,
+    Adapter, AdapterCapabilities, AdapterError, AdapterEventPayload, AdapterKind,
+    CopilotStartupOptions, NestedCapability,
 };
 use batman_runtime::conformance::report::AdapterKindLabel;
 use batman_runtime::conformance::{ConformanceMode, ConformanceReport, ScenarioResult, scenario};
@@ -637,6 +637,58 @@ fn managed_nesting_rejection_scenario() -> ScenarioResult {
     )
 }
 
+/// Reuses `subagent.jsonl`, modeling the Claude adapter's own
+/// `unexpected_child_observation_scenario`: a vendor-side delegation to a
+/// subagent, normalized through `copilot_normalize_session_update`,
+/// should surface exactly one `NestedWorkerObserved` without upgrading
+/// the declared `nested` capability. ACP v1's `session/update` schema
+/// has no discriminator this adapter maps to `NestedWorkerObserved` (see
+/// `normalize.rs`'s own module doc, and
+/// `raising_the_max_acp_protocol_version_requires_a_session_update_nested_worker_mapping`'s
+/// permanent-wall assertion), so the delegation normalizes to ordinary
+/// `ToolStarted`/`ToolResult` events instead and this scenario honestly
+/// fails -- a real, reported gap, not a silently omitted one.
+fn unexpected_child_observation_scenario(
+    declared_capabilities: AdapterCapabilities,
+) -> ScenarioResult {
+    use batman_runtime::adapter::AdapterEventPayload::NestedWorkerObserved;
+
+    let updates: Vec<Value> = load_jsonl_fixture("subagent.jsonl")
+        .into_iter()
+        .map(|frame| frame["params"]["update"].clone())
+        .collect();
+    let nested: Vec<(String, String)> = updates
+        .iter()
+        .flat_map(copilot_normalize_session_update)
+        .filter_map(|payload| match payload {
+            NestedWorkerObserved {
+                vendor_child_id,
+                vendor_parent_ref,
+            } => Some((vendor_child_id, vendor_parent_ref)),
+            _ => None,
+        })
+        .collect();
+
+    if nested.len() == 1 && declared_capabilities.nested == NestedCapability::None {
+        ScenarioResult::pass(
+            scenario::UNEXPECTED_CHILD_OBSERVATION,
+            format!(
+                "subagent.jsonl's vendor-side delegation normalized to exactly one NestedWorkerObserved{:?}, while this adapter's own declared nested capability stayed NestedCapability::None -- emitting the event never upgraded it",
+                nested[0]
+            ),
+        )
+    } else {
+        ScenarioResult::fail(
+            scenario::UNEXPECTED_CHILD_OBSERVATION,
+            format!(
+                "ACP v1's session/update schema has no discriminator this adapter maps to NestedWorkerObserved -- subagent.jsonl's vendor-side delegation normalized to {} NestedWorkerObserved event(s) (declared nested={:?}); a real gap until a newer ACP protocol version adds a subagent-observation variant",
+                nested.len(),
+                declared_capabilities.nested
+            ),
+        )
+    }
+}
+
 /// Runs every scenario this adapter can prove without a model call.
 pub async fn fixture_report() -> ConformanceReport {
     let (probe_result, version, declared_capabilities) = probe_scenario().await;
@@ -655,6 +707,7 @@ pub async fn fixture_report() -> ConformanceReport {
         native_discovery_scenario(),
         redaction_scenario(),
         managed_nesting_rejection_scenario(),
+        unexpected_child_observation_scenario(declared_capabilities),
     ];
     ConformanceReport::new(
         AdapterKindLabel::from(AdapterKind::Copilot),
@@ -748,6 +801,7 @@ pub async fn live_report() -> Result<ConformanceReport, String> {
         native_discovery_scenario(),
         redaction_scenario(),
         managed_nesting_rejection_scenario(),
+        unexpected_child_observation_scenario(declared_capabilities),
     ];
     Ok(ConformanceReport::new(
         AdapterKindLabel::from(AdapterKind::Copilot),

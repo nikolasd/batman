@@ -114,6 +114,32 @@ enum Command {
         #[arg(long)]
         run_id: String,
     },
+    /// Probe the display backend status.
+    Display {
+        #[command(subcommand)]
+        probe: DisplayCommand,
+    },
+    /// Run conformance tests for one or all adapters.
+    Conformance {
+        /// Adapter name: claude, codex, copilot, ompRpc, or all.
+        #[arg(long)]
+        adapter: String,
+        /// Use fixture mode (no real model calls).
+        #[arg(long, default_value_t = false)]
+        fixture: bool,
+        /// Use live mode (real vendor CLI), gated per adapter.
+        #[arg(long, default_value_t = false)]
+        live: bool,
+        /// Output file path for the conformance report.
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// List registered adapters with declared vs effective capabilities.
+    Adapters {
+        /// Output as JSON.
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -135,6 +161,18 @@ enum AuditCommand {
         /// The output file path (defaults to stdout).
         #[arg(long)]
         output: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum DisplayCommand {
+    /// Probe the display backend status.
+    Probe {
+        /// Backend to probe: herdr, tmux, or terminal.
+        backend: String,
+        /// Output as JSON.
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
 }
 
@@ -199,6 +237,16 @@ pub async fn run() -> ExitCode {
             repo,
             run_id,
         } => run_coordination_mcp(state_dir, repo, run_id).await,
+        Command::Display {
+            probe: DisplayCommand::Probe { backend, json },
+        } => run_display_probe(backend, json).await,
+        Command::Conformance {
+            adapter,
+            fixture,
+            live,
+            output,
+        } => run_conformance(adapter, fixture, live, output).await,
+        Command::Adapters { json } => run_adapters(json).await,
     }
 }
 
@@ -516,6 +564,160 @@ async fn run_coordination_mcp(state_dir: Option<PathBuf>, repo: PathBuf, run_id:
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => fail(&err),
     }
+}
+
+/// Runs `batcave display probe`: probes one display backend's status and
+/// prints it as JSON or human-readable text. Never activates the backend;
+/// this only reads availability/version, exactly like `DisplayBackendTrait::status`.
+async fn run_display_probe(backend: String, json: bool) -> ExitCode {
+    use batman_protocol::{DisplayBackend as ProtoBackend, DisplayConfig};
+    use batman_runtime::display::{DisplayBackendTrait, HerdrDisplay, TerminalDisplay, TmuxDisplay};
+
+    let display: Box<dyn DisplayBackendTrait> = match backend.as_str() {
+        "herdr" => Box::new(HerdrDisplay::new(DisplayConfig {
+            backend: ProtoBackend::Herdr,
+            width: None,
+            height: None,
+        })),
+        "tmux" => Box::new(TmuxDisplay::new(DisplayConfig {
+            backend: ProtoBackend::Tmux,
+            width: None,
+            height: None,
+        })),
+        "terminal" => Box::new(TerminalDisplay::new(DisplayConfig {
+            backend: ProtoBackend::Terminal,
+            width: None,
+            height: None,
+        })),
+        other => {
+            return fail(&format!(
+                "unknown display backend `{other}`; expected one of herdr, tmux, or terminal"
+            ));
+        }
+    };
+
+    let status = display.status();
+    let version = display.version();
+
+    if json {
+        let mut value = serde_json::to_value(&status).expect("DisplayStatus serializes");
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("version".to_string(), serde_json::json!(version));
+        }
+        println!("{value}");
+    } else {
+        println!("backend: {}", display.backend_name());
+        println!("available: {}", status.available);
+        println!("active: {}", status.active);
+        if let Some(v) = version {
+            println!("version: {v}");
+        }
+        if let Some((w, h)) = status.dimensions {
+            println!("dimensions: {w}x{h}");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// Runs `batcave conformance`: runs one or all adapters' fixture or live
+/// conformance suite and writes the resulting report(s) to `output` as a
+/// JSON array, printing the exact same JSON to stdout. Exactly one of
+/// `fixture`/`live` must be set. An unset `BATMAN_LIVE_<ADAPTER>` gate in
+/// live mode is reported as a `passed: false` entry with an `error`
+/// field, never a hard process failure.
+async fn run_conformance(adapter: String, fixture: bool, live: bool, output: PathBuf) -> ExitCode {
+    use batman_runtime::adapter::AdapterKind;
+    use batman_runtime::conformance::{run_fixture_conformance, run_live_conformance};
+
+    if fixture == live {
+        return fail(&format!(
+            "conformance requires exactly one of --fixture or --live (got fixture={fixture}, live={live})"
+        ));
+    }
+
+    let kinds: Vec<AdapterKind> = if adapter == "all" {
+        vec![
+            AdapterKind::Claude,
+            AdapterKind::Codex,
+            AdapterKind::Copilot,
+            AdapterKind::OmpRpc,
+        ]
+    } else {
+        match AdapterKind::from_wire_name(&adapter) {
+            Some(kind) => vec![kind],
+            None => {
+                return fail(&format!(
+                    "unknown adapter `{adapter}`; expected one of claude, codex, copilot, ompRpc, or all"
+                ));
+            }
+        }
+    };
+
+    let mut reports = Vec::with_capacity(kinds.len());
+    for kind in kinds {
+        let report = if fixture {
+            serde_json::to_value(run_fixture_conformance(kind).await)
+                .expect("ConformanceReport serializes")
+        } else {
+            match run_live_conformance(kind).await {
+                Ok(report) => {
+                    serde_json::to_value(report).expect("ConformanceReport serializes")
+                }
+                Err(err) => serde_json::json!({
+                    "adapter": kind.wire_name(),
+                    "mode": "live",
+                    "passed": false,
+                    "error": err,
+                }),
+            }
+        };
+        reports.push(report);
+    }
+
+    let rendered = serde_json::to_string_pretty(&reports).expect("reports serialize");
+    if let Err(err) = std::fs::write(&output, &rendered) {
+        return fail(&format!("failed to write {}: {err}", output.display()));
+    }
+    println!("{rendered}");
+    ExitCode::SUCCESS
+}
+
+/// Runs `batcave adapters`: runs every reserved adapter kind's fixture
+/// conformance suite and prints the resulting reports (the only source of
+/// truth for OMP-facing effective capabilities) as JSON or human-readable
+/// text.
+async fn run_adapters(json: bool) -> ExitCode {
+    use batman_runtime::adapter::AdapterKind;
+    use batman_runtime::conformance::run_fixture_conformance;
+
+    let kinds = [
+        AdapterKind::Claude,
+        AdapterKind::Codex,
+        AdapterKind::Copilot,
+        AdapterKind::OmpRpc,
+    ];
+    let mut reports = Vec::with_capacity(kinds.len());
+    for kind in kinds {
+        reports.push(run_fixture_conformance(kind).await);
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&reports).expect("reports serialize")
+        );
+    } else {
+        for report in &reports {
+            println!(
+                "{}: mode={:?} passed={} scenarios={}",
+                report.adapter,
+                report.mode,
+                report.passed,
+                report.scenarios.len()
+            );
+        }
+    }
+    ExitCode::SUCCESS
 }
 /// Prints an error to stderr and returns `ExitCode::FAILURE`.
 fn fail(err: &dyn std::fmt::Display) -> ExitCode {

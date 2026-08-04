@@ -147,6 +147,18 @@ CREATE TABLE policy_violations (
 );
 ";
 
+/// Migration 5: enrich the events journal with envelope convenience columns
+/// so that events/replay can reconstruct full EventEnvelopes from disk
+/// (previously these fields were only available in-memory during live
+/// broadcast). The columns are nullable -- existing rows before migration
+/// will have NULL here, and replay() handles NULL by returning None.
+const MIGRATION_5: &str = "
+ALTER TABLE events ADD COLUMN task_id TEXT;
+ALTER TABLE events ADD COLUMN worker_id TEXT;
+ALTER TABLE events ADD COLUMN parent_worker_id TEXT;
+ALTER TABLE events ADD COLUMN vendor_event_ref TEXT;
+";
+
 /// Opens `path` as a private (mode `0600`) SQLite database, configures its
 /// PRAGMAs (`journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`,
 /// `synchronous=FULL`), and migrates it to the latest schema. Migrations
@@ -170,6 +182,7 @@ pub(super) fn open_and_migrate(path: &Path) -> Result<Connection, DbError> {
         M::up(MIGRATION_2),
         M::up(MIGRATION_3),
         M::up(MIGRATION_4),
+        M::up(MIGRATION_5),
     ]);
     migrations.to_latest(&mut conn)?;
 

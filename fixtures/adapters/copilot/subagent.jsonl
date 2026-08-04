@@ -1,0 +1,2 @@
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"tool_call","toolCallId":"call-sub-1","title":"Delegate to a review subagent","kind":"other","status":"pending"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-sub-1","status":"completed","title":"Delegate to a review subagent","content":[{"type":"content","content":{"type":"text","text":"Subagent reviewed the diff and found no issues."}}]}}}

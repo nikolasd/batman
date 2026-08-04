@@ -831,12 +831,53 @@ fn managed_nesting_rejection_scenario() -> ScenarioResult {
     }
 }
 
+// -------------------------------------------------- RESULT_USAGE_ARTIFACTS
+
+/// `turn.jsonl`'s `get_state` response normalizes into
+/// `VendorSessionEstablished`, its `get_session_stats` response into
+/// `UsageReported`, and its `prompt` response (with `agentInvoked:
+/// false`) into a completing `MessageFinal` -- all three correlate to
+/// the one session the fixture replays.
+fn result_usage_artifacts_scenario() -> ScenarioResult {
+    let events = normalize_fixture_lines(&load_fixture_lines("turn.jsonl"));
+
+    let session = events.iter().find_map(|e| match e {
+        AdapterEventPayload::VendorSessionEstablished { vendor_session_id } => {
+            Some(vendor_session_id.clone())
+        }
+        _ => None,
+    });
+    let usage = events.iter().find_map(|e| match e {
+        AdapterEventPayload::UsageReported {
+            input_tokens,
+            output_tokens,
+            cost_usd,
+        } => Some((*input_tokens, *output_tokens, *cost_usd)),
+        _ => None,
+    });
+    let completed = events
+        .iter()
+        .any(|e| matches!(e, AdapterEventPayload::MessageFinal { role, .. } if role == "system"));
+
+    match (session, usage, completed) {
+        (Some(session_id), Some((input, output, cost)), true) => ScenarioResult::pass(
+            scenario::RESULT_USAGE_ARTIFACTS,
+            format!(
+                "turn.jsonl's one session ({session_id}) normalized a VendorSessionEstablished, a UsageReported ({input} in / {output} out tokens, cost={cost:?}), and a completing MessageFinal(role=\"system\") -- all three correlate to the same replayed session"
+            ),
+        ),
+        _ => ScenarioResult::fail(
+            scenario::RESULT_USAGE_ARTIFACTS,
+            "expected VendorSessionEstablished + UsageReported + a completing MessageFinal from turn.jsonl",
+        ),
+    }
+}
+
 // -------------------------------------------- UNEXPECTED_CHILD_OBSERVATION
 
 /// A vendor-reported subagent normalizes into `NestedWorkerObserved`
 /// even though this adapter always declares `nested: none` -- emission
 /// never upgrades the declared capability.
-#[allow(dead_code)]
 fn unexpected_child_observation_scenario() -> ScenarioResult {
     let events = normalize_fixture_lines(&load_fixture_lines("subagents.jsonl"));
     let nested = events.iter().find_map(|e| match e {
@@ -896,9 +937,11 @@ async fn build_scenarios(
         session_resume_scenario().await,
         vendor_reconnect_scenario().await,
         runtime_restart_scenario().await,
+        result_usage_artifacts_scenario(),
         native_discovery_scenario(),
         redaction_scenario(),
         managed_nesting_rejection_scenario(),
+        unexpected_child_observation_scenario(),
     ];
     (scenarios, version, declared_capabilities)
 }
