@@ -138,6 +138,7 @@ fn ctx(
         events_tx,
         prompt: None,
         violation_service,
+        workspace_path: None,
     }
 }
 

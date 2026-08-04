@@ -394,9 +394,13 @@ async fn run_one(
         .map_err(RegistryError::AuthorizationDenied)
         .map_err(String::from)?;
 
+    // Use the workspace path from the context (isolated worktree or copy)
+    // when available; fall back to the repository root.
+    let cwd = ctx.workspace_path.as_deref().unwrap_or(repo_root);
+
     let adapter = build_adapter(
         &profile,
-        repo_root,
+        cwd,
         ctx.run_id,
         ctx.task_id,
         ctx.worker_id,

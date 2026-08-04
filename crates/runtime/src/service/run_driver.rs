@@ -34,6 +34,10 @@ pub struct RunDriverContext {
     /// Task 1), for [`crate::adapter::registry::AdapterRegistry`] to wire
     /// into each run's [`crate::adapter::event_sink::DomainAdapterEventSink`].
     pub violation_service: Arc<crate::policy::ViolationService>,
+    /// The resolved workspace path for this run. When `Some`, the adapter
+    /// uses this as its working directory (for isolated worktrees or copies).
+    /// When `None`, the adapter uses the repository root.
+    pub workspace_path: Option<std::path::PathBuf>,
 }
 
 /// Seam for starting an adapter-backed run. The (later) adapter registry
