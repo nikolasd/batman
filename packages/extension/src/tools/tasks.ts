@@ -20,7 +20,7 @@ export function registerTaskTool(pi: ExtensionAPI, ctx: OrchestrationToolContext
     name: BATMAN_TASK_TOOL_NAME,
     label: "BATMAN Task",
     description:
-      "Creates or resumes a BATMAN-tracked task. The extension auto-generates the task ID and uses your OMP session as the owner.",
+      "Use when you need to create a persistent, cross-session unit of work that will be executed by an external AI harness (Claude, Codex, Copilot, or OMP-RPC) -- not OMP's native in-process task subagent. Persists across session disconnects (stored in SQLite journal), executes via external harness processes, and can be retried, cancelled, or reconciled after failure. Auto-generates a task ID and uses your OMP session as owner. After creating, select a worker with batman_worker { op: 'list' } and submit execution with batman_run { op: 'submit', taskId, workerId }.",
     parameters: params,
     approval: "write",
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {

@@ -23,7 +23,7 @@ export function registerWorkerTool(pi: ExtensionAPI, ctx: OrchestrationToolConte
   pi.registerTool({
     name: BATMAN_WORKER_TOOL_NAME,
     label: "BATMAN Worker",
-    description: "Creates, lists, or fetches BATMAN worker identities backing OMP-selected harnesses.",
+    description: "Use to find or provision external AI harness workers (Claude, Codex, Copilot, OMP-RPC) that execute tasks. Use op: 'list' to see available workers for a repository (call before submitting a run), op: 'get' to fetch details of a specific worker, or op: 'create' to provision a new worker identity for a specific harness/model combination (requires fingerprint, adapter, model). You need a workerId from batman_worker { op: 'list' } to submit a run with batman_run { op: 'submit' }.",
     parameters: params,
     approval: (args) =>
       typeof args === "object" && args !== null && "op" in args && args.op === "create" ? "exec" : "read",

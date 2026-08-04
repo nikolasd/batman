@@ -28,7 +28,7 @@ import { ensureRuntime } from "./runtime";
 
 const TOOL_NAME = "batman_status";
 const COMMAND_NAME = "batman-status";
-const STATUS_DESCRIPTION = "Reports the status of the local BATMAN runtime for this repository.";
+const STATUS_DESCRIPTION = "Use to verify the BATMAN runtime is reachable and healthy before orchestration operations. Returns connection status, runtime identity, and binary source. Call this if you're unsure the daemon is running, or after a connection failure.";
 
 export default function batmanExtension(pi: ExtensionAPI): void {
   // Cached per extension instance (one per OMP session), closed on shutdown.
@@ -103,7 +103,7 @@ export default function batmanExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "batman_doctor",
     label: "BATMAN Doctor",
-    description: "Runs diagnostic checks on the BATMAN runtime state and configuration.",
+    description: "Use for deep diagnostics when batman_status fails or the runtime is unreachable. Runs checks without connecting to a running daemon -- verifies database, state directory, rollout gates, and configuration. Use when the runtime won't start or status reports errors.",
     parameters: pi.zod.object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       return runDoctorCommand(doctorContextFor(ctx.cwd));

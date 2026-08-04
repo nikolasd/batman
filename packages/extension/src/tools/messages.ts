@@ -35,7 +35,7 @@ export function registerMessageTool(pi: ExtensionAPI, ctx: OrchestrationToolCont
   pi.registerTool({
     name: BATMAN_MESSAGE_TOOL_NAME,
     label: "BATMAN Message",
-    description: "Sends or lists correlated, journaled messages within a BATMAN run.",
+    description: "Use to communicate between workers during an active multi-worker run, or to review message history. Use op: 'send' to send a message to another worker (requires runId, senderWorkerId, kind, payload), or op: 'list' to list messages for a run. Message kinds: assign, steer, followUp, question, answer, peerMessage, approvalDecision, cancel, shutdown. Use when workers need to coordinate or escalate decisions.",
     parameters: params,
     approval: "write",
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {

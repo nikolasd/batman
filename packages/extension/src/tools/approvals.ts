@@ -60,7 +60,7 @@ export function registerApprovalTool(pi: ExtensionAPI, ctx: OrchestrationToolCon
     name: BATMAN_APPROVAL_TOOL_NAME,
     label: "BATMAN Approval",
     description:
-      "Lists pending BATMAN approval requests or records a human approve/deny decision. Never auto-approves.",
+      "Use when a worker escalates a decision to human (e.g., for risky operations). The runtime shows a dialog; call this to list pending approvals (with human-in-the-loop flag) or decide with the human's approve/deny decision. The runtime enforces humanRequired flags -- never auto-approve, even for list. Use when a worker pauses execution waiting for human input.",
     parameters: params,
     approval: { tier: "exec", override: true, reason: "Approval decisions are a user-facing safety action." },
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx): Promise<AgentToolResult<unknown>> {

@@ -24,7 +24,7 @@ export function registerRunTool(pi: ExtensionAPI, ctx: OrchestrationToolContext)
     name: BATMAN_RUN_TOOL_NAME,
     label: "BATMAN Run",
     description:
-      "Submits, lists, fetches, retries, or cancels a BATMAN run. A retry always creates a new run id, never resurrects the prior one.",
+      "Use to execute, monitor, or manage task execution by external workers. Use op: 'submit' to start execution (requires taskId from batman_task and workerId from batman_worker), op: 'get' to check progress/status of a run, op: 'list' to list runs for a task, op: 'retry' to retry a terminal run (creates new runId, never resurrects the prior one), or op: 'cancel' to stop a running run. After submitting, monitor with op: 'get'. If the run fails, retry with op: 'retry' (new runId). If stuck, cancel with op: 'cancel'.",
     parameters: params,
     approval: (args) =>
       typeof args === "object" && args !== null && "op" in args && (args.op === "submit" || args.op === "cancel")

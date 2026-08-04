@@ -19,7 +19,7 @@ export function registerReconcileTool(pi: ExtensionAPI, ctx: OrchestrationToolCo
     name: BATMAN_RECONCILE_TOOL_NAME,
     label: "BATMAN Reconcile",
     description:
-      "Rebinds a BATMAN-tracked task from a disconnected OMP client instance to this one, only on a matching revision.",
+      "Use after a session drop or reconnect when your OMP session was interrupted and you had active tasks. Rebinds task ownership from the prior session to the current one. Requires matching taskId and monotonic revision (the runtime rejects rebinds on revision mismatch to prevent race conditions). Call when your session was interrupted and restarted, you have active tasks from a prior session that need to be reattached, or the runtime reports ownership conflicts.",
     parameters: params,
     approval: "write",
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
