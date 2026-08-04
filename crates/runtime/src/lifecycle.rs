@@ -142,6 +142,43 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
 
     let db = Arc::new(DatabaseHandle::start(paths.database.clone()).await?);
 
+    // Crash recovery: transition any run left stuck in a non-terminal state
+    // by an unclean prior shutdown, before anything else touches the
+    // database or the socket accepts a single connection. Every run this
+    // sweep can see predates this process, so there is no live run to race.
+    let recovery = crate::recovery::RecoveryCoordinator::with_defaults(
+        Arc::clone(&db),
+        paths.project_id,
+    );
+    match recovery.recover().await {
+        Ok(result) if result.recovered_count > 0 => {
+            for recovered in &result.recovered_runs {
+                if recovered.success {
+                    tracing::info!(
+                        run_id = %recovered.run_id,
+                        worker_id = %recovered.worker_id,
+                        from_state = %recovered.previous_state,
+                        to_state = %recovered.new_state,
+                        last_activity = %recovered.last_activity,
+                        "crash_recovery_transitioned_run"
+                    );
+                } else {
+                    tracing::warn!(
+                        run_id = %recovered.run_id,
+                        worker_id = %recovered.worker_id,
+                        from_state = %recovered.previous_state,
+                        error = recovered.error.as_deref().unwrap_or("unknown"),
+                        "crash_recovery_failed_to_transition_run"
+                    );
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(err) => {
+            tracing::warn!(error = %err, "crash_recovery_sweep_failed");
+        }
+    }
+
     // Use the config paths from ServeOptions (passed through from CLI).
     let policy = crate::config::resolve_effective_policy(
         opts.org_config.as_deref(),

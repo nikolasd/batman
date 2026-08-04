@@ -1136,7 +1136,11 @@ mod tests {
                 timestamp TEXT NOT NULL,
                 project_id TEXT NOT NULL,
                 run_id TEXT,
-                event_json TEXT NOT NULL
+                event_json TEXT NOT NULL,
+                task_id TEXT,
+                worker_id TEXT,
+                parent_worker_id TEXT,
+                vendor_event_ref TEXT
             );
             CREATE TABLE worker_profiles (
                 id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, adapter TEXT NOT NULL,

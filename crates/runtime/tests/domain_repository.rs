@@ -21,7 +21,11 @@ fn open_test_db() -> Connection {
             timestamp TEXT NOT NULL,
             project_id TEXT NOT NULL,
             run_id TEXT,
-            event_json TEXT NOT NULL
+            event_json TEXT NOT NULL,
+            task_id TEXT,
+            worker_id TEXT,
+            parent_worker_id TEXT,
+            vendor_event_ref TEXT
         );
         CREATE TABLE operations (
             operation_id TEXT PRIMARY KEY,
