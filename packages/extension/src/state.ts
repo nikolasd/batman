@@ -37,17 +37,11 @@ export class StateRootError extends Error {
  * @throws {StateRootError} if `BATMAN_STATE_DIR` or `XDG_STATE_HOME` is set
  * to a relative path.
  */
-export function resolveStateRoot(
-  env: Readonly<Record<string, string | undefined>>,
-  home: string,
-): string {
+export function resolveStateRoot(env: Readonly<Record<string, string | undefined>>, home: string): string {
   const batmanStateDir = env.BATMAN_STATE_DIR;
   if (batmanStateDir !== undefined) {
     if (!isAbsolute(batmanStateDir)) {
-      throw new StateRootError(
-        "relative-override",
-        `BATMAN_STATE_DIR must be an absolute path, got ${JSON.stringify(batmanStateDir)}`,
-      );
+      throw new StateRootError("relative-override", `BATMAN_STATE_DIR must be an absolute path, got ${JSON.stringify(batmanStateDir)}`);
     }
     return batmanStateDir;
   }
@@ -55,10 +49,7 @@ export function resolveStateRoot(
   const xdgStateHome = env.XDG_STATE_HOME;
   if (xdgStateHome !== undefined) {
     if (!isAbsolute(xdgStateHome)) {
-      throw new StateRootError(
-        "relative-override",
-        `XDG_STATE_HOME must be an absolute path, got ${JSON.stringify(xdgStateHome)}`,
-      );
+      throw new StateRootError("relative-override", `XDG_STATE_HOME must be an absolute path, got ${JSON.stringify(xdgStateHome)}`);
     }
     return join(xdgStateHome, "omp", "batman");
   }

@@ -6,7 +6,9 @@
 // the CLI directly, so it works even when no runtime is serving the repo.
 
 import { spawn } from "node:child_process";
+import { homedir } from "node:os";
 import { detectLibc, resolveBatcave } from "./platform";
+import { resolveStateRoot } from "./state";
 
 /** A single failed check from the doctor output. */
 export interface FailedCheck {
@@ -40,6 +42,9 @@ export interface DoctorFailure {
 
 /** Successful result from the doctor command. */
 export interface DoctorSuccess {
+  /** Always absent for success, so `isError` discriminates the union
+   * without every caller having to narrow with `in` first. */
+  readonly isError?: false;
   /** Content blocks for display. */
   readonly content: [DoctorTextContent];
   /** Parsed doctor result. */
@@ -74,13 +79,18 @@ export interface DoctorContext {
 }
 
 /**
- * Builds the doctor context for the given working directory. Resolves the
- * `batcave` binary path using the same logic as `status.ts`.
+ * Builds the doctor context for the given working directory.
+ *
+ * Resolves the state root through {@link resolveStateRoot} -- the same
+ * function the launcher uses to spawn the daemon -- so the doctor always
+ * diagnoses the directory a daemon actually writes. A second resolution
+ * path here was the defect: it produced `<cwd>/.batman`, which no daemon
+ * ever used.
  */
 export function buildDoctorContext(cwd: string, env: NodeJS.ProcessEnv = process.env): DoctorContext {
   const binary = resolveBatcave(process.platform, process.arch, detectLibc(), env);
   return {
-    stateDir: resolveStateDir(cwd),
+    stateDir: resolveStateRoot(env, homedir()),
     repository: cwd,
     batcavePath: binary.path,
   };
@@ -114,37 +124,54 @@ export async function runDoctorCommand(ctx: DoctorContext): Promise<DoctorComman
       const doctorCommand = `${ctx.batcavePath} doctor --state-dir ${ctx.stateDir} --repo ${ctx.repository}`;
 
       if (exitCode !== 0) {
-        // Parse JSON from stdout if available, otherwise use stderr
+        // `batcave doctor --json` reports two distinct shapes on a
+        // non-zero exit: a full result whose checks failed, and an abort
+        // envelope `{ healthy: false, error }` for a condition that
+        // stopped the catalog from running at all. Both carry the real
+        // diagnostic; replacing either with a generic message is what
+        // made this tool useless to debug.
+        let parsed: unknown;
         try {
-          const parsed = JSON.parse(stdout);
-          if (parsed && typeof parsed === "object" && "healthy" in parsed) {
-            resolve({
-              isError: true,
-              content: [{ type: "text", text: formatDoctorOutput(parsed as DoctorResult) }],
-              details: {
-                code: "doctor-failed",
-                message: stderr || `Doctor command exited with code ${exitCode}`,
-                doctorCommand,
-              },
-            });
-          } else {
-            resolve(failureResult(ctx, "doctor-failed", stderr || `Doctor command exited with code ${exitCode}`, doctorCommand));
-          }
+          parsed = JSON.parse(stdout);
         } catch {
-          resolve(failureResult(ctx, "doctor-failed", stderr || `Doctor command exited with code ${exitCode}`, doctorCommand));
+          resolve(failureResult(ctx, "doctor-failed", stderr.trim() || `Doctor command exited with code ${exitCode}`, doctorCommand));
+          return;
         }
-      } else {
-        // Parse JSON from stdout
-        try {
-          const parsed: DoctorResult = JSON.parse(stdout);
+
+        if (isDoctorResult(parsed)) {
           resolve({
+            isError: true,
             content: [{ type: "text", text: formatDoctorOutput(parsed) }],
-            details: parsed,
+            details: {
+              code: "doctor-failed",
+              message: stderr.trim() || `Doctor reported ${parsed.failed_checks.length} failed check(s)`,
+              doctorCommand,
+            },
           });
+          return;
+        }
+
+        const aborted = abortReason(parsed);
+        resolve(failureResult(ctx, "doctor-failed", aborted || stderr.trim() || `Doctor command exited with code ${exitCode}`, doctorCommand));
+      } else {
+        // A zero exit is always a full result; a malformed body here is a
+        // protocol break, not a check failure.
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(stdout);
         } catch (err) {
           const message = err instanceof Error ? err.message : "Failed to parse doctor output";
           resolve(failureResult(ctx, "parse-error", message, doctorCommand));
+          return;
         }
+        if (!isDoctorResult(parsed)) {
+          resolve(failureResult(ctx, "parse-error", "Doctor output is missing its check lists", doctorCommand));
+          return;
+        }
+        resolve({
+          content: [{ type: "text", text: formatDoctorOutput(parsed) }],
+          details: parsed,
+        });
       }
     });
 
@@ -155,12 +182,7 @@ export async function runDoctorCommand(ctx: DoctorContext): Promise<DoctorComman
   });
 }
 
-function failureResult(
-  ctx: DoctorContext,
-  code: string,
-  message: string,
-  doctorCommand?: string,
-): DoctorErrorResult {
+function failureResult(ctx: DoctorContext, code: string, message: string, doctorCommand?: string): DoctorErrorResult {
   return {
     isError: true,
     content: [{ type: "text", text: `Doctor command failed: ${message}` }],
@@ -172,9 +194,26 @@ function failureResult(
   };
 }
 
-function resolveStateDir(cwd: string): string {
-  const path = require("node:path");
-  return path.join(cwd, ".batman");
+/**
+ * Narrows to a full doctor result, as opposed to the abort envelope the
+ * CLI emits when a condition stops the catalog from running. The check is
+ * on the two list fields the formatter dereferences, so a value that
+ * passes here cannot make the formatter throw.
+ */
+function isDoctorResult(value: unknown): value is DoctorResult {
+  if (value === null || typeof value !== "object") return false;
+  if (!("passed_checks" in value) || !("failed_checks" in value)) return false;
+  return Array.isArray(value.passed_checks) && Array.isArray(value.failed_checks);
+}
+
+/**
+ * The `error` text from an abort envelope, or `undefined` if the value is
+ * not one. This is the underlying diagnostic the tool must surface rather
+ * than replace with a generic message.
+ */
+function abortReason(value: unknown): string | undefined {
+  if (value === null || typeof value !== "object" || !("error" in value)) return undefined;
+  return typeof value.error === "string" ? value.error : undefined;
 }
 
 function formatDoctorOutput(result: DoctorResult): string {

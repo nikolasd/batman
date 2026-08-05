@@ -1,5 +1,5 @@
 {
-  "name": "@satori/batman",
+  "name": "@nikolasd/batman",
   "version": "0.1.0",
   "type": "module",
   "files": ["dist"],
@@ -11,14 +11,14 @@
   },
   "peerDependencies": { "@oh-my-pi/pi-coding-agent": ">=17.0.7 <18" },
   "optionalDependencies": {
-    "@satori/batman-darwin-arm64": "workspace:*",
-    "@satori/batman-darwin-x64": "workspace:*",
-    "@satori/batman-linux-arm64-gnu": "workspace:*",
-    "@satori/batman-linux-x64-gnu": "workspace:*"
+    "@nikolasd/batman-darwin-arm64": "workspace:*",
+    "@nikolasd/batman-darwin-x64": "workspace:*",
+    "@nikolasd/batman-linux-arm64-gnu": "workspace:*",
+    "@nikolasd/batman-linux-x64-gnu": "workspace:*"
   },
   "devDependencies": {
     "@oh-my-pi/pi-coding-agent": ">=17.0.7 <18",
-    "@satori/batman-protocol": "workspace:*",
+    "@nikolasd/batman-protocol": "workspace:*",
     "@types/bun": "latest",
     "ajv": "8.17.1",
     "typescript": "latest",

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import type { EventEnvelope } from "@satori/batman-protocol";
+import type { EventEnvelope } from "@nikolasd/batman-protocol";
 
 import { EMPTY_MONITOR_STATE, reduceEvent, reduceEvents } from "./model";
 
@@ -46,6 +46,103 @@ test("a runEvent creates a row with task/worker/state", () => {
   expect(row?.taskId).toBe("task-1");
   expect(row?.workerId).toBe("worker-1");
   expect(row?.state).toBe("working");
+});
+
+// ---- Evidence events: usage, artifacts, workspace activity. ----
+//
+// All three carry `runId` in their own payload (unlike message/approval/
+// child events, which fall back to `envelope.runId`), and none of them
+// touches the pending-approval count.
+
+test("an adapterUsageEvent reports token counts, and its bigints survive interpolation", () => {
+  const state = reduceEvent(
+    EMPTY_MONITOR_STATE,
+    envelope({
+      event: {
+        type: "adapterUsageEvent",
+        payload: {
+          runId: "run-1",
+          taskId: "task-1",
+          workerId: "worker-1",
+          inputTokens: 1234n,
+          outputTokens: 56n,
+          costUsd: null,
+        },
+      },
+    }),
+  );
+  const row = state.rows["run-1"];
+  expect(row?.latestActivity).toBe("usage 1234 in / 56 out");
+  expect(row?.taskId).toBe("task-1");
+  expect(state.pendingApprovalCount).toBe(EMPTY_MONITOR_STATE.pendingApprovalCount);
+});
+
+test("an adapterUsageEvent appends cost only when the vendor reported one", () => {
+  const state = reduceEvent(
+    EMPTY_MONITOR_STATE,
+    envelope({
+      event: {
+        type: "adapterUsageEvent",
+        payload: {
+          runId: "run-1",
+          taskId: "task-1",
+          workerId: "worker-1",
+          inputTokens: 10n,
+          outputTokens: 2n,
+          costUsd: 0.0042,
+        },
+      },
+    }),
+  );
+  expect(state.rows["run-1"]?.latestActivity).toBe("usage 10 in / 2 out ($0.0042)");
+});
+
+test("an adapterArtifactEvent reports the artifact's kind and id", () => {
+  const state = reduceEvent(
+    EMPTY_MONITOR_STATE,
+    envelope({
+      event: {
+        type: "adapterArtifactEvent",
+        payload: {
+          runId: "run-1",
+          taskId: "task-1",
+          workerId: "worker-1",
+          artifactId: "018f0000-0000-7000-8000-0000000000ab",
+          artifactKind: "fileChange",
+        },
+      },
+    }),
+  );
+  expect(state.rows["run-1"]?.latestActivity).toBe("artifact fileChange 018f0000-0000-7000-8000-0000000000ab");
+});
+
+test("a workspaceEvent renders its adjacently-tagged variant name", () => {
+  const state = reduceEvent(
+    EMPTY_MONITOR_STATE,
+    envelope({
+      event: {
+        type: "workspaceEvent",
+        payload: {
+          // The real wire shape: `#[serde(tag = "type", content =
+          // "payload")]`. Reading the first object key instead of `.type`
+          // would render "workspace type".
+          kind: {
+            type: "leaseAcquired",
+            payload: {
+              leaseId: "lease-1",
+              runId: "run-1",
+              path: "/tmp/wt",
+              isolationKind: "gitWorktree",
+              baseRevision: "abc123",
+            },
+          },
+          runId: "run-1",
+          leaseId: "lease-1",
+        },
+      },
+    }),
+  );
+  expect(state.rows["run-1"]?.latestActivity).toBe("workspace leaseAcquired");
 });
 
 test("replaying out-of-order cross-run events with ordered per-run sequences produces stable rows regardless of interleaving order", () => {
@@ -124,10 +221,7 @@ test("renders a degraded fixture via runFlagsEvent", () => {
       },
     },
   });
-  const state = reduceEvents(EMPTY_MONITOR_STATE, [
-    runEvent("run-1", "task-1", "worker-1", "working"),
-    flagsEvent,
-  ]);
+  const state = reduceEvents(EMPTY_MONITOR_STATE, [runEvent("run-1", "task-1", "worker-1", "working"), flagsEvent]);
   expect(state.rows["run-1"]?.flags.degradedControl).toBe(true);
 });
 
@@ -154,10 +248,7 @@ test("an approvalRequested event increments pendingApprovalCount and a decided o
     },
   });
 
-  const afterRequest = reduceEvents(EMPTY_MONITOR_STATE, [
-    runEvent("run-1", "task-1", "worker-1", "waitingUser"),
-    requested,
-  ]);
+  const afterRequest = reduceEvents(EMPTY_MONITOR_STATE, [runEvent("run-1", "task-1", "worker-1", "waitingUser"), requested]);
   expect(afterRequest.rows["run-1"]?.pendingApprovalCount).toBe(1);
 
   const afterDecision = reduceEvent(afterRequest, decided);
@@ -174,10 +265,7 @@ test("only the sanitized fields the RuntimeEvent union carries ever reach a row 
       payload: { kind: "messageSent", messageId: "message-1", runId: "run-1", taskId: "task-1", deliveryState: "sent" },
     },
   });
-  const state = reduceEvents(EMPTY_MONITOR_STATE, [
-    runEvent("run-1", "task-1", "worker-1", "working"),
-    messageEvent,
-  ]);
+  const state = reduceEvents(EMPTY_MONITOR_STATE, [runEvent("run-1", "task-1", "worker-1", "working"), messageEvent]);
   const row = state.rows["run-1"];
   expect(row).toBeDefined();
   // The row's only content-shaped field is a derived, kind-based label --
@@ -185,18 +273,5 @@ test("only the sanitized fields the RuntimeEvent union carries ever reach a row 
   // RuntimeEvent::MessageEvent carries no payload field on the wire).
   expect(row?.latestActivity).toBe("messageSent sent");
   expect(JSON.stringify(row, (_key, value) => (typeof value === "bigint" ? value.toString() : value))).not.toContain("payload");
-  expect(Object.keys(row ?? {}).sort()).toEqual(
-    [
-      "runId",
-      "taskId",
-      "workerId",
-      "state",
-      "flags",
-      "latestActivity",
-      "pendingApprovalCount",
-      "firstSeenAt",
-      "lastEventAt",
-      "lastAppliedSequence",
-    ].sort(),
-  );
+  expect(Object.keys(row ?? {}).sort()).toEqual(["runId", "taskId", "workerId", "state", "flags", "latestActivity", "pendingApprovalCount", "firstSeenAt", "lastEventAt", "lastAppliedSequence"].sort());
 });

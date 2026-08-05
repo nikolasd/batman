@@ -4,11 +4,7 @@
 // each function is a total map from one payload to one fact (or, for the
 // raw event channel, no fact at all).
 
-import type {
-  SubagentEventPayload,
-  SubagentLifecyclePayload,
-  SubagentProgressPayload,
-} from "@oh-my-pi/pi-coding-agent/task";
+import type { SubagentEventPayload, SubagentLifecyclePayload, SubagentProgressPayload } from "@oh-my-pi/pi-coding-agent/task";
 
 import type { OmpNativeAgentFact, OmpNativeStatus } from "./types";
 
@@ -38,11 +34,7 @@ function mapProgressStatus(status: SubagentProgressPayload["progress"]["status"]
 }
 
 /** Normalizes a `task:subagent:lifecycle` payload (start/end transitions). */
-export function normalizeLifecyclePayload(
-  payload: SubagentLifecyclePayload,
-  ompProcessEpoch: string,
-  observedAtMs: number,
-): OmpNativeAgentFact {
+export function normalizeLifecyclePayload(payload: SubagentLifecyclePayload, ompProcessEpoch: string, observedAtMs: number): OmpNativeAgentFact {
   return {
     ompAgentId: payload.id,
     status: mapLifecycleStatus(payload.status),
@@ -55,11 +47,7 @@ export function normalizeLifecyclePayload(
 }
 
 /** Normalizes a `task:subagent:progress` payload (in-flight updates). */
-export function normalizeProgressPayload(
-  payload: SubagentProgressPayload,
-  ompProcessEpoch: string,
-  observedAtMs: number,
-): OmpNativeAgentFact {
+export function normalizeProgressPayload(payload: SubagentProgressPayload, ompProcessEpoch: string, observedAtMs: number): OmpNativeAgentFact {
   return {
     ompAgentId: payload.progress.id,
     status: mapProgressStatus(payload.progress.status),

@@ -25,10 +25,10 @@ type SupportedTarget = "darwin-arm64" | "darwin-x64" | "linux-arm64-gnu" | "linu
 
 /** Maps each supported target triple to its leaf package name. */
 const TARGET_PACKAGES: Record<SupportedTarget, string> = {
-  "darwin-arm64": "@satori/batman-darwin-arm64",
-  "darwin-x64": "@satori/batman-darwin-x64",
-  "linux-arm64-gnu": "@satori/batman-linux-arm64-gnu",
-  "linux-x64-gnu": "@satori/batman-linux-x64-gnu",
+  "darwin-arm64": "@nikolasd/batman-darwin-arm64",
+  "darwin-x64": "@nikolasd/batman-darwin-x64",
+  "linux-arm64-gnu": "@nikolasd/batman-linux-arm64-gnu",
+  "linux-x64-gnu": "@nikolasd/batman-linux-x64-gnu",
 };
 
 /**
@@ -43,10 +43,7 @@ export class UnsupportedPlatformError extends Error {
   readonly libc: string | undefined;
 
   constructor(platform: string, arch: string, libc: string | undefined) {
-    super(
-      `unsupported platform: platform=${platform} arch=${arch} libc=${libc ?? "unknown"} ` +
-        `(supported: ${Object.keys(TARGET_PACKAGES).join(", ")})`,
-    );
+    super(`unsupported platform: platform=${platform} arch=${arch} libc=${libc ?? "unknown"} ` + `(supported: ${Object.keys(TARGET_PACKAGES).join(", ")})`);
     this.name = "UnsupportedPlatformError";
     this.platform = platform;
     this.arch = arch;
@@ -85,7 +82,7 @@ interface LeafManifest {
 /** Injectable seams for {@link resolveBatcave}, used to keep tests hermetic. */
 export interface ResolveBatcaveDeps {
   /**
-   * Resolves a leaf package name (e.g. `@satori/batman-darwin-arm64`) to its
+   * Resolves a leaf package name (e.g. `@nikolasd/batman-darwin-arm64`) to its
    * installed package directory. Defaults to `import.meta.resolve`.
    */
   readonly resolveLeafDir?: (packageName: string) => string;
@@ -104,13 +101,7 @@ export interface ResolveBatcaveDeps {
  *    `manifest.json`, and the manifest's `version` must equal this
  *    extension's version, before returning -- source `"package"`.
  */
-export function resolveBatcave(
-  platform: string,
-  arch: string,
-  libc: string | undefined,
-  env: Readonly<Record<string, string | undefined>>,
-  deps: ResolveBatcaveDeps = {},
-): SelectedBinary {
+export function resolveBatcave(platform: string, arch: string, libc: string | undefined, env: Readonly<Record<string, string | undefined>>, deps: ResolveBatcaveDeps = {}): SelectedBinary {
   const override = resolveOverride(env);
   if (override !== undefined) {
     return override;
@@ -126,19 +117,11 @@ export function resolveBatcave(
 
   const actualSha256 = sha256File(binPath);
   if (actualSha256 !== manifest.sha256) {
-    throw new BinaryIntegrityError(
-      "checksum-mismatch",
-      `checksum mismatch for ${binPath}: manifest ${manifestPath} declares ${manifest.sha256}, ` +
-        `computed ${actualSha256}`,
-    );
+    throw new BinaryIntegrityError("checksum-mismatch", `checksum mismatch for ${binPath}: manifest ${manifestPath} declares ${manifest.sha256}, ` + `computed ${actualSha256}`);
   }
 
   if (manifest.version !== EXTENSION_VERSION) {
-    throw new BinaryIntegrityError(
-      "version-mismatch",
-      `leaf package ${packageName} is version ${manifest.version}, but this extension is ` +
-        `version ${EXTENSION_VERSION}`,
-    );
+    throw new BinaryIntegrityError("version-mismatch", `leaf package ${packageName} is version ${manifest.version}, but this extension is ` + `version ${EXTENSION_VERSION}`);
   }
 
   return { path: binPath, source: "package" };
@@ -175,32 +158,18 @@ function readManifest(manifestPath: string): LeafManifest {
   try {
     raw = readFileSync(manifestPath, "utf8");
   } catch (err) {
-    throw new BinaryIntegrityError(
-      "manifest-invalid",
-      `unable to read manifest at ${manifestPath}: ${(err as Error).message}`,
-    );
+    throw new BinaryIntegrityError("manifest-invalid", `unable to read manifest at ${manifestPath}: ${(err as Error).message}`);
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw new BinaryIntegrityError(
-      "manifest-invalid",
-      `manifest at ${manifestPath} is not valid JSON: ${(err as Error).message}`,
-    );
+    throw new BinaryIntegrityError("manifest-invalid", `manifest at ${manifestPath} is not valid JSON: ${(err as Error).message}`);
   }
 
-  if (
-    typeof parsed !== "object" ||
-    parsed === null ||
-    typeof (parsed as Partial<LeafManifest>).sha256 !== "string" ||
-    typeof (parsed as Partial<LeafManifest>).version !== "string"
-  ) {
-    throw new BinaryIntegrityError(
-      "manifest-invalid",
-      `manifest at ${manifestPath} is missing required string fields "sha256"/"version"`,
-    );
+  if (typeof parsed !== "object" || parsed === null || typeof (parsed as Partial<LeafManifest>).sha256 !== "string" || typeof (parsed as Partial<LeafManifest>).version !== "string") {
+    throw new BinaryIntegrityError("manifest-invalid", `manifest at ${manifestPath} is missing required string fields "sha256"/"version"`);
   }
 
   return parsed as LeafManifest;
@@ -230,8 +199,7 @@ export function detectLibc(platform: string = process.platform): string | undefi
   }
 
   try {
-    const report = (process.report?.getReport() as { header?: { glibcVersionRuntime?: string } })
-      ?.header;
+    const report = (process.report?.getReport() as { header?: { glibcVersionRuntime?: string } })?.header;
     if (report?.glibcVersionRuntime) {
       return "glibc";
     }

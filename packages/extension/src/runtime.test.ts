@@ -1,26 +1,9 @@
 import { afterEach, beforeAll, expect, test } from "bun:test";
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { BatmanClient } from "./client";
-import {
-  BinarySelectionError,
-  buildServeArgs,
-  ensureRuntime,
-  type EnsureRuntimeOptions,
-  repositoryId,
-  repositoryIdFromRoot,
-} from "./runtime";
+import { BinarySelectionError, buildServeArgs, ensureRuntime, type EnsureRuntimeOptions, repositoryId, repositoryIdFromRoot } from "./runtime";
 
 interface RepoIdCase {
   name: string;
@@ -28,9 +11,7 @@ interface RepoIdCase {
   repositoryId: string;
 }
 
-const repoIdCases = (await Bun.file(
-  "fixtures/repo-id/repo-id-cases.json",
-).json()) as RepoIdCase[];
+const repoIdCases = (await Bun.file("fixtures/repo-id/repo-id-cases.json").json()) as RepoIdCase[];
 
 test("shared repo-id fixture has at least one case", () => {
   expect(repoIdCases.length).toBeGreaterThan(0);
@@ -140,15 +121,7 @@ test("buildServeArgs returns the exact detached serve argument vector", () => {
     idleSeconds: 42,
     env: {},
   });
-  expect(args).toEqual([
-    "serve",
-    "--state-dir",
-    "/s",
-    "--repo",
-    "/r",
-    "--idle-seconds",
-    "42",
-  ]);
+  expect(args).toEqual(["serve", "--state-dir", "/s", "--repo", "/r", "--idle-seconds", "42"]);
   // Detached launches never pass --foreground.
   expect(args).not.toContain("--foreground");
 });
@@ -182,20 +155,7 @@ test("foreground startup writes the runtime_started record to stderr instead", a
   const stateDir = newStateDir();
   const repository = newRepo();
 
-  const proc = Bun.spawn(
-    [
-      BATCAVE,
-      "serve",
-      "--foreground",
-      "--state-dir",
-      stateDir,
-      "--repo",
-      repository,
-      "--idle-seconds",
-      "30",
-    ],
-    { stdout: "ignore", stderr: "pipe" },
-  );
+  const proc = Bun.spawn([BATCAVE, "serve", "--foreground", "--state-dir", stateDir, "--repo", repository, "--idle-seconds", "30"], { stdout: "ignore", stderr: "pipe" });
 
   try {
     // Read stderr until the runtime_started record shows up.

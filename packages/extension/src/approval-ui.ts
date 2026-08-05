@@ -32,10 +32,7 @@ const SECRET_KEY_PATTERN = /token|secret|password|apikey|api_key|credential/i;
  * immediately -- without prompting -- when `approval.humanRequired` is
  * false, and also on timeout: in both cases the request is left pending.
  */
-export async function showApprovalDialog(
-  ui: ExtensionUIContext,
-  approval: PendingApproval,
-): Promise<ApprovalDialogResult | undefined> {
+export async function showApprovalDialog(ui: ExtensionUIContext, approval: PendingApproval): Promise<ApprovalDialogResult | undefined> {
   if (!approval.humanRequired) {
     return undefined;
   }
@@ -50,11 +47,7 @@ export async function showApprovalDialog(
   }
 
   const decision: "approve" | "deny" = selection === "Approve" ? "approve" : "deny";
-  const reason = await ui.input(
-    decision === "approve" ? "Reason for approving" : "Reason for denying",
-    "",
-    { timeout: APPROVAL_DIALOG_TIMEOUT_MS },
-  );
+  const reason = await ui.input(decision === "approve" ? "Reason for approving" : "Reason for denying", "", { timeout: APPROVAL_DIALOG_TIMEOUT_MS });
   if (reason === undefined) {
     return undefined;
   }

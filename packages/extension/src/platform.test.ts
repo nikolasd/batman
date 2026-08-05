@@ -36,7 +36,7 @@ function makeLeaf(options: LeafFixtureOptions = {}): string {
   chmodSync(binPath, 0o755);
 
   const manifest = {
-    name: "@satori/batman-fixture",
+    name: "@nikolasd/batman-fixture",
     version: options.version ?? EXTENSION_VERSION,
     target: options.target ?? "fixture-target",
     sha256: options.sha256 ?? sha256File(binPath),
@@ -47,64 +47,86 @@ function makeLeaf(options: LeafFixtureOptions = {}): string {
 }
 
 describe("resolveBatcave: tuple mapping", () => {
-  test("darwin/arm64 maps to @satori/batman-darwin-arm64", () => {
+  test("darwin/arm64 maps to @nikolasd/batman-darwin-arm64", () => {
     const leaf = makeLeaf();
     let requested: string | undefined;
-    const result = resolveBatcave("darwin", "arm64", undefined, {}, {
-      resolveLeafDir: (packageName) => {
-        requested = packageName;
-        return leaf;
+    const result = resolveBatcave(
+      "darwin",
+      "arm64",
+      undefined,
+      {},
+      {
+        resolveLeafDir: (packageName) => {
+          requested = packageName;
+          return leaf;
+        },
       },
-    });
-    expect(requested).toBe("@satori/batman-darwin-arm64");
+    );
+    expect(requested).toBe("@nikolasd/batman-darwin-arm64");
     expect(result).toEqual({ path: join(leaf, "bin", "batcave"), source: "package" });
   });
 
-  test("darwin/x64 maps to @satori/batman-darwin-x64", () => {
+  test("darwin/x64 maps to @nikolasd/batman-darwin-x64", () => {
     const leaf = makeLeaf();
     let requested: string | undefined;
-    const result = resolveBatcave("darwin", "x64", undefined, {}, {
-      resolveLeafDir: (packageName) => {
-        requested = packageName;
-        return leaf;
+    const result = resolveBatcave(
+      "darwin",
+      "x64",
+      undefined,
+      {},
+      {
+        resolveLeafDir: (packageName) => {
+          requested = packageName;
+          return leaf;
+        },
       },
-    });
-    expect(requested).toBe("@satori/batman-darwin-x64");
+    );
+    expect(requested).toBe("@nikolasd/batman-darwin-x64");
     expect(result).toEqual({ path: join(leaf, "bin", "batcave"), source: "package" });
   });
 
-  test("linux/arm64/glibc maps to @satori/batman-linux-arm64-gnu", () => {
+  test("linux/arm64/glibc maps to @nikolasd/batman-linux-arm64-gnu", () => {
     const leaf = makeLeaf();
     let requested: string | undefined;
-    const result = resolveBatcave("linux", "arm64", "glibc", {}, {
-      resolveLeafDir: (packageName) => {
-        requested = packageName;
-        return leaf;
+    const result = resolveBatcave(
+      "linux",
+      "arm64",
+      "glibc",
+      {},
+      {
+        resolveLeafDir: (packageName) => {
+          requested = packageName;
+          return leaf;
+        },
       },
-    });
-    expect(requested).toBe("@satori/batman-linux-arm64-gnu");
+    );
+    expect(requested).toBe("@nikolasd/batman-linux-arm64-gnu");
     expect(result).toEqual({ path: join(leaf, "bin", "batcave"), source: "package" });
   });
 
-  test("linux/x64/glibc maps to @satori/batman-linux-x64-gnu", () => {
+  test("linux/x64/glibc maps to @nikolasd/batman-linux-x64-gnu", () => {
     const leaf = makeLeaf();
     let requested: string | undefined;
-    const result = resolveBatcave("linux", "x64", "glibc", {}, {
-      resolveLeafDir: (packageName) => {
-        requested = packageName;
-        return leaf;
+    const result = resolveBatcave(
+      "linux",
+      "x64",
+      "glibc",
+      {},
+      {
+        resolveLeafDir: (packageName) => {
+          requested = packageName;
+          return leaf;
+        },
       },
-    });
-    expect(requested).toBe("@satori/batman-linux-x64-gnu");
+    );
+    expect(requested).toBe("@nikolasd/batman-linux-x64-gnu");
     expect(result).toEqual({ path: join(leaf, "bin", "batcave"), source: "package" });
   });
 });
 
 describe("resolveBatcave: unsupported platforms", () => {
   test("win32/x64 throws UnsupportedPlatformError with the exact platform/arch/libc", () => {
-    expect(() =>
-      resolveBatcave("win32", "x64", undefined, {}, { resolveLeafDir: NEVER_RESOLVE_LEAF_DIR }),
-    ).toThrow(UnsupportedPlatformError);
+    expect(() => resolveBatcave("win32", "x64", undefined, {}, { resolveLeafDir: NEVER_RESOLVE_LEAF_DIR })).toThrow(UnsupportedPlatformError);
 
     try {
       resolveBatcave("win32", "x64", undefined, {}, { resolveLeafDir: NEVER_RESOLVE_LEAF_DIR });
@@ -172,9 +194,7 @@ describe("resolveBatcave: integrity", () => {
     bytes[0] = (bytes[0]! ^ 0xff) & 0xff;
     writeFileSync(binPath, bytes);
 
-    expect(() =>
-      resolveBatcave("darwin", "arm64", undefined, {}, { resolveLeafDir: () => leaf }),
-    ).toThrow(BinaryIntegrityError);
+    expect(() => resolveBatcave("darwin", "arm64", undefined, {}, { resolveLeafDir: () => leaf })).toThrow(BinaryIntegrityError);
 
     try {
       resolveBatcave("darwin", "arm64", undefined, {}, { resolveLeafDir: () => leaf });

@@ -24,10 +24,10 @@ export function registerWorkerTool(pi: ExtensionAPI, ctx: OrchestrationToolConte
   pi.registerTool({
     name: BATMAN_WORKER_TOOL_NAME,
     label: "BATMAN Worker",
-    description: "Use to find or provision external AI harness workers (Claude, Codex, Copilot, OMP-RPC) that execute tasks. Use op: 'list' to see available workers for a repository (call before submitting a run), op: 'get' to fetch details of a specific worker, or op: 'create' to provision a new worker identity for a specific harness/model combination (requires fingerprint, adapter, model). You need a workerId from batman_worker { op: 'list' } to submit a run with batman_run { op: 'submit' }.",
+    description:
+      "Use to find or provision external AI harness workers (Claude, Codex, Copilot, OMP-RPC) that execute tasks. Use op: 'list' to see available workers for a repository (call before submitting a run), op: 'get' to fetch details of a specific worker, or op: 'create' to provision a new worker identity for a specific harness/model combination (requires fingerprint, adapter, model). You need a workerId from batman_worker { op: 'list' } to submit a run with batman_run { op: 'submit' }.",
     parameters: params,
-    approval: (args) =>
-      typeof args === "object" && args !== null && "op" in args && args.op === "create" ? "exec" : "read",
+    approval: (args) => (typeof args === "object" && args !== null && "op" in args && args.op === "create" ? "exec" : "read"),
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
       const client = await ctx.getClient(extCtx.cwd);
       switch (input.op) {
@@ -40,6 +40,7 @@ export function registerWorkerTool(pi: ExtensionAPI, ctx: OrchestrationToolConte
             permissionEnvelope: input.permissionEnvelope,
             parentWorkerId: input.parentWorkerId,
           });
+        case "list":
           return callOrchestration(client, "worker/list", {});
         case "get":
           return callOrchestration(client, "worker/get", { workerId: input.workerId });

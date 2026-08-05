@@ -5,39 +5,68 @@
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
+import { OMP_NATIVE_CORRELATION_ENTRY_TYPE } from "../omp-native/persistence";
 import type { OrchestrationToolContext } from "./shared";
 import { callOrchestration } from "./shared";
 
 export const BATMAN_TASK_TOOL_NAME = "batman_task";
 
+/**
+ * The revision every task this tool creates is stored with. `task/upsert`
+ * persists exactly the revision it is sent and returns only
+ * `{ taskId, sequence }`, so this constant is also the revision a later
+ * `reconcile/omp` must present -- the two must never be written separately.
+ */
+const INITIAL_TASK_REVISION = 0;
+
 export function registerTaskTool(pi: ExtensionAPI, ctx: OrchestrationToolContext): void {
   const params = pi.zod.object({
-    description: pi.zod.string().describe("What the task should do (natural language description)."),
-    taskId: pi.zod.string().optional().describe("Optional: Reuse an existing task ID (for resume). Auto-generated if omitted."),
+    op: pi.zod.enum(["upsert", "get"]).describe("Which task operation to perform."),
+    description: pi.zod.string().optional().describe("What the task should do (natural language description)."),
+    taskId: pi.zod.string().optional().describe("Optional for upsert: reuse an existing task ID (for resume); auto-generated if omitted. Required for get."),
   });
 
   pi.registerTool({
     name: BATMAN_TASK_TOOL_NAME,
     label: "BATMAN Task",
     description:
-      "Use when you need to create a persistent, cross-session unit of work that will be executed by an external AI harness (Claude, Codex, Copilot, or OMP-RPC) -- not OMP's native in-process task subagent. Persists across session disconnects (stored in SQLite journal), executes via external harness processes, and can be retried, cancelled, or reconciled after failure. Auto-generates a task ID and uses your OMP session as owner. After creating, select a worker with batman_worker { op: 'list' } and submit execution with batman_run { op: 'submit', taskId, workerId }.",
+      "Use when you need to create a persistent, cross-session unit of work that will be executed by an external AI harness (Claude, Codex, Copilot, or OMP-RPC) -- not OMP's native in-process task subagent. Use op: 'upsert' to create or update a task, or op: 'get' to read one back. Persists across session disconnects (stored in SQLite journal), executes via external harness processes, and can be retried, cancelled, or reconciled after failure. Auto-generates a task ID and uses your OMP session as owner. After creating, select a worker with batman_worker { op: 'list' } and submit execution with batman_run { op: 'submit', taskId, workerId, prompt }.",
     parameters: params,
-    approval: "write",
+    // `get` is a read: charging it a write approval made reading a task
+    // cost the same as mutating one.
+    approval: (args) => (typeof args === "object" && args !== null && "op" in args && args.op === "get" ? "read" : "write"),
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
       const client = await ctx.getClient(extCtx.cwd);
-      
-      // Auto-generate taskId if not provided (new task)
-      const taskId = input.taskId ?? crypto.randomUUID();
-      
-      // Use OMP session ID as owner
-      const ownerClientInstanceId = extCtx.sessionManager.getSessionId();
-      
-      // Create a new task (always upsert with revision 0)
-      return callOrchestration(client, "task/upsert", {
-        taskId,
-        ownerClientInstanceId,
-        revision: 0,
-      });
+      switch (input.op) {
+        case "upsert": {
+          const taskId = input.taskId ?? crypto.randomUUID();
+          const result = await callOrchestration(client, "task/upsert", {
+            taskId,
+            ownerClientInstanceId: extCtx.sessionManager.getSessionId(),
+            revision: INITIAL_TASK_REVISION,
+          });
+          // Remember the correlation so a later OMP process can rebind
+          // this task's ownership via `reconcile/omp`. The runtime exposes
+          // no way to enumerate owned tasks, so an unrecorded task can
+          // never be reclaimed after a restart.
+          if (result.isError !== true) {
+            try {
+              pi.appendEntry(OMP_NATIVE_CORRELATION_ENTRY_TYPE, {
+                taskId,
+                revision: INITIAL_TASK_REVISION,
+              });
+            } catch (err) {
+              pi.logger.warn("batman task: failed to persist task correlation", {
+                taskId,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
+          return result;
+        }
+        case "get":
+          return callOrchestration(client, "task/get", { taskId: input.taskId });
+      }
     },
   });
 }

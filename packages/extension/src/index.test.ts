@@ -6,7 +6,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@o
 
 import { z as zod } from "zod/v4";
 
-import { validateRuntimeStatus } from "@satori/batman-protocol/validate";
+import { validateRuntimeStatus } from "@nikolasd/batman-protocol/validate";
 
 import extension from "./index";
 import { getRuntimeStatus, type RuntimeStatusResult } from "./status";
@@ -28,13 +28,7 @@ test("exports an OMP extension factory", () => {
 // that `index.ts` calls: `registerTool`, `registerCommand`, `zod.object`, and `on`.
 interface FakeToolDefinition {
   readonly name: string;
-  readonly execute: (
-    toolCallId: string,
-    params: unknown,
-    signal: AbortSignal | undefined,
-    onUpdate: undefined,
-    ctx: ExtensionContext,
-  ) => Promise<RuntimeStatusResult>;
+  readonly execute: (toolCallId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext) => Promise<RuntimeStatusResult>;
 }
 
 interface FakeRegisteredCommand {
@@ -69,18 +63,7 @@ function createFakeApi(): {
 test("registers batman_status plus every orchestration tool, and both slash commands", () => {
   const { api, tools, commands } = createFakeApi();
   extension(api);
-  expect([...tools.keys()]).toEqual([
-    "batman_status",
-    "batman_task",
-    "batman_worker",
-    "batman_run",
-    "batman_message",
-    "batman_approval",
-    "batman_reconcile",
-    "batman_profile",
-    "batman_workspace",
-    "batman_doctor",
-  ]);
+  expect([...tools.keys()]).toEqual(["batman_status", "batman_task", "batman_worker", "batman_profile", "batman_run", "batman_workspace", "batman_artifact", "batman_child", "batman_violation", "batman_message", "batman_approval", "batman_reconcile", "batman_doctor"]);
   expect([...commands.keys()]).toEqual(["batman-status", "batman", "batman-doctor"]);
 });
 
@@ -145,10 +128,7 @@ beforeAll(async () => {
   repoDir = mkdtempSync("/tmp/bat-omp-r-");
   mkdirSync(join(repoDir, ".git"));
 
-  daemon = Bun.spawn(
-    [BATCAVE, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir],
-    { stdout: "ignore", stderr: "pipe" },
-  );
+  daemon = Bun.spawn([BATCAVE, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir], { stdout: "ignore", stderr: "pipe" });
 
   await waitForSocket(stateDir);
 }, 180_000);
@@ -194,9 +174,7 @@ test("batman_status tool reuses the cached client across a second call", async (
 
   expect(first.isError).toBeUndefined();
   expect(second.isError).toBeUndefined();
-  expect((second.details as { projectId: string }).projectId).toBe(
-    (first.details as { projectId: string }).projectId,
-  );
+  expect((second.details as { projectId: string }).projectId).toBe((first.details as { projectId: string }).projectId);
 });
 
 test("batman_status tool returns a sanitized error when the runtime cannot be reached", async () => {
@@ -244,11 +222,7 @@ test("batman_status surfaces a typed BinaryIntegrityError code without leaking i
       idleSeconds: 60,
       env: {},
       packagedBinaryResolver: () => {
-        throw new BinaryIntegrityError(
-          "checksum-mismatch",
-          `checksum mismatch for ${sensitivePath}: manifest ${sensitivePath}.json declares ` +
-            "aaa, computed bbb",
-        );
+        throw new BinaryIntegrityError("checksum-mismatch", `checksum mismatch for ${sensitivePath}: manifest ${sensitivePath}.json declares ` + "aaa, computed bbb");
       },
     },
     cache: { get: () => undefined, set: () => {} },

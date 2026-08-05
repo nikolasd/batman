@@ -19,13 +19,7 @@ interface FakeToolDefinition {
   readonly description: string;
   readonly approval?: unknown;
   readonly parameters: unknown;
-  readonly execute: (
-    toolCallId: string,
-    params: unknown,
-    signal: AbortSignal | undefined,
-    onUpdate: undefined,
-    ctx: ExtensionContext,
-  ) => Promise<AgentToolResult<unknown>>;
+  readonly execute: (toolCallId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext) => Promise<AgentToolResult<unknown>>;
 }
 
 function createFakeApi(): { api: ExtensionAPI; tools: Map<string, FakeToolDefinition> } {
@@ -40,7 +34,6 @@ function createFakeApi(): { api: ExtensionAPI; tools: Map<string, FakeToolDefini
   return { api: api as unknown as ExtensionAPI, tools };
 }
 
-
 function fakeExtensionContext(cwd: string): ExtensionContext {
   const sessionManager = {
     getSessionId: () => "test-session-id-12345",
@@ -53,23 +46,14 @@ function fakeExtensionContext(cwd: string): ExtensionContext {
 
 // ------------------------------------------------------- registration shape
 
-test("registers exactly the eight orchestration tools with expected names", () => {
+test("registers exactly the eleven orchestration tools, in the order the model sees them", () => {
   const { api, tools } = createFakeApi();
   registerOrchestrationTools(api, {
     getClient: () => {
       throw new Error("not exercised in this test");
     },
   });
-  expect([...tools.keys()]).toEqual([
-    "batman_task",
-    "batman_worker",
-    "batman_run",
-    "batman_message",
-    "batman_approval",
-    "batman_reconcile",
-    "batman_profile",
-    "batman_workspace",
-  ]);
+  expect([...tools.keys()]).toEqual(["batman_task", "batman_worker", "batman_profile", "batman_run", "batman_workspace", "batman_artifact", "batman_child", "batman_violation", "batman_message", "batman_approval", "batman_reconcile"]);
 });
 
 test("read-only ops resolve to tier read, mutating worker/run ops resolve to tier exec", () => {
@@ -95,6 +79,43 @@ test("read-only ops resolve to tier read, mutating worker/run ops resolve to tie
   expect(runApproval({ op: "list" })).toBe("read");
   expect(runApproval({ op: "get" })).toBe("read");
   expect(runApproval({ op: "retry" })).toBe("read");
+});
+
+test("every op's approval tier matches whether it mutates", () => {
+  const { api, tools } = createFakeApi();
+  registerOrchestrationTools(api, {
+    getClient: () => {
+      throw new Error("not exercised in this test");
+    },
+  });
+  const tierOf = (name: string, args: unknown): string => {
+    const tool = tools.get(name);
+    expect(tool).toBeDefined();
+    const approval = tool?.approval;
+    return typeof approval === "function" ? (approval as (a: unknown) => string)(args) : String(approval);
+  };
+
+  // Reading a task must not cost a write approval.
+  expect(tierOf("batman_task", { op: "upsert" })).toBe("write");
+  expect(tierOf("batman_task", { op: "get" })).toBe("read");
+
+  // Artifacts are pure evidence: no op mutates.
+  expect(tierOf("batman_artifact", { op: "list" })).toBe("read");
+  expect(tierOf("batman_artifact", { op: "fetch" })).toBe("read");
+
+  // Accepting a child provisions a real run; listing requests does not.
+  expect(tierOf("batman_child", { op: "list" })).toBe("read");
+  expect(tierOf("batman_child", { op: "decide" })).toBe("exec");
+
+  // Deciding a violation releases or cancels a quarantined run.
+  expect(tierOf("batman_violation", { op: "decide" })).toBe("exec");
+
+  // `apply` rewrites a real working tree, so it joins acquire/release.
+  expect(tierOf("batman_workspace", { op: "apply" })).toBe("exec");
+  expect(tierOf("batman_workspace", { op: "acquire" })).toBe("exec");
+  expect(tierOf("batman_workspace", { op: "release" })).toBe("exec");
+  expect(tierOf("batman_workspace", { op: "get" })).toBe("read");
+  expect(tierOf("batman_workspace", { op: "inspect" })).toBe("read");
 });
 
 test("batman_approval never auto-approves: fixed exec tier with override and reason", () => {
@@ -172,10 +193,7 @@ beforeAll(async () => {
   repoDir = mkdtempSync("/tmp/bat-tools-r-");
   mkdirSync(join(repoDir, ".git"));
 
-  daemon = Bun.spawn(
-    [BATCAVE, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir],
-    { stdout: "ignore", stderr: "pipe" },
-  );
+  daemon = Bun.spawn([BATCAVE, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir], { stdout: "ignore", stderr: "pipe" });
 
   await waitForSocket(stateDir);
 }, 180_000);
@@ -193,7 +211,7 @@ async function connectedClient(): Promise<BatmanClient> {
   const client = new BatmanClient({ socketPath });
   await client.whenConnected();
   await client.initialize({
-    client: { name: "@satori/batman", version: "0.1.0" },
+    client: { name: "@nikolasd/batman", version: "0.1.0" },
     supported: { min: { major: 1, minor: 0 }, max: { major: 1, minor: 0 } },
     repository: { canonicalPath: repoDir, vcsRoot: repoDir },
     auth: { role: "ompExtension", instanceId: "omp-tools-test", agentDirectory: repoDir },
@@ -203,7 +221,7 @@ async function connectedClient(): Promise<BatmanClient> {
   return client;
 }
 
-test("batman_task tool creates a task with auto-generated ID and session owner", async () => {
+test("batman_task upsert creates a task with auto-generated ID and session owner, and get reads it back", async () => {
   const { api, tools } = createFakeApi();
   let cached: BatmanClient | undefined;
   registerOrchestrationTools(api, {
@@ -218,19 +236,20 @@ test("batman_task tool creates a task with auto-generated ID and session owner",
   if (taskTool === undefined) throw new Error("unreachable");
 
   // Create a new task - extension auto-generates taskId and uses session ID as owner
-  const result = await taskTool.execute(
-    "call-1",
-    { description: "Test task creation" },
-    undefined,
-    undefined,
-    fakeExtensionContext(repoDir),
-  );
-  
+  const result = await taskTool.execute("call-1", { op: "upsert", description: "Test task creation" }, undefined, undefined, fakeExtensionContext(repoDir));
+
   // Should succeed with a valid taskId
   expect(result.isError).toBeUndefined();
   const details = result.details as { taskId: string };
   expect(typeof details.taskId).toBe("string");
-  expect(details.taskId).toMatch(/^[0-9a-f-]+$/);  // Valid UUID format
+  expect(details.taskId).toMatch(/^[0-9a-f-]+$/); // Valid UUID format
+
+  // `get` is the op that was previously unreachable: the tool had no `op`
+  // discriminator, so `task/get` could never be called at all.
+  const fetched = await taskTool.execute("call-2", { op: "get", taskId: details.taskId }, undefined, undefined, fakeExtensionContext(repoDir));
+  expect(fetched.isError).toBeUndefined();
+  const fetchedDetails = fetched.details as { taskId?: string };
+  expect(fetchedDetails.taskId).toBe(details.taskId);
 
   cached?.close();
 });
@@ -252,13 +271,7 @@ test("batman_worker tool maps a JSON-RPC error to a stable, non-throwing tool er
   // "get" with a well-formed but nonexistent workerId triggers a runtime
   // NOT_FOUND-shaped error; the tool must surface it as a structured,
   // non-throwing result rather than an unhandled rejection.
-  const result = await workerTool.execute(
-    "call-1",
-    { op: "get", workerId: "018f0000-0000-7000-8000-000000000000" },
-    undefined,
-    undefined,
-    fakeExtensionContext(repoDir),
-  );
+  const result = await workerTool.execute("call-1", { op: "get", workerId: "018f0000-0000-7000-8000-000000000000" }, undefined, undefined, fakeExtensionContext(repoDir));
   expect(result.isError).toBe(true);
   const details = result.details as { code: number; message: string };
   expect(typeof details.code).toBe("number");

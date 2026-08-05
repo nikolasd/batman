@@ -87,10 +87,7 @@ export class OmpNativeReconciler {
  * without a terminal lifecycle event. It transitions to `lost` -- never
  * `succeeded`, and never silently rendered as still runtime-scoped.
  */
-export function reconcileAcrossRestart(
-  priorFacts: readonly OmpNativeAgentFact[],
-  currentEpoch: string,
-): OmpNativeAgentFact[] {
+export function reconcileAcrossRestart(priorFacts: readonly OmpNativeAgentFact[], currentEpoch: string): OmpNativeAgentFact[] {
   return priorFacts.map((fact) => {
     if (fact.ompProcessEpoch === currentEpoch || TERMINAL_STATUSES.has(fact.status)) {
       return fact;
@@ -110,10 +107,7 @@ export function createOmpProcessEpoch(): string {
  * (resolves `undefined`) when no correlation is known -- an uncorrelated
  * fact has no runtime task to rebind.
  */
-export async function reconcileWithRuntime(
-  client: ReconcileOmpClient,
-  correlation: OmpNativeTaskCorrelation | undefined,
-): Promise<unknown> {
+export async function reconcileWithRuntime(client: ReconcileOmpClient, correlation: OmpNativeTaskCorrelation | undefined): Promise<unknown> {
   if (correlation === undefined) {
     return undefined;
   }

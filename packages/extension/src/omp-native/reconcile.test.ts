@@ -1,17 +1,9 @@
 import { expect, test } from "bun:test";
 
-import type {
-  SubagentLifecyclePayload,
-  SubagentProgressPayload,
-} from "@oh-my-pi/pi-coding-agent/task";
+import type { SubagentLifecyclePayload, SubagentProgressPayload } from "@oh-my-pi/pi-coding-agent/task";
 
 import { normalizeEventPayload, normalizeLifecyclePayload, normalizeProgressPayload } from "./events";
-import {
-  OmpNativeReconciler,
-  createOmpProcessEpoch,
-  reconcileAcrossRestart,
-  reconcileWithRuntime,
-} from "./reconcile";
+import { OmpNativeReconciler, createOmpProcessEpoch, reconcileAcrossRestart, reconcileWithRuntime } from "./reconcile";
 import type { OmpNativeAgentFact } from "./types";
 
 const EPOCH_A = "epoch-a";
@@ -26,10 +18,7 @@ function delay(ms: number): Promise<void> {
   return promise;
 }
 
-function lifecyclePayload(
-  status: SubagentLifecyclePayload["status"],
-  overrides: Partial<SubagentLifecyclePayload> = {},
-): SubagentLifecyclePayload {
+function lifecyclePayload(status: SubagentLifecyclePayload["status"], overrides: Partial<SubagentLifecyclePayload> = {}): SubagentLifecyclePayload {
   return {
     id: "agent-1",
     agent: "task",
@@ -42,10 +31,7 @@ function lifecyclePayload(
   };
 }
 
-function progressPayload(
-  status: SubagentProgressPayload["progress"]["status"],
-  overrides: Partial<SubagentProgressPayload["progress"]> = {},
-): SubagentProgressPayload {
+function progressPayload(status: SubagentProgressPayload["progress"]["status"], overrides: Partial<SubagentProgressPayload["progress"]> = {}): SubagentProgressPayload {
   return {
     index: 0,
     agent: "task",
@@ -190,10 +176,7 @@ test("reconcileAcrossRestart transitions an omitted non-terminal run to lost, ne
     observedAtMs: 0,
   };
 
-  const reconciled = reconcileAcrossRestart(
-    [runningUnderPriorProcess, idleUnderPriorProcess, alreadySucceeded],
-    currentEpoch,
-  );
+  const reconciled = reconcileAcrossRestart([runningUnderPriorProcess, idleUnderPriorProcess, alreadySucceeded], currentEpoch);
 
   expect(reconciled.find((f) => f.ompAgentId === "agent-1")?.status).toBe("lost");
   expect(reconciled.find((f) => f.ompAgentId === "agent-2")?.status).toBe("lost");

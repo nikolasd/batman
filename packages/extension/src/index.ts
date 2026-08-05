@@ -1,4 +1,4 @@
-// The `@satori/batman` OMP extension entry point. Registers `batman_status`
+// The `@nikolasd/batman` OMP extension entry point. Registers `batman_status`
 // (an LLM-callable tool), `/batman-status` (a slash command), and every
 // deterministic orchestration tool (`batman_task`, `batman_worker`,
 // `batman_run`, `batman_message`, `batman_approval`, `batman_reconcile`).
@@ -7,19 +7,13 @@
 // session, and every tool reuses that connection.
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import {
-  TASK_SUBAGENT_EVENT_CHANNEL,
-  TASK_SUBAGENT_LIFECYCLE_CHANNEL,
-  TASK_SUBAGENT_PROGRESS_CHANNEL,
-  type SubagentEventPayload,
-  type SubagentLifecyclePayload,
-  type SubagentProgressPayload,
-} from "@oh-my-pi/pi-coding-agent/task";
+import { TASK_SUBAGENT_EVENT_CHANNEL, TASK_SUBAGENT_LIFECYCLE_CHANNEL, TASK_SUBAGENT_PROGRESS_CHANNEL, type SubagentEventPayload, type SubagentLifecyclePayload, type SubagentProgressPayload } from "@oh-my-pi/pi-coding-agent/task";
 
 import type { BatmanClient } from "./client";
 import { buildStatusContext } from "./context";
 import { normalizeEventPayload, normalizeLifecyclePayload, normalizeProgressPayload } from "./omp-native/events";
-import { OmpNativeReconciler, createOmpProcessEpoch } from "./omp-native/reconcile";
+import { OMP_NATIVE_FACT_ENTRY_TYPE, persistedCorrelations, persistedFacts, type SessionEntryLike } from "./omp-native/persistence";
+import { OmpNativeReconciler, createOmpProcessEpoch, reconcileAcrossRestart, reconcileWithRuntime } from "./omp-native/reconcile";
 import { getRuntimeStatus, type GetRuntimeStatusContext } from "./status";
 import { runDoctorCommand, buildDoctorContext, type DoctorContext } from "./doctor";
 import { registerOrchestrationTools } from "./tools";
@@ -126,11 +120,28 @@ export default function batmanExtension(pi: ExtensionAPI): void {
   // OMP-native subagent lifecycle mirroring: one epoch per extension
   // process, normalized facts recorded by the reconciler, listeners
   // registered on session_start and removed on session_shutdown.
+  //
+  // `onChange` persists each committed fact into OMP's own session log, so
+  // the next process can tell a run that ended from one whose OMP process
+  // vanished mid-flight. Without persistence `reconcileAcrossRestart`
+  // would always receive an empty list and could never transition anything
+  // to `lost`.
   const ompProcessEpoch = createOmpProcessEpoch();
-  const reconciler = new OmpNativeReconciler();
+  const reconciler = new OmpNativeReconciler((fact) => {
+    try {
+      pi.appendEntry(OMP_NATIVE_FACT_ENTRY_TYPE, { ...fact });
+    } catch (err) {
+      // Persistence is best-effort telemetry: losing one entry degrades a
+      // later restart's classification, and must never break the live
+      // session that produced the fact.
+      pi.logger.warn("batman omp-native: failed to persist fact", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
   let unsubscribers: Array<() => void> = [];
 
-  pi.on("session_start", async () => {
+  pi.on("session_start", async (_payload, extCtx) => {
     unsubscribers = [
       // The event bus is untyped (`EventBus.on` receives `unknown`); these
       // three channels are SDK-internal and documented at
@@ -152,7 +163,57 @@ export default function batmanExtension(pi: ExtensionAPI): void {
         }
       }),
     ];
+
+    await reconcilePriorProcess(extCtx);
   });
+
+  /**
+   * Settles what a prior OMP process left behind, before any of it can be
+   * rendered as live:
+   *
+   * 1. every non-terminal fact from a foreign epoch becomes `lost`, and is
+   *    re-persisted under this epoch so it is settled exactly once;
+   * 2. every task a prior process correlated is rebound to this instance
+   *    via `reconcile/omp`, which is the only way ownership transfers --
+   *    the runtime exposes no way to enumerate owned tasks.
+   *
+   * Entirely non-fatal: the daemon may legitimately be absent when OMP
+   * starts, and a failed reconciliation must never block activation.
+   */
+  async function reconcilePriorProcess(extCtx: ExtensionContext): Promise<void> {
+    const entries = extCtx.sessionManager.getEntries() as SessionEntryLike[];
+
+    const settled = reconcileAcrossRestart(persistedFacts(entries), ompProcessEpoch);
+    for (const fact of settled) {
+      if (fact.ompProcessEpoch === ompProcessEpoch && fact.status === "lost") {
+        reconciler.record(fact);
+      }
+    }
+
+    const correlations = persistedCorrelations(entries);
+    if (correlations.length === 0) {
+      return;
+    }
+    try {
+      const client = await getClient(extCtx.cwd);
+      for (const correlation of correlations) {
+        try {
+          await reconcileWithRuntime(client, correlation);
+        } catch (err) {
+          // A stale revision is the expected, benign case: another
+          // instance already rebound this task.
+          pi.logger.warn("batman omp-native: task reconciliation refused", {
+            taskId: correlation.taskId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    } catch (err) {
+      pi.logger.warn("batman omp-native: runtime unavailable for reconciliation", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   pi.on("session_shutdown", async () => {
     cachedClient?.close();
@@ -164,7 +225,3 @@ export default function batmanExtension(pi: ExtensionAPI): void {
     reconciler.dispose();
   });
 }
-
-// Export conformance utilities for external use.
-export { runConformance, formatConformanceSummary } from "./conformance";
-export type { ConformanceConfig, ConformanceReport, ConformanceTestResult, AdapterKind, ConformanceMode } from "./conformance";

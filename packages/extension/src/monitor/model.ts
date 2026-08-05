@@ -11,7 +11,7 @@
 // reasoning and secret-marked fields structurally cannot enter this view
 // model.
 
-import type { EventEnvelope, RuntimeEvent } from "@satori/batman-protocol";
+import type { EventEnvelope, RuntimeEvent } from "@nikolasd/batman-protocol";
 
 /** Independent lifecycle flags, mirrored from the runtime's `RunFlags`. */
 export interface MonitorFlags {
@@ -103,9 +103,7 @@ export function reduceEvent(state: MonitorState, envelope: EventEnvelope): Monit
     state: patch.state ?? base.state,
     flags: patch.flags ?? base.flags,
     latestActivity: patch.latestActivity ?? base.latestActivity,
-    pendingApprovalCount: patch.pendingApprovalCountDelta !== undefined
-      ? Math.max(0, base.pendingApprovalCount + patch.pendingApprovalCountDelta)
-      : base.pendingApprovalCount,
+    pendingApprovalCount: patch.pendingApprovalCountDelta !== undefined ? Math.max(0, base.pendingApprovalCount + patch.pendingApprovalCountDelta) : base.pendingApprovalCount,
     lastEventAt: envelope.timestamp,
     lastAppliedSequence: envelope.sequence,
   };
@@ -215,6 +213,35 @@ function eventPatch(envelope: EventEnvelope): EventPatch | undefined {
       }
       const label = event.payload.kind === "childWorkerRequested" ? "child worker requested" : "child worker request denied";
       return { runId, latestActivity: label };
+    }
+    case "adapterUsageEvent": {
+      // `inputTokens`/`outputTokens` are `bigint`: interpolated directly,
+      // never handed to a numeric formatter, which would throw.
+      const { inputTokens, outputTokens, costUsd } = event.payload;
+      const cost = costUsd === null || costUsd === undefined ? "" : ` ($${costUsd})`;
+      return {
+        runId: event.payload.runId,
+        taskId: event.payload.taskId,
+        latestActivity: `usage ${inputTokens} in / ${outputTokens} out${cost}`,
+      };
+    }
+    case "adapterArtifactEvent": {
+      return {
+        runId: event.payload.runId,
+        taskId: event.payload.taskId,
+        latestActivity: `artifact ${event.payload.artifactKind} ${event.payload.artifactId}`,
+      };
+    }
+    case "workspaceEvent": {
+      // `WorkspaceEvent` is an *adjacently* tagged enum
+      // (`#[serde(tag = "type", content = "payload")]`), so the variant
+      // name is `kind.type`. Taking the first object key instead would
+      // yield the literal string "type".
+      const kindLabel = event.payload.kind.type;
+      return {
+        runId: event.payload.runId,
+        latestActivity: `workspace ${kindLabel}`,
+      };
     }
     default:
       return undefined;

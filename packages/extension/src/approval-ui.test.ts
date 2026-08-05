@@ -123,9 +123,9 @@ test("the dialog notifies with worker, action, policy reason, and approval id", 
 test("renderApprovalMessage redacts secret-looking argument keys", () => {
   const message = renderApprovalMessage(BASE_APPROVAL);
 
-  expect(message).toContain("\"path\":\"/tmp/x\"");
+  expect(message).toContain('"path":"/tmp/x"');
   expect(message).not.toContain("sk-should-never-render");
-  expect(message).toContain("\"apiKey\":\"<redacted>\"");
+  expect(message).toContain('"apiKey":"<redacted>"');
 });
 
 test("renderApprovalMessage omits the worker line when no workerId is known", () => {

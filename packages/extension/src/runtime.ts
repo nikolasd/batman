@@ -14,7 +14,7 @@ import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 
 import { BatmanClient } from "./client";
-import type { InitializeParams } from "@satori/batman-protocol";
+import type { InitializeParams } from "@nikolasd/batman-protocol";
 
 /** The bootstrap frame size the launcher's own connections negotiate. */
 const CONNECT_MAX_FRAME_BYTES = 1024 * 1024;
@@ -49,12 +49,7 @@ export interface EnsureRuntimeResult {
 }
 
 /** Machine-readable reason a binary could not be selected. */
-export type BinarySelectionCode =
-  | "not-absolute"
-  | "not-found"
-  | "not-regular"
-  | "not-executable"
-  | "no-binary";
+export type BinarySelectionCode = "not-absolute" | "not-found" | "not-regular" | "not-executable" | "no-binary";
 
 /** Thrown before any spawn when a `batcave` binary cannot be selected. */
 export class BinarySelectionError extends Error {
@@ -82,24 +77,14 @@ export interface SelectedBinary {
  * its inherited stdio is discarded.
  */
 export function buildServeArgs(options: EnsureRuntimeOptions): string[] {
-  return [
-    "serve",
-    "--state-dir",
-    options.stateDir,
-    "--repo",
-    options.repository,
-    "--idle-seconds",
-    String(options.idleSeconds),
-  ];
+  return ["serve", "--state-dir", options.stateDir, "--repo", options.repository, "--idle-seconds", String(options.idleSeconds)];
 }
 
 /**
  * Connects to the runtime for `options.repository`, spawning it detached if it
  * is not already serving.
  */
-export async function ensureRuntime(
-  options: EnsureRuntimeOptions,
-): Promise<EnsureRuntimeResult> {
+export async function ensureRuntime(options: EnsureRuntimeOptions): Promise<EnsureRuntimeResult> {
   const socketPath = socketPathFor(options.stateDir, options.repository);
 
   // 1. If a runtime is already serving, connect to it without spawning.
@@ -204,19 +189,14 @@ function pathExists(path: string): boolean {
  * `platform.ts`'s `resolveBatcave`, so override precedence and validation
  * behave identically wherever a `batcave` binary is selected.
  */
-export function resolveOverride(
-  env: Readonly<Record<string, string | undefined>>,
-): SelectedBinary | undefined {
+export function resolveOverride(env: Readonly<Record<string, string | undefined>>): SelectedBinary | undefined {
   const override = env.OMP_BATMAN_BINARY;
   if (override === undefined || override === "") {
     return undefined;
   }
 
   if (!isAbsolute(override)) {
-    throw new BinarySelectionError(
-      "not-absolute",
-      `OMP_BATMAN_BINARY must be an absolute path, got ${JSON.stringify(override)}`,
-    );
+    throw new BinarySelectionError("not-absolute", `OMP_BATMAN_BINARY must be an absolute path, got ${JSON.stringify(override)}`);
   }
 
   // Canonicalize to prove existence (and follow symlinks for the file-type
@@ -230,17 +210,11 @@ export function resolveOverride(
 
   const stat = statSync(canonical);
   if (!stat.isFile()) {
-    throw new BinarySelectionError(
-      "not-regular",
-      `OMP_BATMAN_BINARY is not a regular file: ${override}`,
-    );
+    throw new BinarySelectionError("not-regular", `OMP_BATMAN_BINARY is not a regular file: ${override}`);
   }
   // Owner/group/other execute bit set?
   if ((stat.mode & 0o111) === 0) {
-    throw new BinarySelectionError(
-      "not-executable",
-      `OMP_BATMAN_BINARY is not executable: ${override}`,
-    );
+    throw new BinarySelectionError("not-executable", `OMP_BATMAN_BINARY is not executable: ${override}`);
   }
 
   // Selected verbatim: the override path is used as given.
@@ -252,10 +226,7 @@ export function resolveOverride(
  * development override (see {@link resolveOverride}); otherwise the packaged
  * resolver is used if provided.
  */
-function selectBinary(
-  env: Readonly<Record<string, string | undefined>>,
-  packagedBinaryResolver?: () => string,
-): SelectedBinary {
+function selectBinary(env: Readonly<Record<string, string | undefined>>, packagedBinaryResolver?: () => string): SelectedBinary {
   const override = resolveOverride(env);
   if (override !== undefined) {
     return override;
@@ -265,10 +236,7 @@ function selectBinary(
     return { path: packagedBinaryResolver(), source: "package" };
   }
 
-  throw new BinarySelectionError(
-    "no-binary",
-    "no OMP_BATMAN_BINARY override is set and no packaged-binary resolver was provided",
-  );
+  throw new BinarySelectionError("no-binary", "no OMP_BATMAN_BINARY override is set and no packaged-binary resolver was provided");
 }
 
 /**
@@ -281,7 +249,7 @@ function selectBinary(
 function initParams(repository: string): InitializeParams {
   const canonical = realpathSync(repository);
   return {
-    client: { name: "@satori/batman", version: "0.1.0" },
+    client: { name: "@nikolasd/batman", version: "0.1.0" },
     supported: { min: { major: 1, minor: 0 }, max: { major: 1, minor: 0 } },
     repository: { canonicalPath: canonical, vcsRoot: canonical },
     auth: { role: "ompExtension", instanceId: "batman-extension", agentDirectory: canonical },
@@ -294,10 +262,7 @@ function initParams(repository: string): InitializeParams {
  * Attempts one connect + initialize. Resolves to the client on success, or
  * `undefined` if the runtime is absent or the handshake fails.
  */
-async function tryConnect(
-  socketPath: string,
-  repository: string,
-): Promise<BatmanClient | undefined> {
+async function tryConnect(socketPath: string, repository: string): Promise<BatmanClient | undefined> {
   if (!existsSync(socketPath)) {
     return undefined;
   }
@@ -316,10 +281,7 @@ async function tryConnect(
  * Retries {@link tryConnect} with exponential backoff, up to
  * {@link CONNECT_DEADLINE_MS} total.
  */
-async function connectWithBackoff(
-  socketPath: string,
-  repository: string,
-): Promise<BatmanClient> {
+async function connectWithBackoff(socketPath: string, repository: string): Promise<BatmanClient> {
   const deadline = Date.now() + CONNECT_DEADLINE_MS;
   let delay = 25;
   for (;;) {
@@ -328,9 +290,7 @@ async function connectWithBackoff(
       return client;
     }
     if (Date.now() >= deadline) {
-      throw new Error(
-        `runtime did not become reachable at ${socketPath} within ${CONNECT_DEADLINE_MS}ms`,
-      );
+      throw new Error(`runtime did not become reachable at ${socketPath} within ${CONNECT_DEADLINE_MS}ms`);
     }
     await sleep(Math.min(delay, deadline - Date.now()));
     delay = Math.min(delay * 2, 500);

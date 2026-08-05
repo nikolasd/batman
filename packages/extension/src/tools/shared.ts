@@ -28,11 +28,7 @@ export interface OrchestrationToolError {
  * the runtime includes them, travel in `data`) rather than throwing --
  * callers see a stable tool error instead of an unhandled rejection.
  */
-export async function callOrchestration(
-  client: BatmanClient,
-  method: string,
-  params: unknown,
-): Promise<AgentToolResult<unknown>> {
+export async function callOrchestration(client: BatmanClient, method: string, params: unknown): Promise<AgentToolResult<unknown>> {
   try {
     const result = await client.request(method, params);
     return {

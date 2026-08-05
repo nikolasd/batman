@@ -28,15 +28,11 @@ for (const testCase of cases) {
 }
 
 test("rejects a relative BATMAN_STATE_DIR override", () => {
-  expect(() => resolveStateRoot({ BATMAN_STATE_DIR: "relative/state" }, "/home/alice")).toThrow(
-    StateRootError,
-  );
+  expect(() => resolveStateRoot({ BATMAN_STATE_DIR: "relative/state" }, "/home/alice")).toThrow(StateRootError);
 });
 
 test("rejects a relative XDG_STATE_HOME override", () => {
-  expect(() => resolveStateRoot({ XDG_STATE_HOME: "relative/state" }, "/home/alice")).toThrow(
-    StateRootError,
-  );
+  expect(() => resolveStateRoot({ XDG_STATE_HOME: "relative/state" }, "/home/alice")).toThrow(StateRootError);
 });
 
 test("BATMAN_STATE_DIR wins over XDG_STATE_HOME and the default", () => {
@@ -55,9 +51,7 @@ test("falls back to $HOME/.omp/orchestrator when nothing is set", () => {
 });
 
 test("PI_CONFIG_DIR overrides the default .omp directory name", () => {
-  expect(resolveStateRoot({ PI_CONFIG_DIR: ".config-omp" }, "/home/alice")).toBe(
-    "/home/alice/.config-omp/orchestrator",
-  );
+  expect(resolveStateRoot({ PI_CONFIG_DIR: ".config-omp" }, "/home/alice")).toBe("/home/alice/.config-omp/orchestrator");
 });
 
 test("does not read process-global env or home", () => {

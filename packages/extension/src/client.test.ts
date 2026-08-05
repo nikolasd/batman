@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 
-import type { InitializeParams, InitializeResult, RuntimeStatus } from "@satori/batman-protocol";
+import type { InitializeParams, InitializeResult, RuntimeStatus } from "@nikolasd/batman-protocol";
 import { BatmanClient, JsonRpcRemoteError, ValidationError } from "./client";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
@@ -44,7 +44,7 @@ async function waitForSocket(state: string): Promise<string> {
 
 function ompInitParams(agentDir: string, maxFrameBytes: number): InitializeParams {
   return {
-    client: { name: "@satori/batman", version: "0.1.0" },
+    client: { name: "@nikolasd/batman", version: "0.1.0" },
     supported: { min: { major: 1, minor: 0 }, max: { major: 1, minor: 0 } },
     repository: { canonicalPath: agentDir, vcsRoot: agentDir },
     auth: { role: "ompExtension", instanceId: "omp-1", agentDirectory: agentDir },
@@ -65,10 +65,7 @@ beforeAll(async () => {
   repoDir = mkdtempSync("/tmp/bat-ts-r-");
   mkdirSync(join(repoDir, ".git"));
 
-  serverProc = Bun.spawn(
-    [BATCAVE, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir],
-    { stdout: "pipe", stderr: "pipe" },
-  );
+  serverProc = Bun.spawn([BATCAVE, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir], { stdout: "pipe", stderr: "pipe" });
 
   socketPath = await waitForSocket(stateDir);
 }, 180_000);
@@ -110,13 +107,9 @@ test("subscribe replays the durable RuntimeStarted event", async () => {
   const client = new BatmanClient({ socketPath });
   try {
     await client.initialize(ompInitParams(repoDir, 1024 * 1024));
-    const firstEvent = await new Promise<{ sequence: number; event: { type: string } }>(
-      (resolve) => {
-        client.subscribe(0, (event) =>
-          resolve(event as unknown as { sequence: number; event: { type: string } }),
-        );
-      },
-    );
+    const firstEvent = await new Promise<{ sequence: number; event: { type: string } }>((resolve) => {
+      client.subscribe(0, (event) => resolve(event as unknown as { sequence: number; event: { type: string } }));
+    });
     expect(firstEvent.sequence).toBe(1);
     expect(firstEvent.event.type).toBe("runtimeStarted");
   } finally {
@@ -168,9 +161,7 @@ test("an inbound message with an unknown field is rejected before reaching calle
 
   const client = new BatmanClient({ socketPath: fakeSocketPath });
   try {
-    await expect(client.initialize(ompInitParams(repoDir, 1024 * 1024))).rejects.toBeInstanceOf(
-      ValidationError,
-    );
+    await expect(client.initialize(ompInitParams(repoDir, 1024 * 1024))).rejects.toBeInstanceOf(ValidationError);
   } finally {
     client.close();
     await new Promise<void>((resolve) => fakeServer.close(() => resolve()));
@@ -238,9 +229,7 @@ test("an inbound frame exceeding the negotiated cap is rejected before dispatch 
       serverSocket?.once("close", () => resolve());
     });
 
-    await expect(client.request("runtime/status")).rejects.toThrow(
-      /exceeds the negotiated maximum/,
-    );
+    await expect(client.request("runtime/status")).rejects.toThrow(/exceeds the negotiated maximum/);
 
     // The connection must be torn down, not just the one request rejected.
     await expect(client.request("runtime/status")).rejects.toThrow();

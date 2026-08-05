@@ -21,12 +21,7 @@ export function registerMessageTool(pi: ExtensionAPI, ctx: OrchestrationToolCont
     runId: pi.zod.string().describe("The run this message belongs to (required for both send and list)."),
     senderWorkerId: pi.zod.string().optional().describe("Required for send: the sending worker id."),
     taskId: pi.zod.string().optional().describe("Required for send: the task this message relates to."),
-    kind: pi.zod
-      .string()
-      .optional()
-      .describe(
-        "Required for send: one of assign, steer, followUp, question, answer, peerMessage, approvalDecision, cancel, shutdown.",
-      ),
+    kind: pi.zod.string().optional().describe("Required for send: one of assign, steer, followUp, question, answer, peerMessage, approvalDecision, cancel, shutdown."),
     payload: pi.zod.string().optional().describe("Required for send: the message payload."),
     recipientWorkerId: pi.zod.string().optional().describe("Optional recipient worker id for send."),
     replyTo: pi.zod.string().optional().describe("Optional id of a prior message this replies to."),
@@ -35,7 +30,8 @@ export function registerMessageTool(pi: ExtensionAPI, ctx: OrchestrationToolCont
   pi.registerTool({
     name: BATMAN_MESSAGE_TOOL_NAME,
     label: "BATMAN Message",
-    description: "Use to communicate between workers during an active multi-worker run, or to review message history. Use op: 'send' to send a message to another worker (requires runId, senderWorkerId, kind, payload), or op: 'list' to list messages for a run. Message kinds: assign, steer, followUp, question, answer, peerMessage, approvalDecision, cancel, shutdown. Use when workers need to coordinate or escalate decisions.",
+    description:
+      "Use to communicate between workers during an active multi-worker run, or to review message history. Use op: 'send' to send a message to another worker (requires runId, senderWorkerId, kind, payload), or op: 'list' to list messages for a run. Message kinds: assign, steer, followUp, question, answer, peerMessage, approvalDecision, cancel, shutdown. Use when workers need to coordinate or escalate decisions.",
     parameters: params,
     approval: "write",
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {

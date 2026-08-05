@@ -4,15 +4,7 @@ import type { ExtensionAPI, ExtensionContext, Theme, ThemeColor } from "@oh-my-p
 
 import { assertCompatiblePiCodingAgentVersion, PiCodingAgentVersionError } from "./compat";
 import type { MonitorRow, MonitorState } from "./model";
-import {
-  MAX_WIDGET_ROWS,
-  renderRowDetails,
-  renderRowLine,
-  renderWidgetBox,
-  stateIcon,
-  stateColor,
-  renderWidgetHeader,
-} from "./render";
+import { MAX_WIDGET_ROWS, renderRowDetails, renderRowLine, renderWidgetBox, stateIcon, stateColor, renderWidgetHeader } from "./render";
 
 function row(overrides: Partial<MonitorRow>): MonitorRow {
   return {
@@ -130,9 +122,7 @@ test("a row line includes the state icon alongside the state word", () => {
 });
 
 test("renderRowDetails includes worker, action-relevant fields, and timestamps for /batman status", () => {
-  const details = renderRowDetails(
-    row({ workspaceMode: "isolated", latestActivity: "question sent", adapter: "codex", model: "gpt-5" }),
-  );
+  const details = renderRowDetails(row({ workspaceMode: "isolated", latestActivity: "question sent", adapter: "codex", model: "gpt-5" }));
   expect(details).toContain("Run: run-1");
   expect(details).toContain("Task: task-1");
   expect(details).toContain("Worker: worker-1");
@@ -141,6 +131,27 @@ test("renderRowDetails includes worker, action-relevant fields, and timestamps f
   expect(details).toContain("Latest activity: question sent");
   expect(details).toContain("First seen:");
   expect(details).toContain("Last event:");
+});
+
+test("renderRowDetails names the decision surface for a run with children active", () => {
+  const withChildren = row({
+    flags: {
+      degradedControl: false,
+      needsReconciliation: false,
+      protocolUnhealthy: false,
+      policyQuarantined: false,
+      workspaceDirty: false,
+      childrenActive: true,
+    },
+  });
+  const details = renderRowDetails(withChildren);
+  // The raw flag name still appears in the flag list; the added line is
+  // what tells an operator how to resolve it.
+  expect(details).toContain("childrenActive");
+  expect(details).toContain("batman_child");
+
+  // A run with no children must not carry the pointer at all.
+  expect(renderRowDetails(row({}))).not.toContain("batman_child");
 });
 
 test("renderWidgetBox embeds the accent-colored header in the top border", () => {
@@ -170,9 +181,7 @@ test("renderWidgetBox colors each row by its state and ends with a plain bottom 
 });
 
 test("renderWidgetBox appends a muted overflow line beyond MAX_WIDGET_ROWS", () => {
-  const rows = Array.from({ length: MAX_WIDGET_ROWS + 2 }, (_, i) =>
-    row({ runId: `run-${i}`, lastEventAt: `2026-01-01T00:${String(i).padStart(2, "0")}:00Z` }),
-  );
+  const rows = Array.from({ length: MAX_WIDGET_ROWS + 2 }, (_, i) => row({ runId: `run-${i}`, lastEventAt: `2026-01-01T00:${String(i).padStart(2, "0")}:00Z` }));
   const lines = renderWidgetBox(stateOf(rows), fakeTheme());
 
   // top border + MAX_WIDGET_ROWS rows + 1 overflow line + bottom border
@@ -191,10 +200,7 @@ test("renderWidgetBox produces a top border, every content line, and the bottom 
     fg: (_color: ThemeColor, text: string) => text,
   } as unknown as Theme;
 
-  const rows = [
-    row({ runId: "run-1", state: "succeeded", lastEventAt: "2026-01-01T00:00:00Z" }),
-    row({ runId: "run-2", state: "queued", lastEventAt: "2026-01-01T00:01:00Z" }),
-  ];
+  const rows = [row({ runId: "run-1", state: "succeeded", lastEventAt: "2026-01-01T00:00:00Z" }), row({ runId: "run-2", state: "queued", lastEventAt: "2026-01-01T00:01:00Z" })];
   const lines = renderWidgetBox(stateOf(rows), plainTheme);
 
   // Width equality must hold in *code points*, not UTF-16 code units. Every

@@ -6,7 +6,7 @@
 import { BinarySelectionError, ensureRuntime, type EnsureRuntimeOptions } from "./runtime";
 import { BinaryIntegrityError, UnsupportedPlatformError } from "./platform";
 import type { BatmanClient } from "./client";
-import type { RuntimeStatus } from "@satori/batman-protocol";
+import type { RuntimeStatus } from "@nikolasd/batman-protocol";
 
 /** A text content block, structurally compatible with OMP's `TextContent`. */
 export interface StatusTextContent {
@@ -52,8 +52,7 @@ export interface GetRuntimeStatusContext {
   readonly cache: BatmanClientCache;
 }
 
-const GENERIC_FAILURE_MESSAGE =
-  "The BATMAN runtime is not reachable for this repository. Run the doctor command below for details.";
+const GENERIC_FAILURE_MESSAGE = "The BATMAN runtime is not reachable for this repository. Run the doctor command below for details.";
 
 /**
  * Returns the current `runtime/status` for the repository named in

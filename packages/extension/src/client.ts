@@ -11,23 +11,8 @@
 
 import { createConnection, type Socket } from "node:net";
 
-import {
-  assertValid,
-  ValidationError,
-  validateEventEnvelope,
-  validateEventEnvelopeArray,
-  validateInitializeResult,
-  validateJsonRpcErrorResponse,
-  validateJsonRpcNotification,
-  validateJsonRpcResponse,
-  validateRuntimeStatus,
-} from "@satori/batman-protocol/validate";
-import type {
-  EventEnvelope,
-  InitializeParams,
-  InitializeResult,
-  RuntimeStatus,
-} from "@satori/batman-protocol";
+import { assertValid, ValidationError, validateEventEnvelope, validateEventEnvelopeArray, validateInitializeResult, validateJsonRpcErrorResponse, validateJsonRpcNotification, validateJsonRpcResponse, validateRuntimeStatus } from "@nikolasd/batman-protocol/validate";
+import type { EventEnvelope, InitializeParams, InitializeResult, RuntimeStatus } from "@nikolasd/batman-protocol";
 
 /** The 4 MiB bootstrap frame limit applied before `initialize` completes. */
 const BOOTSTRAP_MAX_FRAME_BYTES = 4 * 1024 * 1024;
@@ -168,11 +153,7 @@ export class BatmanClient {
       const frameBytes = Buffer.byteLength(frame, "utf8");
 
       if (frameBytes + 1 > this.#maxFrameBytes) {
-        reject(
-          new Error(
-            `outbound frame of ${frameBytes + 1} bytes exceeds the negotiated maximum of ${this.#maxFrameBytes}`,
-          ),
-        );
+        reject(new Error(`outbound frame of ${frameBytes + 1} bytes exceeds the negotiated maximum of ${this.#maxFrameBytes}`));
         return;
       }
 
@@ -199,11 +180,7 @@ export class BatmanClient {
         // already exceeds the limit must never reach caller code.
         const lineBytes = Buffer.byteLength(line, "utf8");
         if (lineBytes + 1 > this.#maxFrameBytes) {
-          this.#onError(
-            new Error(
-              `inbound frame of ${lineBytes + 1} bytes exceeds the negotiated maximum of ${this.#maxFrameBytes}`,
-            ),
-          );
+          this.#onError(new Error(`inbound frame of ${lineBytes + 1} bytes exceeds the negotiated maximum of ${this.#maxFrameBytes}`));
           return;
         }
         this.#handleLine(line);
@@ -214,11 +191,7 @@ export class BatmanClient {
     // An unterminated frame that already exceeds the limit can never become
     // valid: fail closed rather than buffer without bound.
     if (Buffer.byteLength(this.#buffer, "utf8") > this.#maxFrameBytes) {
-      this.#onError(
-        new Error(
-          `inbound frame exceeds the ${this.#maxFrameBytes}-byte maximum with no frame boundary`,
-        ),
-      );
+      this.#onError(new Error(`inbound frame exceeds the ${this.#maxFrameBytes}-byte maximum with no frame boundary`));
     }
   }
 

@@ -37,11 +37,7 @@ export class PiCodingAgentVersionError extends Error {
   readonly installedVersion: string;
 
   constructor(installedVersion: string) {
-    super(
-      `@oh-my-pi/pi-coding-agent@${installedVersion} is outside the supported range ` +
-        `[${SUPPORTED_PI_CODING_AGENT_RANGE.min}, ${SUPPORTED_PI_CODING_AGENT_RANGE.maxExclusive}) ` +
-        "the embedded monitor's pi.appendEntry/ctx.ui.setWidget usage is pinned to.",
-    );
+    super(`@oh-my-pi/pi-coding-agent@${installedVersion} is outside the supported range ` + `[${SUPPORTED_PI_CODING_AGENT_RANGE.min}, ${SUPPORTED_PI_CODING_AGENT_RANGE.maxExclusive}) ` + "the embedded monitor's pi.appendEntry/ctx.ui.setWidget usage is pinned to.");
     this.name = "PiCodingAgentVersionError";
     this.installedVersion = installedVersion;
   }
@@ -72,9 +68,7 @@ function compareVersions(a: readonly [number, number, number], b: readonly [numb
  *
  * @throws {PiCodingAgentVersionError} if the version is outside the range.
  */
-export function assertCompatiblePiCodingAgentVersion(
-  installedVersion: string = installedPiCodingAgentVersion(),
-): void {
+export function assertCompatiblePiCodingAgentVersion(installedVersion: string = installedPiCodingAgentVersion()): void {
   const installed = parseVersion(installedVersion);
   const min = parseVersion(SUPPORTED_PI_CODING_AGENT_RANGE.min);
   const maxExclusive = parseVersion(SUPPORTED_PI_CODING_AGENT_RANGE.maxExclusive);

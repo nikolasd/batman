@@ -19,10 +19,7 @@ import { callOrchestration } from "./shared";
 export const BATMAN_APPROVAL_TOOL_NAME = "batman_approval";
 
 /** Fetches the pending approval matching `approvalId`, if still pending. */
-async function findPendingApproval(
-  client: { request(method: string, params?: unknown): Promise<unknown> },
-  approvalId: string,
-): Promise<PendingApproval | undefined> {
+async function findPendingApproval(client: { request(method: string, params?: unknown): Promise<unknown> }, approvalId: string): Promise<PendingApproval | undefined> {
   const result = await client.request("approval/list", {});
   if (typeof result !== "object" || result === null || !("approvals" in result)) {
     return undefined;
@@ -31,10 +28,7 @@ async function findPendingApproval(
   if (!Array.isArray(approvals)) {
     return undefined;
   }
-  const match = approvals.find(
-    (entry): entry is Record<string, unknown> =>
-      typeof entry === "object" && entry !== null && (entry as Record<string, unknown>).approvalId === approvalId,
-  );
+  const match = approvals.find((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null && (entry as Record<string, unknown>).approvalId === approvalId);
   if (match === undefined) {
     return undefined;
   }

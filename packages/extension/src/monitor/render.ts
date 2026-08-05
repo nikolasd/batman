@@ -138,20 +138,11 @@ function assembleBox(header: string, lines: string[], colors: ThemeColor[], them
   const contentWidth = Math.max(...lines.map((line) => codePointLength(line))) + 2;
   const width = Math.max(contentWidth, codePointLength(header) + 4);
 
-  const top =
-    theme.fg("border", `${topLeft}${horizontal} `) +
-    theme.fg("accent", header) +
-    theme.fg("border", ` ${horizontal.repeat(width - codePointLength(header) - 3)}${topRight}`);
+  const top = theme.fg("border", `${topLeft}${horizontal} `) + theme.fg("accent", header) + theme.fg("border", ` ${horizontal.repeat(width - codePointLength(header) - 3)}${topRight}`);
 
   const body = lines.map((line, index) => {
     const pad = width - codePointLength(line) - 1;
-    return (
-      theme.fg("border", vertical) +
-      " " +
-      theme.fg(colors[index] ?? "text", line) +
-      " ".repeat(pad) +
-      theme.fg("border", vertical)
-    );
+    return theme.fg("border", vertical) + " " + theme.fg(colors[index] ?? "text", line) + " ".repeat(pad) + theme.fg("border", vertical);
   });
 
   const bottom = theme.fg("border", `${bottomLeft}${horizontal.repeat(width)}${bottomRight}`);
@@ -186,18 +177,19 @@ export function renderWidgetBox(state: MonitorState, theme: Theme): string[] {
 
 /** Renders the full detail block for `/batman status <runId>`. */
 export function renderRowDetails(row: MonitorRow): string {
-  const lines = [
-    `Run: ${row.runId}`,
-    `Task: ${row.taskId}`,
-    `Worker: ${row.workerId}`,
-    `State: ${row.state}`,
-  ];
+  const lines = [`Run: ${row.runId}`, `Task: ${row.taskId}`, `Worker: ${row.workerId}`, `State: ${row.state}`];
   const harness = harnessLabel(row);
   if (harness !== undefined) {
     lines.push(`Harness/model: ${harness}`);
   }
   const flags = activeFlagLabels(row.flags);
   lines.push(`Flags: ${flags.length > 0 ? flags.join(", ") : "none"}`);
+  // A bare `childrenActive` flag tells an operator a nested worker exists
+  // but not what to do about it. `coordination/child/decide` is the only
+  // way a pending request ever resolves, so name its tool here.
+  if (row.flags.childrenActive) {
+    lines.push("Children: active -- list and decide with batman_child");
+  }
   lines.push(`Pending approvals: ${row.pendingApprovalCount}`);
   if (row.workspaceMode !== undefined) {
     lines.push(`Workspace mode: ${row.workspaceMode}`);
