@@ -1,0 +1,8 @@
+{
+  "targets": [
+    { "leaf": "darwin-arm64",    "rust": "aarch64-apple-darwin",      "os": "macos-latest",  "cpu": "arm64", "libc": null },
+    { "leaf": "darwin-x64",      "rust": "x86_64-apple-darwin",       "os": "macos-latest",  "cpu": "x64",   "libc": null },
+    { "leaf": "linux-arm64-gnu", "rust": "aarch64-unknown-linux-gnu", "os": "ubuntu-latest", "cpu": "arm64", "libc": "glibc" },
+    { "leaf": "linux-x64-gnu",   "rust": "x86_64-unknown-linux-gnu",  "os": "ubuntu-latest", "cpu": "x64",   "libc": "glibc" }
+  ]
+}

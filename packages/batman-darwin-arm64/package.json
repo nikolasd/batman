@@ -1,5 +1,5 @@
 {
-  "name": "@satori/batman-darwin-arm64",
+  "name": "@nikolasd/batman-darwin-arm64",
   "version": "0.1.0",
   "description": "Prebuilt batcave binary for darwin-arm64.",
   "type": "module",

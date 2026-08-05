@@ -11,23 +11,33 @@ permissions:
   contents: read
 
 jobs:
+  # `release/targets.json` is the single source of truth for the target set.
+  # The matrix is derived from it so a target can never be added here and
+  # forgotten in xtask (or the reverse).
+  targets:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.read.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        name: Read release/targets.json
+        run: |
+          MATRIX=$(jq -c '{include: [.targets[] | {os, rust_target: .rust, leaf_target: .leaf}]}' release/targets.json)
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: targets
     runs-on: ${{ matrix.os }}
+    permissions:
+      # `attest-build-provenance` mints a signed attestation, which needs an
+      # OIDC token and attestation write. Scoped to this job rather than
+      # widening the workflow-level `contents: read` default.
+      id-token: write
+      attestations: write
+      contents: read
     strategy:
-      matrix:
-        include:
-          - os: macos-latest
-            rust_target: aarch64-apple-darwin
-            leaf_target: darwin-arm64
-          - os: macos-latest
-            rust_target: x86_64-apple-darwin
-            leaf_target: darwin-x64
-          - os: ubuntu-latest
-            rust_target: aarch64-unknown-linux-gnu
-            leaf_target: linux-arm64-gnu
-          - os: ubuntu-latest
-            rust_target: x86_64-unknown-linux-gnu
-            leaf_target: linux-x64-gnu
+      matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -39,11 +49,27 @@ jobs:
       - name: Build batcave
         run: cargo build --release --target ${{ matrix.rust_target }} --bin batcave
 
+      # Pin the packaging clock to the tagged commit's own commit time, so a
+      # rebuild of the same commit produces a byte-identical manifest.
+      - name: Resolve SOURCE_DATE_EPOCH
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+
       - name: Assemble leaf package
         run: |
           cargo run -p batman-xtask -- package \
             --target ${{ matrix.leaf_target }} \
             --binary target/${{ matrix.rust_target }}/release/batcave
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: packages/batman-${{ matrix.leaf_target }}/bin/batcave
+          artifact-name: sbom-${{ matrix.leaf_target }}.spdx.json
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: packages/batman-${{ matrix.leaf_target }}/bin/batcave
 
       - name: Upload leaf package
         uses: actions/upload-artifact@v4
@@ -54,6 +80,15 @@ jobs:
   conformance:
     needs: build
     runs-on: ubuntu-latest
+    # The runtime's default posture is that vendor CLIs are ordinary
+    # installed dependencies: live conformance and the availability probe
+    # run by default and will spawn a real, billed vendor CLI process if
+    # one happens to be on PATH. This job must never make a billed call, so
+    # it sets the opt-out kill switch (see
+    # `crates/runtime/src/conformance/mod.rs`). This gate uses fixture mode
+    # only regardless -- the switch is a second, independent safeguard.
+    env:
+      BATMAN_DISABLE_VENDOR_CLI: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -66,17 +101,64 @@ jobs:
       - name: Run conformance unit tests
         run: bun test tests/conformance
 
-      - name: Generate conformance report (STUB - will fail validation)
-        run: |
-          # STUB: Real implementation would spawn 'batcave conformance --adapter <name> --output <path>' for each adapter
-          # For now, generate an empty report that will fail validation (intentional)
-          echo '{"timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","adapters":{"claude":{"adapter":"claude","mode":"fixture","declaredCapabilities":[],"effectiveCapabilities":[],"scenarios":[]},"codex":{"adapter":"codex","mode":"fixture","declaredCapabilities":[],"effectiveCapabilities":[],"scenarios":[]},"copilot":{"adapter":"copilot","mode":"fixture","declaredCapabilities":[],"effectiveCapabilities":[],"scenarios":[]},"omp-rpc":{"adapter":"omp-rpc","mode":"fixture","declaredCapabilities":[],"effectiveCapabilities":[],"scenarios":[]}}}' > conformance-report.json
+      # The gate needs a real `batcave`: it spawns the CLI rather than
+      # hand-writing a report, which is what let the previous stub pass a
+      # fabricated payload through validation.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Validate conformance report (FAILS if stubs detected)
+      - name: Build batcave
+        run: cargo build -p batman-runtime --bin batcave
+
+      - name: Generate conformance report
+        run: bun run -e "import { runAllFixtures } from './tests/conformance/run.ts'; await runAllFixtures('conformance-report.json');"
+
+      - name: Validate conformance report
         run: bun run -e "import { loadAndValidateReport } from './tests/conformance/assert-report.ts'; loadAndValidateReport('conformance-report.json');"
 
+      - name: Upload conformance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-report
+          path: conformance-report.json
+
+  # Validates the four leaves TOGETHER -- shared version, identical schema
+  # fingerprint, real checksums, an executable named `batcave` -- and emits
+  # one aggregate release manifest. No single `package` run can make these
+  # checks, so this is the only place a mismatched set is caught.
+  package-set:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Download all leaf packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: batman-*
+          path: assembled
+
+      - name: Read release version
+        run: echo "RELEASE_VERSION=$(jq -r .version packages/extension/package.json)" >> "$GITHUB_ENV"
+
+      - name: Validate the assembled set
+        run: |
+          cargo run -p batman-xtask -- package-set \
+            --version "$RELEASE_VERSION" \
+            --input assembled \
+            --output release
+
+      - name: Upload release manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: release/release-manifest.json
+
   publish:
-    needs: [build, conformance]
+    needs: [build, conformance, package-set]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -112,7 +194,7 @@ jobs:
 
       - name: Publish leaf packages and extension to the private registry
         env:
-          SATORI_NPM_TOKEN: ${{ secrets.SATORI_NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           # Each package's own publishConfig.access (public for the 4 leaf
           # packages, restricted for the extension) governs visibility --

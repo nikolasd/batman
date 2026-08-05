@@ -1,5 +1,5 @@
 {
-  "name": "@satori/batman-linux-arm64-gnu",
+  "name": "@nikolasd/batman-linux-arm64-gnu",
   "version": "0.1.0",
   "description": "Prebuilt batcave binary for linux-arm64-gnu.",
   "type": "module",

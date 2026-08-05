@@ -1,5 +1,5 @@
 {
-  "name": "@satori/batman-darwin-x64",
+  "name": "@nikolasd/batman-darwin-x64",
   "version": "0.1.0",
   "description": "Prebuilt batcave binary for darwin-x64.",
   "type": "module",

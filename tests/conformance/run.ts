@@ -1,83 +1,71 @@
-// Aggregate conformance test runner.
+// Aggregate conformance runner.
 //
-// Runs all adapter fixture conformance reports and writes a combined report
-// to the specified output path. Used by CI and manual testing.
+// Spawns the real `batcave conformance` CLI once for every adapter and
+// writes a combined report. This is the release gate's data source, so it
+// never fabricates a report: a non-zero exit throws and no file is written.
 
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-// Conformance report types (mirror of Rust struct)
-interface ScenarioResult {
-  readonly scenario: string;
-  readonly status: "passed" | "failed" | "skipped";
-  readonly duration_ms?: number;
-  readonly error?: string;
-}
+import type { AdapterConformanceReport, CombinedReport } from "./assert-report";
 
-interface ConformanceReport {
-  readonly adapter: string;
-  readonly mode: "fixture" | "live";
-  readonly declaredCapabilities: string[];
-  readonly effectiveCapabilities: string[];
-  readonly scenarios: ScenarioResult[];
-}
-
-interface CombinedReport {
-  readonly timestamp: string;
-  readonly adapters: Record<string, ConformanceReport>;
+/** Resolves the `batcave` binary the same way the extension's tests do. */
+function batcavePath(): string {
+  return process.env.OMP_BATMAN_BINARY ?? "target/debug/batcave";
 }
 
 /**
- * Runs all adapter fixture conformance reports and writes a combined report.
+ * Runs every adapter's **fixture** conformance suite and writes
+ * `{ timestamp, adapters }` to `outputPath`, keyed by each report's own
+ * `adapter` field.
  *
- * STUB: This is a placeholder implementation. The real implementation would
- * spawn `batcave conformance --adapter <name> --output <path>` for each
- * adapter and combine the results. Currently writes empty reports for all
- * adapters.
+ * `--adapter all` already loops over all four adapters, so this spawns the
+ * CLI exactly once rather than once per adapter.
  *
- * @param outputPath - Path to write the combined report JSON
+ * Fixture mode only: `--live` invokes real vendor CLIs and would make a
+ * release gate spend billed tokens.
+ *
+ * @throws if the CLI exits non-zero, or emits output that is not an array
+ *   of reports. Either way `outputPath` is left untouched.
  */
 export async function runAllFixtures(outputPath: string): Promise<void> {
-  const adapters = ["claude", "codex", "copilot", "omp-rpc"] as const;
-  const combined: Record<string, ConformanceReport> = {};
+  const scratch = mkdtempSync(join(tmpdir(), "batman-conformance-"));
+  const reportPath = join(scratch, "conformance.json");
 
-  for (const adapter of adapters) {
-    // STUB: in real implementation, spawn batcave conformance command
-    combined[adapter] = {
-      adapter,
-      mode: "fixture",
-      declaredCapabilities: [],
-      effectiveCapabilities: [],
-      scenarios: [],
-    };
+  const proc = Bun.spawn([batcavePath(), "conformance", "--adapter", "all", "--fixture", "--output", reportPath], { stdout: "pipe", stderr: "pipe" });
+  const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+
+  if (exitCode !== 0) {
+    throw new Error(`batcave conformance exited ${exitCode}: ${stderr.trim() || "(no stderr)"}`);
   }
 
-  const report: CombinedReport = {
-    timestamp: new Date().toISOString(),
-    adapters: combined,
-  };
-
-  writeFileSync(outputPath, JSON.stringify(report, null, 2));
-}
-
-/**
- * Asserts that a conformance report is complete (all expected adapters present).
- *
- * STUB: Only checks field presence, not that scenarios actually ran or passed.
- */
-export function assertReportComplete(report: unknown): void {
-  if (!report || typeof report !== "object") {
-    throw new Error("Report must be an object");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(reportPath, "utf-8"));
+  } catch (err) {
+    throw new Error(`batcave conformance wrote an unreadable report: ${err}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error("batcave conformance must write a JSON array of reports");
   }
 
-  const r = report as { adapters?: Record<string, ConformanceReport> };
-  if (!r.adapters) {
-    throw new Error("Report missing 'adapters' field");
-  }
-
-  const expectedAdapters = ["claude", "codex", "copilot", "omp-rpc"];
-  for (const adapter of expectedAdapters) {
-    if (!r.adapters[adapter]) {
-      throw new Error(`Report missing adapter: ${adapter}`);
+  const adapters: Record<string, AdapterConformanceReport> = {};
+  for (const entry of parsed) {
+    if (entry === null || typeof entry !== "object" || !("adapter" in entry)) {
+      throw new Error("every conformance report element must carry an 'adapter' field");
     }
+    const { adapter } = entry as { adapter: unknown };
+    if (typeof adapter !== "string") {
+      throw new Error("a conformance report's 'adapter' field must be a string");
+    }
+    adapters[adapter] = entry as AdapterConformanceReport;
   }
+
+  const combined: CombinedReport = {
+    timestamp: new Date().toISOString(),
+    adapters,
+  };
+  writeFileSync(outputPath, `${JSON.stringify(combined, null, 2)}\n`);
 }
