@@ -23,6 +23,19 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --all --check
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install JS workspace dependencies
+        run: bun install
+
+      # Biome formats the JS/TS half. `cargo fmt` above covers Rust only,
+      # so without this a TypeScript formatting regression reaches main
+      # unchallenged.
+      - name: Check JS/TS formatting
+        run: bun run format:check
+
   clippy:
     runs-on: ubuntu-latest
     steps:
@@ -41,6 +54,14 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
+    # The runtime's default posture is that vendor CLIs are ordinary
+    # installed dependencies: live conformance and the availability probe
+    # run by default and will spawn a real, billed vendor CLI process if
+    # one happens to be on PATH. CI must never make a billed call, so every
+    # job here that runs `cargo test`/`bun test` sets the opt-out kill
+    # switch (see `crates/runtime/src/conformance/mod.rs`).
+    env:
+      BATMAN_DISABLE_VENDOR_CLI: "1"
     steps:
       - uses: actions/checkout@v4
 

@@ -1,5 +1,5 @@
 {
-  "name": "@satori/batman-workspace",
+  "name": "@nikolasd/batman-workspace",
   "private": true,
   "packageManager": "bun@1.3.14",
   "workspaces": ["packages/*"],
@@ -7,7 +7,12 @@
     "setup": "bash scripts/setup.sh",
     "generate": "cargo run -p batman-xtask -- generate",
     "build": "bun run --cwd packages/extension build",
+    "format:check": "biome format .",
+    "format:write": "biome format --write .",
     "test": "bun test packages && cargo test --workspace",
-    "check": "bun run generate --check && bun run build && bun test packages && cargo test --workspace"
+    "check": "bun run generate --check && bun run format:check && bun run build && bun test packages && cargo test --workspace"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.7"
   }
 }
