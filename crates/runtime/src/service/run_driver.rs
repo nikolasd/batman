@@ -12,9 +12,9 @@ use std::sync::Arc;
 use batman_protocol::{EventEnvelope, ProjectId, RunId, RunState, TaskId, WorkerId};
 use tokio::sync::broadcast;
 
+use crate::adapter::{Adapter, CancelScope};
 use crate::db::DatabaseHandle;
 use crate::domain::{DomainRepository, take_envelope};
-use crate::adapter::{Adapter, CancelScope};
 
 /// A boxed future returned by [`RunDriver::start`].
 pub type AdapterFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -38,6 +38,16 @@ pub struct RunDriverContext {
     /// uses this as its working directory (for isolated worktrees or copies).
     /// When `None`, the adapter uses the repository root.
     pub workspace_path: Option<std::path::PathBuf>,
+    /// The [`crate::config::RuntimePolicy`] this run was authorized under --
+    /// the startup policy re-merged with the run's own `policyOverrides`.
+    /// `None` means "use the authorizer's own startup policy", which is what
+    /// every test path and every run without overrides supplies.
+    pub policy: Option<Arc<crate::config::RuntimePolicy>>,
+    /// The display backend resolved for this run at submit time, so the
+    /// completion path can emit `DisplayPaneDetached` for the same pane it
+    /// attached without probing the registry a second time. `None` when no
+    /// backend was available (headless) or the run never reached selection.
+    pub display: Option<batman_protocol::DisplaySelection>,
 }
 
 /// Seam for starting an adapter-backed run. The (later) adapter registry

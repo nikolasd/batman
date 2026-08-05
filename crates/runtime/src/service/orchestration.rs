@@ -121,6 +121,21 @@ impl From<crate::policy::ViolationError> for ServiceError {
     }
 }
 
+/// Maps a lease failure onto the RPC error surface.
+///
+/// [`LeaseError::IsolationRequired`] is the one variant a caller can fix by
+/// changing its request -- asking for `gitWorktree` or `copy` isolation
+/// yields an independent workspace -- so it is `invalid_params`. Every other
+/// variant is an internal fault the caller cannot act on.
+fn lease_error_to_service_error(err: crate::workspace::LeaseError) -> ServiceError {
+    match err {
+        crate::workspace::LeaseError::IsolationRequired => {
+            ServiceError::invalid_params(err.to_string())
+        }
+        other => ServiceError::internal(other.to_string()),
+    }
+}
+
 /// Routes every orchestration method to the domain repository. Holds no
 /// mutable state itself; every command borrows the shared
 /// [`DatabaseHandle`] and commits on the actor thread.
@@ -134,6 +149,19 @@ pub struct OrchestrationService {
     lease_service: Arc<crate::workspace::LeaseService>,
     artifact_store: Arc<crate::workspace::ArtifactStore>,
     repository: std::path::PathBuf,
+    /// The startup policy every run is authorized under unless that run
+    /// supplies `policyOverrides`. `None` in tests and in any embedding
+    /// that starts the service without a merged config, in which case the
+    /// authorizer falls back to its own startup policy.
+    policy: Option<Arc<crate::config::RuntimePolicy>>,
+    /// The startup config layers, retained so a run carrying
+    /// `policyOverrides` can be re-merged against them at submit time
+    /// rather than being authorized under a policy it did not request.
+    layered_config: Option<Arc<crate::config::LayeredConfig>>,
+    /// The display backends this machine can attach a run's pane to.
+    /// Resolved once per `run/submit` against the caller's
+    /// `displayPreference`, so an adapter never re-probes.
+    display: Arc<crate::display::DisplayRegistry>,
 }
 
 impl OrchestrationService {
@@ -166,7 +194,40 @@ impl OrchestrationService {
             lease_service,
             artifact_store,
             repository,
+            policy: None,
+            layered_config: None,
+            display: Arc::new(crate::display::DisplayRegistry::with_default_backends(
+                batman_protocol::DisplayConfig::default(),
+            )),
         }
+    }
+
+    /// Attaches the merged startup policy and the layers it came from. The
+    /// daemon calls this once, before serving; every other embedding leaves
+    /// it unset, gets `None` for a run's policy, and so falls back to the
+    /// authorizer's own startup policy.
+    ///
+    /// The layers are what make `policyOverrides` meaningful: without them
+    /// a per-run override has nothing to merge onto and is ignored.
+    #[must_use]
+    pub fn with_policy(
+        mut self,
+        layered_config: Arc<crate::config::LayeredConfig>,
+        policy: Arc<crate::config::RuntimePolicy>,
+    ) -> Self {
+        self.display = Arc::new(crate::display::DisplayRegistry::with_default_backends(
+            batman_protocol::DisplayConfig {
+                backend: policy
+                    .display_backend
+                    .parse()
+                    .unwrap_or(batman_protocol::DisplayBackend::Terminal),
+                width: None,
+                height: None,
+            },
+        ));
+        self.layered_config = Some(layered_config);
+        self.policy = Some(policy);
+        self
     }
 
     /// Broadcasts the envelope embedded by a mutation's `run_domain_op`
@@ -475,6 +536,41 @@ impl OrchestrationService {
             .get("workspaceMode")
             .and_then(Value::as_str)
             .map(str::to_string);
+
+        // Re-merge this run's own `policyOverrides` on top of the startup
+        // layers, so the run is authorized against -- and fingerprinted
+        // with -- exactly the policy it asked for. Without overrides (or
+        // without a merged startup config at all) this is the startup
+        // policy unchanged, and `None` lets the authorizer fall back to its
+        // own. A malformed or lock-violating override is the caller's
+        // fault, so it is `invalid_params`, never an internal error.
+        let policy = match (params.get("policyOverrides"), self.layered_config.as_ref()) {
+            (Some(overrides), Some(layers)) => Some(Arc::new(
+                layers
+                    .merge(Some(overrides))
+                    .map_err(|e| ServiceError::invalid_params(e.to_string()))?,
+            )),
+            _ => self.policy.clone(),
+        };
+
+        // Resolve the caller's display preference once, here, against the
+        // live registry -- the adapter consumes the outcome rather than
+        // re-probing. An absent preference means "any available backend,
+        // embedded"; an unresolvable one yields `selected: None`, which is
+        // headless, not an error.
+        let display_preference: batman_protocol::DisplayPreference = params
+            .get("displayPreference")
+            .map(|v| serde_json::from_value(v.clone()))
+            .transpose()
+            .map_err(|e| {
+                ServiceError::invalid_params(format!("displayPreference is malformed: {e}"))
+            })?
+            .unwrap_or(batman_protocol::DisplayPreference {
+                ordered: Vec::new(),
+                placement: batman_protocol::DisplayPlacement::Embedded,
+            });
+        let display = Some(self.display.resolve(&display_preference));
+
         // Cross-project rejection: the task must exist in this project.
         self.db
             .run_domain_op(query::task_get_op(task_id))
@@ -496,16 +592,44 @@ impl OrchestrationService {
         };
 
         let project_id = self.project_id;
+        let fingerprint = policy.as_ref().map(|p| p.fingerprint.clone());
         let mut submit_result = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.submit_run(&run)
+                repo.submit_run(&run, fingerprint.as_deref())
                     .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
             .map_err(ServiceError::from)?;
         self.broadcast(&mut submit_result);
+
+        // A pane is journaled only once the run row exists, so a replayer
+        // never sees a pane attach to a run it has not seen created. No
+        // available backend means no event at all -- headless is a normal
+        // outcome, not a failure.
+        if let Some(backend) = display.as_ref().and_then(|s| s.selected) {
+            let placement = display_preference.placement;
+            let mut attached = self
+                .db
+                .run_domain_op(Box::new(move |conn| {
+                    let mut repo = DomainRepository::new(conn, project_id);
+                    repo.record_display_event(
+                        batman_protocol::RuntimeEventKind::DisplayPaneAttached,
+                        run_id,
+                        backend,
+                        placement,
+                        // The registry resolves availability without
+                        // activating a backend, so no vendor pane id
+                        // exists yet. Never a filesystem path.
+                        String::new(),
+                    )
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+                }))
+                .await
+                .map_err(ServiceError::from)?;
+            self.broadcast(&mut attached);
+        }
 
         let Some(driver) = self.run_driver.clone() else {
             // The queued run is preserved; the caller learns the adapter
@@ -516,25 +640,35 @@ impl OrchestrationService {
             });
         };
 
-        // Resolve workspace: if workspaceMode is "isolated", acquire an
-        // isolated lease; otherwise the adapter uses the repository root.
-        let workspace_path = if let Some(mode_str) = &workspace_mode {
-            if mode_str == "isolated" {
-                let isolation = Some(IsolationKind::GitWorktree);
-                let lease = self.lease_service.acquire(run_id, LeaseMode::Write, isolation)
-                    .map_err(|e| ServiceError::internal(e.to_string()))?;
-                let materializer = crate::workspace::WorkspaceMaterializer::new(
-                    self.project_id,
-                    self.repository.clone(),
-                ).map_err(|e| ServiceError::internal(e.to_string()))?;
-                let real_path = materializer.materialize(run_id, lease.isolation_kind)
-                    .map_err(|e| ServiceError::internal(e.to_string()))?;
-                self.lease_service.activate(lease.lease_id, real_path.to_string_lossy().to_string())
-                    .map_err(|e| ServiceError::internal(e.to_string()))?;
-                Some(real_path)
-            } else {
-                None
+        // Resolve the workspace. `shared` (and an absent mode) runs in the
+        // repository itself; `isolated` and `copy` each materialize a real
+        // per-run workspace. An unrecognized mode is the caller's error
+        // rather than a silent downgrade: falling back to the shared
+        // repository would let a typo run a write-capable agent directly
+        // against the user's working tree.
+        let isolation = match workspace_mode.as_deref() {
+            None | Some("shared") => None,
+            Some("isolated") => Some(IsolationKind::GitWorktree),
+            Some("copy") => Some(IsolationKind::Copy),
+            Some(other) => {
+                return Err(ServiceError::invalid_params(format!(
+                    "workspaceMode must be one of shared, isolated, copy; got {other:?}"
+                )));
             }
+        };
+        let workspace_path = if let Some(isolation) = isolation {
+            let lease = self
+                .lease_service
+                .acquire(run_id, LeaseMode::Write, Some(isolation))
+                .map_err(|e| ServiceError::internal(e.to_string()))?;
+            let materializer = self.materializer()?;
+            let real_path = materializer
+                .materialize(run_id, lease.isolation_kind)
+                .map_err(|e| ServiceError::internal(e.to_string()))?;
+            self.lease_service
+                .activate(lease.lease_id, real_path.to_string_lossy().to_string())
+                .map_err(|e| ServiceError::internal(e.to_string()))?;
+            Some(real_path)
         } else {
             None
         };
@@ -549,6 +683,8 @@ impl OrchestrationService {
             events_tx: self.events_tx.clone(),
             violation_service: Arc::clone(&self.violation),
             workspace_path: workspace_path.clone(),
+            policy: policy.clone(),
+            display: display.clone(),
         };
         // Orchestration-test-scope: awaited synchronously so the caller
         // observes the final committed state deterministically.
@@ -562,6 +698,10 @@ impl OrchestrationService {
         if let Some(path) = &workspace_path {
             result["workspacePath"] = json!(path.to_string_lossy().to_string());
             result["workspaceMode"] = json!("isolated");
+        }
+        if let Some(selection) = &display {
+            result["display"] = serde_json::to_value(selection)
+                .expect("DisplaySelection always serializes to JSON");
         }
         Ok(result)
     }
@@ -581,7 +721,8 @@ impl OrchestrationService {
 
     async fn run_get(&self, params: &Value) -> Result<Value, ServiceError> {
         let run_id = parse_run_id(params.get("runId"))?;
-        let mut result = self.db
+        let mut result = self
+            .db
             .run_domain_op(query::run_get_op(run_id))
             .await
             .map_err(ServiceError::from)?;
@@ -589,13 +730,11 @@ impl OrchestrationService {
         // Append workspace info if an active lease exists for this run
         if let Ok(Some(info)) = self.lease_service.active_for_run(run_id) {
             result["workspacePath"] = json!(info.path);
-            result["workspaceMode"] = json!(
-                match info.isolation_kind {
-                    IsolationKind::Shared => "shared",
-                    IsolationKind::GitWorktree => "isolated",
-                    IsolationKind::Copy => "isolated",
-                }
-            );
+            result["workspaceMode"] = json!(match info.isolation_kind {
+                IsolationKind::Shared => "shared",
+                IsolationKind::GitWorktree => "isolated",
+                IsolationKind::Copy => "isolated",
+            });
         }
         Ok(result)
     }
@@ -636,11 +775,14 @@ impl OrchestrationService {
             completed_at: None,
         };
         let project_id = self.project_id;
+        // A retry is a fresh authorization, so it is fingerprinted with the
+        // policy in force now -- never with whatever the prior run carried.
+        let fingerprint = self.policy.as_ref().map(|p| p.fingerprint.clone());
         let mut sequence = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.submit_run(&run)
+                repo.submit_run(&run, fingerprint.as_deref())
                     .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
@@ -675,15 +817,54 @@ impl OrchestrationService {
         self.broadcast(&mut result);
 
         // Also terminate the actual vendor subprocess if one is running.
-        if let Some(driver) = &self.run_driver {
-            if let Err(err) = driver.cancel_run(run_id, CancelScope::Worker).await {
-                tracing::warn!(error = %err, run_id = %run_id, "failed to cancel running adapter subprocess");
-            }
+        if let Some(driver) = &self.run_driver
+            && let Err(err) = driver.cancel_run(run_id, CancelScope::Worker).await
+        {
+            tracing::warn!(error = %err, run_id = %run_id, "failed to cancel running adapter subprocess");
         }
 
         Ok(result)
     }
     // ------------------------------------------------------- workspace
+
+    /// Builds a materializer carrying this daemon's configured copy
+    /// ceilings. Every workspace materialization goes through here so no
+    /// call site can accidentally construct an unbounded copier.
+    fn materializer(&self) -> Result<crate::workspace::WorkspaceMaterializer, ServiceError> {
+        let materializer =
+            crate::workspace::WorkspaceMaterializer::new(self.project_id, self.repository.clone())
+                .map_err(|e| ServiceError::internal(e.to_string()))?;
+        Ok(match self.policy.as_ref() {
+            Some(policy) => {
+                materializer.with_copy_limits(policy.copy_max_bytes, policy.copy_max_files)
+            }
+            None => materializer,
+        })
+    }
+
+    /// Journals a [`batman_protocol::WorkspaceEvent`] and broadcasts it to
+    /// live subscribers, exactly as every domain mutation does. Workspace
+    /// state itself lives in the lease database, so this is the only way a
+    /// monitor learns a lease was taken, inspected, applied, or released.
+    async fn emit_workspace_event(
+        &self,
+        kind: batman_protocol::WorkspaceEvent,
+        run_id: RunId,
+        lease_id: String,
+    ) -> Result<(), ServiceError> {
+        let project_id = self.project_id;
+        let mut result = self
+            .db
+            .run_domain_op(Box::new(move |conn| {
+                let mut repo = DomainRepository::new(conn, project_id);
+                repo.record_workspace_event(kind, run_id, lease_id)
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+            }))
+            .await
+            .map_err(ServiceError::from)?;
+        self.broadcast(&mut result);
+        Ok(())
+    }
 
     async fn workspace_acquire(&self, params: &Value) -> Result<Value, ServiceError> {
         use batman_protocol::LeaseRequest;
@@ -693,21 +874,50 @@ impl OrchestrationService {
         let mode = request.mode;
         let isolation = request.requested_isolation;
 
-        // Phase 1: allocate the lease (state: allocating, path: empty)
-        let lease = self.lease_service.acquire(run_id, mode, isolation)
-            .map_err(|e| ServiceError::internal(e.to_string()))?;
+        // Phase 1: allocate the lease (state: allocating, path: empty).
+        // `IsolationRequired` is caller-correctable -- the request can succeed
+        // by asking for gitWorktree/copy isolation -- so it maps to
+        // invalid_params rather than an internal fault.
+        let lease = self
+            .lease_service
+            .acquire(run_id, mode, isolation)
+            .map_err(lease_error_to_service_error)?;
+        self.emit_workspace_event(
+            batman_protocol::WorkspaceEvent::LeaseRequested {
+                lease_id: lease.lease_id.clone(),
+                run_id,
+                mode,
+            },
+            run_id,
+            lease.lease_id.clone(),
+        )
+        .await?;
 
         // Phase 2: materialize the workspace
-        let materializer = crate::workspace::WorkspaceMaterializer::new(
-            self.project_id,
-            self.repository.clone(),
-        ).map_err(|e| ServiceError::internal(e.to_string()))?;
-        let real_path = materializer.materialize(run_id, lease.isolation_kind)
+        let materializer = self.materializer()?;
+        let real_path = materializer
+            .materialize(run_id, lease.isolation_kind)
             .map_err(|e| ServiceError::internal(e.to_string()))?;
 
         // Phase 3: activate the lease with the real path
-        self.lease_service.activate(lease.lease_id.clone(), real_path.to_string_lossy().to_string())
+        self.lease_service
+            .activate(
+                lease.lease_id.clone(),
+                real_path.to_string_lossy().to_string(),
+            )
             .map_err(|e| ServiceError::internal(e.to_string()))?;
+        self.emit_workspace_event(
+            batman_protocol::WorkspaceEvent::LeaseAcquired {
+                lease_id: lease.lease_id.clone(),
+                run_id,
+                path: real_path.to_string_lossy().to_string(),
+                isolation_kind: lease.isolation_kind,
+                base_revision: lease.base_revision.clone(),
+            },
+            run_id,
+            lease.lease_id.clone(),
+        )
+        .await?;
 
         Ok(json!({
             "leaseId": lease.lease_id,
@@ -723,7 +933,9 @@ impl OrchestrationService {
 
     async fn workspace_get(&self, params: &Value) -> Result<Value, ServiceError> {
         let lease_id = str_field(params, "leaseId")?;
-        let info = self.lease_service.get(lease_id)
+        let info = self
+            .lease_service
+            .get(lease_id)
             .map_err(|e| ServiceError::internal(e.to_string()))?;
 
         Ok(json!({
@@ -740,22 +952,98 @@ impl OrchestrationService {
     async fn workspace_release(&self, params: &Value) -> Result<Value, ServiceError> {
         let request: batman_protocol::ReleaseRequest = serde_json::from_value(params.clone())
             .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
-        self.lease_service.release(request.lease_id)
+        // Read the lease before releasing it: after release the row is
+        // gone, and the event must carry the run it belonged to.
+        let lease = self
+            .lease_service
+            .get(request.lease_id.clone())
             .map_err(|e| ServiceError::internal(e.to_string()))?;
-        Ok(json!({ "released": true }))
+        self.lease_service
+            .release(request.lease_id.clone())
+            .map_err(|e| ServiceError::internal(e.to_string()))?;
+
+        // Tear the materialized directory down. The lease is already
+        // released, so a teardown failure is an operator problem (a leaked
+        // worktree), not a caller error: record it as `cleanupFailed` for
+        // the doctor and still report the release as successful.
+        let cleanup_error = self
+            .materializer()
+            .and_then(|m| {
+                m.teardown(std::path::Path::new(&lease.path), lease.isolation_kind)
+                    .map_err(|e| ServiceError::internal(e.to_string()))
+            })
+            .err();
+
+        if let Some(err) = &cleanup_error {
+            let _ = self
+                .lease_service
+                .mark_cleanup_failed(request.lease_id.clone());
+            self.emit_workspace_event(
+                batman_protocol::WorkspaceEvent::CleanupFailed {
+                    lease_id: request.lease_id.clone(),
+                    error: err.message.clone(),
+                },
+                lease.run_id,
+                request.lease_id.clone(),
+            )
+            .await?;
+        }
+
+        self.emit_workspace_event(
+            batman_protocol::WorkspaceEvent::LeaseReleased {
+                lease_id: request.lease_id.clone(),
+                run_id: lease.run_id,
+            },
+            lease.run_id,
+            request.lease_id.clone(),
+        )
+        .await?;
+        Ok(json!({
+            "released": true,
+            "cleanupFailed": cleanup_error.is_some(),
+        }))
     }
 
     async fn workspace_inspect(&self, params: &Value) -> Result<Value, ServiceError> {
         use batman_protocol::InspectRequest;
         let request: InspectRequest = serde_json::from_value(params.clone())
             .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
-        let lease = self.lease_service.get(request.lease_id.clone())
+        let lease = self
+            .lease_service
+            .get(request.lease_id.clone())
             .map_err(|e| ServiceError::internal(e.to_string()))?;
 
-        let inspector = crate::workspace::WorkspaceInspector::new(std::path::PathBuf::from(&lease.path));
-        let result = inspector.inspect(&request)
+        let inspector =
+            crate::workspace::WorkspaceInspector::new(std::path::PathBuf::from(&lease.path));
+        let result = inspector
+            .inspect(&request)
             .await
             .map_err(|e| ServiceError::internal(e.to_string()))?;
+        self.emit_workspace_event(
+            batman_protocol::WorkspaceEvent::WorkspaceInspected {
+                lease_id: result.lease_id.clone(),
+                patch_artifact_id: result.patch_artifact_id,
+                commit_count: result.commit_count,
+                dirty_file_count: result.dirty_file_count,
+                untracked_file_count: result.untracked_file_count,
+            },
+            lease.run_id,
+            result.lease_id.clone(),
+        )
+        .await?;
+        // The patch an inspect produced is fetchable, so publishing it is
+        // its own event -- a monitor listing artifacts must not have to
+        // infer their existence from an inspect result it may have missed.
+        self.emit_workspace_event(
+            batman_protocol::WorkspaceEvent::ArtifactPublished {
+                lease_id: result.lease_id.clone(),
+                artifact_id: result.patch_artifact_id,
+                kind: "patch".to_string(),
+            },
+            lease.run_id,
+            result.lease_id.clone(),
+        )
+        .await?;
 
         Ok(json!({
             "leaseId": result.lease_id,
@@ -773,7 +1061,9 @@ impl OrchestrationService {
         use batman_protocol::ApplyRequest;
         let request: ApplyRequest = serde_json::from_value(params.clone())
             .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
-        let lease = self.lease_service.get(request.lease_id.clone())
+        let lease = self
+            .lease_service
+            .get(request.lease_id.clone())
             .map_err(|e| ServiceError::internal(e.to_string()))?;
         self.ensure_not_quarantined(lease.run_id).await?;
 
@@ -781,9 +1071,58 @@ impl OrchestrationService {
             std::path::PathBuf::from(&lease.path),
             self.artifact_store.clone(),
         );
-        let result = applier.apply(&request)
+        self.emit_workspace_event(
+            batman_protocol::WorkspaceEvent::ApplyStarted {
+                lease_id: request.lease_id.clone(),
+                strategy: request.strategy,
+                artifact_id: request.artifact_id,
+                expected_target_revision: request.expected_target_revision.clone(),
+            },
+            lease.run_id,
+            request.lease_id.clone(),
+        )
+        .await?;
+        let result = applier
+            .apply(&request)
             .await
             .map_err(|e| ServiceError::internal(e.to_string()))?;
+        self.emit_workspace_event(
+            batman_protocol::WorkspaceEvent::ApplyCompleted {
+                lease_id: result.lease_id.clone(),
+                success: result.success,
+                conflict_artifact_id: result.conflict_artifact_id,
+                target_revision_after: result.target_revision_after.clone(),
+            },
+            lease.run_id,
+            result.lease_id.clone(),
+        )
+        .await?;
+        // A conflict is the one apply outcome OMP must act on, so it gets
+        // its own event rather than being buried in `ApplyCompleted`'s
+        // `success: false`.
+        if let Some(conflict_artifact_id) = result.conflict_artifact_id {
+            self.emit_workspace_event(
+                batman_protocol::WorkspaceEvent::ApplyConflict {
+                    lease_id: result.lease_id.clone(),
+                    conflict_artifact_id,
+                    strategy: request.strategy,
+                    expected_target_revision: request.expected_target_revision.clone(),
+                },
+                lease.run_id,
+                result.lease_id.clone(),
+            )
+            .await?;
+            self.emit_workspace_event(
+                batman_protocol::WorkspaceEvent::ArtifactPublished {
+                    lease_id: result.lease_id.clone(),
+                    artifact_id: conflict_artifact_id,
+                    kind: "conflictReport".to_string(),
+                },
+                lease.run_id,
+                result.lease_id.clone(),
+            )
+            .await?;
+        }
 
         Ok(json!({
             "leaseId": result.lease_id,
@@ -811,12 +1150,22 @@ impl OrchestrationService {
 
     async fn artifact_fetch(&self, params: &Value) -> Result<Value, ServiceError> {
         use batman_protocol::ArtifactId;
-        let artifact_id: ArtifactId = serde_json::from_value(params.get("artifactId").cloned().ok_or_else(|| ServiceError::invalid_params("artifactId is required"))?)
-            .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
+        let artifact_id: ArtifactId = serde_json::from_value(
+            params
+                .get("artifactId")
+                .cloned()
+                .ok_or_else(|| ServiceError::invalid_params("artifactId is required"))?,
+        )
+        .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
         let offset: u64 = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
-        let length: u64 = params.get("length").and_then(Value::as_u64).unwrap_or(1024 * 1024);
+        let length: u64 = params
+            .get("length")
+            .and_then(Value::as_u64)
+            .unwrap_or(crate::workspace::ARTIFACT_FETCH_MAX_BYTES);
 
-        let result = self.artifact_store.fetch_chunked(&artifact_id, offset, length)
+        let result = self
+            .artifact_store
+            .fetch_chunked(&artifact_id, offset, length)
             .await
             .map_err(|e| ServiceError::internal(e.to_string()))?;
 

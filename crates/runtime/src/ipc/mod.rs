@@ -18,9 +18,7 @@ mod server;
 
 use std::sync::Arc;
 
-use batman_protocol::{
-    BatmanMethod, ClientRole, ProtocolVersion, RunId, TaskId, VersionRange, WorkerId,
-};
+use batman_protocol::{BatmanMethod, ClientRole, RunId, TaskId, VersionRange, WorkerId};
 use tokio::net::UnixStream;
 
 pub use server::{Server, should_idle_shutdown, socket_path_within_limit};
@@ -34,20 +32,19 @@ pub const PROTOCOL_MIN_FRAME_BYTES: u32 = 64 * 1024;
 /// also the bootstrap hard limit applied before `initialize` completes.
 pub const DEFAULT_MAX_FRAME_BYTES: u32 = 4 * 1024 * 1024;
 
-/// The single protocol version this foundation runtime implements.
-pub const RUNTIME_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
+/// The single protocol version this runtime implements. Re-exported from
+/// `batman-protocol`, which owns it: `batman-xtask` records the same value
+/// as release provenance, and a second definition here could ship a
+/// manifest claiming a version the runtime does not speak.
+pub use batman_protocol::PROTOCOL_VERSION as RUNTIME_PROTOCOL_VERSION;
 
 /// The durable database schema version reported by `runtime/status`.
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// The inclusive range of protocol versions the runtime supports. Foundation
-/// scope implements exactly `1.0`.
+/// The inclusive range of protocol versions the runtime supports.
 #[must_use]
 pub const fn runtime_supported_versions() -> VersionRange {
-    VersionRange {
-        min: RUNTIME_PROTOCOL_VERSION,
-        max: RUNTIME_PROTOCOL_VERSION,
-    }
+    batman_protocol::supported_versions()
 }
 
 /// The peer's operating-system credentials for an accepted connection, as
@@ -173,6 +170,14 @@ pub struct ServerConfig {
     /// `quarantineAndCancel` (the default). Applied by
     /// [`crate::policy::ViolationService::record`].
     pub nested_violation_action: crate::config::NestedViolationAction,
+    /// The merged startup policy and the layers it came from. `Some` in the
+    /// daemon (`crate::lifecycle::serve`); `None` in tests and embeddings,
+    /// which then authorize every run under the authorizer's own startup
+    /// policy and ignore per-run `policyOverrides`.
+    pub policy: Option<(
+        std::sync::Arc<crate::config::LayeredConfig>,
+        std::sync::Arc<crate::config::RuntimePolicy>,
+    )>,
 }
 
 impl Default for ServerConfig {
@@ -188,6 +193,7 @@ impl Default for ServerConfig {
             binary_source: batman_protocol::BinarySource::Unknown,
             approval_callback: Arc::new(crate::approval::NoopApprovalCallback),
             nested_violation_action: crate::config::NestedViolationAction::default(),
+            policy: None,
         }
     }
 }
@@ -219,15 +225,15 @@ impl ClientPrincipal {
     #[must_use]
     pub fn allowed_methods(&self) -> Vec<BatmanMethod> {
         use BatmanMethod::{
-            ApprovalDecide, ApprovalList, CoordinationAskPolicy, CoordinationChildDecide,
+            ApprovalDecide, ApprovalList, ArtifactFetch, ArtifactList, CoordinationArtifactFetch,
+            CoordinationArtifactList, CoordinationAskPolicy, CoordinationChildDecide,
             CoordinationChildList, CoordinationPeerWorkspace, CoordinationPeers,
             CoordinationPublishArtifact, CoordinationReportBlocked, CoordinationRequestChild,
             CoordinationSend, CoordinationTask, EventsReplay, EventsSubscribe, MessageList,
             MessageSend, PolicyViolationDecide, ProfileRegister, ReconcileOmp, RunCancel, RunGet,
             RunList, RunRetry, RunSubmit, RuntimeShutdown, RuntimeStatus, TaskGet, TaskUpsert,
-            WorkspaceAcquire, WorkspaceGet, WorkspaceRelease, WorkspaceInspect, WorkspaceApply,
-            ArtifactList, ArtifactFetch,
-            WorkerCreate, WorkerGet, WorkerList,
+            WorkerCreate, WorkerGet, WorkerList, WorkspaceAcquire, WorkspaceApply, WorkspaceGet,
+            WorkspaceInspect, WorkspaceRelease,
         };
         match self.role {
             ClientRole::OmpExtension => vec![
@@ -288,6 +294,8 @@ impl ClientPrincipal {
                 CoordinationAskPolicy,
                 CoordinationChildList,
                 CoordinationPeerWorkspace,
+                CoordinationArtifactList,
+                CoordinationArtifactFetch,
             ],
         }
     }

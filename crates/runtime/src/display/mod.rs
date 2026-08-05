@@ -17,7 +17,9 @@ pub use herdr::{HerdrDisplay, HerdrStatus};
 pub use terminal::TerminalDisplay;
 pub use tmux::TmuxDisplay;
 
-use batman_protocol::{DisplayBackend, DisplayStatus};
+use batman_protocol::{
+    DisplayBackend, DisplayConfig, DisplayPreference, DisplaySelection, DisplayStatus,
+};
 use std::io;
 use std::process::Command;
 
@@ -123,6 +125,60 @@ impl DisplayRegistry {
         index: usize,
     ) -> Option<&mut (dyn DisplayBackendTrait + 'static)> {
         self.backends.get_mut(index).map(move |b| b.as_mut())
+    }
+
+    /// Registers every display backend this runtime knows how to build, in
+    /// descending capability order (Herdr, tmux, raw terminal). Availability
+    /// is *not* probed here -- each backend answers `is_available()` when
+    /// asked, so constructing a registry never spawns a process.
+    #[must_use]
+    pub fn with_default_backends(config: DisplayConfig) -> Self {
+        let mut registry = Self::new();
+        registry.register(Box::new(herdr::HerdrDisplay::new(config.clone())));
+        registry.register(Box::new(tmux::TmuxDisplay::new(config.clone())));
+        registry.register(Box::new(terminal::TerminalDisplay::new(config)));
+        registry
+    }
+
+    /// Resolves a caller's ordered [`DisplayPreference`] against what is
+    /// actually available on this machine.
+    ///
+    /// `attempts` records every backend tried, in order, so an operator can
+    /// see why the preferred one lost. An empty `ordered` list means "any
+    /// available", which falls back to registration order. A `selected` of
+    /// `None` means every candidate was unavailable (headless CI) and is
+    /// never an error -- runs proceed without a pane.
+    #[must_use]
+    pub fn resolve(&self, preference: &DisplayPreference) -> DisplaySelection {
+        let mut attempts = Vec::new();
+        let mut selected = None;
+
+        let candidates: Vec<DisplayBackend> = if preference.ordered.is_empty() {
+            self.backends
+                .iter()
+                .filter_map(|b| b.backend_name().parse().ok())
+                .collect()
+        } else {
+            preference.ordered.clone()
+        };
+
+        for candidate in candidates {
+            attempts.push(candidate);
+            let available = self
+                .backends
+                .iter()
+                .any(|b| b.backend_name() == candidate.to_string() && b.is_available());
+            if available {
+                selected = Some(candidate);
+                break;
+            }
+        }
+
+        DisplaySelection {
+            selected,
+            placement: preference.placement,
+            attempts,
+        }
     }
 }
 

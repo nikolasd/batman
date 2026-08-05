@@ -9,17 +9,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use batman_protocol::{RunId, TaskId, WorkerId};
+use batman_runtime::adapter::{
+    Adapter, AdapterEvent, AdapterEventPayload, AdapterEventSink, CancelScope, OmpRpcAdapter,
+    OmpRpcAdapterOptions, OmpRpcStartupOptions, ProfileId, StartSpec, StartupOptions,
+    WorkerProfile,
+};
 use batman_runtime::db::DatabaseHandle;
 use batman_runtime::ipc::{PeerCredentialReader, PeerCredentials, Server, ServerConfig};
 use batman_runtime::paths::RuntimePaths;
-use batman_runtime::adapter::{
-    Adapter, AdapterEvent, AdapterEventPayload, AdapterEventSink, CancelScope, OmpRpcAdapter,
-    OmpRpcAdapterOptions, OmpRpcStartupOptions, ProfileId, StartSpec, StartupOptions, WorkerProfile,
-};
-use std::time::Duration;
 use batman_runtime::service::{AdapterFuture, FakeRunDriver, RunDriver, RunDriverContext};
 use nix::unistd::Uid;
 use serde_json::{Value, json};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::OwnedWriteHalf;
@@ -83,7 +84,11 @@ impl RunDriver for RecordingRunDriver {
         None
     }
 
-    fn cancel_run(&self, _run_id: RunId, _scope: CancelScope) -> AdapterFuture<'static, Result<(), String>> {
+    fn cancel_run(
+        &self,
+        _run_id: RunId,
+        _scope: CancelScope,
+    ) -> AdapterFuture<'static, Result<(), String>> {
         Box::pin(async { Ok(()) })
     }
 }
@@ -123,7 +128,11 @@ impl RunDriver for CancelTrackingRunDriver {
         None
     }
 
-    fn cancel_run(&self, run_id: RunId, scope: CancelScope) -> AdapterFuture<'static, Result<(), String>> {
+    fn cancel_run(
+        &self,
+        run_id: RunId,
+        scope: CancelScope,
+    ) -> AdapterFuture<'static, Result<(), String>> {
         self.cancel_calls.lock().push((run_id, scope));
         Box::pin(async { Ok(()) })
     }
@@ -165,26 +174,36 @@ async fn run_cancel_calls_adapter_cancel_run_with_worker_scope() {
             json!({ "taskId": task_id, "workerId": worker_id }),
         )
         .await;
-    assert!(submit.get("error").is_none(), "run/submit failed: {submit:?}");
+    assert!(
+        submit.get("error").is_none(),
+        "run/submit failed: {submit:?}"
+    );
 
     let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
 
     // Now cancel the run
     let cancel = client
-        .call(
-            5,
-            "run/cancel",
-            json!({ "runId": run_id }),
-        )
+        .call(5, "run/cancel", json!({ "runId": run_id }))
         .await;
-    assert!(cancel.get("error").is_none(), "run/cancel failed: {cancel:?}");
+    assert!(
+        cancel.get("error").is_none(),
+        "run/cancel failed: {cancel:?}"
+    );
 
     // Verify cancel_run was called with CancelScope::Worker
     let calls = driver.cancel_calls();
     assert_eq!(calls.len(), 1, "expected exactly one cancel_run call");
     let (called_run_id, scope) = &calls[0];
-    assert_eq!(called_run_id.to_string(), run_id, "cancel_run called with wrong run_id");
-    assert_eq!(*scope, CancelScope::Worker, "cancel_run called with wrong CancelScope");
+    assert_eq!(
+        called_run_id.to_string(),
+        run_id,
+        "cancel_run called with wrong run_id"
+    );
+    assert_eq!(
+        *scope,
+        CancelScope::Worker,
+        "cancel_run called with wrong CancelScope"
+    );
 }
 
 // ------------------------------------------------------- policy violation
@@ -227,6 +246,7 @@ impl ViolationTriggeringRunDriver {
             vec![],
             true,
             Arc::clone(&ctx.violation_service),
+            None,
         );
         sink.emit(AdapterEvent {
             run_id: ctx.run_id,
@@ -253,6 +273,7 @@ impl RunDriver for ViolationTriggeringRunDriver {
                 vec![],
                 true,
                 Arc::clone(&ctx.violation_service),
+                None,
             );
             sink.emit(AdapterEvent {
                 run_id: ctx.run_id,
@@ -283,7 +304,11 @@ impl RunDriver for ViolationTriggeringRunDriver {
         None
     }
 
-    fn cancel_run(&self, run_id: RunId, scope: CancelScope) -> AdapterFuture<'static, Result<(), String>> {
+    fn cancel_run(
+        &self,
+        run_id: RunId,
+        scope: CancelScope,
+    ) -> AdapterFuture<'static, Result<(), String>> {
         self.cancel_calls.lock().push((run_id, scope));
         Box::pin(async { Ok(()) })
     }
@@ -316,7 +341,10 @@ async fn submit_run_with_driver(client: &mut Client, owner: &str) -> (String, St
             json!({ "taskId": task_id, "workerId": worker_id }),
         )
         .await;
-    assert!(submit.get("error").is_none(), "run/submit failed: {submit:?}");
+    assert!(
+        submit.get("error").is_none(),
+        "run/submit failed: {submit:?}"
+    );
     let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
     (task_id, worker_id, run_id)
 }
@@ -376,10 +404,11 @@ async fn nested_worker_observed_quarantines_run_and_blocks_message_send_until_re
         .iter()
         .find(|e| e["event"]["type"] == "policyViolationRecorded")
         .expect("a policyViolationRecorded event must be journaled");
-    let violation_id = recorded["event"]["payload"]["kind"]["policyViolationRecorded"]["violation_id"]
-        .as_str()
-        .expect("violation_id must be present on the recorded event")
-        .to_string();
+    let violation_id =
+        recorded["event"]["payload"]["kind"]["policyViolationRecorded"]["violation_id"]
+            .as_str()
+            .expect("violation_id must be present on the recorded event")
+            .to_string();
 
     // The owning client releases the quarantine.
     let decide = client
@@ -437,10 +466,11 @@ async fn policy_violation_decide_is_forbidden_for_a_non_owning_client() {
         .iter()
         .find(|e| e["event"]["type"] == "policyViolationRecorded")
         .expect("a policyViolationRecorded event must be journaled");
-    let violation_id = recorded["event"]["payload"]["kind"]["policyViolationRecorded"]["violation_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let violation_id =
+        recorded["event"]["payload"]["kind"]["policyViolationRecorded"]["violation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
     let mut other_client = omp_client(&harness, "omp-other").await;
     let decide = other_client
@@ -493,10 +523,11 @@ async fn policy_violation_decide_release_is_refused_on_an_already_terminal_run()
         .iter()
         .find(|e| e["event"]["type"] == "policyViolationRecorded")
         .expect("a policyViolationRecorded event must be journaled");
-    let violation_id = recorded["event"]["payload"]["kind"]["policyViolationRecorded"]["violation_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let violation_id =
+        recorded["event"]["payload"]["kind"]["policyViolationRecorded"]["violation_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
     // Releasing quarantine on an already-terminal (cancelled) run must
     // never revive it.
@@ -519,6 +550,236 @@ async fn policy_violation_decide_release_is_refused_on_an_already_terminal_run()
     );
 }
 
+/// A run's `policyFingerprint` is an immutable snapshot of the merge it
+/// was authorized under: a later run carrying `policyOverrides` gets its
+/// own fingerprint and never rewrites an existing run's.
+#[tokio::test]
+async fn per_run_policy_overrides_snapshot_only_their_own_run() {
+    let org = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(org.path(), "max_workers: 8\n").unwrap();
+    let layers = Arc::new(
+        batman_runtime::config::LayeredConfig::load(Some(org.path()), None, None).unwrap(),
+    );
+    let startup = Arc::new(layers.merge(None).unwrap());
+    let startup_fingerprint = startup.fingerprint.clone();
+
+    let harness = Harness::start({
+        let layers = Arc::clone(&layers);
+        let startup = Arc::clone(&startup);
+        move |c| {
+            c.run_driver = Some(Arc::new(FakeRunDriver) as Arc<dyn RunDriver>);
+            c.policy = Some((layers, startup));
+        }
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let task = client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+    let worker = client
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+
+    let plain = client
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id }),
+        )
+        .await;
+    let plain_run = plain["result"]["runId"].as_str().unwrap().to_string();
+
+    let overridden = client
+        .call(
+            5,
+            "run/submit",
+            json!({
+                "taskId": task_id,
+                "workerId": worker_id,
+                "policyOverrides": { "max_workers": 2 },
+            }),
+        )
+        .await;
+    assert!(
+        overridden.get("error").is_none(),
+        "an override that violates no lock must be accepted: {overridden:?}"
+    );
+    let overridden_run = overridden["result"]["runId"].as_str().unwrap().to_string();
+
+    let plain_get = client
+        .call(6, "run/get", json!({ "runId": plain_run }))
+        .await;
+    let overridden_get = client
+        .call(7, "run/get", json!({ "runId": overridden_run }))
+        .await;
+
+    assert_eq!(
+        plain_get["result"]["policyFingerprint"], startup_fingerprint,
+        "a run without overrides is snapshotted under the startup merge"
+    );
+    let overridden_fingerprint = overridden_get["result"]["policyFingerprint"]
+        .as_str()
+        .expect("an overridden run must carry its own fingerprint");
+    assert_ne!(
+        overridden_fingerprint, startup_fingerprint,
+        "an override must produce a distinct merge fingerprint"
+    );
+
+    // The snapshot is immutable: the second submit did not rewrite the
+    // first run's row.
+    let plain_again = client
+        .call(8, "run/get", json!({ "runId": plain_run }))
+        .await;
+    assert_eq!(
+        plain_again["result"]["policyFingerprint"], startup_fingerprint,
+        "one run's overrides must never change another run's snapshot"
+    );
+}
+
+/// A run whose display preference resolves to an available backend
+/// journals exactly one `DisplayPaneAttached`, and reports the winning
+/// backend on the submit response so the caller needs no second call.
+#[tokio::test]
+async fn run_submit_journals_the_display_pane_it_attached() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver) as Arc<dyn RunDriver>);
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let task = client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+    let worker = client
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+
+    // `terminal` is the one backend that is always available, so this
+    // resolves identically on a developer machine and in headless CI.
+    let submit = client
+        .call(
+            4,
+            "run/submit",
+            json!({
+                "taskId": task_id,
+                "workerId": worker_id,
+                "displayPreference": { "ordered": ["terminal"], "placement": "embedded" },
+            }),
+        )
+        .await;
+    let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
+    assert_eq!(submit["result"]["display"]["selected"], "terminal");
+    assert_eq!(submit["result"]["display"]["attempts"], json!(["terminal"]));
+
+    let replay = client
+        .call(5, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    let attached = pane_events(&replay, "displayPaneAttached");
+    assert_eq!(attached.len(), 1, "exactly one attach: {attached:?}");
+    assert_eq!(attached[0]["runId"], run_id);
+    assert_eq!(attached[0]["backend"], "terminal");
+    assert_eq!(
+        attached[0]["paneRef"], "",
+        "resolution never activates a backend, so there is no vendor pane id yet"
+    );
+}
+
+/// Every `displayEvent` payload of `kind` in a replay response.
+fn pane_events<'a>(replay: &'a Value, kind: &str) -> Vec<&'a Value> {
+    replay["result"]
+        .as_array()
+        .expect("events/replay returns an array")
+        .iter()
+        .map(|e| &e["event"])
+        .filter(|e| e["type"] == "displayEvent" && e["payload"]["kind"] == kind)
+        .map(|e| &e["payload"])
+        .collect()
+}
+
+/// An attach is journaled if and only if a backend was actually
+/// selected. Whether `herdr` happens to be installed decides which branch
+/// runs, so the test asserts the correspondence rather than the outcome.
+#[tokio::test]
+async fn a_pane_is_journaled_exactly_when_a_backend_was_selected() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver) as Arc<dyn RunDriver>);
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let task = client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+    let worker = client
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+
+    let submit = client
+        .call(
+            4,
+            "run/submit",
+            json!({
+                "taskId": task_id,
+                "workerId": worker_id,
+                // Only `herdr`, with no fallback: on a machine without
+                // it this resolves to nothing at all.
+                "displayPreference": { "ordered": ["herdr"], "placement": "tab" },
+            }),
+        )
+        .await;
+    assert!(
+        submit.get("error").is_none(),
+        "a headless run still submits: {submit:?}"
+    );
+    let selected = submit["result"]["display"]["selected"].clone();
+
+    let replay = client
+        .call(5, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    let attached = pane_events(&replay, "displayPaneAttached");
+    match selected.as_str() {
+        Some(backend) => {
+            assert_eq!(attached.len(), 1, "a selection journals one attach");
+            assert_eq!(attached[0]["backend"], backend);
+        }
+        None => assert!(
+            attached.is_empty(),
+            "a headless run must journal no pane at all: {attached:?}"
+        ),
+    }
+}
+
 #[tokio::test]
 async fn second_nested_worker_observed_on_an_already_actioned_run_never_double_cancels() {
     let driver = Arc::new(ViolationTriggeringRunDriver::default());
@@ -531,7 +792,11 @@ async fn second_nested_worker_observed_on_an_already_actioned_run_never_double_c
     let mut client = omp_client(&harness, "omp-1").await;
     let (_, _, run_id) = submit_run_with_driver(&mut client, "omp-1").await;
 
-    assert_eq!(driver.cancel_calls().len(), 1, "first observation must cancel once");
+    assert_eq!(
+        driver.cancel_calls().len(),
+        1,
+        "first observation must cancel once"
+    );
 
     // A second, independent NestedWorkerObserved on the same (now
     // terminal) run -- e.g. the adapter reports a further unexpected
@@ -688,7 +953,7 @@ impl Client {
             "id": 1,
             "method": "initialize",
             "params": {
-                "client": { "name": "@satori/batman", "version": "0.1.0" },
+                "client": { "name": "@nikolasd/batman", "version": "0.1.0" },
                 "supported": { "min": { "major": 1, "minor": 0 }, "max": { "major": 1, "minor": 0 } },
                 "repository": { "canonicalPath": agent_dir.unwrap_or("/tmp"), "vcsRoot": agent_dir.unwrap_or("/tmp") },
                 "auth": auth,
@@ -1464,7 +1729,10 @@ async fn workspace_acquire_returns_lease_for_valid_run() {
             json!({ "taskId": task_id, "workerId": worker_id }),
         )
         .await;
-    assert!(submit.get("error").is_none(), "run/submit failed: {submit:?}");
+    assert!(
+        submit.get("error").is_none(),
+        "run/submit failed: {submit:?}"
+    );
 
     let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
 
@@ -1481,7 +1749,10 @@ async fn workspace_acquire_returns_lease_for_valid_run() {
         )
         .await;
 
-    assert!(acquire.get("error").is_none(), "workspace/acquire failed: {acquire:?}");
+    assert!(
+        acquire.get("error").is_none(),
+        "workspace/acquire failed: {acquire:?}"
+    );
     assert!(
         acquire["result"]["leaseId"].as_str().is_some(),
         "leaseId missing in response: {acquire:?}"
@@ -1490,6 +1761,69 @@ async fn workspace_acquire_returns_lease_for_valid_run() {
         acquire["result"]["runId"].as_str().unwrap(),
         &run_id,
         "runId mismatch in response"
+    );
+}
+
+/// An unrecognized `workspaceMode` is rejected rather than silently
+/// downgraded to the shared repository. The silent fallback was the real
+/// hazard: a typo (`"isolatd"`) would run a write-capable agent directly
+/// against the user's working tree while the caller believed it was
+/// isolated.
+#[tokio::test]
+async fn run_submit_rejects_an_unrecognized_workspace_mode() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let task = client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+    let worker = client
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+
+    let submit = client
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id, "workspaceMode": "isolatd" }),
+        )
+        .await;
+
+    let message = submit["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("workspaceMode"),
+        "a typo'd mode must be refused by name, got: {submit:?}"
+    );
+    assert_eq!(
+        submit["error"]["code"].as_i64(),
+        Some(i64::from(batman_protocol::error_code::INVALID_PARAMS)),
+        "an unrecognized mode is the caller's error: {submit:?}"
+    );
+
+    // `shared` remains accepted and is the documented default's spelling.
+    let shared = client
+        .call(
+            5,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id, "workspaceMode": "shared" }),
+        )
+        .await;
+    assert!(
+        shared.get("error").is_none(),
+        "shared must remain accepted: {shared:?}"
     );
 }
 // ---------------------------------------------------------------- item 33: real adapter cancel
@@ -1538,10 +1872,14 @@ struct TestSink {
 
 impl TestSink {
     async fn process_started_pid(&self) -> Option<u32> {
-        self.events.lock().await.iter().find_map(|event| match &event.payload {
-            AdapterEventPayload::ProcessStarted { pid } => Some(*pid),
-            _ => None,
-        })
+        self.events
+            .lock()
+            .await
+            .iter()
+            .find_map(|event| match &event.payload {
+                AdapterEventPayload::ProcessStarted { pid } => Some(*pid),
+                _ => None,
+            })
     }
 }
 
@@ -1703,7 +2041,10 @@ async fn run_cancel_reaches_real_omprpc_adapter_and_kills_process() {
             json!({ "taskId": task_id, "workerId": worker_id }),
         )
         .await;
-    assert!(submit.get("error").is_none(), "run/submit failed: {submit:?}");
+    assert!(
+        submit.get("error").is_none(),
+        "run/submit failed: {submit:?}"
+    );
     let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
 
     // OmpRpcAdapter::start emits ProcessStarted (carrying the fake-worker's
@@ -1722,7 +2063,10 @@ async fn run_cancel_reaches_real_omprpc_adapter_and_kills_process() {
     let cancel = client
         .call(5, "run/cancel", json!({ "runId": run_id }))
         .await;
-    assert!(cancel.get("error").is_none(), "run/cancel failed: {cancel:?}");
+    assert!(
+        cancel.get("error").is_none(),
+        "run/cancel failed: {cancel:?}"
+    );
 
     // OmpRpcAdapter::cancel() only queues Outbound::Terminate on
     // run_pump's channel and returns immediately -- it does not itself

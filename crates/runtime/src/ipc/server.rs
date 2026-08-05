@@ -151,7 +151,7 @@ impl Server {
             config.nested_violation_action,
         ));
 
-        let orchestration = Arc::new(crate::service::OrchestrationService::new(
+        let mut orchestration = crate::service::OrchestrationService::new(
             db.clone(),
             project_id,
             config.run_driver.clone(),
@@ -159,14 +159,19 @@ impl Server {
             violation_service,
             events_tx.clone(),
             lease_service.clone(),
-            artifact_store,
+            artifact_store.clone(),
             config.repository.clone(),
-        ));
+        );
+        if let Some((layers, policy)) = config.policy.clone() {
+            orchestration = orchestration.with_policy(layers, policy);
+        }
+        let orchestration = Arc::new(orchestration);
         let coordination = Arc::new(crate::coordination::CoordinationBroker::new(
             db.clone(),
             project_id,
             events_tx.clone(),
             lease_service,
+            artifact_store,
         ));
 
         let shared = Arc::new(Shared {

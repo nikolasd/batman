@@ -258,7 +258,7 @@ async fn try_connect_and_authenticate(
 
     let params = InitializeParams {
         client: ClientInfo {
-            name: "@satori/batman-coordination-mcp".to_string(),
+            name: "@nikolasd/batman-coordination-mcp".to_string(),
             version: crate::VERSION.to_string(),
         },
         supported: batman_protocol::VersionRange {

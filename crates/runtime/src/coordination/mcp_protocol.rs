@@ -130,6 +130,51 @@ pub fn tool_specs() -> Vec<ToolSpec> {
             }),
         },
         ToolSpec {
+            name: "batman_artifact_list",
+            description: "List artifacts published by any agent on this task. Never exposes artifacts from other tasks.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["patch", "commitList", "conflictReport", "workspaceManifest"],
+                    },
+                },
+                "required": [],
+                "additionalProperties": false,
+            }),
+            output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "artifacts": { "type": "array" },
+                },
+                "required": ["artifacts"],
+            }),
+        },
+        ToolSpec {
+            name: "batman_artifact_fetch",
+            description: "Read one bounded chunk of an artifact on this task. Follow nextOffset until complete is true; the chunk size is fixed by the runtime.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "artifactId": { "type": "string", "maxLength": ID_MAX_CHARS },
+                    "offset": { "type": "integer", "minimum": 0 },
+                },
+                "required": ["artifactId"],
+                "additionalProperties": false,
+            }),
+            output_schema: json!({
+                "type": "object",
+                "properties": {
+                    "artifact": { "type": "object" },
+                    "contentBase64": { "type": "string" },
+                    "nextOffset": { "type": ["integer", "null"] },
+                    "complete": { "type": "boolean" },
+                },
+                "required": ["artifact", "contentBase64", "complete"],
+            }),
+        },
+        ToolSpec {
             name: "batman_send",
             description: "Send a correlated, journaled message to a peer worker or to OMP.",
             input_schema: json!({
@@ -385,6 +430,24 @@ pub fn translate_tool_call(
                 json!({ "runId": run_id, "peerRunId": peer_run_id }),
             ))
         }
+        "batman_artifact_list" => {
+            let kind = arguments.get("kind").and_then(Value::as_str);
+            Ok((
+                "coordination/artifactList",
+                match kind {
+                    Some(kind) => json!({ "runId": run_id, "kind": kind }),
+                    None => json!({ "runId": run_id }),
+                },
+            ))
+        }
+        "batman_artifact_fetch" => {
+            let artifact_id = required_bounded_str(arguments, "artifactId", ID_MAX_CHARS)?;
+            let offset = arguments.get("offset").and_then(Value::as_u64).unwrap_or(0);
+            Ok((
+                "coordination/artifactFetch",
+                json!({ "runId": run_id, "artifactId": artifact_id, "offset": offset }),
+            ))
+        }
         other => Err(ToolCallError::UnknownTool(other.to_string())),
     }
 }
@@ -528,7 +591,7 @@ mod tests {
     #[test]
     fn every_tool_spec_has_a_batman_prefixed_name_and_object_schema() {
         let specs = tool_specs();
-        assert_eq!(specs.len(), 8);
+        assert_eq!(specs.len(), 10);
         for spec in &specs {
             assert!(spec.name.starts_with("batman_"), "{}", spec.name);
             assert_eq!(spec.input_schema["type"], "object");

@@ -119,7 +119,7 @@ pub fn run_get_op(run_id: RunId) -> DomainClosure {
             "SELECT run_id, task_id, worker_id, state,
                     flags_degraded_control, flags_needs_reconciliation, flags_protocol_unhealthy,
                     flags_policy_quarantined, flags_workspace_dirty, flags_children_active,
-                    vendor_session_id, created_at, started_at, completed_at
+                    vendor_session_id, created_at, started_at, completed_at, policy_fingerprint
              FROM runs WHERE run_id = ?1",
             [run_id.to_string()],
             row_to_run_json,
@@ -140,7 +140,7 @@ pub fn run_list_op(task_id: Option<TaskId>, project_id: ProjectId) -> DomainClos
                 "SELECT run_id, task_id, worker_id, state,
                         flags_degraded_control, flags_needs_reconciliation, flags_protocol_unhealthy,
                         flags_policy_quarantined, flags_workspace_dirty, flags_children_active,
-                        vendor_session_id, created_at, started_at, completed_at
+                        vendor_session_id, created_at, started_at, completed_at, policy_fingerprint
                  FROM runs WHERE task_id = ?1 ORDER BY created_at",
             )?;
             stmt.query_map([task_id.to_string()], row_to_run_json)?
@@ -150,7 +150,8 @@ pub fn run_list_op(task_id: Option<TaskId>, project_id: ProjectId) -> DomainClos
                 "SELECT r.run_id, r.task_id, r.worker_id, r.state,
                         r.flags_degraded_control, r.flags_needs_reconciliation, r.flags_protocol_unhealthy,
                         r.flags_policy_quarantined, r.flags_workspace_dirty, r.flags_children_active,
-                        r.vendor_session_id, r.created_at, r.started_at, r.completed_at
+                        r.vendor_session_id, r.created_at, r.started_at, r.completed_at,
+                        r.policy_fingerprint
                  FROM runs r JOIN tasks t ON r.task_id = t.task_id
                  WHERE t.project_id = ?1 ORDER BY r.created_at",
             )?;
@@ -179,6 +180,11 @@ fn row_to_run_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "createdAt": row.get::<_, String>(11)?,
         "startedAt": row.get::<_, Option<String>>(12)?,
         "completedAt": row.get::<_, Option<String>>(13)?,
+        // The immutable snapshot of the merged policy this run was
+        // authorized under, so a later violation is auditable against the
+        // exact merge that permitted it. `None` for runs created without a
+        // merged startup config (tests and embeddings).
+        "policyFingerprint": row.get::<_, Option<String>>(14)?,
     }))
 }
 

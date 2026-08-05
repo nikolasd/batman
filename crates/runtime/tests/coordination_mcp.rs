@@ -319,7 +319,7 @@ impl Drop for McpSubprocess {
 // ------------------------------------------------------------------ tests
 
 #[tokio::test]
-async fn coordination_mcp_lists_all_eight_tools() {
+async fn coordination_mcp_lists_all_ten_tools() {
     let harness = Harness::start().await;
     let (run_id, task_id, worker_id) = harness.seed_run().await;
     let mut proxy = McpSubprocess::spawn(&harness, run_id, task_id, worker_id).await;
@@ -336,6 +336,8 @@ async fn coordination_mcp_lists_all_eight_tools() {
             "batman_task",
             "batman_peers",
             "batman_peer_workspace",
+            "batman_artifact_list",
+            "batman_artifact_fetch",
             "batman_send",
             "batman_request_child",
             "batman_publish_artifact",

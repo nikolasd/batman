@@ -451,7 +451,9 @@ async fn dispatch(
         | BatmanMethod::CoordinationPublishArtifact
         | BatmanMethod::CoordinationReportBlocked
         | BatmanMethod::CoordinationAskPolicy
-        | BatmanMethod::CoordinationPeerWorkspace => {
+        | BatmanMethod::CoordinationPeerWorkspace
+        | BatmanMethod::CoordinationArtifactList
+        | BatmanMethod::CoordinationArtifactFetch => {
             let resolved = method.expect("allowed implies a known method");
             let params = message.get("params").cloned().unwrap_or(Value::Null);
             match dispatch_coordination(resolved, principal, &params, shared).await {
@@ -593,6 +595,29 @@ async fn dispatch_coordination(
             shared
                 .coordination
                 .peer_workspace(run_id, peer_run_id)
+                .await
+        }
+        BatmanMethod::CoordinationArtifactList => {
+            let kind = match params.get("kind").and_then(Value::as_str) {
+                Some(raw) => Some(
+                    serde_json::from_value(Value::String(raw.to_string()))
+                        .map_err(|_| invalid_params("kind is not a valid artifact kind"))?,
+                ),
+                None => None,
+            };
+            shared.coordination.artifact_list(run_id, kind).await
+        }
+        BatmanMethod::CoordinationArtifactFetch => {
+            let artifact_id = params
+                .get("artifactId")
+                .cloned()
+                .ok_or_else(|| invalid_params("artifactId is required"))?;
+            let artifact_id = serde_json::from_value(artifact_id)
+                .map_err(|_| invalid_params("artifactId is not a valid id"))?;
+            let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
+            shared
+                .coordination
+                .artifact_fetch(run_id, artifact_id, offset)
                 .await
         }
         _ => Err(crate::coordination::CoordinationError {

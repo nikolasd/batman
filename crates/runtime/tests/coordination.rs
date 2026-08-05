@@ -8,7 +8,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use batman_protocol::{ProjectId, RunId, TaskId, Timestamp, WorkerId};
+use batman_protocol::{
+    Artifact, ArtifactId, ArtifactKind, ProjectId, RunId, TaskId, Timestamp, WorkerId,
+};
 use batman_runtime::coordination::{
     CoordinationBroker, ScopeBinding, ScopeTokenStore, ScopeTokenVerifier, VendorProcessIdentity,
     mcp_protocol,
@@ -17,7 +19,7 @@ use batman_runtime::db::DatabaseHandle;
 use batman_runtime::ipc::{PeerCredentialReader, PeerCredentials, Server, ServerConfig};
 use batman_runtime::paths::RuntimePaths;
 use batman_runtime::service::FakeRunDriver;
-use batman_runtime::workspace::LeaseService;
+use batman_runtime::workspace::{ArtifactStore, LeaseService};
 use nix::unistd::Uid;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -142,12 +144,19 @@ impl Harness {
     /// with no socket connection at all. SQLite's WAL mode makes a
     /// second handle onto the same file safe alongside the server's own.
     async fn broker(&self) -> CoordinationBroker {
+        self.broker_with_store(Arc::new(ArtifactStore::new())).await
+    }
+
+    /// The same broker, but sharing an artifact store the test also holds
+    /// -- the only way to seed artifacts a worker-facing tool can then
+    /// read back.
+    async fn broker_with_store(&self, store: Arc<ArtifactStore>) -> CoordinationBroker {
         let db = Arc::new(DatabaseHandle::start(self.database.clone()).await.unwrap());
         let (events_tx, _events_rx) = broadcast::channel(16);
         let lease_service = Arc::new(
             LeaseService::open_in_memory(self.project_id).expect("in-memory lease service"),
         );
-        CoordinationBroker::new(db, self.project_id, events_tx, lease_service)
+        CoordinationBroker::new(db, self.project_id, events_tx, lease_service, store)
     }
 }
 
@@ -207,7 +216,7 @@ async fn omp_client(harness: &Harness, instance_id: &str) -> Client {
             "id": 1,
             "method": "initialize",
             "params": {
-                "client": { "name": "@satori/batman", "version": "0.1.0" },
+                "client": { "name": "@nikolasd/batman", "version": "0.1.0" },
                 "supported": { "min": { "major": 1, "minor": 0 }, "max": { "major": 1, "minor": 0 } },
                 "repository": { "canonicalPath": harness.owned_dir, "vcsRoot": harness.owned_dir },
                 "auth": { "role": "ompExtension", "instanceId": instance_id, "agentDirectory": harness.owned_dir },
@@ -449,6 +458,114 @@ async fn execute_tool_call_reports_an_unknown_tool_as_a_tool_error_not_a_panic()
             .unwrap()
             .contains("unknown tool")
     );
+}
+
+/// The worker-facing artifact tools are scoped to the caller's task: an
+/// artifact published by a run on another task is neither listed nor
+/// fetchable, and the refusal is worded identically to "no such
+/// artifact" so a worker cannot probe the project's artifact space.
+#[tokio::test]
+async fn artifact_tools_only_expose_artifacts_from_the_callers_own_task() {
+    let harness = Harness::start().await;
+    let mut omp = omp_client(&harness, "omp-1").await;
+    let (_token, run_id, task_id, worker_id) = seed_scoped_run(&harness, &mut omp).await;
+
+    // A second run on a *different* task, whose artifact must stay hidden.
+    let other_task = omp
+        .call(
+            20,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
+        .await;
+    let other_task_id = other_task["result"]["taskId"].as_str().unwrap().to_string();
+    let other_worker = omp
+        .call(
+            21,
+            "worker/create",
+            json!({ "fingerprint": "sha256:h", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let other_worker_id = other_worker["result"]["workerId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let other_run = omp
+        .call(
+            22,
+            "run/submit",
+            json!({ "taskId": other_task_id, "workerId": other_worker_id }),
+        )
+        .await;
+    let other_run_id = other_run["result"]["runId"].as_str().unwrap().to_string();
+
+    let store = Arc::new(ArtifactStore::new());
+    let mine = seed_artifact(&store, "mine\n", Some(run_id.to_string())).await;
+    let theirs = seed_artifact(&store, "theirs\n", Some(other_run_id)).await;
+    // An artifact with no run provenance belongs to no task, so it is
+    // invisible to every worker.
+    let orphan = seed_artifact(&store, "orphan\n", None).await;
+
+    let broker = harness.broker_with_store(store).await;
+    let scope = bound_scope(run_id, task_id, worker_id);
+
+    let listed = broker
+        .execute_tool_call("batman_artifact_list", &json!({}), scope)
+        .await;
+    assert_eq!(listed["isError"], false, "{listed:?}");
+    let ids: Vec<&str> = listed["structuredContent"]["artifacts"]
+        .as_array()
+        .expect("artifacts array")
+        .iter()
+        .map(|a| a["artifactId"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![mine.to_string()], "only this task's artifact");
+
+    let fetched = broker
+        .execute_tool_call(
+            "batman_artifact_fetch",
+            &json!({ "artifactId": mine.to_string() }),
+            scope,
+        )
+        .await;
+    assert_eq!(fetched["isError"], false, "{fetched:?}");
+    assert_eq!(fetched["structuredContent"]["complete"], true);
+
+    let refusals: Vec<String> = {
+        let mut out = Vec::new();
+        for id in [theirs, orphan, ArtifactId::new()] {
+            let denied = broker
+                .execute_tool_call(
+                    "batman_artifact_fetch",
+                    &json!({ "artifactId": id.to_string() }),
+                    scope,
+                )
+                .await;
+            assert_eq!(denied["isError"], true, "{denied:?}");
+            out.push(denied["content"][0]["text"].as_str().unwrap().to_string());
+        }
+        out
+    };
+    assert!(
+        refusals.windows(2).all(|w| w[0] == w[1]),
+        "another task's artifact, an unowned one, and a nonexistent one must be \
+         indistinguishable: {refusals:?}"
+    );
+}
+
+async fn seed_artifact(store: &ArtifactStore, body: &str, run_id: Option<String>) -> ArtifactId {
+    use sha2::{Digest, Sha256};
+    let content = body.as_bytes().to_vec();
+    let artifact = Artifact {
+        artifact_id: ArtifactId::new(),
+        kind: ArtifactKind::Patch,
+        sha256: hex::encode(Sha256::digest(&content)),
+        byte_length: content.len() as u64,
+        media_type: "text/plain".to_string(),
+        storage_path: format!("seed/{}.txt", body.trim()),
+        run_id,
+    };
+    store.store(artifact, content).await.unwrap()
 }
 
 // ------------------------------------------------------------- send bounds
@@ -875,7 +992,13 @@ async fn sweep_unacknowledged_as_unknown_settles_recorded_and_sent_messages() {
     let (events_tx, _events_rx) = broadcast::channel(64);
     let lease_service =
         Arc::new(LeaseService::open_in_memory(ProjectId::new()).expect("in-memory lease service"));
-    let broker = CoordinationBroker::new(db, ProjectId::new(), events_tx, lease_service);
+    let broker = CoordinationBroker::new(
+        db,
+        ProjectId::new(),
+        events_tx,
+        lease_service,
+        Arc::new(batman_runtime::workspace::ArtifactStore::new()),
+    );
     let swept = broker.sweep_unacknowledged_as_unknown().await.unwrap();
     assert_eq!(swept, 1);
 

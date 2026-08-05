@@ -75,6 +75,7 @@ pub struct CoordinationBroker {
     rate_limiter: RateLimiter,
     events_tx: broadcast::Sender<EventEnvelope>,
     lease_service: Arc<crate::workspace::LeaseService>,
+    artifact_store: Arc<crate::workspace::ArtifactStore>,
 }
 
 impl CoordinationBroker {
@@ -84,6 +85,7 @@ impl CoordinationBroker {
         project_id: ProjectId,
         events_tx: broadcast::Sender<EventEnvelope>,
         lease_service: Arc<crate::workspace::LeaseService>,
+        artifact_store: Arc<crate::workspace::ArtifactStore>,
     ) -> Self {
         Self {
             db,
@@ -91,6 +93,7 @@ impl CoordinationBroker {
             rate_limiter: RateLimiter::default(),
             events_tx,
             lease_service,
+            artifact_store,
         }
     }
 
@@ -411,6 +414,111 @@ impl CoordinationBroker {
         }))
     }
 
+    /// The set of run ids coordinating on the same task as `run_id`,
+    /// including `run_id` itself. This is the scope every worker-facing
+    /// artifact query is filtered by.
+    ///
+    /// Returned as strings because that is how `Artifact::run_id` carries
+    /// its provenance -- reparsing on both sides would only add a failure
+    /// mode.
+    async fn task_run_ids(&self, run_id: RunId) -> Result<Vec<String>, CoordinationError> {
+        let (task_id, _) = self.run_participants(run_id).await?;
+        self.db
+            .run_domain_op(Box::new(move |conn| {
+                let mut stmt = conn.prepare("SELECT run_id FROM runs WHERE task_id = ?1")?;
+                let rows = stmt
+                    .query_map([task_id.to_string()], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(json!(rows))
+            }))
+            .await
+            .map_err(CoordinationError::from)
+            .map(|value| {
+                value
+                    .as_array()
+                    .map(|rows| {
+                        rows.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+    }
+
+    /// `coordination/artifactList`: artifacts published by any run on the
+    /// caller's task. Project-wide `artifact/list` is deliberately not
+    /// reused: a worker must never see another task's artifacts.
+    pub async fn artifact_list(
+        &self,
+        run_id: RunId,
+        kind: Option<batman_protocol::ArtifactKind>,
+    ) -> Result<Value, CoordinationError> {
+        self.require_live_run(run_id).await?;
+        let scope = self.task_run_ids(run_id).await?;
+        let listed = self.artifact_store.list(kind).await;
+        let artifacts: Vec<_> = listed
+            .artifacts
+            .into_iter()
+            .filter(|a| {
+                a.run_id
+                    .as_deref()
+                    .is_some_and(|id| scope.iter().any(|s| s == id))
+            })
+            .collect();
+        Ok(json!({ "artifacts": artifacts }))
+    }
+
+    /// `coordination/artifactFetch`: one bounded chunk of an artifact
+    /// published on the caller's task.
+    ///
+    /// An artifact outside the caller's task and an artifact that does not
+    /// exist return the *same* message, so a worker cannot probe the
+    /// project's artifact space for ids it is not entitled to see.
+    pub async fn artifact_fetch(
+        &self,
+        run_id: RunId,
+        artifact_id: batman_protocol::ArtifactId,
+        offset: u64,
+    ) -> Result<Value, CoordinationError> {
+        self.require_live_run(run_id).await?;
+        let scope = self.task_run_ids(run_id).await?;
+        let not_on_task =
+            || CoordinationError::invalid_params("artifactId is not an artifact on this task");
+
+        let metadata = self
+            .artifact_store
+            .fetch(&artifact_id)
+            .await
+            .map_err(|_| not_on_task())?;
+        if !metadata
+            .run_id
+            .as_deref()
+            .is_some_and(|id| scope.iter().any(|s| s == id))
+        {
+            return Err(not_on_task());
+        }
+
+        // The worker never chooses a length: it always gets one capped
+        // chunk and paginates with `nextOffset`.
+        let result = self
+            .artifact_store
+            .fetch_chunked(
+                &artifact_id,
+                offset,
+                crate::workspace::ARTIFACT_FETCH_MAX_BYTES,
+            )
+            .await
+            .map_err(|e| CoordinationError {
+                code: error_code::INTERNAL_ERROR,
+                message: e.to_string(),
+            })?;
+        serde_json::to_value(result).map_err(|e| CoordinationError {
+            code: error_code::INTERNAL_ERROR,
+            message: e.to_string(),
+        })
+    }
+
     /// `coordination/requestChild`: records intent only, transitions the
     /// requesting run to `waitingPeer`, and notifies OMP (via the durable
     /// event journal OMP already replays). Never creates a task or worker.
@@ -711,6 +819,41 @@ impl CoordinationBroker {
             "coordination/askPolicy" => {
                 let question = params["question"].as_str().unwrap_or_default().to_string();
                 self.ask_policy(scope.run_id, question).await
+            }
+            "coordination/peerWorkspace" => match params["peerRunId"].as_str().map(RunId::parse) {
+                Some(Ok(peer_run_id)) => self.peer_workspace(scope.run_id, peer_run_id).await,
+                _ => Err(CoordinationError::invalid_params(
+                    "peerRunId is not a valid id",
+                )),
+            },
+            "coordination/artifactList" => {
+                let kind = match params.get("kind") {
+                    Some(raw) => match serde_json::from_value(raw.clone()) {
+                        Ok(kind) => Some(kind),
+                        Err(_) => {
+                            return super::mcp_protocol::tool_result_from_error(
+                                "kind is not a valid artifact kind",
+                            );
+                        }
+                    },
+                    None => None,
+                };
+                self.artifact_list(scope.run_id, kind).await
+            }
+            "coordination/artifactFetch" => {
+                let artifact_id = params
+                    .get("artifactId")
+                    .cloned()
+                    .and_then(|v| serde_json::from_value(v).ok());
+                match artifact_id {
+                    Some(artifact_id) => {
+                        let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
+                        self.artifact_fetch(scope.run_id, artifact_id, offset).await
+                    }
+                    None => Err(CoordinationError::invalid_params(
+                        "artifactId is not a valid id",
+                    )),
+                }
             }
             other => Err(CoordinationError {
                 code: error_code::METHOD_NOT_FOUND,
