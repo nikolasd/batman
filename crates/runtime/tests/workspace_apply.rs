@@ -1,7 +1,10 @@
 //! Workspace apply integration tests.
 
 use batman_protocol::{ApplyRequest, ApplyStrategy, Artifact, ArtifactId, ArtifactKind, ProjectId};
-use batman_runtime::workspace::{ArtifactStore, WorkspaceApplier, WorkspaceInspector};
+use batman_runtime::workspace::{
+    ARTIFACT_FETCH_MAX_BYTES, ArtifactStore, ArtifactStoreError, WorkspaceApplier,
+    WorkspaceInspector,
+};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -48,8 +51,47 @@ fn create_fixture_repo() -> PathBuf {
         .args(["commit", "-m", "Initial commit"])
         .output()
         .expect("Failed to commit");
-
     repo
+}
+
+/// Runs `git` in `repo`, returning its trimmed stdout. Panics on failure:
+/// a broken fixture must not read as a legitimate test outcome.
+fn git(repo: &PathBuf, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("git {args:?} failed to start: {e}"));
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn head_of(repo: &PathBuf) -> String {
+    git(repo, &["rev-parse", "HEAD"])
+}
+
+/// A hex SHA-256 in the form `Artifact::sha256` carries.
+fn digest(content: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(content);
+    hex::encode(hasher.finalize())
+}
+
+fn patch_artifact(content: &[u8], sha256: String) -> Artifact {
+    Artifact {
+        artifact_id: ArtifactId::new(),
+        kind: ArtifactKind::Patch,
+        sha256,
+        byte_length: content.len() as u64,
+        media_type: "text/plain".to_string(),
+        storage_path: "test.patch".to_string(),
+        run_id: None,
+    }
 }
 
 #[tokio::test]
@@ -57,15 +99,7 @@ async fn artifact_store_list_and_fetch() {
     let store = ArtifactStore::new();
 
     let content = b"test content".to_vec();
-    let artifact = Artifact {
-        artifact_id: ArtifactId::new(),
-        kind: ArtifactKind::Patch,
-        sha256: String::new(),
-        byte_length: content.len() as u64,
-        media_type: "text/plain".to_string(),
-        storage_path: "test.patch".to_string(),
-        run_id: None,
-    };
+    let artifact = patch_artifact(&content, digest(&content));
     let id = store.store(artifact, content.clone()).await.unwrap();
 
     let list = store.list(None).await;
@@ -82,6 +116,58 @@ async fn artifact_store_missing_artifact() {
     let missing = ArtifactId::new();
     let result = store.fetch(&missing).await;
     assert!(result.is_err());
+}
+
+/// A publisher whose declared digest disagrees with its bytes is refused
+/// at `store`, so the corrupt artifact never enters the store at all.
+#[tokio::test]
+async fn artifact_store_rejects_a_declared_digest_that_does_not_match_the_bytes() {
+    let store = ArtifactStore::new();
+    let content = b"test content".to_vec();
+    let artifact = patch_artifact(&content, digest(b"different content"));
+
+    let err = store
+        .store(artifact, content)
+        .await
+        .expect_err("a mismatched digest must be refused at publish");
+    assert!(
+        matches!(err, ArtifactStoreError::DigestMismatch { .. }),
+        "expected a digest mismatch, got {err:?}"
+    );
+    assert_eq!(
+        store.list(None).await.artifacts.len(),
+        0,
+        "a refused artifact must not be stored"
+    );
+}
+
+/// One `fetch_chunked` call never returns more than the ceiling, no matter
+/// what length the caller asks for; the remainder is reachable by
+/// following `next_offset`.
+#[tokio::test]
+async fn artifact_fetch_is_capped_regardless_of_requested_length() {
+    let store = ArtifactStore::new();
+    let content = vec![b'x'; (ARTIFACT_FETCH_MAX_BYTES as usize) + 4096];
+    let artifact = patch_artifact(&content, digest(&content));
+    let id = store.store(artifact, content.clone()).await.unwrap();
+
+    let first = store.fetch_chunked(&id, 0, u64::MAX).await.unwrap();
+    assert_eq!(
+        first.next_offset,
+        Some(ARTIFACT_FETCH_MAX_BYTES),
+        "an over-large request must be clamped to the ceiling, not served whole"
+    );
+    assert!(!first.complete, "a clamped read is not a complete read");
+
+    let second = store
+        .fetch_chunked(&id, ARTIFACT_FETCH_MAX_BYTES, u64::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        second.next_offset, None,
+        "following next_offset must reach the end"
+    );
+    assert!(second.complete);
 }
 
 #[tokio::test]
@@ -133,7 +219,7 @@ async fn workspace_apply_with_real_patch() {
     let artifact = Artifact {
         artifact_id: ArtifactId::new(),
         kind: ArtifactKind::Patch,
-        sha256: String::new(),
+        sha256: digest(&patch_content),
         byte_length: patch_content.len() as u64,
         media_type: "application/x-git-diff".to_string(),
         storage_path: "test.patch".to_string(),
@@ -167,6 +253,131 @@ async fn workspace_apply_with_real_patch() {
     // Verify the file was modified
     let content = std::fs::read_to_string(repo.join("file1.txt")).unwrap();
     assert_eq!(content, "modified content\n");
+}
+
+/// A patch that does not apply is a conflict, not an internal error: the
+/// caller gets `success: false`, a `CONFLICT` code, and a stored report.
+#[tokio::test]
+async fn workspace_apply_patch_conflict_records_an_artifact_and_never_errors() {
+    let repo = create_fixture_repo();
+    let store = ArtifactStore::new();
+
+    // A patch whose pre-image ("something else\n") does not match the
+    // repo's actual file1.txt, so `git apply --check` rejects it.
+    let patch_content = b"diff --git a/file1.txt b/file1.txt\n\
+index 0000000..1111111 100644\n\
+--- a/file1.txt\n\
++++ b/file1.txt\n\
+@@ -1 +1 @@\n\
+-something else\n\
++replacement\n"
+        .to_vec();
+    let artifact = Artifact {
+        artifact_id: ArtifactId::new(),
+        kind: ArtifactKind::Patch,
+        sha256: digest(&patch_content),
+        byte_length: patch_content.len() as u64,
+        media_type: "application/x-git-diff".to_string(),
+        storage_path: "conflict.patch".to_string(),
+        run_id: None,
+    };
+    let artifact_id = store.store(artifact, patch_content).await.unwrap();
+
+    let head = head_of(&repo);
+    let applier = WorkspaceApplier::from_store(repo.clone(), std::sync::Arc::new(store.clone()));
+    let result = applier
+        .apply(&ApplyRequest {
+            lease_id: "conflict-lease".to_string(),
+            strategy: ApplyStrategy::ApplyPatch,
+            artifact_id,
+            expected_target_revision: head,
+            approval_correlation_id: None,
+        })
+        .await
+        .expect("a conflict must be a result, not an Err");
+
+    assert!(!result.success);
+    assert_eq!(result.error_code.as_deref(), Some("CONFLICT"));
+    let conflict_id = result
+        .conflict_artifact_id
+        .expect("a conflict must record a report artifact");
+    let report = store.fetch(&conflict_id).await.unwrap();
+    assert_eq!(report.kind, ArtifactKind::ConflictReport);
+
+    // `--check` runs before any mutation, so the tree is untouched.
+    assert_eq!(
+        std::fs::read_to_string(repo.join("file1.txt")).unwrap(),
+        "initial content\n"
+    );
+}
+
+/// A conflicting cherry-pick aborts, so the workspace is left usable, and
+/// still reports the conflict with a stored report.
+#[tokio::test]
+async fn workspace_cherry_pick_conflict_aborts_and_records_an_artifact() {
+    let repo = create_fixture_repo();
+    let store = ArtifactStore::new();
+
+    // Branch off and commit a conflicting change, then diverge on the
+    // original branch so the pick cannot apply cleanly.
+    let branch = git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    git(&repo, &["checkout", "-b", "side"]);
+    std::fs::write(repo.join("file1.txt"), "side content\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-m", "side change"]);
+    let side_commit = git(&repo, &["rev-parse", "HEAD"]);
+
+    git(&repo, &["checkout", &branch]);
+    std::fs::write(repo.join("file1.txt"), "main content\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-m", "main change"]);
+
+    let content = format!("{side_commit}\n").into_bytes();
+    let artifact = Artifact {
+        artifact_id: ArtifactId::new(),
+        kind: ArtifactKind::Patch,
+        sha256: digest(&content),
+        byte_length: content.len() as u64,
+        media_type: "text/plain".to_string(),
+        storage_path: "commits.txt".to_string(),
+        run_id: None,
+    };
+    let artifact_id = store.store(artifact, content).await.unwrap();
+
+    let head = head_of(&repo);
+    let applier = WorkspaceApplier::from_store(repo.clone(), std::sync::Arc::new(store.clone()));
+    let result = applier
+        .apply(&ApplyRequest {
+            lease_id: "pick-lease".to_string(),
+            strategy: ApplyStrategy::CherryPick,
+            artifact_id,
+            expected_target_revision: head,
+            approval_correlation_id: None,
+        })
+        .await
+        .expect("a conflict must be a result, not an Err");
+
+    assert!(!result.success);
+    assert_eq!(result.error_code.as_deref(), Some("CONFLICT"));
+    let conflict_id = result
+        .conflict_artifact_id
+        .expect("a conflict must record a report artifact");
+    assert_eq!(
+        store.fetch(&conflict_id).await.unwrap().kind,
+        ArtifactKind::ConflictReport
+    );
+
+    // The abort is what makes the workspace reusable: git no longer
+    // reports an in-progress cherry-pick, and no conflict markers remain.
+    assert!(
+        !repo.join(".git/CHERRY_PICK_HEAD").exists(),
+        "the failed cherry-pick must be aborted"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join("file1.txt")).unwrap(),
+        "main content\n",
+        "abort must restore the pre-pick tree"
+    );
 }
 
 #[tokio::test]
@@ -214,7 +425,7 @@ async fn workspace_apply_stale_revision_returns_conflict() {
     let artifact = Artifact {
         artifact_id: ArtifactId::new(),
         kind: ArtifactKind::Patch,
-        sha256: String::new(),
+        sha256: digest(&patch_output.stdout),
         byte_length: patch_output.stdout.len() as u64,
         media_type: "application/x-git-diff".to_string(),
         storage_path: "test.patch".to_string(),

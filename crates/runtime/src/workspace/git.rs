@@ -54,14 +54,18 @@ impl GitWorktree {
     }
 
     /// Removes the worktree.
-    /// Executes `git worktree remove <path>` from the source repository.
-    #[allow(dead_code)]
+    /// Executes `git worktree remove --force <path>` from the source
+    /// repository. `--force` is required because teardown runs after a
+    /// worker has been editing inside the worktree: git refuses to remove
+    /// one carrying modified or untracked files without it, and every
+    /// isolated run would then leak its directory.
     pub fn remove(&self) -> Result<(), GitError> {
         // Use .arg() with Path directly to preserve non-UTF-8 paths
         let output = Command::new("git")
             .current_dir(&self.repository)
             .arg("worktree")
             .arg("remove")
+            .arg("--force")
             .arg(&self.path)
             .output()
             .map_err(|e| GitError::Worktree(format!("Failed to execute git: {}", e)))?;

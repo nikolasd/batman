@@ -3,15 +3,17 @@
 //! Tests for git worktree and copy isolation strategies with fixture repositories.
 
 use batman_protocol::{IsolationKind, ProjectId, RunId};
-use batman_runtime::workspace::WorkspaceMaterializer;
+use batman_runtime::workspace::{
+    DEFAULT_COPY_MAX_BYTES, DEFAULT_COPY_MAX_FILES, WorkspaceMaterializer,
+};
 use std::path::PathBuf;
 
 fn test_project_id(n: u32) -> ProjectId {
-    ProjectId::parse(&format!("01900000-0000-0000-0000-00000000000{0}", n)).unwrap()
+    ProjectId::parse(&format!("01900000-0000-0000-0000-{n:012}")).unwrap()
 }
 
 fn test_run_id(n: u32) -> RunId {
-    RunId::parse(&format!("01900000-0000-0000-0000-00000000000{0}", n)).unwrap()
+    RunId::parse(&format!("01900000-0000-0000-0000-{n:012}")).unwrap()
 }
 
 /// Fixture that holds a temp directory and a materializer, cleaning up on drop.
@@ -399,4 +401,108 @@ fn path_guard_accepts_valid_relative_path() {
     // Valid relative path inside the repository
     let result = fixture.materializer.validate_path("README.md");
     assert!(result.is_ok(), "valid relative path should be accepted");
+}
+
+#[test]
+fn copy_isolation_refuses_a_tree_over_the_byte_ceiling() {
+    let fixture = Fixture::new(test_project_id(7));
+    std::fs::write(fixture.repo.join("big.bin"), vec![0u8; 4096]).unwrap();
+    let materializer = WorkspaceMaterializer::new(test_project_id(7), fixture.repo.clone())
+        .unwrap()
+        .with_copy_limits(1024, DEFAULT_COPY_MAX_FILES);
+    let run = test_run_id(7);
+
+    let err = materializer
+        .materialize(run, IsolationKind::Copy)
+        .expect_err("a tree larger than the byte ceiling must be refused");
+    assert!(
+        err.to_string().contains("byte size"),
+        "the error must name the ceiling that was hit: {err}"
+    );
+
+    // A partially copied workspace is worse than none: an adapter would run
+    // against a silently incomplete checkout.
+    let copy_path = std::env::temp_dir()
+        .join(format!("batman-workspace-{}", test_project_id(7)))
+        .join(run.to_string());
+    assert!(
+        !copy_path.exists(),
+        "the partial destination must be removed"
+    );
+}
+
+#[test]
+fn copy_isolation_refuses_a_tree_over_the_file_ceiling() {
+    let fixture = Fixture::new(test_project_id(8));
+    let materializer = WorkspaceMaterializer::new(test_project_id(8), fixture.repo.clone())
+        .unwrap()
+        .with_copy_limits(DEFAULT_COPY_MAX_BYTES, 1);
+    let run = test_run_id(8);
+
+    let err = materializer
+        .materialize(run, IsolationKind::Copy)
+        .expect_err("a tree with more files than the ceiling must be refused");
+    assert!(
+        err.to_string().contains("file count"),
+        "the error must name the ceiling that was hit: {err}"
+    );
+}
+
+#[test]
+fn teardown_removes_a_git_worktree_even_when_dirty() {
+    let fixture = Fixture::new(test_project_id(9));
+    let run = test_run_id(9);
+    let path = fixture
+        .materializer
+        .materialize(run, IsolationKind::GitWorktree)
+        .unwrap();
+    // A real worker leaves edits behind; git refuses a non-forced removal
+    // of a dirty worktree, so this is the case teardown must survive.
+    std::fs::write(path.join("README.md"), "# edited by the worker\n").unwrap();
+    std::fs::write(path.join("scratch.txt"), "untracked\n").unwrap();
+
+    fixture
+        .materializer
+        .teardown(&path, IsolationKind::GitWorktree)
+        .expect("teardown must remove a dirty worktree");
+
+    assert!(!path.exists(), "the worktree directory must be gone");
+    let listed = std::process::Command::new("git")
+        .current_dir(&fixture.repo)
+        .args(["worktree", "list"])
+        .output()
+        .unwrap();
+    let listed = String::from_utf8_lossy(&listed.stdout).to_string();
+    assert!(
+        !listed.contains(&run.to_string()),
+        "git must no longer list the worktree: {listed}"
+    );
+}
+
+#[test]
+fn teardown_removes_a_copy_but_never_the_shared_repository() {
+    let fixture = Fixture::new(test_project_id(10));
+    let run = test_run_id(10);
+    let path = fixture
+        .materializer
+        .materialize(run, IsolationKind::Copy)
+        .unwrap();
+    assert!(path.exists());
+
+    fixture
+        .materializer
+        .teardown(&path, IsolationKind::Copy)
+        .expect("teardown must remove a copy");
+    assert!(!path.exists(), "the copied directory must be gone");
+
+    // The single most important branch: a shared workspace's path *is* the
+    // user's repository, and tearing it down must never delete it.
+    fixture
+        .materializer
+        .teardown(&fixture.repo, IsolationKind::Shared)
+        .expect("shared teardown must succeed");
+    assert!(
+        fixture.repo.join("README.md").exists(),
+        "shared teardown must not touch the repository"
+    );
 }

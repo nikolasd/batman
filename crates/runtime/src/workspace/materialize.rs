@@ -39,6 +39,8 @@ pub struct WorkspaceMaterializer {
     project_id: ProjectId,
     repository: PathBuf,
     root: PathBuf,
+    copy_max_bytes: u64,
+    copy_max_files: u64,
 }
 
 impl WorkspaceMaterializer {
@@ -49,7 +51,19 @@ impl WorkspaceMaterializer {
             project_id,
             repository,
             root,
+            copy_max_bytes: crate::workspace::DEFAULT_COPY_MAX_BYTES,
+            copy_max_files: crate::workspace::DEFAULT_COPY_MAX_FILES,
         })
+    }
+
+    /// Overrides the copy-isolation ceilings with the operator's configured
+    /// values. Separate from `new` so every embedding gets a bounded copy by
+    /// default -- a materializer built without a policy is still safe.
+    #[must_use]
+    pub fn with_copy_limits(mut self, max_bytes: u64, max_files: u64) -> Self {
+        self.copy_max_bytes = max_bytes;
+        self.copy_max_files = max_files;
+        self
     }
 
     /// Validates that a path is within the lease root.
@@ -143,9 +157,47 @@ impl WorkspaceMaterializer {
                 let copier = CopyIsolation {
                     source: self.repository.clone(),
                     destination: copy_path.clone(),
+                    max_bytes: self.copy_max_bytes,
+                    max_files: self.copy_max_files,
                 };
                 copier.copy()?;
                 Ok(copy_path)
+            }
+        }
+    }
+
+    /// Removes a materialized workspace. The inverse of [`Self::materialize`],
+    /// called when its lease is released; without it every isolated run
+    /// leaks a worktree or a full tree copy permanently.
+    ///
+    /// `IsolationKind::Shared` is deliberately a no-op: its "workspace" is
+    /// the user's repository root, and removing it would delete their work.
+    ///
+    /// # Errors
+    /// Returns [`MaterializerError`] if git refuses to remove the worktree
+    /// or the directory cannot be deleted.
+    pub fn teardown(&self, path: &Path, isolation: IsolationKind) -> Result<(), MaterializerError> {
+        // An `allocating` lease released before phase 2 ran has no path and
+        // nothing on disk; that is a clean teardown, not a failure.
+        if path.as_os_str().is_empty() {
+            return Ok(());
+        }
+        match isolation {
+            IsolationKind::Shared => Ok(()),
+            IsolationKind::GitWorktree => {
+                let git_worktree = GitWorktree {
+                    repository: self.repository.clone(),
+                    path: path.to_path_buf(),
+                    base_commit: String::new(),
+                };
+                git_worktree.remove()?;
+                Ok(())
+            }
+            IsolationKind::Copy => {
+                if path.exists() {
+                    std::fs::remove_dir_all(path)?;
+                }
+                Ok(())
             }
         }
     }

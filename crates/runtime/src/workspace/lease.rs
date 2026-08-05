@@ -11,8 +11,18 @@ pub enum LeaseError {
     Db(String),
     #[error("lease not found: {lease_id}")]
     NotFound { lease_id: String },
+    /// A same-run guard: this run already holds a workspace. Isolation cannot
+    /// fix it, because the caller is asking for a second workspace for one run.
     #[error("conflict: another lease exists for this project")]
     Conflict,
+    /// A *shared* write lease was refused because another shared lease is
+    /// already active. Unlike [`LeaseError::Conflict`] this is caller-
+    /// correctable: requesting `gitWorktree` or `copy` isolation creates an
+    /// independent workspace that never contends for the repository root.
+    #[error(
+        "isolation required: a shared write lease is already active; request gitWorktree or copy isolation"
+    )]
+    IsolationRequired,
     #[error("lease already released: {lease_id}")]
     AlreadyReleased { lease_id: String },
 }
@@ -94,7 +104,7 @@ impl LeaseService {
                     .map_err(|e| LeaseError::Db(e.to_string()))?;
                 if shared_active > 0 {
                     let _ = conn.execute("ROLLBACK", params![]);
-                    return Err(LeaseError::Conflict);
+                    return Err(LeaseError::IsolationRequired);
                 }
             }
 
@@ -206,27 +216,72 @@ impl LeaseService {
 
         let _ = conn.close();
 
-        Ok(result.map(|(run_id_str, mode_str, isol_kind, path, _state, base_rev)| {
-            let mode = match mode_str.as_str() {
-                "readOnly" => LeaseMode::ReadOnly,
-                "write" => LeaseMode::Write,
-                _ => LeaseMode::ReadOnly,
-            };
-            WorkspaceInfo {
-                lease_id: String::new(),
-                run_id: run_id_from_str(&run_id_str).unwrap_or(run_id),
-                mode,
-                isolation_kind: match isol_kind.as_str() {
-                    "shared" => IsolationKind::Shared,
-                    "gitWorktree" => IsolationKind::GitWorktree,
-                    "copy" => IsolationKind::Copy,
-                    _ => IsolationKind::Shared,
-                },
-                path,
-                state: WorkspaceState::Active,
-                base_revision: base_rev,
-            }
-        }))
+        Ok(result.map(
+            |(run_id_str, mode_str, isol_kind, path, _state, base_rev)| {
+                let mode = match mode_str.as_str() {
+                    "readOnly" => LeaseMode::ReadOnly,
+                    "write" => LeaseMode::Write,
+                    _ => LeaseMode::ReadOnly,
+                };
+                WorkspaceInfo {
+                    lease_id: String::new(),
+                    run_id: run_id_from_str(&run_id_str).unwrap_or(run_id),
+                    mode,
+                    isolation_kind: match isol_kind.as_str() {
+                        "shared" => IsolationKind::Shared,
+                        "gitWorktree" => IsolationKind::GitWorktree,
+                        "copy" => IsolationKind::Copy,
+                        _ => IsolationKind::Shared,
+                    },
+                    path,
+                    state: WorkspaceState::Active,
+                    base_revision: base_rev,
+                }
+            },
+        ))
+    }
+
+    /// Returns `(lease_id, state)` for every lease that a healthy runtime
+    /// should not have: `allocating`/`active` leases whose materialized
+    /// path no longer exists on disk, plus every `cleanupFailed` lease.
+    ///
+    /// `allocating` leases legitimately have an empty path until
+    /// [`Self::activate`] runs, so an empty path is never counted as
+    /// missing -- only a non-empty path pointing at nothing is.
+    ///
+    /// # Errors
+    /// Returns [`LeaseError::Db`] if the lease database cannot be read.
+    pub fn stale(&self) -> Result<Vec<(String, String)>, LeaseError> {
+        let conn =
+            rusqlite::Connection::open(&self.db_path).map_err(|e| LeaseError::Db(e.to_string()))?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT lease_id, state, path FROM workspace_leases
+                 WHERE state IN ('allocating', 'active', 'cleanupFailed')",
+            )
+            .map_err(|e| LeaseError::Db(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|e| LeaseError::Db(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| LeaseError::Db(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .filter(|(_, state, path)| {
+                state == "cleanupFailed"
+                    || (!path.is_empty() && !std::path::Path::new(path).exists())
+            })
+            .map(|(lease_id, state, _)| (lease_id, state))
+            .collect())
     }
 
     pub fn get(&self, lease_id: String) -> Result<WorkspaceInfo, LeaseError> {
@@ -304,6 +359,30 @@ impl LeaseService {
         conn.execute(
             "UPDATE workspace_leases SET state = 'released', released_at = ?1 WHERE lease_id = ?2",
             params![now_str, lease_id],
+        )
+        .map_err(|e| LeaseError::Db(e.to_string()))?;
+
+        let _ = conn.close();
+
+        Ok(())
+    }
+
+    /// Marks a released lease's materialized directory as un-removable.
+    ///
+    /// A teardown failure never invalidates the release itself -- the lease
+    /// is genuinely gone and the repository is free -- so this records the
+    /// leaked directory for the doctor's stale-workspace check instead of
+    /// failing the caller's RPC.
+    ///
+    /// # Errors
+    /// Returns [`LeaseError::Db`] if the update fails.
+    pub fn mark_cleanup_failed(&self, lease_id: String) -> Result<(), LeaseError> {
+        let conn =
+            rusqlite::Connection::open(&self.db_path).map_err(|e| LeaseError::Db(e.to_string()))?;
+
+        conn.execute(
+            "UPDATE workspace_leases SET state = 'cleanupFailed' WHERE lease_id = ?1",
+            params![lease_id],
         )
         .map_err(|e| LeaseError::Db(e.to_string()))?;
 

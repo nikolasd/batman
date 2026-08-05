@@ -3,6 +3,7 @@
 //! Captures real evidence from a workspace: dirty files, untracked files,
 //! commit history, and generates a patch artifact stored in the ArtifactStore.
 
+use crate::workspace::artifact_store::sha256_hex;
 use batman_protocol::{Artifact, ArtifactId, ArtifactKind, InspectRequest, InspectResult};
 use std::process::Command;
 use std::sync::Arc;
@@ -171,11 +172,4 @@ impl WorkspaceInspector {
 
         Ok(output.stdout)
     }
-}
-
-/// Computes SHA-256 hash of data and returns hex string.
-fn sha256_hex(data: &[u8]) -> String {
-    use sha2::Digest;
-    let hash = sha2::Sha256::digest(data);
-    format!("{:x}", hash)
 }
