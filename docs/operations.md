@@ -161,7 +161,7 @@ When updating BATMAN, you may need to roll back to a previous version:
 2. **Install the previous version:**
    ```bash
    # From private registry
-   bun install @satori/batman@<previous-version> --force
+   bun install @nikolasd/batman@<previous-version> --force
    
    # Or from source (see building from source below)
    ```
@@ -178,7 +178,7 @@ The OMP extension is version-locked to the runtime:
 
 1. **Install the matching extension version:**
    ```bash
-   omp install @satori/batman@<previous-version>
+   omp install @nikolasd/batman@<previous-version>
    ```
 
 2. **Restart OMP** to load the rolled-back extension.
@@ -218,10 +218,10 @@ rm -rf ~/.config/batman
 
 ```bash
 # Uninstall from OMP
-omp uninstall @satori/batman
+omp uninstall @nikolasd/batman
 
 # Or manually remove from OMP extensions directory
-rm -rf ~/.omp/extensions/@satori/batman
+rm -rf ~/.omp/extensions/@nikolasd/batman
 ```
 
 ### Cleaning Up
@@ -257,7 +257,7 @@ Before upgrading:
 2. **Update the package:**
    ```bash
    # From private registry
-   bun update @satori/batman
+   bun update @nikolasd/batman
    
    # Or from source (see building from source below)
    ```

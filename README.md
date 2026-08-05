@@ -4,7 +4,7 @@
 
 BATMAN is an [Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi) extension backed by a durable, repository-scoped local daemon. OMP stays the brain — task intake, scheduling, worker selection, approvals, merge decisions, synthesis. BATMAN is the hands: it supervises worker processes, speaks harness adapter protocols, persists a durable event journal, recovers after crashes, and feeds display backends.
 
-Everything is delivered as an external npm package (`@satori/batman`) plus a Rust daemon binary (`batcave`) — no OMP fork, no private APIs.
+Everything is delivered as an external npm package (`@nikolasd/batman`) plus a Rust daemon binary (`batcave`) — no OMP fork, no private APIs.
 
 ## Why BATMAN?
 
@@ -32,19 +32,19 @@ BATMAN consists of two components, both installed in one step:
 - **Binary**: `batcave` runtime daemon
 
 ```bash
-omp install @satori/batman
+omp install @nikolasd/batman
 ```
 
 This installs:
-- Plugin: `~/.omp/plugins/node_modules/@satori/batman` (TypeScript extension)
+- Plugin: `~/.omp/plugins/node_modules/@nikolasd/batman` (TypeScript extension)
 - Runtime: `batcave` binary from the installed leaf package (discovered by the extension via `import.meta.resolve`)
 
 **To uninstall:**
 ```bash
-omp plugin uninstall @satori/batman
+omp plugin uninstall @nikolasd/batman
 ```
 
-Requires access to the private npm registry `@satori/*` packages are published to. Configure the `@satori` scope once — see [`.npmrc`](.npmrc) for the registry template (replace the placeholder URL and set `SATORI_NPM_TOKEN`), or use your organization's standard registry auth setup.
+Requires access to the private npm registry `@nikolasd/*` packages are published to. Configure the `@nikolasd` scope once — see [`.npmrc`](.npmrc) for the registry template (replace the placeholder URL and set `NPM_TOKEN`), or use your organization's standard registry auth setup.
 
 ## Development
 
@@ -92,14 +92,21 @@ This project is licensed under the [MIT License](LICENSE). See the LICENSE file 
 
 ## Known Limitations
 
-This is a pre-1.0 project. Some things don't work yet — see [`TODO.md`](TODO.md) for the full, verified, prioritized list. Highlights:
+This is a pre-1.0 project. What follows is what genuinely remains, verified against the current
+codebase — see [`TODO.md`](TODO.md) for the full prioritized list. Every adapter is installed and
+authenticated here, and live conformance is run against all four (reports under `release/`), so
+none of these is a "requires a vendor CLI" caveat.
 
-- **`batcave conformance`/`batcave adapters` CLI subcommands don't exist.** Blocks the release conformance gate and the Worker Adapters plan's own Task 8 verification.
-- **Claude/Codex/Copilot conformance reports omit a canonical scenario.** `result_usage_artifacts` is defined but missing from all three adapters' generated reports.
-- **`tests/domain_repository.rs` never actually exercises `DomainRepository`.** It maintains a separate, drifted, hand-copied schema and never imports the real type — the real repository is genuinely tested elsewhere, but this file's coverage is misleading.
-- **OMP-RPC approval flow is not normalized.** The adapter's `extension_ui_request` frame is silently dropped.
-- **No artifact tracking for OMP-RPC.** The `ArtifactProduced` payload is never constructed.
-- **Conformance tests are stubs.** `tests/conformance/run.ts` and `assert-report.ts` write empty reports; the conformance gate in `release.yml` always passes.
-- **No JS/TS formatter.** CI format job only checks Rust (`cargo fmt`).
+- **ACP v1 has no durable session handle, so Copilot cannot resume across processes.** A session
+  that completed a real turn answers `session/load` with `Resource not found`, which fails
+  `session_resume` and `runtime_restart`. A protocol wall, not an adapter defect.
+- **ACP v1 exposes no subagent-observation variant**, so Copilot's vendor-side delegation cannot be
+  normalized to `NestedWorkerObserved`. Pending a newer ACP version.
+- **Codex's turn-dependent scenarios are unprovable on an out-of-credit account.** `initialize` and
+  `thread/start` succeed; the turn is refused server-side with `usageLimitExceeded`. The adapter now
+  reports that reason verbatim instead of timing out. Refilling the workspace makes five scenarios
+  provable with no code change.
+- **Operator docs are only partially split.** `docs/installation.md`, `configuration.md`,
+  `security.md`, and `recovery.md` do not exist as standalone files yet.
 
 These are tracked in [`TODO.md`](TODO.md) — the single source of truth for implementation gaps, verified against the current codebase and prioritized by severity.

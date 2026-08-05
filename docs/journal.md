@@ -202,7 +202,7 @@ invisible; this is the first commit you could demo.
 
 Foundation's last piece of real engineering: how does a *packaged* extension (not a dev checkout)
 find its daemon binary? `platform.ts::resolveBatcave` maps `(platform, arch, libc)` to one of four
-npm `optionalDependencies` leaf packages (`@satori/batman-darwin-arm64`, `-darwin-x64`,
+npm `optionalDependencies` leaf packages (`@nikolasd/batman-darwin-arm64`, `-darwin-x64`,
 `-linux-arm64-gnu`, `-linux-x64-gnu`) and rejects everything else — musl, Windows, anything — with
 a typed `UnsupportedPlatformError`, never a silent fallback to source-building or a generic binary.
 For a packaged binary it verifies a SHA-256 against the leaf's `manifest.json` and requires the
@@ -895,7 +895,7 @@ not yet the deny-by-default production policy (that swap is commit 55). Alongsid
 `RunDriver::send_follow_up`, the seam a live message can be forwarded through to an already-running
 adapter instance rather than requiring a second `start()` call, and a rename of every adapter's
 artifact tracking from `Vec<String>` to `Vec<serde_json::Value>` so a structured artifact (not just
-a bare path) can travel the same field. `docs/known-gaps.md` gets a matching trim — a gap this
+a bare path) can travel the same field. `TODO.md` gets a matching trim — a gap this
 commit just closed no longer belongs on the open list.
 
 ### 54. Redesigning `batman_task` around a natural-language description (8cf3e72, 975b710)

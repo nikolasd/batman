@@ -31,14 +31,12 @@ export BATMAN_STATE_DIR=/path/to/state
 # Path to org config file (overrides default discovery)
 export BATMAN_ORG_CONFIG=/path/to/org.yaml
 
-# Development override: authorize all workers (DO NOT use in production)
-export BATMAN_DEV_ALLOW_ALL_WORKERS=1
-
-# Gates for live conformance tests (per-adapter)
-export BATMAN_LIVE_CLAUDE=1    # Claude adapter live tests
-export BATMAN_LIVE_CODEX=1     # Codex adapter live tests (needs $OPENAI_API_KEY)
-export BATMAN_LIVE_COPILOT=1   # Copilot adapter live tests
-export BATMAN_LIVE_OMP=1       # OMP-RPC adapter live tests (needs local model server)
+# Vendor CLIs (claude, codex, copilot, the local omp model server) are ordinary installed
+# dependencies. Live conformance and the availability probe run by default -- no gate needs to be
+# set to exercise a real vendor CLI. Set this only to forbid observation-only vendor invocation
+# (live conformance suites, the availability probe, #[ignore]d live tests) on a machine without
+# the CLIs installed, or in CI:
+export BATMAN_DISABLE_VENDOR_CLI=1
 
 # Path override for the batcave binary (bypasses packaged binary discovery)
 export OMP_BATMAN_BINARY="$PWD/target/debug/batcave"
@@ -81,8 +79,8 @@ rollout_gates:
 ```
 
 **Security notes:**
-- `BATMAN_DEV_ALLOW_ALL_WORKERS=1` is a development override that disables the `DenyByDefaultAuthorization` policy. This **must not** be used in production.
-- `BATMAN_LIVE_<ADAPTER>` gates should **never** be set in CI jobs or unattended runs — they enable real, billed model calls.
+- Adapter authorization is decided entirely by org policy — `models`, `adapters`, `capabilities.required`, `concurrency`, `cost`, and the `native_discovery_reviewed` rollout gate. No environment variable grants or withholds it.
+- Vendor CLIs are ordinary installed dependencies; live conformance and the availability probe run by default. `BATMAN_DISABLE_VENDOR_CLI=1` should always be set in CI jobs or unattended runs — it forbids observation-only vendor invocation and guarantees no billed model call is made.
 
 ## 1. The daemon through OMP (no model call, no extension CLI needed)
 
@@ -424,7 +422,6 @@ rather than papering over with a fabricated pass:
 
 | Adapter | Scenario(s) | Why |
 |---|---|---|
-| `ompRpc` | `probe`, `cancellation_scope`, `follow_up` | Depend on `omp models --json` currently listing a local `lm-studio`/`omlx` selector — the model server itself need not be *running*, just listed. If none is listed right now, expect these three `"passed": false` with a detail saying so. |
 | `ompRpc` | `approval` | This adapter's `normalize_frame` has no case for the real vendor's `extension_ui_request` frame at all; `ApprovalsCapability::Observable` is declared but not yet actually backed by any observable event. |
 | `codex` | `follow_up`, `cancellation_scope`, `session_resume`, `runtime_restart` | The installed `codex-cli` does not write a thread's rollout file to disk until a turn actually runs — resuming/following up/cancelling a turn on a never-turned thread needs a real (billed) turn, which fixture mode must never make. Live mode (4c) proves all four for real when its gate is set. |
 | `copilot` | `session_resume`, `runtime_restart` | The installed CLI (1.0.75) does not persist a never-prompted session across a process boundary — proving full persistence needs a real turn. |
@@ -433,42 +430,51 @@ rather than papering over with a fabricated pass:
 ### 4c. Per-adapter smoke, live mode (requires a real API key/session; makes a real, billed model
 call for the adapters that reach one)
 
-Each adapter's live suite is gated on its own environment variable, checked internally — the test
-command is identical across adapters with `--live` semantics built into the test binary; nothing
-here ever needs a secret *in* the command itself:
+Vendor CLIs are ordinary installed dependencies: none of the commands below need an opt-in
+environment variable, and each test file handles its own gating internally.
 
 ```bash
 mkdir -p /tmp/batman-conformance-live && cd /tmp/batman-conformance-live && git init -q && git commit -q --allow-empty -m init
 
-# Claude — needs an authenticated `claude` CLI session (run `claude auth status` first if unsure)
-BATMAN_LIVE_CLAUDE=1 cargo test -p batman-runtime --test claude_live
+# Claude — needs an authenticated `claude` CLI session (run `claude auth status` first if unsure).
+# `#[ignore]`d: an explicit `--ignored` run is itself the signal a human wants the live call.
+cargo test -p batman-runtime --test claude_live -- --ignored
 
-# Codex — needs $OPENAI_API_KEY (or an authenticated `codex` CLI session) in the environment
-BATMAN_LIVE_CODEX=1 cargo test -p batman-runtime --test codex_adapter -- --ignored
+# Codex — needs $OPENAI_API_KEY (or an authenticated `codex` CLI session) in the environment.
+# `#[ignore]`d for the same reason.
+cargo test -p batman-runtime --test codex_adapter -- --ignored
 
 # Copilot — needs an authenticated `copilot` CLI session (`copilot` itself manages this, not an
-# env var this adapter reads directly)
-BATMAN_LIVE_COPILOT=1 cargo test -p batman-runtime --test copilot_adapter -- --ignored
+# env var this adapter reads directly). Not `#[ignore]`d: its real-binary test only performs the
+# `initialize` + `session/list` handshake, which never invokes a model, so it runs in every
+# default `cargo test` and simply skips if `copilot` is not on PATH.
+cargo test -p batman-runtime --test copilot_adapter
 
-# OMP-RPC — needs a local model server (LM Studio/oMLX) actually running; no cloud API key at all
-BATMAN_LIVE_OMP=1 cargo test -p batman-runtime --test omp_rpc_adapter
+# OMP-RPC — no cloud API key needed. The harness resolves a cloud selector from `omp`'s built-in
+# catalog of 583 models; no local model server is required. Not `#[ignore]`d: its real-binary
+# tests exercise zero-model-call stdio probes and run on every `cargo test`, skipping only if
+# `omp` is not on PATH.
+cargo test -p batman-runtime --test omp_rpc_adapter
 ```
 
 Run each from inside `/tmp/batman-conformance-live` (a disposable repo — some live scenarios spawn
 a real vendor process with that directory as its `cwd`), and reference credentials only as the
 environment variable name, never the value, exactly as shown above.
 
-If you run WITHOUT the matching `BATMAN_LIVE_<ADAPTER>=1` gate set, the test still passes — it
-just doesn't exercise the live scenarios. The test binary handles gating internally.
+Set `export BATMAN_DISABLE_VENDOR_CLI=1` first to forbid the Claude and Codex live tests from
+making their real, billed call. The Copilot and OMP-RPC real-binary tests above never invoke a
+model at all, so the switch has nothing to suppress for them — they are safe by construction,
+and are instead protected in CI simply by the `copilot` or `omp` binary being absent.
 
 **What "no paid model call" means here, precisely:** every 4b (fixture) test is *guaranteed*
 zero model calls — that is this milestone's own design invariant, proven by the test code never
-invoking a model. A 4c (live) test, once its gate is actually set, is the opposite: it
-deliberately makes a real, billed call for whichever scenarios that adapter's own live suite
-defines as needing one (this milestone's default posture is to prove as much as possible in
-fixture mode and reserve live mode for the few properties — a real vendor process schema/handshake,
-mostly — that only a live process can prove at all). Never set a `BATMAN_LIVE_<ADAPTER>` variable
-in a CI job or an unattended run.
+invoking a model. A 4c (live) test that reaches a model, run with the kill switch unset, is the
+opposite: it deliberately makes a real, billed call for whichever scenarios that adapter's own
+live suite defines as needing one (this milestone's default posture is to prove as much as
+possible in fixture mode and reserve live mode for the few properties — a real vendor process
+schema/handshake, mostly — that only a live process can prove at all). Always set
+`export BATMAN_DISABLE_VENDOR_CLI=1` in a CI job or an unattended run, so a stray `--ignored`
+invocation degrades to an honest skip instead of a charge.
 
 ### 4d. AdapterRegistry is wired into the daemon (changed from previous milestone)
 
@@ -478,13 +484,16 @@ the running daemon** — `lifecycle::serve()`'s `ServerConfig` sets `run_driver`
 `AdapterRegistry` instance. This is a change from the previous milestone, where the registry was
 not wired in.
 
-However, the registry's production default authorization is `DenyByDefaultAuthorization` — no
-workers are allowed unless `BATMAN_DEV_ALLOW_ALL_WORKERS=1` is set. This is a deliberate security
-boundary.
+However, whether the registry starts an adapter is decided by the merged org policy, evaluated by
+`PolicyEvaluator`: the `models` and `adapters` allowlists (empty means "all allowed"), any
+`capabilities.required` entries checked against the adapter's conformance-proven capability set,
+the `concurrency` ceiling, the `cost` ceilings, and the `native_discovery_reviewed` rollout gate
+for adapters that can observe vendor-created child workers.
 
 Practically: submitting a run through a live `omp` session with a real adapter's vendor CLI
-installed *and* `BATMAN_DEV_ALLOW_ALL_WORKERS=1` set **will** attempt to start the adapter.
-Without that env var, `run/submit` still reports `adapter_unavailable` — by design, not by bug.
+installed **will** attempt to start the adapter as long as the merged policy permits it. A denial
+names the dimension that refused (for example `adapter 'codex' is not authorized`), and an absent
+vendor CLI still reports `adapter_unavailable` — a separate, availability-level answer.
 
 To exercise the registry's own start/reject/authorize/construct logic directly:
 
@@ -492,13 +501,12 @@ To exercise the registry's own start/reject/authorize/construct logic directly:
 cargo test -p batman-runtime --test adapter_registry
 ```
 
-### 4e. Worker MCP coordination tools (supervised path still not reachable from live `omp`)
+### 4e. Worker MCP coordination tools
 
 The *supervised* path (a real adapter's vendor process calling `batman_task`/`batman_send`
-through its injected MCP config) is not reachable from a live `omp` session. The reason has
-changed: it's not that the registry isn't wired in (it is), but that the registry's default
-authorization denies all workers, and there is no supported way to opt into a specific adapter
-without `BATMAN_DEV_ALLOW_ALL_WORKERS=1` — which defeats the security model.
+through its injected MCP config) is reachable from a live `omp` session once the vendor CLI is
+installed and the merged org policy permits the adapter and model. Exercising it costs real
+model calls, so the deterministic check below drives the same MCP server directly instead.
 
 The MCP server side is now a real CLI subcommand (`batcave coordination-mcp --state-dir
 <path> --repo <path> --run-id <id>`, wired in 2026-08-02 — previously the argv every adapter's
@@ -529,11 +537,10 @@ tool for cross-workspace review.
 
 ### 5a. Prerequisites
 
-Everything from [§4a](#4a-prerequisites) above, plus `BATMAN_DEV_ALLOW_ALL_WORKERS=1` (required
-for real adapter execution), and the daemon built and ready:
+Everything from [§4a](#4a-prerequisites) above, with an org policy that permits the adapters and
+models you intend to run, and the daemon built and ready:
 
 ```bash
-export BATMAN_DEV_ALLOW_ALL_WORKERS=1
 export OMP_BATMAN_BINARY="$PWD/target/debug/batcave"
 
 mkdir -p /tmp/batman-cross-agent && cd /tmp/batman-cross-agent && git init -q && git commit -q --allow-empty -m init

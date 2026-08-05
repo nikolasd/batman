@@ -23,12 +23,12 @@ with the extension version?
 
 ## Considered Options
 
-* Four npm `optionalDependencies` leaf packages (`@satori/batman-darwin-arm64`, `-darwin-x64`,
+* Four npm `optionalDependencies` leaf packages (`@nikolasd/batman-darwin-arm64`, `-darwin-x64`,
   `-linux-arm64-gnu`, `-linux-x64-gnu`), each containing one platform's binary plus a
   `manifest.json` (name, version, target, SHA-256, size); the extension resolves and verifies the
   matching leaf at runtime.
 * A `postinstall` script that downloads the correct binary from a release URL.
-* Ship all four binaries inside the main `@satori/batman` package.
+* Ship all four binaries inside the main `@nikolasd/batman` package.
 
 ## Decision Outcome
 

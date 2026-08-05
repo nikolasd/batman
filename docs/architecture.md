@@ -36,7 +36,7 @@ graph TB
     end
 
     subgraph "BATMAN System"
-        OE[OMP Extension<br/>@satori/batman]
+        OE[OMP Extension<br/>@nikolasd/batman]
         BR[BATMAN Runtime<br/>batcave]
     end
 
@@ -56,7 +56,7 @@ graph TB
 ```
 
 **System boundaries:**
-- **OMP Extension** (`@satori/batman`): TypeScript extension registering tools and commands with OMP
+- **OMP Extension** (`@nikolasd/batman`): TypeScript extension registering tools and commands with OMP
 - **BATMAN Runtime** (`batcave`): Rust daemon handling worker supervision, persistence, and IPC
 - **Worker Processes**: Supervised vendor CLI processes (Claude, Codex, Copilot, OMP-RPC)
 
@@ -529,12 +529,10 @@ pub struct FixtureAuthorization {
     pub allow: bool,
 }
 
-/// The production `AdapterAuthorization`: denies every worker unless the
-/// development override is explicitly set. Replaced by the Hardening plan's
-/// `PolicyEvaluator`, which owns model/adapter allowlists and ceilings.
-pub struct DenyByDefaultAuthorization {
-    dev_override: bool,
-}
+/// The production `AdapterAuthorization`: evaluates the merged org policy's
+/// model and adapter allowlists, required capabilities, concurrency and cost
+/// ceilings, and the `native_discovery_reviewed` rollout gate.
+pub struct PolicyEvaluator { ... }
 
 /// Implements `RunDriver` against the four real worker adapters.
 pub struct AdapterRegistry { ... }

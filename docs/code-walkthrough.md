@@ -117,7 +117,7 @@ One file (`src/main.rs`): `generate [--check]` (schema + ts-rs bindings, determi
 temp-dir byte-compare in check mode) and `package --target <triple> --binary <path>` (installs a
 binary into a leaf package with a deterministic manifest).
 
-### `packages/extension` — the OMP extension (`@satori/batman`)
+### `packages/extension` — the OMP extension (`@nikolasd/batman`)
 
 | File | What lives there |
 |---|---|
@@ -142,7 +142,7 @@ binary into a leaf package with a deterministic manifest).
 
 Each module has a sibling `*.test.ts`. `client.test.ts` and `index.test.ts` spawn the real daemon.
 
-### `packages/protocol-ts` — generated contract (`@satori/batman-protocol`)
+### `packages/protocol-ts` — generated contract (`@nikolasd/batman-protocol`)
 
 `src/generated/*.ts` and `schema/batman.schema.json` are build outputs — regenerate, never edit.
 `src/validate.ts` is hand-written: it compiles Ajv validators once (`validateInitializeResult`,

@@ -2,7 +2,7 @@
 
 This guide covers everything you need to **build BATMAN from source as a contributor** — from setup to troubleshooting. It covers all M4 hardening features including configuration, security, recovery, doctor, and release management.
 
-> **Just want to use BATMAN, not build it?** See [README.md's Installation section](../README.md#installation) — `omp install @satori/batman` installs both the extension and the runtime with no build step. This guide is for developing BATMAN itself.
+> **Just want to use BATMAN, not build it?** See [README.md's Installation section](../README.md#installation) — `omp install @nikolasd/batman` installs both the extension and the runtime with no build step. This guide is for developing BATMAN itself.
 
 ## Prerequisites
 
@@ -298,7 +298,7 @@ cargo test --test adapter_registry
 cargo test --test approval
 cargo test --test audit
 cargo test --test claude_adapter
-cargo test --test claude_live      # gated on BATMAN_LIVE_CLAUDE=1, real model call
+cargo test --test claude_live -- --ignored   # #[ignore]d; real model call; skips if BATMAN_DISABLE_VENDOR_CLI=1
 cargo test --test codex_adapter
 cargo test --test config
 cargo test --test conformance
