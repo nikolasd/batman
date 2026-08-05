@@ -388,7 +388,7 @@ mod tests {
     fn visible_text_survives_unchanged() {
         let redactor = Redactor::new();
         let persisted = redactor.sanitize(event(vec![visible("hello world")]));
-        
+
         match serde_json::from_str::<RuntimeEvent>(persisted.event_json()) {
             Ok(RuntimeEvent::Diagnostic { message, .. }) => {
                 assert_eq!(message, "hello world");

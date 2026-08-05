@@ -12,6 +12,7 @@ mod evaluate;
 mod violation;
 
 pub use evaluate::{
-    PolicyError, PolicyEvaluation, PolicyEvaluator, PolicyViolation, PolicyViolationKind,
+    DailySpend, JournalDailySpend, PolicyError, PolicyEvaluation, PolicyEvaluator, PolicyViolation,
+    PolicyViolationKind,
 };
 pub use violation::{DecideOutcome, ViolationError, ViolationService};

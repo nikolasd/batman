@@ -7,7 +7,7 @@
 //! `AdapterEventPayload::NestedWorkerObserved` while the run's effective
 //! `nested` capability is `NestedCapability::None`.
 //!
-//! On [`ViolationService::record`]: atomically persists a
+//! On [`ViolationService::record_nested_worker`]: atomically persists a
 //! [`batman_protocol::RuntimeEvent::PolicyViolationRecorded`], then applies
 //! the configured [`NestedViolationAction`] -- `Quarantine` sets
 //! `Run.flags.policyQuarantined` (blocking `message/send`,
@@ -18,6 +18,11 @@
 //! a run already quarantined or already terminal still gets a durable
 //! `PolicyViolationRecorded` event (so OMP sees every subsequent
 //! unexpected child), but the action is applied at most once.
+//!
+//! [`ViolationService::record_cost_ceiling`] journals the same event with
+//! code `cost_ceiling_exceeded` and shares the identical action semantics
+//! through [`ViolationService::apply_action`], so a spend violation
+//! quarantines and cancels exactly the way a nested-worker violation does.
 //!
 //! [`ViolationService::decide`] resolves a violation via
 //! `policy/violation/decide`, restricted to the violation's task's
@@ -39,6 +44,14 @@ use crate::db::{DatabaseHandle, DbError};
 use crate::domain::{DomainError, DomainRepository, embed_envelope, take_envelope};
 use crate::security::redaction::Redactor;
 use crate::service::RunDriver;
+
+/// Journaled `code` for a mid-run child observed against
+/// `NestedCapability::None`.
+pub const VIOLATION_CODE_NESTED_WORKER_DENIED: &str = "nested_worker_denied";
+
+/// Journaled `code` for a run whose accumulated adapter spend crossed
+/// `RuntimePolicy::cost_ceiling_per_run_usd`.
+pub const VIOLATION_CODE_COST_CEILING_EXCEEDED: &str = "cost_ceiling_exceeded";
 
 /// Errors returned by [`ViolationService`] operations.
 #[derive(Debug, thiserror::Error)]
@@ -120,21 +133,27 @@ impl ViolationService {
         }
     }
 
-    /// Loads a run's current `state` and full `flags`, for the
-    /// idempotency check in [`ViolationService::record`] and to
+    /// Loads a run's current `state`, full `flags`, and the
+    /// `policy_fingerprint` it was authorized under, for the idempotency
+    /// check in [`ViolationService::record_nested_worker`], to
     /// read-modify-write a single flag via
-    /// [`DomainRepository::set_run_flags`].
+    /// [`DomainRepository::set_run_flags`], and to make the journaled
+    /// violation auditable against a specific merged policy.
+    ///
+    /// The fingerprint is `None` for runs created before migration 6; it is
+    /// journaled as an empty string rather than a fabricated value.
     async fn load_run_state_and_flags(
         &self,
         run_id: RunId,
-    ) -> Result<(RunState, RunFlags), ViolationError> {
+    ) -> Result<(RunState, RunFlags, String), ViolationError> {
         let value = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 conn.query_row(
                     "SELECT state, flags_degraded_control, flags_needs_reconciliation,
                             flags_protocol_unhealthy, flags_policy_quarantined,
-                            flags_workspace_dirty, flags_children_active
+                            flags_workspace_dirty, flags_children_active,
+                            policy_fingerprint
                      FROM runs WHERE run_id = ?1",
                     [run_id.to_string()],
                     |row| {
@@ -147,7 +166,8 @@ impl ViolationService {
                                 "policyQuarantined": row.get::<_, i64>(4)? != 0,
                                 "workspaceDirty": row.get::<_, i64>(5)? != 0,
                                 "childrenActive": row.get::<_, i64>(6)? != 0,
-                            }
+                            },
+                            "policyFingerprint": row.get::<_, Option<String>>(7)?,
                         }))
                     },
                 )
@@ -158,22 +178,32 @@ impl ViolationService {
             }))
             .await
             .map_err(ViolationError::Domain)?;
-        let state = RunState::try_from(value["state"].as_str().unwrap_or_default())
-            .map_err(|_| ViolationError::Domain(DomainError::NotFound {
-                kind: "run-state",
-                id: value["state"].to_string(),
-            }))?;
+        let state =
+            RunState::try_from(value["state"].as_str().unwrap_or_default()).map_err(|_| {
+                ViolationError::Domain(DomainError::NotFound {
+                    kind: "run-state",
+                    id: value["state"].to_string(),
+                })
+            })?;
         let flags = RunFlags {
             degraded_control: value["flags"]["degradedControl"].as_bool().unwrap_or(false),
             needs_reconciliation: value["flags"]["needsReconciliation"]
                 .as_bool()
                 .unwrap_or(false),
-            protocol_unhealthy: value["flags"]["protocolUnhealthy"].as_bool().unwrap_or(false),
-            policy_quarantined: value["flags"]["policyQuarantined"].as_bool().unwrap_or(false),
+            protocol_unhealthy: value["flags"]["protocolUnhealthy"]
+                .as_bool()
+                .unwrap_or(false),
+            policy_quarantined: value["flags"]["policyQuarantined"]
+                .as_bool()
+                .unwrap_or(false),
             workspace_dirty: value["flags"]["workspaceDirty"].as_bool().unwrap_or(false),
             children_active: value["flags"]["childrenActive"].as_bool().unwrap_or(false),
         };
-        Ok((state, flags))
+        let policy_fingerprint = value["policyFingerprint"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        Ok((state, flags, policy_fingerprint))
     }
 
     /// Called by [`crate::adapter::event_sink::DomainAdapterEventSink`]
@@ -186,17 +216,21 @@ impl ViolationService {
     /// unexpected child -- but does not re-apply the quarantine flag,
     /// create a second cancellation intent, or call `cancel_run` again.
     ///
+    /// Named rather than overloaded so the cost-ceiling sibling
+    /// [`ViolationService::record_cost_ceiling`] can never be mistaken for it.
+    ///
     /// # Errors
     /// Returns [`ViolationError::Domain`] if `run_id` does not exist.
-    pub async fn record(
+    pub async fn record_nested_worker(
         &self,
         run_id: RunId,
         task_id: TaskId,
         worker_id: WorkerId,
         vendor_child_id: &str,
         vendor_parent_ref: &str,
+        observed_event_sequence: u64,
     ) -> Result<(), ViolationError> {
-        let (state, mut flags) = self.load_run_state_and_flags(run_id).await?;
+        let (state, mut flags, policy_fingerprint) = self.load_run_state_and_flags(run_id).await?;
         let already_actioned = flags.policy_quarantined || state.is_terminal();
 
         let violation_id = PolicyViolationId::new();
@@ -213,8 +247,11 @@ impl ViolationService {
                     run_id,
                     task_id,
                     worker_id,
-                    &vendor_child_id_owned,
-                    &vendor_parent_ref_owned,
+                    VIOLATION_CODE_NESTED_WORKER_DENIED,
+                    observed_event_sequence,
+                    &policy_fingerprint,
+                    Some(&vendor_child_id_owned),
+                    Some(&vendor_parent_ref_owned),
                     &action_str,
                 )
                 .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
@@ -223,23 +260,112 @@ impl ViolationService {
             .map_err(ViolationError::Domain)?;
         self.broadcast(&mut result);
 
+        self.apply_action(
+            run_id,
+            worker_id,
+            &mut flags,
+            already_actioned,
+            Some(vendor_child_id),
+            Some(vendor_parent_ref),
+        )
+        .await
+    }
+
+    /// Journals a `cost_ceiling_exceeded` violation and applies the same
+    /// quarantine/cancellation semantics as a nested-worker violation.
+    ///
+    /// Called by [`crate::adapter::event_sink::DomainAdapterEventSink`] when
+    /// accumulated `AdapterUsageEvent.cost_usd` for this run crosses
+    /// `RuntimePolicy::cost_ceiling_per_run_usd`. `observed_event_sequence`
+    /// is the sequence of the usage event that crossed the ceiling.
+    ///
+    /// A cost ceiling has no vendor child, so `vendor_child_id` and
+    /// `vendor_parent_ref` are journaled as `None` rather than empty strings.
+    ///
+    /// # Errors
+    /// Returns [`ViolationError::Domain`] if `run_id` does not exist.
+    pub async fn record_cost_ceiling(
+        &self,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        observed_event_sequence: u64,
+    ) -> Result<(), ViolationError> {
+        let (state, mut flags, policy_fingerprint) = self.load_run_state_and_flags(run_id).await?;
+        let already_actioned = flags.policy_quarantined || state.is_terminal();
+
+        let violation_id = PolicyViolationId::new();
+        let project_id = self.project_id;
+        let action_str = self.action.to_string();
+        let mut result = self
+            .db
+            .run_domain_op(Box::new(move |conn| {
+                let mut repo = DomainRepository::new(conn, project_id);
+                repo.record_policy_violation(
+                    violation_id,
+                    run_id,
+                    task_id,
+                    worker_id,
+                    VIOLATION_CODE_COST_CEILING_EXCEEDED,
+                    observed_event_sequence,
+                    &policy_fingerprint,
+                    None,
+                    None,
+                    &action_str,
+                )
+                .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+            }))
+            .await
+            .map_err(ViolationError::Domain)?;
+        self.broadcast(&mut result);
+
+        self.apply_action(run_id, worker_id, &mut flags, already_actioned, None, None)
+            .await
+    }
+
+    /// Applies `self.action` after a violation has been journaled. Shared by
+    /// both violation kinds so quarantine and cancellation semantics can
+    /// never drift between them.
+    ///
+    /// A no-op when `already_actioned` -- the violation is still journaled by
+    /// the caller, but the quarantine flag is not re-applied and no second
+    /// cancellation intent is created.
+    async fn apply_action(
+        &self,
+        run_id: RunId,
+        worker_id: WorkerId,
+        flags: &mut RunFlags,
+        already_actioned: bool,
+        vendor_child_id: Option<&str>,
+        vendor_parent_ref: Option<&str>,
+    ) -> Result<(), ViolationError> {
         if already_actioned {
             return Ok(());
         }
 
         match self.action {
             NestedViolationAction::Quarantine => {
-                self.set_quarantined(run_id, &mut flags, true).await?;
+                self.set_quarantined(run_id, flags, true).await?;
             }
             NestedViolationAction::Cancel => {
-                self.create_cancellation_intent(run_id, worker_id, vendor_child_id, vendor_parent_ref)
-                    .await?;
+                self.create_cancellation_intent(
+                    run_id,
+                    worker_id,
+                    vendor_child_id,
+                    vendor_parent_ref,
+                )
+                .await?;
                 self.cancel_and_transition(run_id).await?;
             }
             NestedViolationAction::QuarantineAndCancel => {
-                self.set_quarantined(run_id, &mut flags, true).await?;
-                self.create_cancellation_intent(run_id, worker_id, vendor_child_id, vendor_parent_ref)
-                    .await?;
+                self.set_quarantined(run_id, flags, true).await?;
+                self.create_cancellation_intent(
+                    run_id,
+                    worker_id,
+                    vendor_child_id,
+                    vendor_parent_ref,
+                )
+                .await?;
                 self.cancel_and_transition(run_id).await?;
             }
         }
@@ -277,21 +403,30 @@ impl ViolationService {
     /// (the same mechanism `crate::db::actor` uses elsewhere) before
     /// actually cancelling, per the Hardening plan's requirement that the
     /// nested-worker cancellation path be audited.
+    ///
+    /// The vendor ids are `None` for a violation with no vendor child, such
+    /// as a cost ceiling; the intent then records JSON `null` for them rather
+    /// than an empty string that would read as a real, blank id.
     async fn create_cancellation_intent(
         &self,
         run_id: RunId,
         worker_id: WorkerId,
-        vendor_child_id: &str,
-        vendor_parent_ref: &str,
+        vendor_child_id: Option<&str>,
+        vendor_parent_ref: Option<&str>,
     ) -> Result<(), ViolationError> {
         use batman_protocol::{OperationId, Timestamp};
 
+        let reason = if vendor_child_id.is_some() {
+            "nested-worker policy violation"
+        } else {
+            "cost-ceiling policy violation"
+        };
         let intent = json!({
             "runId": run_id.to_string(),
             "workerId": worker_id.to_string(),
             "vendorChildId": vendor_child_id,
             "vendorParentRef": vendor_parent_ref,
-            "reason": "nested-worker policy violation",
+            "reason": reason,
         });
         let sanitized = Redactor::new().sanitize_json(&intent);
         self.db
@@ -379,7 +514,9 @@ impl ViolationService {
             .await
             .map_err(|_| ViolationError::NotFound { violation_id })?;
 
-        let owner = snapshot["ownerClientInstanceId"].as_str().unwrap_or_default();
+        let owner = snapshot["ownerClientInstanceId"]
+            .as_str()
+            .unwrap_or_default();
         if owner != principal_instance_id {
             return Err(ViolationError::Forbidden {
                 instance_id: principal_instance_id.to_string(),
@@ -405,7 +542,10 @@ impl ViolationService {
             .map_err(|_| ViolationError::NotFound { violation_id })?;
 
         if resolution == "release" && run_state.is_terminal() {
-            return Err(ViolationError::RunSettled { violation_id, run_id });
+            return Err(ViolationError::RunSettled {
+                violation_id,
+                run_id,
+            });
         }
 
         let resolved_by = principal_instance_id.to_string();
@@ -429,7 +569,7 @@ impl ViolationService {
         self.broadcast(&mut result);
 
         if resolution == "release" {
-            let (_, mut flags) = self.load_run_state_and_flags(run_id).await?;
+            let (_, mut flags, _) = self.load_run_state_and_flags(run_id).await?;
             self.set_quarantined(run_id, &mut flags, false).await?;
         } else {
             self.cancel_and_transition(run_id).await?;
