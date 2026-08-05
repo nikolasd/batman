@@ -14,22 +14,6 @@ partially-closed items remain below.
 
 ## Low / Environment / Permanent
 
-### 49. Subscription forwarder reaping
-
-**Status:** Open (low priority, harmless — re-verified 2026-08-03, unchanged)
-**Priority:** Low
-**Labels:** cleanup, subscription
-
-**Description:**
-Subscription forwarder tasks for closed connections are reaped lazily on the next event broadcast; harmless in practice since a closed connection's own `events_rx.recv()` loop (`spawn_subscription`, `connection.rs:680-696`) only exits when a broadcast finds the writer channel already closed, and never eagerly on disconnect itself.
-
-**Implementation:**
-- Optional: add explicit reaping logic for closed connections; current behavior is acceptable
-
-**References:** `crates/runtime/src/ipc/connection.rs::spawn_subscription`
-
----
-
 ### 55. Codex/Copilot: several capabilities are unprovable in fixture mode — not a bug, requires a gated live run to confirm the positive case
 
 **Status:** ⚠️ Partially closed 2026-08-05 — split by cause, with per-scenario evidence.

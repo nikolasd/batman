@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 use tokio::net::unix::OwnedWriteHalf;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio_util::codec::{Framed, FramedParts, LinesCodec};
 
 use super::server::{ConnContext, Shared};
@@ -723,21 +723,44 @@ async fn replay(shared: &Arc<Shared>, after: u64) -> Result<Value, String> {
 /// broadcast [`EventEnvelope`] to the writer as an `events/event`
 /// notification until the connection closes.
 fn spawn_subscription(shared: &Arc<Shared>, writer_tx: mpsc::Sender<WriterMsg>) {
-    let mut events_rx = shared.events_tx.subscribe();
-    tokio::spawn(async move {
-        // On a lag/closed error the loop ends; reconnect/replay is the
-        // recovery path for a dropped notification.
-        while let Ok(envelope) = events_rx.recv().await {
-            let params = serde_json::to_value(&envelope)
-                .expect("EventEnvelope is a plain, serializable wire type");
-            let notification = JsonRpcNotification::new(EVENTS_EVENT_METHOD, Some(params));
-            let frame = serde_json::to_string(&notification)
-                .expect("a notification of plain wire types serializes");
-            if writer_tx.send(WriterMsg::Frame(frame)).await.is_err() {
-                break;
-            }
+    let events_rx = shared.events_tx.subscribe();
+    tokio::spawn(forward_events(events_rx, writer_tx));
+}
+
+/// Forwards every broadcast [`EventEnvelope`] to the writer as an
+/// `events/event` notification, returning as soon as either the broadcast
+/// ends or the connection's writer half closes.
+///
+/// Split out of [`spawn_subscription`] so the shutdown behavior is
+/// exercisable without constructing a full [`Shared`].
+async fn forward_events(
+    mut events_rx: broadcast::Receiver<EventEnvelope>,
+    writer_tx: mpsc::Sender<WriterMsg>,
+) {
+    loop {
+        let envelope = tokio::select! {
+            // Reap eagerly: a closed writer half means the connection is
+            // already gone, so stop now instead of waiting for the next
+            // broadcast to discover it. `broadcast::Receiver::recv` is
+            // cancel-safe, so losing this race drops no event.
+            () = writer_tx.closed() => return,
+            received = events_rx.recv() => match received {
+                Ok(envelope) => envelope,
+                // On a lag/closed error the loop ends; reconnect/replay is
+                // the recovery path for a dropped notification.
+                Err(_) => return,
+            },
+        };
+
+        let params = serde_json::to_value(&envelope)
+            .expect("EventEnvelope is a plain, serializable wire type");
+        let notification = JsonRpcNotification::new(EVENTS_EVENT_METHOD, Some(params));
+        let frame = serde_json::to_string(&notification)
+            .expect("a notification of plain wire types serializes");
+        if writer_tx.send(WriterMsg::Frame(frame)).await.is_err() {
+            return;
         }
-    });
+    }
 }
 
 /// The serialized writer task: writes NDJSON frames in order, enforcing the
@@ -776,4 +799,72 @@ fn success(id: &Value, result: Value) -> String {
 /// Builds a JSON-RPC error response frame echoing `id`.
 fn error(id: &Value, code: i32, message: &str) -> String {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::time::Duration;
+
+    use batman_protocol::{EventSource, ProjectId, RuntimeEvent, Timestamp};
+
+    fn envelope() -> EventEnvelope {
+        EventEnvelope {
+            sequence: 1,
+            timestamp: Timestamp::now(),
+            project_id: ProjectId::new(),
+            task_id: None,
+            worker_id: None,
+            run_id: None,
+            parent_worker_id: None,
+            source: EventSource::Runtime,
+            event: RuntimeEvent::RuntimeStarted,
+            vendor_event_ref: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_closed_writer_reaps_the_forwarder_without_waiting_for_a_broadcast() {
+        let (events_tx, events_rx) = broadcast::channel(8);
+        let (writer_tx, writer_rx) = mpsc::channel(8);
+
+        let forwarder = tokio::spawn(forward_events(events_rx, writer_tx));
+
+        // Close the connection's writer half and broadcast nothing at all.
+        // Before eager reaping the forwarder parked on `recv()` indefinitely.
+        drop(writer_rx);
+
+        tokio::time::timeout(Duration::from_secs(5), forwarder)
+            .await
+            .expect("the forwarder must exit as soon as the writer closes")
+            .expect("the forwarder must not panic");
+
+        // The forwarder's broadcast receiver is dropped along with it.
+        assert_eq!(events_tx.receiver_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_broadcast_event_still_reaches_the_writer_as_an_events_event_frame() {
+        let (events_tx, events_rx) = broadcast::channel(8);
+        let (writer_tx, mut writer_rx) = mpsc::channel(8);
+
+        let forwarder = tokio::spawn(forward_events(events_rx, writer_tx));
+        events_tx.send(envelope()).expect("a live receiver exists");
+
+        let message = tokio::time::timeout(Duration::from_secs(5), writer_rx.recv())
+            .await
+            .expect("a broadcast event must be forwarded")
+            .expect("the writer channel stays open");
+
+        let WriterMsg::Frame(frame) = message else {
+            panic!("expected a frame, got a control message");
+        };
+        let parsed: Value = serde_json::from_str(&frame).expect("the frame is JSON");
+        assert_eq!(parsed["method"], EVENTS_EVENT_METHOD);
+        assert_eq!(parsed["params"]["event"]["type"], "runtimeStarted");
+
+        drop(writer_rx);
+        let _ = forwarder.await;
+    }
 }
