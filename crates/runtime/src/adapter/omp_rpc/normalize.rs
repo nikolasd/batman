@@ -20,7 +20,7 @@
 //! matching -- the marker text exists only for this adapter's own tests
 //! and diagnostics, never as the sole distinguishing signal.
 
-use batman_protocol::{Classified, ContentClass};
+use batman_protocol::{ArtifactId, Classified, ContentClass};
 use serde_json::Value;
 
 use batman_runtime::adapter::AdapterEventPayload;
@@ -138,7 +138,12 @@ pub fn normalize_frame(frame: &Value) -> Vec<AdapterEventPayload> {
         "thinking_start" | "thinking_delta" | "thinking_end" => Vec::new(),
         "toolcall_start" | "tool_execution_start" => tool_started(frame).into_iter().collect(),
         "toolcall_delta" => tool_progress(frame).into_iter().collect(),
-        "toolcall_end" | "tool_execution_end" => tool_result(frame).into_iter().collect(),
+        // A completed tool call yields its result, and additionally an
+        // artifact when the call actually mutated a file.
+        "toolcall_end" | "tool_execution_end" => tool_result(frame)
+            .into_iter()
+            .chain(artifact_produced(frame))
+            .collect(),
         "subagent_started" | "subagent_lifecycle" | "subagent_event" => {
             subagent_observed(frame).into_iter().collect()
         }
@@ -218,23 +223,31 @@ fn normalize_response(frame: &Value) -> Vec<AdapterEventPayload> {
     }
 }
 
-fn tool_started(frame: &Value) -> Option<AdapterEventPayload> {
-    let tool_call_id = frame.get("toolCallId").and_then(Value::as_str)?.to_string();
-    let name = frame
-        .get("name")
+/// The tool name, across both observed frame shapes.
+///
+/// `omp 17.2.7`'s real `tool_execution_*` frames carry `toolName`, while
+/// the `toolcall_*` frames carry `name`. Both are routed here, so both
+/// spellings are read rather than silently falling back to `"tool"` --
+/// which is what a real `edit` call used to normalize to.
+fn tool_name_of(frame: &Value) -> String {
+    frame
+        .get("toolName")
+        .or_else(|| frame.get("name"))
         .and_then(Value::as_str)
         .unwrap_or("tool")
-        .to_string();
-    Some(AdapterEventPayload::ToolStarted { tool_call_id, name })
+        .to_string()
+}
+
+fn tool_started(frame: &Value) -> Option<AdapterEventPayload> {
+    let tool_call_id = frame.get("toolCallId").and_then(Value::as_str)?.to_string();
+    Some(AdapterEventPayload::ToolStarted {
+        tool_call_id,
+        name: tool_name_of(frame),
+    })
 }
 
 fn tool_progress(frame: &Value) -> Option<AdapterEventPayload> {
     let tool_call_id = frame.get("toolCallId").and_then(Value::as_str)?.to_string();
-    let name = frame
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or("tool")
-        .to_string();
     let detail = frame
         .get("delta")
         .and_then(Value::as_str)
@@ -242,29 +255,91 @@ fn tool_progress(frame: &Value) -> Option<AdapterEventPayload> {
         .to_string();
     Some(AdapterEventPayload::ToolProgress {
         tool_call_id,
-        name,
+        name: tool_name_of(frame),
         detail: visible(detail),
     })
 }
 
+/// Whether a completed tool call failed.
+///
+/// `tool_execution_end` reports `isError: true`; `toolcall_end` reports
+/// `ok: false`. Absent both, a completed call is treated as successful --
+/// but `isError` must be honored, or a rejected `edit` would be reported
+/// as a success (observed against `omp 17.2.7`, whose failed edits carry
+/// `isError: true` and no `ok` field at all).
+fn tool_ok_of(frame: &Value) -> bool {
+    if let Some(is_error) = frame.get("isError").and_then(Value::as_bool) {
+        return !is_error;
+    }
+    frame.get("ok").and_then(Value::as_bool).unwrap_or(true)
+}
+
+/// The human-readable outcome, across both shapes. `toolcall_end` carries
+/// `result` as a plain string; `tool_execution_end` carries it as an
+/// object whose `content` is an MCP-style text-block array.
+fn tool_detail_of(frame: &Value) -> String {
+    let Some(result) = frame.get("result") else {
+        return String::new();
+    };
+    if let Some(text) = result.as_str() {
+        return text.to_string();
+    }
+    result
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
 fn tool_result(frame: &Value) -> Option<AdapterEventPayload> {
     let tool_call_id = frame.get("toolCallId").and_then(Value::as_str)?.to_string();
-    let name = frame
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or("tool")
-        .to_string();
-    let ok = frame.get("ok").and_then(Value::as_bool).unwrap_or(true);
-    let detail = frame
-        .get("result")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
     Some(AdapterEventPayload::ToolResult {
         tool_call_id,
-        name,
-        ok,
-        detail: visible(detail),
+        name: tool_name_of(frame),
+        ok: tool_ok_of(frame),
+        detail: visible(tool_detail_of(frame)),
+    })
+}
+
+/// An artifact for a tool call that actually mutated a file.
+///
+/// The discriminator was captured from a real `omp --mode rpc 17.2.7`
+/// session (a local `lm-studio` model told to rewrite a file): a
+/// successful mutation reports
+///
+/// ```text
+/// {"type":"tool_execution_end","toolName":"edit","isError":false,
+///  "result":{"details":{"op":"update","path":"greeting.txt",
+///                       "diff":"-1|hello\n+1|goodbye", ...}}}
+/// ```
+///
+/// while a *rejected* edit carries `isError: true` and `details: {}`, and
+/// a `read` carries `details` with no `op`/`path` at all. So the presence
+/// of both `op` and `path` under `result.details`, on a non-error frame,
+/// is what distinguishes a mutation from every other tool call --
+/// deliberately narrow, so a read or a failed edit never fabricates an
+/// artifact.
+///
+/// `artifact_kind` is the literal `"fileChange"` rather than the frame's
+/// `op` (`"update"`, ...): `op` describes the operation, not the kind of
+/// artifact, and Codex emits `"fileChange"` for the same event
+/// (`codex/normalize.rs`), so the two adapters stay comparable.
+fn artifact_produced(frame: &Value) -> Option<AdapterEventPayload> {
+    if !tool_ok_of(frame) {
+        return None;
+    }
+    let details = frame.get("result")?.get("details")?;
+    details.get("op").and_then(Value::as_str)?;
+    details.get("path").and_then(Value::as_str)?;
+    Some(AdapterEventPayload::ArtifactProduced {
+        artifact_id: ArtifactId::new(),
+        artifact_kind: "fileChange".to_string(),
     })
 }
 

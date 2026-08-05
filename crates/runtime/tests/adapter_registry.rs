@@ -139,6 +139,8 @@ fn ctx(
         prompt: None,
         violation_service,
         workspace_path: None,
+        policy: None,
+        display: None,
     }
 }
 

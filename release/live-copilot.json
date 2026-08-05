@@ -1,0 +1,104 @@
+[
+  {
+    "adapter": "copilot",
+    "declaredCapabilities": {
+      "approvals": "controllable",
+      "durability": "vendorResumable",
+      "nativeView": "none",
+      "nested": "none",
+      "protocol": "structured",
+      "resume": "session",
+      "steering": "none",
+      "structuredResult": false,
+      "usage": "none",
+      "workspaceControl": "write"
+    },
+    "effectiveCapabilities": {
+      "approvals": "controllable",
+      "durability": "vendorResumable",
+      "nativeView": "none",
+      "nested": "none",
+      "protocol": "structured",
+      "resume": "none",
+      "steering": "none",
+      "structuredResult": false,
+      "usage": "none",
+      "workspaceControl": "write"
+    },
+    "mode": "live",
+    "passed": false,
+    "scenarios": [
+      {
+        "detail": "copilot --version reported Some(\"1.0.78\"); authReady=true",
+        "name": "probe",
+        "passed": true
+      },
+      {
+        "detail": "real copilot --acp negotiated protocol v1 and session/list returned {\"sessions\":[{\"cwd\":\"/private/tmp\",\"sessionId\":\"8fdc0ecc-bb9b-4403-8434-c739193cb848\",\"title\":\"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":1,\\\"method\\\":\\\"initialize\\\",\\\"params\\\":{\\\"protocolVersion\\\":1,\\\"clientCapabilities\\\":{\\\"fs\\\":{\\\"readTextFile\\\":false,\\\"writeTextFile\\\":false}}}}\",\"updatedAt\":\"2026-08-05T09:58:59.002Z\"},{\"cwd\":\"/Users/nikolasdemiridis/Work/Repos/ipto-enterprise-gpt\",\"sessionId\":\"9f49ba93-c692-4b69-9ed1-04c4f0ac0b05\",\"title\":\"Check Pending Changes on Branch\",\"updatedAt\":\"2026-07-08T09:46:13.827Z\"},{\"cwd\":\"/Users/nikolasdemiridis/Work/Repos/ipto-enterprise-gpt\",\"sessionId\":\"624fdc02-d420-4bbb-874d-ae684c2150a9\",\"title\":\"Conduct Code Review\",\"updatedAt\":\"2026-07-08T09:09:46.314Z\"},{\"cwd\":\"/Users/nikolasdemiridis/Work/satori-backup\",\"sessionId\":\"bcccbd21-73ec-479d-80ce-6ebfba3fcf6d\",\"title\":\"Review PowerShell Scripts\",\"updatedAt\":\"2026-07-04T00:43:28.052Z\"},{\"cwd\":\"S:\\\\Repos\\\\Satori\\\\elgeka-policyassistant\",\"sessionId\":\"a68304d3-f714-42e4-ae3d-0adec1ae6035\",\"title\":\"Index SharePoint Documents to Vector DB\",\"updatedAt\":\"2026-05-28T17:45:14.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Satori\\\\elgeka-policyassistant\",\"sessionId\":\"c328b6ac-1dd6-4095-8808-a799b75ea38f\",\"title\":\"Variable reference is not valid. ':' was not followed by a valid\\n     | variable name character. Consider using ${} to delimit the name.\",\"updatedAt\":\"2026-05-18T18:02:50.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Satori\\\\admhe-ipto-poc\",\"sessionId\":\"45910ad8-bcaf-448f-a4a5-34ac043843cc\",\"title\":\"Codebase Overview\",\"updatedAt\":\"2026-05-11T14:43:58.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Satori\\\\satori-python-library\",\"sessionId\":\"32f8c3ba-6b6a-4b65-8efe-aafafb1b7071\",\"title\":\"Add Optional Poetry Extras\",\"updatedAt\":\"2026-05-07T17:36:50.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Satori\\\\satori-ai-product\",\"sessionId\":\"b01f6397-b9db-4314-a9a8-415b4c5d00b5\",\"title\":\"Review Codebase Functions And Egpt\",\"updatedAt\":\"2026-05-06T20:56:46.000Z\"},{\"cwd\":\"C:\\\\Users\\\\NikolasDemiridis\\\\scoop\\\\apps\\\\vscode\\\\current\",\"sessionId\":\"47b7cfb5-75cd-4ff5-a9d2-3a14322712f8\",\"title\":\"I have this #file:cert_creation powershell script. I want to refactor it to a full fledged powershell applicaiton that will take arguments and create certificates. The finished script, will need to contain detailed technical documentation and instructions written in markdown for an end user to use the script and create certificates. I will provide additional documentation to incorporate to this user manual later. The workspace contains different folders, e.g. sharepoint-tools, teams-tools. Every...\",\"updatedAt\":\"2026-05-06T11:41:54.000Z\"},{\"cwd\":\"C:\\\\Users\\\\NikolasDemiridis\\\\scoop\\\\apps\\\\vscode\\\\current\",\"sessionId\":\"831bb058-c01b-4470-9a0b-dc7513482187\",\"title\":\"I have this #file:cert_creation powershell script. I want to refactor it to a full fledged powershell applicaiton that will take arguments and create certificates. The finished script, will need to contain detailed technical documentation and instructions written in markdown for an end user to use the script and create certificates. I will provide additional documentation to incorporate to this user manual later. The workspace contains different folders, e.g. sharepoint-tools, teams-tools. Every...\",\"updatedAt\":\"2026-05-06T11:41:54.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\worktrees\\\\OPAI-1214\",\"sessionId\":\"dc585318-1113-4e84-94de-2a7fd8ddbe87\",\"title\":\"---BEGIN USER MESSAGES---\\nGithub copilot left the following comments regarding PR for this branch to master.\\n---END USER MESSAGES---\\n\\nGenerate a short title for the above messages.\",\"updatedAt\":\"2026-05-04T07:42:08.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\worktrees\\\\OPAI-1214\",\"sessionId\":\"fa29d2f1-aacc-40f5-affc-58e53cd80d5a\",\"title\":\"What is the weather like in San Francisco today?\",\"updatedAt\":\"2026-05-01T00:20:24.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Satori\\\\satori-ai-product\",\"sessionId\":\"a6edcdae-bc0b-4852-9ef5-7c40e1b73330\",\"title\":\"Manage MCPs With Copilot Commands\",\"updatedAt\":\"2026-04-22T18:21:32.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Satori\\\\satori-ai-product\",\"sessionId\":\"3fe3798d-1e7e-4f26-846b-4d6e95ee0683\",\"title\":\"Review Pending Changes\",\"updatedAt\":\"2026-04-22T18:09:00.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Personal\\\\resilience-ai\",\"sessionId\":\"8aedb0bf-8122-43d0-a6c6-069eb4064ca7\",\"title\":\"Commit Changes Without Attribution\",\"updatedAt\":\"2026-03-30T14:24:44.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Personal\\\\resilience-ai\\\\scripts\",\"sessionId\":\"4fadd18a-438a-4528-a478-077a1affdfe7\",\"title\":\"Commit Changes Without Attribution\",\"updatedAt\":\"2026-03-30T14:13:52.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Satori\\\\serena\",\"sessionId\":\"dc6b3d26-43ed-4e82-9ee9-1c02f47714e6\",\"title\":\"Commit Changes Without Attribution\",\"updatedAt\":\"2026-03-30T10:04:42.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Satori\\\\satori-genai-framework\",\"sessionId\":\"b8c0b210-ed35-4083-b778-eb5e83f61a42\",\"title\":\"Commit Changes Without Attribution\",\"updatedAt\":\"2026-03-26T15:50:56.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Satori\\\\satori-ai-product\",\"sessionId\":\"373e97da-b795-4b6f-ae90-9ec11962af63\",\"title\":\"Review Pull Request Changes\",\"updatedAt\":\"2026-03-26T13:42:54.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Personal\\\\resilience-ai\",\"sessionId\":\"9e5bf29d-ec06-4586-bab7-59df6633ef1c\",\"title\":\"Commit Current Changes\",\"updatedAt\":\"2026-03-26T00:13:32.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Personal\\\\resilience-ai\",\"sessionId\":\"4f483ca6-171c-426c-8e04-126fcf9de482\",\"title\":\"Debug Backend Status Reporting\",\"updatedAt\":\"2026-03-25T23:16:28.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Personal\\\\resilience-ai\",\"sessionId\":\"06c0e722-a1c8-4051-9b9d-382a5914a732\",\"title\":\"Review Start-Dev Script Modes\",\"updatedAt\":\"2026-03-25T21:33:16.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Satori\\\\satori-ai-product\",\"sessionId\":\"ddd21a72-dc0c-41f3-a3d1-1d9fe6ef837d\",\"title\":\"Add MCP Server Command\",\"updatedAt\":\"2026-03-21T20:51:40.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Satori\\\\satori-ai-product\",\"sessionId\":\"4c75e20c-044f-456b-9747-23abe4ded15c\",\"title\":\"Debate Git Branch Strategies\",\"updatedAt\":\"2026-03-21T14:43:34.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Satori\\\\satori-ai-product\",\"sessionId\":\"16e50d7e-5f04-44b1-816e-733bd7f4d80d\",\"title\":\"List Available Skills\",\"updatedAt\":\"2026-03-20T21:48:24.000Z\"},{\"cwd\":\"/private/var/folders/rd/6cprc9sj4tsc4v35dgpgt8k00000gp/T\",\"sessionId\":\"ce543033-cd87-4204-a850-c9721e5f6f44\",\"title\":\"Let's run the whole EGPT server unit test suite **Summary** <analysis> [Chronological Review: The conversation began with the user discussing a comment from Copilot regarding the tests in the file `test_feature_dependencies.py`. The user requested validation of the comment and proposed changes to the tests to call the dependency returned by `require_feature_enabled`. The user then referenced documentation about the Wireup override API, suggesting that it supports temporary substitution. Followin...\",\"updatedAt\":\"2026-02-12T13:31:48.000Z\"},{\"cwd\":\"C:\\\\Personal\\\\satori-backup\",\"sessionId\":\"dcd51052-b7aa-4000-968a-4904d639abd4\",\"title\":\"Explain Backup Repos Script\",\"updatedAt\":\"2026-01-30T03:43:20.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Satori\\\\satori-ai-product\",\"sessionId\":\"84d7c027-40f2-41eb-bedc-fff48f0d9853\",\"title\":\"Create Commit Message\",\"updatedAt\":\"2026-01-30T02:58:56.000Z\"},{\"cwd\":\"S:\\\\Repos\\\\Satori\\\\satori-genai-framework\",\"sessionId\":\"3eedd835-b462-4687-8254-f6143ec7aa00\",\"title\":\"Show Current Changes\",\"updatedAt\":\"2026-01-30T01:50:32.000Z\"}]} without ever sending session/prompt",
+        "name": "read_only_start_and_progress",
+        "passed": true
+      },
+      {
+        "detail": "edit tool_call_update confined to path /workspace/adapter.rs (no `..` traversal); normalized ToolResult detail is \"diff: /workspace/adapter.rs\", never the old/new file text",
+        "name": "isolated_write",
+        "passed": true
+      },
+      {
+        "detail": "session/load against still-connected real session 7578f7cf-aa4c-4a89-bb16-7c54029c6bd0 answered \"already loaded\" -- proof Copilot recognizes and can re-engage the exact session a follow-up would target, ACP v1's only follow-up-equivalent mechanism given its declared steering: None",
+        "name": "follow_up",
+        "passed": true
+      },
+      {
+        "detail": "observed a real session/request_permission (session=sess-1, tool_call=call-2) and answered it over the wire with allow-once",
+        "name": "approval",
+        "passed": true
+      },
+      {
+        "detail": "shutdown() terminated the real copilot --acp process (pid 15889); confirmed gone via `kill -0`",
+        "name": "cancellation_scope",
+        "passed": true
+      },
+      {
+        "detail": "session d29686f1-cfc9-4c58-a6d2-98a1b146790f completed a real turn but a brand-new process still could not session/load it: session/load failed: adapter copilot operation session/load failed (protocol): ACP error response: Resource not found: Session d29686f1-cfc9-4c58-a6d2-98a1b146790f not found",
+        "name": "session_resume",
+        "passed": false
+      },
+      {
+        "detail": "not applicable to Copilot: worker MCP reconnection is handled by Copilot's own `--additional-mcp-config`-injected `batcave coordination-mcp` subprocess, which Copilot itself spawns and reconnects to, not a separate MCP subprocess this adapter manages",
+        "name": "vendor_reconnect",
+        "passed": true
+      },
+      {
+        "detail": "session d29686f1-cfc9-4c58-a6d2-98a1b146790f completed a real turn but a brand-new process still could not session/load it: session/load failed: adapter copilot operation session/load failed (protocol): ACP error response: Resource not found: Session d29686f1-cfc9-4c58-a6d2-98a1b146790f not found",
+        "name": "runtime_restart",
+        "passed": false
+      },
+      {
+        "detail": "every session/update in the fixture correlates to sessionId \"sess-1\"; tool_call/tool_call_update pairs (e.g. call-2) correlate via a shared toolCallId; ACP v1 carries no usage object at all, so usage capability is honestly declared None regardless",
+        "name": "result_usage_artifacts",
+        "passed": true
+      },
+      {
+        "detail": "--disable-builtin-mcps is never added to argv, with or without worker-MCP injection, so native skill/agent/plugin/hook/MCP discovery is never suppressed",
+        "name": "native_discovery",
+        "passed": true
+      },
+      {
+        "detail": "agent_thought_chunk (secret-shaped content included) drops to zero events before the redaction boundary; the worker-MCP scope token never appears in argv, only in env",
+        "name": "redaction",
+        "passed": true
+      },
+      {
+        "detail": "declared nested capability is None, never Managed",
+        "name": "managed_nesting_rejection",
+        "passed": true
+      },
+      {
+        "detail": "ACP v1's session/update schema has no discriminator this adapter maps to NestedWorkerObserved -- subagent.jsonl's vendor-side delegation normalized to 0 NestedWorkerObserved event(s) (declared nested=None); a real gap until a newer ACP protocol version adds a subagent-observation variant",
+        "name": "unexpected_child_observation",
+        "passed": false
+      }
+    ],
+    "version": "1.0.78"
+  }
+]

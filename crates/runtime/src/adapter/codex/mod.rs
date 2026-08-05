@@ -159,7 +159,7 @@ impl CodexAdapter {
             .call(
                 "initialize",
                 json!({
-                    "clientInfo": {"name": "@satori/batman", "version": env!("CARGO_PKG_VERSION")},
+                    "clientInfo": {"name": "@nikolasd/batman", "version": env!("CARGO_PKG_VERSION")},
                     "capabilities": {"experimentalApi": true}
                 }),
             )

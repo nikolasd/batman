@@ -7,10 +7,11 @@
 //! negotiated ACP protocol version its own `normalize.rs` understands the
 //! field names of. `1.0.73` was the version installed on the build
 //! machine at the start of this work; the CLI's own background
-//! auto-updater (`copilot update`) then updated it to `1.0.75`
-//! mid-development. Both are listed below because both were empirically
+//! auto-updater (`copilot update`) then moved it to `1.0.75` and later
+//! `1.0.78`. All three are listed below because each was empirically
 //! reprobed with a real `initialize` handshake and confirmed to negotiate
-//! identical ACP v1 `agentCapabilities`/`agentInfo` field names (see
+//! `protocolVersion: 1` with identical ACP v1
+//! `agentCapabilities`/`agentInfo` field names (see
 //! `tests/copilot_adapter.rs`'s real-binary tests) -- adding a newer CLI
 //! release here always requires that same kind of empirical
 //! verification, not a guess.
@@ -31,6 +32,10 @@ pub const COPILOT_KNOWN_CLI_VERSIONS: &[CopilotCompatibilityEntry] = &[
     },
     CopilotCompatibilityEntry {
         cli_version: "1.0.75",
+        acp_protocol_version: 1,
+    },
+    CopilotCompatibilityEntry {
+        cli_version: "1.0.78",
         acp_protocol_version: 1,
     },
 ];

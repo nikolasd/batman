@@ -1,0 +1,104 @@
+[
+  {
+    "adapter": "codex",
+    "declaredCapabilities": {
+      "approvals": "controllable",
+      "durability": "vendorResumable",
+      "nativeView": "none",
+      "nested": "none",
+      "protocol": "structured",
+      "resume": "session",
+      "steering": "activeTurn",
+      "structuredResult": true,
+      "usage": "perTurn",
+      "workspaceControl": "write"
+    },
+    "effectiveCapabilities": {
+      "approvals": "controllable",
+      "durability": "vendorResumable",
+      "nativeView": "none",
+      "nested": "none",
+      "protocol": "structured",
+      "resume": "none",
+      "steering": "none",
+      "structuredResult": true,
+      "usage": "perTurn",
+      "workspaceControl": "write"
+    },
+    "mode": "live",
+    "passed": false,
+    "scenarios": [
+      {
+        "detail": "codex --version reported Some(\"codex-cli 0.146.0\"); authReady=true",
+        "name": "probe",
+        "passed": true
+      },
+      {
+        "detail": "spawn_spec(None) argv is [\"app-server\"]: only \"app-server\" plus any user-configured -c overrides, none of --bare/--strict-mcp-config/--disable-builtin-mcps, so Codex's own config/skill/plugin/hook/MCP discovery is never suppressed",
+        "name": "native_discovery",
+        "passed": true
+      },
+      {
+        "detail": "approval.jsonl's execCommandApproval/applyPatchApproval requests both normalized to pending approvals (kinds [\"execCommand\", \"applyPatch\"]) with intact request_id/call_id correlation, never as sink events; approve/deny/invalid decision mapping matches the verified ReviewDecision shape",
+        "name": "approval",
+        "passed": true
+      },
+      {
+        "detail": "live codex lifecycle probe failed: first turn failed vendor-side: usageLimitExceeded: Your workspace is out of credits. Ask your workspace owner to refill in order to continue.",
+        "name": "result_usage_artifacts",
+        "passed": false
+      },
+      {
+        "detail": "the fixture's reasoning item (\"internal chain of thought...\") never produced an AdapterEvent at all -- normalize::notification_to_event drops every reasoning item before construction -- and every MessageChunk/MessageFinal that was produced carries ContentClass::Visible text with no chain-of-thought content",
+        "name": "redaction",
+        "passed": true
+      },
+      {
+        "detail": "fileChange artifact change path(s) [\"src/lib.rs\"] are plain relative paths with no \"..\" traversal component, so joined against the worker's own cwd (as Codex's own sandboxed filesystem access already enforces) they can only ever resolve inside the worker's isolated workspace",
+        "name": "isolated_write",
+        "passed": true
+      },
+      {
+        "detail": "declared_capabilities().nested == None (never Managed); only OMP-native nesting may advertise Managed, and only through OMP's own limits",
+        "name": "managed_nesting_rejection",
+        "passed": true
+      },
+      {
+        "detail": "not applicable to codex: the app-server protocol's ThreadItem variants (agentMessage, reasoning, commandExecution, fileChange) have no vendor-spawned-child/subagent concept to observe, so normalize::notification_to_event has no path producing NestedWorkerObserved -- consistent with this adapter's declared nested: none",
+        "name": "unexpected_child_observation",
+        "passed": true
+      },
+      {
+        "detail": "not applicable to codex: worker MCP reconnection is handled by Codex's own mcp_servers.batman.* -configured coordination-mcp subprocess, which Codex spawns and reconnects to on its own terms -- this adapter has no adapter-owned reconnect logic of its own to test here (see crates/runtime/tests/coordination_mcp.rs for that subprocess's own reconnect proof)",
+        "name": "vendor_reconnect",
+        "passed": true
+      },
+      {
+        "detail": "real codex app-server thread 019fd1ec-0c23-76a3-9aa7-2e58c9da05a1 was started (thread/start) with zero model calls issued and no write outside \"/var/folders/rd/6cprc9sj4tsc4v35dgpgt8k00000gp/T/\"; progress observation (MessageChunk/ToolStarted/ToolResult, correlated to one run/task/worker) is proven by the thread-turn.jsonl fixture replay in the same suite",
+        "name": "read_only_start_and_progress",
+        "passed": true
+      },
+      {
+        "detail": "live codex lifecycle probe failed: first turn failed vendor-side: usageLimitExceeded: Your workspace is out of credits. Ask your workspace owner to refill in order to continue.",
+        "name": "follow_up",
+        "passed": false
+      },
+      {
+        "detail": "live codex lifecycle probe failed: first turn failed vendor-side: usageLimitExceeded: Your workspace is out of credits. Ask your workspace owner to refill in order to continue.",
+        "name": "cancellation_scope",
+        "passed": false
+      },
+      {
+        "detail": "live codex lifecycle probe failed: first turn failed vendor-side: usageLimitExceeded: Your workspace is out of credits. Ask your workspace owner to refill in order to continue.",
+        "name": "session_resume",
+        "passed": false
+      },
+      {
+        "detail": "live codex lifecycle probe failed: first turn failed vendor-side: usageLimitExceeded: Your workspace is out of credits. Ask your workspace owner to refill in order to continue.",
+        "name": "runtime_restart",
+        "passed": false
+      }
+    ],
+    "version": "codex-cli 0.146.0"
+  }
+]

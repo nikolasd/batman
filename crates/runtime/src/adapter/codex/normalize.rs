@@ -133,6 +133,25 @@ pub fn notification_to_event(method: &str, params: &Value) -> Option<AdapterEven
                 cost_usd: None,
             })
         }
+        // A vendor-side turn failure -- an expired credential, an
+        // exhausted quota (`usageLimitExceeded`), a refused request. Codex
+        // reports it as a notification and then completes the turn with
+        // `status: "failed"`, so without this arm the failure is invisible:
+        // the turn simply never produces a final message and every caller
+        // sees an unexplained timeout. Observed verbatim against
+        // `codex-cli 0.146.0`.
+        "error" => {
+            let error = params.get("error")?;
+            let message = error.get("message").and_then(Value::as_str)?;
+            let code = error
+                .get("codexErrorInfo")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            Some(AdapterEventPayload::ProtocolHealthChanged {
+                healthy: false,
+                detail: visible(format!("{code}: {message}")),
+            })
+        }
         // `turn/completed` closes out a turn whose content was already
         // fully represented by the `item/started`/`item/completed`
         // lifecycle events above -- there is no dedicated "turn

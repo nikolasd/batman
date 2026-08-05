@@ -1,0 +1,104 @@
+[
+  {
+    "adapter": "ompRpc",
+    "declaredCapabilities": {
+      "approvals": "observable",
+      "durability": "runtimeScoped",
+      "nativeView": "none",
+      "nested": "none",
+      "protocol": "structured",
+      "resume": "session",
+      "steering": "queued",
+      "structuredResult": true,
+      "usage": "aggregate",
+      "workspaceControl": "write"
+    },
+    "effectiveCapabilities": {
+      "approvals": "observable",
+      "durability": "runtimeScoped",
+      "nativeView": "none",
+      "nested": "none",
+      "protocol": "structured",
+      "resume": "session",
+      "steering": "queued",
+      "structuredResult": true,
+      "usage": "aggregate",
+      "workspaceControl": "write"
+    },
+    "mode": "live",
+    "passed": true,
+    "scenarios": [
+      {
+        "detail": "omp --version reported Some(\"omp/17.2.7\"); authReady=true; model selector \"anthropic/claude-3-5-sonnet-20240620\" was confirmed present in `omp models --json`'s own catalog.",
+        "name": "probe",
+        "passed": true
+      },
+      {
+        "detail": "turn.jsonl's prompt-acceptance MessageChunk precedes its turn-completion MessageFinal (starting a run, observed as distinct from completion), and subagents.jsonl's toolcall_start/toolcall_end normalize into ToolStarted/ToolResult mid-run progress; both derive purely from normalize_frame's pure in-memory transformation, which never performs a filesystem write, so observing start/progress this way never writes anything, let alone outside the worker's own workspace.",
+        "name": "read_only_start_and_progress",
+        "passed": true
+      },
+      {
+        "detail": "OmpRpcAdapter::start() spawns `omp` via a SpawnSpec built from `..SpawnSpec::minimal()` without ever overriding `.cwd`, and Supervisor::spawn applies that cwd verbatim via Command::current_dir(&spec.cwd); SpawnSpec::minimal().cwd resolves to /private/var/folders/rd/6cprc9sj4tsc4v35dgpgt8k00000gp/T on this machine, confirmed equal to the real OS temp directory rather than this runtime's own working directory or repository.",
+        "name": "isolated_write",
+        "passed": true
+      },
+      {
+        "detail": "the real installed omp binary accepted a follow_up-shaped command (built by client::follow_up_command, the exact builder OmpRpcAdapter's run_pump dispatches Outbound::FollowUp to) over the same live RPC channel a running session already owns, without ever sending a prompt; success=true was returned immediately.",
+        "name": "follow_up",
+        "passed": true
+      },
+      {
+        "detail": "confirm and select extension_ui_request frames each produce a PendingApproval (backing ApprovalsCapability::Observable via snapshot()'s state_summary); setWidget produces none; normalize_frame returns zero events for all three",
+        "name": "approval",
+        "passed": true
+      },
+      {
+        "detail": "against the real installed omp binary: CancelScope::Turn's underlying command (`abort`, via client::abort_command -- exactly what OmpRpcAdapter::cancel()'s Turn arm dispatches Outbound::Abort to) was accepted (success=true), and the session remained alive and responsive afterward (a follow-up get_state round trip still succeeded), proving Turn scope never kills the vendor process; CancelScope::Worker and CancelScope::Subtree (identical dispatch: both map to Outbound::Terminate) then genuinely terminated that same live process via ManagedProcess::terminate(), returning Exited { code: Some(130) } only once the leader had actually exited and been reaped.",
+        "name": "cancellation_scope",
+        "passed": true
+      },
+      {
+        "detail": "get_state's real data.sessionId field normalizes to VendorSessionEstablished (observed \"019f9652-7aac-7000-a8e1-db0d90064c58\" from turn.jsonl -- this adapter's VendorSessionRef, carried back via StartSpec.resume); against the real installed omp binary, `--resume <id>` (the exact flag start() appends when spec.resume is set) for an unknown id produced the real, documented vendor error, proving the flag is genuinely dispatched and interpreted, not silently ignored. A fully successful resume of prior *content* would additionally require a real model call establishing a persisted session, which this fixture suite never makes, so resume is proven only at the session-reference/flag level -- matching declared_capabilities()'s own ResumeCapability::Session, not a stronger claim.",
+        "name": "session_resume",
+        "passed": true
+      },
+      {
+        "detail": "not applicable to OMP-RPC as a literal reconnect: this adapter has no separate worker-MCP subprocess to reconnect at all -- host_tool_call/host_tool_result round-trips over the same RPC channel this adapter already owns to the one supervised omp process. Verified in-process: handle_host_tool_call answered a synthetic host_tool_call frame with a real host_tool_result frame (isError=true) with no second connection or process involved; the same bridge is additionally exercised end to end against a real (fake) child process by tests/omp_rpc_adapter.rs::a_host_tool_call_during_the_prompt_turn_never_deadlocks_start.",
+        "name": "vendor_reconnect",
+        "passed": true
+      },
+      {
+        "detail": "a freshly constructed OmpRpcAdapter instance (simulating the runtime restarting, since this struct carries zero cross-instance state -- inner always starts Idle) reported an idle snapshot with no memory of any prior run, confirming restart recovery cannot rely on any in-process adapter state; the only continuity mechanism is the caller re-supplying a previously observed vendor session id via StartSpec.resume, and the real installed omp binary genuinely dispatches that id through --resume (same real-process probe as SESSION_RESUME) -- consistent with this adapter's declared DurabilityCapability::RuntimeScoped (not VendorResumable): resuming the session *reference* is real, resuming prior *content* without a model call is not claimed.",
+        "name": "runtime_restart",
+        "passed": true
+      },
+      {
+        "detail": "turn.jsonl's one session (019f9652-7aac-7000-a8e1-db0d90064c58) normalized a VendorSessionEstablished, a UsageReported (42 in / 7 out tokens, cost=Some(0.0007)), a completing MessageFinal(role=\"system\"), and exactly one ArtifactProduced(fileChange) from the captured tool_execution_end mutation -- while the rejected edit in the same transcript reported ok=false and produced no artifact",
+        "name": "result_usage_artifacts",
+        "passed": true
+      },
+      {
+        "detail": "build_startup_commands only ever adds config commands (set_subagent_subscription/set_host_tools/set_host_uri_schemes) ahead of prompt, never removes or suppresses anything; this adapter's real CLI argv (--mode rpc --model <selector> --allow-home[ --profile ...][ --resume ...], see start()) likewise never adds a flag disabling user/project skill/plugin/hook/MCP discovery.",
+        "name": "native_discovery",
+        "passed": true
+      },
+      {
+        "detail": "thinking_start/thinking_delta/thinking_end frames (this adapter's own hidden- reasoning frame types) normalize to zero AdapterEventPayloads -- normalize_frame drops them before ever constructing an event, so a secret-looking string embedded in a thinking_delta's text field never becomes any payload, classified or not, and can never reach a journaled event.",
+        "name": "redaction",
+        "passed": true
+      },
+      {
+        "detail": "declared_capabilities().nested == NestedCapability::None -- this foreign adapter never advertises managed nesting; only OMP-native nesting may, per the plan's Global Constraints.",
+        "name": "managed_nesting_rejection",
+        "passed": true
+      },
+      {
+        "detail": "subagents.jsonl's subagent_started frame normalizes into NestedWorkerObserved{vendor_child_id: \"sub-1\", vendor_parent_ref: \"main\"} even though declared_capabilities().nested stays NestedCapability::None -- emission never upgrades the declared capability; the same fixture's agent_end still completes the turn despite a subagent having run.",
+        "name": "unexpected_child_observation",
+        "passed": true
+      }
+    ],
+    "version": "omp/17.2.7"
+  }
+]

@@ -96,7 +96,7 @@ async fn call_named<T>(
         .map_err(|err| format!("{what} failed: {err}"))
 }
 
-async fn probe_scenario() -> (
+pub async fn probe_scenario() -> (
     ScenarioResult,
     Option<String>,
     batman_runtime::adapter::AdapterCapabilities,
@@ -726,8 +726,8 @@ pub async fn fixture_report() -> ConformanceReport {
 /// session with real content, not that the loaded session's
 /// conversational context is itself provably continued (that would
 /// need a second real turn checking the first is remembered, which
-/// this suite does not spend). Only reachable through [`live_report`]'s
-/// `BATMAN_LIVE_COPILOT=1` gate.
+/// this suite does not spend). Only reachable through [`live_report`],
+/// which runs by default unless `BATMAN_DISABLE_VENDOR_CLI=1` is set.
 async fn session_resume_probe_live() -> Result<String, String> {
     let cwd = std::env::temp_dir();
     let cwd_str = cwd.to_string_lossy().to_string();
@@ -772,18 +772,22 @@ async fn session_resume_probe_live() -> Result<String, String> {
 }
 
 /// Runs the live conformance suite against the installed `copilot` CLI.
-/// Gated on `BATMAN_LIVE_COPILOT=1`; never runs otherwise. Reuses the
-/// exact same 14-scenario suite as [`fixture_report`], substituting a
-/// real, turn-completed [`session_resume_probe_live`] for
-/// `SESSION_RESUME`/`RUNTIME_RESTART` -- the two scenarios fixture mode
-/// cannot prove past the flag/mechanism level (see
-/// `docs/known-gaps.md`).
+///
+/// Real invocation is the default. Reuses the exact same 14-scenario
+/// suite as [`fixture_report`], substituting a real, turn-completed
+/// [`session_resume_probe_live`] for `SESSION_RESUME`/`RUNTIME_RESTART` --
+/// the two scenarios fixture mode cannot prove past the flag/mechanism
+/// level (see `TODO.md`). Set `BATMAN_DISABLE_VENDOR_CLI=1` to
+/// forbid it in CI or on a machine without the CLI installed.
 ///
 /// # Errors
-/// Returns a message if `BATMAN_LIVE_COPILOT` is unset.
+/// Returns a message if `BATMAN_DISABLE_VENDOR_CLI=1` is set.
 pub async fn live_report() -> Result<ConformanceReport, String> {
-    if std::env::var("BATMAN_LIVE_COPILOT").as_deref() != Ok("1") {
-        return Err("live Copilot conformance requires BATMAN_LIVE_COPILOT=1".to_string());
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        return Err(format!(
+            "live Copilot conformance is disabled by {}=1",
+            batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV
+        ));
     }
     let (probe_result, version, declared_capabilities) = probe_scenario().await;
     let live_resume_probe = session_resume_probe_live().await;

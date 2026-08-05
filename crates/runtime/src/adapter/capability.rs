@@ -120,6 +120,51 @@ pub struct AdapterCapabilities {
     pub durability: DurabilityCapability,
 }
 
+/// Every field name of [`AdapterCapabilities`], in its serialized form.
+/// This is the vocabulary `capabilities.required` accepts: an org names a
+/// capability with the same string the adapter catalog prints, and no
+/// second vocabulary exists to drift from this one.
+pub const CAPABILITY_FIELD_NAMES: &[&str] = &[
+    "protocol",
+    "resume",
+    "steering",
+    "approvals",
+    "structuredResult",
+    "usage",
+    "nested",
+    "nativeView",
+    "workspaceControl",
+    "durability",
+];
+
+impl AdapterCapabilities {
+    /// Whether the named capability is *present* in this set.
+    ///
+    /// "Present" means the adapter actually offers it: `false` for a
+    /// boolean field and the `none` variant of an enum both mean absent.
+    /// Fields with no `none` variant (`protocol`, `workspaceControl`,
+    /// `durability`) always have some value and are therefore always
+    /// present -- requiring them is satisfied by every adapter.
+    ///
+    /// Returns `false` for an unrecognized name. Config validation rejects
+    /// those up front (see `CAPABILITY_FIELD_NAMES`), so reaching this with
+    /// one means an unenforceable requirement, and denying is the safe read.
+    #[must_use]
+    pub fn has(&self, name: &str) -> bool {
+        match name {
+            "protocol" | "workspaceControl" | "durability" => true,
+            "resume" => self.resume != ResumeCapability::None,
+            "steering" => self.steering != SteeringCapability::None,
+            "approvals" => self.approvals != ApprovalsCapability::None,
+            "structuredResult" => self.structured_result,
+            "usage" => self.usage != UsageCapability::None,
+            "nested" => self.nested != NestedCapability::None,
+            "nativeView" => self.native_view != NativeViewCapability::None,
+            _ => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

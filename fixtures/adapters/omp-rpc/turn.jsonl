@@ -7,3 +7,5 @@ this-is-not-json
 {"type":"response","id":"1","command":"prompt","success":true,"data":{"agentInvoked":false}}
 {"type":"response","id":"2","command":"get_session_stats","success":true,"data":{"sessionId":"019f9652-7aac-7000-a8e1-db0d90064c58","userMessages":1,"assistantMessages":1,"tokens":{"input":42,"output":7,"reasoning":0,"cacheRead":0,"cacheWrite":0,"total":49},"cost":0.0007}}
 {"type":"response","id":"3","command":"get_state","success":true,"data":{"sessionId":"019f9652-7aac-7000-a8e1-db0d90064c58","sessionFile":".omp/sessions/019f9652-7aac-7000-a8e1-db0d90064c58.jsonl","isStreaming":false}}
+{"type":"tool_execution_end","toolCallId":"call_e896a543","toolName":"edit","result":{"content":[{"type":"text","text":"Input header must be [PATH] or [PATH#TAG] with a 4-hex content-hash tag; got \"[greeting.txt#*]\"."}],"details":{}},"isError":true}
+{"type":"tool_execution_end","toolCallId":"call_6463bbea","toolName":"edit","result":{"content":[{"type":"text","text":"[greeting.txt#80CE]\n1:goodbye"}],"details":{"diff":"-1|hello\n+1|goodbye","firstChangedLine":1,"op":"update","path":"greeting.txt","oldText":"hello\n","newText":"goodbye\n"}},"isError":false}

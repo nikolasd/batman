@@ -24,8 +24,9 @@
 //! stdin, which *would* invoke the model the moment the CLI reads it --
 //! so the default `claude_adapter.rs` suite never calls them past their
 //! own pre-start guard clauses. The optional, `#[ignore]`d
-//! `claude_live.rs` end-to-end test (gated on `BATMAN_LIVE_CLAUDE=1`) is
-//! what actually exercises the spawn+stdin+reader-task path.
+//! `claude_live.rs` end-to-end test is what actually exercises the
+//! spawn+stdin+reader-task path; it is skipped unless explicitly run
+//! with `--ignored` and `BATMAN_DISABLE_VENDOR_CLI` is unset.
 
 pub mod command;
 pub mod conformance;

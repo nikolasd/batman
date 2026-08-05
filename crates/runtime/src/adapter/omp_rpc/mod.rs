@@ -950,7 +950,13 @@ mod host_tool_bridge_tests {
             batman_runtime::workspace::LeaseService::open_in_memory(project_id)
                 .expect("in-memory lease service must open"),
         );
-        let broker = CoordinationBroker::new(db, project_id, events_tx, lease_service);
+        let broker = CoordinationBroker::new(
+            db,
+            project_id,
+            events_tx,
+            lease_service,
+            std::sync::Arc::new(crate::workspace::ArtifactStore::new()),
+        );
         let scope = BoundScope {
             run_id,
             task_id,

@@ -74,6 +74,53 @@ fn schema_manifest_required_surface_is_present_on_the_installed_binary() {
         .expect("installed codex-cli 0.145.0 app-server schema must still cover this adapter's required surface");
 }
 
+/// A vendor-side turn failure must reach the event stream. Captured
+/// verbatim from `codex-cli 0.146.0` (an exhausted workspace quota): the
+/// CLI emits this notification and then completes the turn with
+/// `status: "failed"`, never producing a final assistant message. Dropping
+/// it made every such failure look like an unexplained 60s timeout.
+#[test]
+fn a_vendor_error_notification_normalizes_to_an_unhealthy_protocol_event() {
+    let params = serde_json::json!({
+        "error": {
+            "message": "Your workspace is out of credits. Ask your workspace owner to refill in order to continue.",
+            "codexErrorInfo": "usageLimitExceeded",
+            "additionalDetails": null
+        },
+        "willRetry": false,
+        "threadId": "019fd1e8-2a4f-7b31-b78b-f7d6863f541c",
+        "turnId": "019fd1e8-2bb6-7280-83c6-fc8132cf2d85"
+    });
+
+    let payload = normalize::notification_to_event("error", &params)
+        .expect("a vendor error must normalize to an event, not be dropped");
+
+    match payload {
+        AdapterEventPayload::ProtocolHealthChanged { healthy, detail } => {
+            assert!(!healthy, "a vendor error is not a healthy protocol state");
+            // Both the machine-readable code and the operator-readable
+            // reason survive; either alone would force a guess.
+            assert!(
+                detail.value.contains("usageLimitExceeded"),
+                "the vendor's error code must survive: {:?}",
+                detail.value
+            );
+            assert!(
+                detail.value.contains("out of credits"),
+                "the vendor's own message must survive: {:?}",
+                detail.value
+            );
+        }
+        other => panic!("expected ProtocolHealthChanged, got {other:?}"),
+    }
+
+    // A malformed error notification is ignored rather than panicking.
+    assert!(
+        normalize::notification_to_event("error", &serde_json::json!({ "error": {} })).is_none(),
+        "an error notification with no message must be skipped, not fabricated"
+    );
+}
+
 #[test]
 fn fixture_thread_turn_transcript_normalizes_to_correlated_events() {
     let lines = read_jsonl("thread-turn.jsonl");
@@ -292,7 +339,7 @@ async fn real_transport_completes_initialize_and_thread_start_with_zero_model_ca
         client.call(
             "initialize",
             serde_json::json!({
-                "clientInfo": {"name": "@satori/batman", "version": "0.0.0-test"},
+                "clientInfo": {"name": "@nikolasd/batman", "version": "0.0.0-test"},
                 "capabilities": {"experimentalApi": true}
             }),
         ),
@@ -338,20 +385,24 @@ async fn real_transport_completes_initialize_and_thread_start_with_zero_model_ca
 /// Exercises the full [`Adapter::start`] lifecycle -- including
 /// `turn/start`, which genuinely does invoke the model once Codex begins
 /// working the turn -- against a real authenticated Codex account.
-/// **Never run this in CI or by an agent**: it is gated behind
-/// `BATMAN_LIVE_CODEX=1` and `#[ignore]`d by default specifically because
-/// it is the one path in this test file that is not free of model calls.
-/// A human wanting to exercise it locally: `BATMAN_LIVE_CODEX=1 cargo test
-/// -p batman-runtime --test codex_adapter -- --ignored
-/// live_start_actually_runs_a_turn_against_a_real_model`.
+/// **Never run this in CI or by an agent**: it is `#[ignore]`d by
+/// default specifically because it is the one path in this test file
+/// that is not free of model calls. An explicit `--ignored` run is
+/// itself the signal that a human wants the live call; the only thing
+/// that still skips it is `BATMAN_DISABLE_VENDOR_CLI=1`, which forbids
+/// observation-only vendor invocation. A human wanting to exercise it
+/// locally: `cargo test -p batman-runtime --test codex_adapter --
+/// --ignored live_start_actually_runs_a_turn_against_a_real_model`.
 #[tokio::test]
 #[ignore = "invokes a real model turn against an authenticated Codex account; human-run only, see doc comment"]
 async fn live_start_actually_runs_a_turn_against_a_real_model() {
-    assert_eq!(
-        std::env::var("BATMAN_LIVE_CODEX").as_deref(),
-        Ok("1"),
-        "set BATMAN_LIVE_CODEX=1 to opt into this live, model-invoking test"
-    );
+    // An explicit `--ignored` run already means the human wants this
+    // live call -- the only remaining reason to refuse is the kill
+    // switch, which forbids observation-only vendor invocation.
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        eprintln!("skipping: BATMAN_DISABLE_VENDOR_CLI=1 forbids live vendor-CLI invocation");
+        return;
+    }
     let adapter = CodexAdapter::new(
         std::env::temp_dir(),
         CodexStartupOptions::default(),
@@ -513,7 +564,7 @@ async fn fixture_conformance_report_covers_every_canonical_scenario_exactly_once
     // rollout once a turn actually runs, and turn/start is what invokes
     // the model, so none of these four are provable here; each is
     // honestly reported `passed: false` (proven instead under
-    // live_report, gated on BATMAN_LIVE_CODEX=1).
+    // live_report, which runs by default unless BATMAN_DISABLE_VENDOR_CLI=1 is set).
     let requires_live_turn = [
         scenario::FOLLOW_UP,
         scenario::CANCELLATION_SCOPE,

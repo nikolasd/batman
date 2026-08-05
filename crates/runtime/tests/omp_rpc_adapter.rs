@@ -545,7 +545,17 @@ async fn spawn_ready_client() -> Option<(OmpRpcClient, PathBuf)> {
         selector.replace('/', "-")
     ));
     std::fs::create_dir_all(&workdir).expect("create scratch workdir");
-    let env = EnvironmentPolicy::baseline().build(&std::env::vars().collect(), &[]);
+    // `omp` needs the local model server's *address* to resolve a
+    // `lm-studio`/`omlx` selector; baseline permits only nine variables and
+    // omits it, so a stripped spawn exits with `Model "…" not found` and
+    // this helper would silently return `None` -- turning these
+    // real-binary tests into permanent skips. Worse, `omp` persists
+    // provider discovery, so the failed spawn also empties the operator's
+    // own `omp models` catalog. Mirrors `OMP_LOCAL_PROVIDER_ENV` in
+    // `src/adapter/omp_rpc/conformance.rs` (duplicated because `src/` and
+    // `tests/` are separate compilation units).
+    let extra = vec!["LM_STUDIO_BASE_URL".to_string()];
+    let env = EnvironmentPolicy::baseline().build(&std::env::vars().collect(), &extra);
     let spec = SpawnSpec {
         program: "omp".into(),
         args: vec![
@@ -640,15 +650,23 @@ async fn set_host_tools_and_host_uri_schemes_round_trip_against_installed_omp() 
         "set_host_uri_schemes must succeed with no model call: {:?}",
         response.error
     );
+    // `omp 17.2.7` echoes the registered schemes as a flat array of
+    // strings -- `{"schemes":["battest"]}` -- not as objects carrying a
+    // `scheme` field. Captured verbatim from the real binary; parsing it as
+    // objects silently collected nothing, and this assertion only ever ran
+    // at all once `spawn_ready_client` stopped failing into a skip.
     let registered_schemes: Vec<&str> = response
         .data
         .get("schemes")
         .and_then(Value::as_array)
         .expect("real set_host_uri_schemes response must carry a schemes array")
         .iter()
-        .filter_map(|entry| entry.get("scheme").and_then(Value::as_str))
+        .filter_map(Value::as_str)
         .collect();
-    assert!(registered_schemes.contains(&"battest"));
+    assert!(
+        registered_schemes.contains(&"battest"),
+        "the registered scheme must be echoed back, got {registered_schemes:?}"
+    );
 
     client.process_mut().terminate().await;
     let _ = std::fs::remove_dir_all(&workdir);

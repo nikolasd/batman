@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 //! Optional, `#[ignore]`d end-to-end conformance probe for
-//! [`ClaudeAdapter`], gated on `BATMAN_LIVE_CLAUDE=1`.
+//! [`ClaudeAdapter`].
 //!
 //! `crates/runtime/tests/claude_adapter.rs`'s default suite deliberately
 //! never calls `start()`/`resume()`/`send()` past their pre-start guard
@@ -13,10 +13,13 @@
 //!
 //! A human runs this deliberately with:
 //! ```sh
-//! BATMAN_LIVE_CLAUDE=1 cargo test -p batman-runtime --test claude_live -- --ignored
+//! cargo test -p batman-runtime --test claude_live -- --ignored
 //! ```
-//! No CI job and no agent working on this task ever sets that variable or
-//! runs this test.
+//! An explicit `--ignored` run is itself the signal that a human wants
+//! the live call; the only thing that still skips it is
+//! `BATMAN_DISABLE_VENDOR_CLI=1`, which forbids observation-only vendor
+//! invocation for CI or a machine without the CLI installed. No CI job
+//! and no agent working on this task ever passes `--ignored` here.
 
 #[path = "../src/adapter/claude/mod.rs"]
 mod claude;
@@ -45,10 +48,13 @@ impl AdapterEventSink for CollectingSink {
 }
 
 #[tokio::test]
-#[ignore = "invokes the real Claude model; gated on BATMAN_LIVE_CLAUDE=1, never run automatically"]
+#[ignore = "invokes the real Claude model; never run automatically"]
 async fn start_a_real_claude_session_and_observe_its_result() {
-    if std::env::var("BATMAN_LIVE_CLAUDE").as_deref() != Ok("1") {
-        eprintln!("skipping: set BATMAN_LIVE_CLAUDE=1 to run this live test");
+    // An explicit `--ignored` run already means the human wants this
+    // live call -- the only remaining reason to refuse is the kill
+    // switch, which forbids observation-only vendor invocation.
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        eprintln!("skipping: BATMAN_DISABLE_VENDOR_CLI=1 forbids live vendor-CLI invocation");
         return;
     }
 

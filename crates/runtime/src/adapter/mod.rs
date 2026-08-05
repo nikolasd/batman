@@ -23,9 +23,9 @@ use std::future::Future;
 use std::pin::Pin;
 
 pub use capability::{
-    AdapterCapabilities, ApprovalsCapability, DurabilityCapability, NativeViewCapability,
-    NestedCapability, ProtocolKind, ResumeCapability, SteeringCapability, UsageCapability,
-    WorkspaceControlCapability,
+    AdapterCapabilities, ApprovalsCapability, CAPABILITY_FIELD_NAMES, DurabilityCapability,
+    NativeViewCapability, NestedCapability, ProtocolKind, ResumeCapability, SteeringCapability,
+    UsageCapability, WorkspaceControlCapability,
 };
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;
@@ -39,10 +39,7 @@ pub use profile::{
     WorkerProfile,
 };
 pub use profile_store::{ProfileStore, ProfileStoreError};
-pub use registry::{
-    AdapterAuthorization, AdapterRegistry, DenyByDefaultAuthorization, FixtureAuthorization,
-    RegistryError,
-};
+pub use registry::{AdapterAuthorization, AdapterRegistry, FixtureAuthorization, RegistryError};
 pub use r#trait::{
     Adapter, AdapterMessage, AdapterSnapshot, CancelScope, ProbeResult, StartSpec, VendorSessionRef,
 };

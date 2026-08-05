@@ -79,7 +79,7 @@ impl AdapterEventSink for RecordingSink {
     }
 }
 
-async fn probe_scenario() -> (
+pub async fn probe_scenario() -> (
     ScenarioResult,
     Option<String>,
     batman_runtime::adapter::AdapterCapabilities,
@@ -469,14 +469,16 @@ fn vendor_reconnect_scenario() -> ScenarioResult {
 /// 0.145.0 binary -- a bare `thread/start` with no turn leaves no rollout
 /// file at all), and `turn/start` itself is what invokes the model, so
 /// none of these four can be proven without one. See `live_report`,
-/// gated on `BATMAN_LIVE_CODEX=1`, for the real proof.
+/// which runs by default unless `BATMAN_DISABLE_VENDOR_CLI=1` is set,
+/// for the real proof.
 fn requires_live_turn_scenario(name: &'static str, mechanism: &str) -> ScenarioResult {
     ScenarioResult::fail(
         name,
         format!(
             "{mechanism} -- codex only persists a thread's resumable rollout once a turn \
              actually runs, and turn/start is what invokes the model, so this is not provable \
-             without a live model call in fixture_report; see live_report (BATMAN_LIVE_CODEX=1)"
+             without a live model call in fixture_report; see live_report (runs by default \
+             unless BATMAN_DISABLE_VENDOR_CLI=1 is set)"
         ),
     )
 }
@@ -501,7 +503,7 @@ async fn spawn_raw_client(cwd: &std::path::Path) -> Result<Arc<CodexRpcClient>, 
         .call(
             "initialize",
             serde_json::json!({
-                "clientInfo": {"name": "@satori/batman", "version": env!("CARGO_PKG_VERSION")},
+                "clientInfo": {"name": "@nikolasd/batman", "version": env!("CARGO_PKG_VERSION")},
                 "capabilities": {"experimentalApi": true}
             }),
         )
@@ -616,18 +618,44 @@ async fn message_final_count(sink: &RecordingSink) -> usize {
         .count()
 }
 
+/// The vendor's own failure text, if the adapter observed one. A turn that
+/// fails vendor-side (expired credential, exhausted quota, refused
+/// request) never produces a `MessageFinal`, so waiting for one would only
+/// ever time out -- and report the timeout instead of the reason.
+fn vendor_failure(sink: &RecordingSink) -> Option<String> {
+    sink.events
+        .lock()
+        .expect("recording sink mutex never poisoned")
+        .iter()
+        .find_map(|e| match &e.payload {
+            AdapterEventPayload::ProtocolHealthChanged { healthy, detail } if !healthy => {
+                Some(detail.value.clone())
+            }
+            _ => None,
+        })
+}
+
+/// Waits for `at_least` final messages, or returns the vendor's failure
+/// text the moment one is observed.
+///
+/// `Ok(true)` -- the messages arrived. `Ok(false)` -- the timeout elapsed
+/// with no vendor explanation. `Err(detail)` -- the vendor reported why it
+/// will never arrive, which is strictly better than a generic timeout.
 async fn wait_for_message_final_count(
     sink: &RecordingSink,
     at_least: usize,
     timeout: std::time::Duration,
-) -> bool {
+) -> Result<bool, String> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if message_final_count(sink).await >= at_least {
-            return true;
+            return Ok(true);
+        }
+        if let Some(detail) = vendor_failure(sink) {
+            return Err(detail);
         }
         if tokio::time::Instant::now() >= deadline {
-            return false;
+            return Ok(false);
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
@@ -664,8 +692,16 @@ async fn live_lifecycle_scenarios_inner() -> Result<Vec<ScenarioResult>, String>
         .await
         .map_err(|e| format!("start failed: {e}"))?;
 
-    if !wait_for_message_final_count(&sink, 1, std::time::Duration::from_secs(60)).await {
-        return Err("first turn never produced a MessageFinal within 60s".to_string());
+    match wait_for_message_final_count(&sink, 1, std::time::Duration::from_secs(60)).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err("first turn never produced a MessageFinal within 60s".to_string());
+        }
+        Err(detail) => {
+            // The vendor said why. Reporting its text keeps an account or
+            // credential problem from masquerading as an adapter defect.
+            return Err(format!("first turn failed vendor-side: {detail}"));
+        }
     }
 
     let thread_id = sink
@@ -821,13 +857,19 @@ async fn live_lifecycle_scenarios() -> Vec<ScenarioResult> {
 }
 
 /// Runs the live conformance suite against the installed `codex` CLI.
-/// Gated on `BATMAN_LIVE_CODEX=1`; never runs otherwise.
+///
+/// Real invocation is the default; this suite runs a real `turn/start`,
+/// which is a billed model call. Set `BATMAN_DISABLE_VENDOR_CLI=1` to
+/// forbid it in CI or on a machine without the CLI installed.
 ///
 /// # Errors
-/// Returns a message if `BATMAN_LIVE_CODEX` is unset.
+/// Returns a message if `BATMAN_DISABLE_VENDOR_CLI=1` is set.
 pub async fn live_report() -> Result<ConformanceReport, String> {
-    if std::env::var("BATMAN_LIVE_CODEX").as_deref() != Ok("1") {
-        return Err("live Codex conformance requires BATMAN_LIVE_CODEX=1".to_string());
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        return Err(format!(
+            "live Codex conformance is disabled by {}=1",
+            batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV
+        ));
     }
     let (_probe_result, version, declared_capabilities) = probe_scenario().await;
     let mut scenarios = assemble_fixture_scenarios().await;

@@ -12,10 +12,8 @@
 //! zero-model-call probe against the installed `omp` binary itself --
 //! this adapter's own, always-legitimate runtime dependency, gated
 //! gracefully (an honest `fail`, never a panic or a fabricated pass) when
-//! unreachable, exactly like [`probe_scenario`] already handles an
-//! unreachable local selector. No scenario here ever sends a real
-//! `prompt` command, so none of them ever actually invokes a model
-//! backend, paid or local.
+//! unreachable. No scenario here ever sends a real `prompt` command, so none
+//! of them ever actually invokes a model backend, paid or local.
 
 use std::process::Stdio;
 
@@ -87,13 +85,80 @@ fn normalize_fixture_lines(lines: &[String]) -> Vec<AdapterEventPayload> {
 
 // -------------------------------------------------------- local selector
 
-/// Queries the installed `omp` binary's own model catalog for a real
-/// `lm-studio`/`omlx` selector. Returns `None` (never invents one) when
-/// `omp` is unreachable or no local provider is currently listed --
-/// mirrors `tests/omp_rpc_adapter.rs::resolve_first_local_selector`
-/// exactly (duplicated here since `src/` and `tests/` are separate
-/// compilation units).
-async fn resolve_first_local_selector() -> Option<String> {
+/// The availability probe `batman_runtime::conformance::probe_availability`
+/// calls for this adapter kind: does the installed `omp` binary answer a
+/// `--version` handshake? Never a model call.
+///
+/// Deliberately weaker than [`probe_scenario`], which additionally
+/// requires a *local* model selector to be catalogued. That is a
+/// conformance question -- which of this adapter's declared capabilities
+/// are provable here -- not an availability one. A run whose profile
+/// names a hosted model is perfectly startable on a machine with no local
+/// provider listed, so gating `run/submit` on the catalog would deny work
+/// the vendor CLI can plainly do.
+pub async fn probe() -> (ScenarioResult, Option<String>, AdapterCapabilities) {
+    let declared_capabilities = super::OmpRpcAdapter::declared_capabilities();
+    // Deliberately not `OmpRpcAdapter::probe()`: that additionally
+    // requires *this instance's* model selector to be catalogued, which an
+    // availability check has no selector to supply.
+    let output = tokio::process::Command::new("omp")
+        .arg("--version")
+        .output()
+        .await;
+    match output {
+        Ok(out) if out.status.success() => {
+            let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            (
+                ScenarioResult::pass(
+                    scenario::PROBE,
+                    format!("omp --version reported {version:?}"),
+                ),
+                Some(version).filter(|v| !v.is_empty()),
+                declared_capabilities,
+            )
+        }
+        Ok(_) => (
+            ScenarioResult::fail(scenario::PROBE, "omp --version exited non-zero"),
+            None,
+            declared_capabilities,
+        ),
+        Err(err) => (
+            ScenarioResult::fail(
+                scenario::PROBE,
+                format!("omp --version failed to run: {err}"),
+            ),
+            None,
+            declared_capabilities,
+        ),
+    }
+}
+
+/// Resolves any selector the installed `omp` reports, for scenarios that
+/// need a *syntactically real* model without ever running inference.
+///
+/// **Why not a local (`lm-studio`/`omlx`) selector, which this used to
+/// require.** `OmpRpcAdapter::probe` verifies that the profile's model
+/// appears in `omp models --json` -- a correct production rule, since a
+/// worker should never start against a model `omp` does not know. But
+/// conformance has no worker profile, so it has to supply a stand-in, and
+/// picking the first *local* one made three scenarios (`probe`,
+/// `cancellation_scope`, `follow_up`) depend on whether a separate local
+/// inference server happened to be running, which models it advertised,
+/// and whether `omp`'s provider catalog was warm. None of that has
+/// anything to do with the adapter under test: these scenarios exercise
+/// stdio framing (`ready`, `follow_up`, `abort`, `get_state`) and never
+/// send a `prompt`.
+///
+/// Taking the first selector of any provider is deterministic instead.
+/// Measured: `omp models --json` reports 583 models with the same first
+/// entry under a full *and* a sanitized environment, with or without a
+/// local server, because the cloud catalog ships with the binary. A cloud
+/// selector costs nothing here precisely because no scenario prompts --
+/// the same property the module doc already relies on.
+///
+/// Returns `None` (never invents a selector) only when `omp` itself is
+/// unreachable or reports an empty catalog.
+async fn resolve_conformance_selector() -> Option<String> {
     let output = tokio::process::Command::new("omp")
         .args(["models", "--json"])
         .output()
@@ -107,14 +172,7 @@ async fn resolve_first_local_selector() -> Option<String> {
         .get("models")?
         .as_array()?
         .iter()
-        .find(|m| {
-            matches!(
-                m.get("provider").and_then(Value::as_str),
-                Some("lm-studio") | Some("omlx")
-            )
-        })
-        .and_then(|m| m.get("selector"))
-        .and_then(Value::as_str)
+        .find_map(|m| m.get("selector").and_then(Value::as_str))
         .map(str::to_string)
 }
 
@@ -132,12 +190,11 @@ async fn probe_scenario(
         return (
             ScenarioResult::fail(
                 scenario::PROBE,
-                "no local (lm-studio/omlx) selector was reachable via `omp models --json` on \
-                 this machine right now -- either `omp` is not installed, or no local provider \
-                 is currently listed in its model catalog. This is a real, accurate report, not \
-                 a design flaw: OMP-RPC's own conformance genuinely depends on a local model \
-                 server's selector being listed (the server itself need not be running); this \
-                 adapter never invents tool compatibility for an unlisted model.",
+                "`omp models --json` reported no usable model selector at all -- either `omp` is \
+                 not installed, or its catalog is empty. This scenario needs one selector purely \
+                 to satisfy `probe`'s catalog check; it never runs inference, and it no longer \
+                 requires a *local* selector (which used to couple it to a separate inference \
+                 server for no benefit).",
             ),
             None,
             declared_capabilities,
@@ -372,10 +429,36 @@ fn approval_scenario() -> ScenarioResult {
 
 // ---------------------------------- CANCELLATION_SCOPE and FOLLOW_UP (live)
 
+/// Environment names passed through to a spawned `omp`, on top of
+/// [`EnvironmentPolicy::baseline`]'s nine.
+///
+/// **This is not needed for any scenario to pass.** Selector resolution no
+/// longer depends on a local provider (see
+/// [`resolve_conformance_selector`]), so the suite is green with an empty
+/// local catalog. The single reason this exists is to avoid a *side effect*
+/// on the operator's own tooling:
+///
+/// `omp` persists its provider discovery. An invocation that cannot reach
+/// the local model server records that absence in the shared catalog, so a
+/// stripped-environment spawn leaves the operator's `omp models` listing
+/// empty until their next `omp models refresh`. Measured A/A vs A/B/A:
+/// three consecutive full-environment reads give `10, 10, 10`; interposing
+/// one stripped-environment call gives `10, 0, 0`. Passing the server's
+/// address keeps a conformance run from quietly degrading state BATMAN does
+/// not own -- verified: 10 local providers before a full live run, 10
+/// after.
+///
+/// `LM_STUDIO_BASE_URL` is an *address*, not a credential, so allowing it
+/// does not widen the redaction boundary. Real runs never consult this
+/// constant: `OmpRpcAdapter` builds its environment from
+/// `WorkerProfile::environment_allowlist`, where an operator lists whatever
+/// their model needs, exactly as they would an API key.
+const OMP_LOCAL_PROVIDER_ENV: &[&str] = &["LM_STUDIO_BASE_URL"];
+
 /// Spawns the installed `omp` binary against `selector` and waits for the
 /// real `ready` handshake, never sending a `prompt` -- mirrors
 /// `tests/omp_rpc_adapter.rs::spawn_ready_client` exactly (duplicated
-/// here for the same reason as [`resolve_first_local_selector`]). Returns
+/// here for the same reason as [`resolve_conformance_selector`]). Returns
 /// `None` (never panics) if spawning/handshaking fails for any reason.
 async fn spawn_ready_client(selector: &str) -> Option<(OmpRpcClient, std::path::PathBuf)> {
     let workdir = std::env::temp_dir().join(format!(
@@ -384,7 +467,11 @@ async fn spawn_ready_client(selector: &str) -> Option<(OmpRpcClient, std::path::
         selector.replace('/', "-")
     ));
     std::fs::create_dir_all(&workdir).ok()?;
-    let env = EnvironmentPolicy::baseline().build(&std::env::vars().collect(), &[]);
+    let extra: Vec<String> = OMP_LOCAL_PROVIDER_ENV
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    let env = EnvironmentPolicy::baseline().build(&std::env::vars().collect(), &extra);
     let spec = SpawnSpec {
         program: "omp".into(),
         args: vec![
@@ -419,19 +506,17 @@ async fn cancellation_scope_and_follow_up_scenarios(
     selector: Option<&str>,
 ) -> (ScenarioResult, ScenarioResult) {
     let Some(selector) = selector else {
-        let detail = "no local (lm-studio/omlx) selector was reachable via `omp models --json` \
-                       on this machine right now; this real-process check genuinely depends on \
-                       one being listed to reach the vendor's ready handshake (the model server \
-                       itself need not be running).";
+        let detail = "`omp models --json` reported no usable model selector at all, so no \
+                       `omp --mode rpc` process could be started to exercise the stdio \
+                       handshake. Either `omp` is not installed or its catalog is empty.";
         return (
             ScenarioResult::fail(scenario::CANCELLATION_SCOPE, detail),
             ScenarioResult::fail(scenario::FOLLOW_UP, detail),
         );
     };
     let Some((mut client, workdir)) = spawn_ready_client(selector).await else {
-        let detail = "a local selector was listed by `omp models --json` but spawning/\
-                       handshaking against the installed omp binary failed, or the selector \
-                       became unreachable between listing and spawn";
+        let detail = "a selector was listed by `omp models --json` but spawning or handshaking \
+                       against the installed omp binary failed";
         return (
             ScenarioResult::fail(scenario::CANCELLATION_SCOPE, detail),
             ScenarioResult::fail(scenario::FOLLOW_UP, detail),
@@ -835,9 +920,19 @@ fn managed_nesting_rejection_scenario() -> ScenarioResult {
 
 /// `turn.jsonl`'s `get_state` response normalizes into
 /// `VendorSessionEstablished`, its `get_session_stats` response into
-/// `UsageReported`, and its `prompt` response (with `agentInvoked:
-/// false`) into a completing `MessageFinal` -- all three correlate to
-/// the one session the fixture replays.
+/// `UsageReported`, its `prompt` response (with `agentInvoked: false`)
+/// into a completing `MessageFinal`, and its real captured
+/// `tool_execution_end` mutation frame into `ArtifactProduced` -- all
+/// correlating to the one session the fixture replays.
+///
+/// The two `tool_execution_end` frames at the tail of `turn.jsonl` were
+/// captured verbatim from a real `omp --mode rpc` 17.2.7 session against a
+/// local `lm-studio` model told to rewrite a file. They are a matched
+/// pair on purpose: the rejected edit (`isError: true`, `details: {}`)
+/// must yield **no** artifact, and the accepted one (`op`/`path` under
+/// `result.details`) must yield exactly one. Asserting only the positive
+/// half would pass just as well against a normalizer that emitted an
+/// artifact for every tool call.
 fn result_usage_artifacts_scenario() -> ScenarioResult {
     let events = normalize_fixture_lines(&load_fixture_lines("turn.jsonl"));
 
@@ -858,17 +953,28 @@ fn result_usage_artifacts_scenario() -> ScenarioResult {
     let completed = events
         .iter()
         .any(|e| matches!(e, AdapterEventPayload::MessageFinal { role, .. } if role == "system"));
+    let artifacts = events
+        .iter()
+        .filter(
+            |e| matches!(e, AdapterEventPayload::ArtifactProduced { artifact_kind, .. } if artifact_kind == "fileChange"),
+        )
+        .count();
+    let failed_tool_reported = events
+        .iter()
+        .any(|e| matches!(e, AdapterEventPayload::ToolResult { ok, .. } if !ok));
 
-    match (session, usage, completed) {
-        (Some(session_id), Some((input, output, cost)), true) => ScenarioResult::pass(
+    match (session, usage, completed, artifacts, failed_tool_reported) {
+        (Some(session_id), Some((input, output, cost)), true, 1, true) => ScenarioResult::pass(
             scenario::RESULT_USAGE_ARTIFACTS,
             format!(
-                "turn.jsonl's one session ({session_id}) normalized a VendorSessionEstablished, a UsageReported ({input} in / {output} out tokens, cost={cost:?}), and a completing MessageFinal(role=\"system\") -- all three correlate to the same replayed session"
+                "turn.jsonl's one session ({session_id}) normalized a VendorSessionEstablished, a UsageReported ({input} in / {output} out tokens, cost={cost:?}), a completing MessageFinal(role=\"system\"), and exactly one ArtifactProduced(fileChange) from the captured tool_execution_end mutation -- while the rejected edit in the same transcript reported ok=false and produced no artifact"
             ),
         ),
-        _ => ScenarioResult::fail(
+        (_, _, _, artifacts, failed_tool_reported) => ScenarioResult::fail(
             scenario::RESULT_USAGE_ARTIFACTS,
-            "expected VendorSessionEstablished + UsageReported + a completing MessageFinal from turn.jsonl",
+            format!(
+                "expected VendorSessionEstablished + UsageReported + a completing MessageFinal + exactly one ArtifactProduced(fileChange) from turn.jsonl, plus a failed ToolResult for the rejected edit; saw {artifacts} artifact(s) and failed_tool_reported={failed_tool_reported}"
+            ),
         ),
     }
 }
@@ -948,7 +1054,7 @@ async fn build_scenarios(
 
 /// Runs every scenario this adapter can prove without a model call.
 pub async fn fixture_report() -> ConformanceReport {
-    let selector = resolve_first_local_selector().await;
+    let selector = resolve_conformance_selector().await;
     let (scenarios, version, declared_capabilities) = build_scenarios(selector.as_deref()).await;
     ConformanceReport::new(
         AdapterKindLabel::from(AdapterKind::OmpRpc),
@@ -960,20 +1066,23 @@ pub async fn fixture_report() -> ConformanceReport {
 }
 
 /// Runs the live conformance suite against the installed `omp` CLI.
-/// Gated on `BATMAN_LIVE_OMP=1`; never runs otherwise. Every scenario
-/// here remains zero-model-call (identical to [`fixture_report`]) --
-/// this adapter's own conformance is already bottlenecked on a real
-/// local selector being reachable (see [`probe_scenario`]), so the
-/// `BATMAN_LIVE_OMP` gate exists to keep these real-process probes out
-/// of a default CI run, not to unlock an actual model invocation.
+///
+/// Real invocation is the default. Every scenario here remains
+/// zero-model-call (identical to [`fixture_report`]) -- this adapter's own
+/// conformance is already bottlenecked on a real local selector being
+/// reachable (see [`probe_scenario`]). Set `BATMAN_DISABLE_VENDOR_CLI=1`
+/// to keep these real-process probes out of a CI run.
 ///
 /// # Errors
-/// Returns a message if `BATMAN_LIVE_OMP` is unset.
+/// Returns a message if `BATMAN_DISABLE_VENDOR_CLI=1` is set.
 pub async fn live_report() -> Result<ConformanceReport, String> {
-    if std::env::var("BATMAN_LIVE_OMP").as_deref() != Ok("1") {
-        return Err("live OMP-RPC conformance requires BATMAN_LIVE_OMP=1".to_string());
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        return Err(format!(
+            "live OMP-RPC conformance is disabled by {}=1",
+            batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV
+        ));
     }
-    let selector = resolve_first_local_selector().await;
+    let selector = resolve_conformance_selector().await;
     let (scenarios, version, declared_capabilities) = build_scenarios(selector.as_deref()).await;
     Ok(ConformanceReport::new(
         AdapterKindLabel::from(AdapterKind::OmpRpc),

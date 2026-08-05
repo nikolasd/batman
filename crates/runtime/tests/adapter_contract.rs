@@ -166,7 +166,7 @@ async fn omp_client(harness: &Harness, instance_id: &str) -> Client {
             "id": 1,
             "method": "initialize",
             "params": {
-                "client": { "name": "@satori/batman", "version": "0.1.0" },
+                "client": { "name": "@nikolasd/batman", "version": "0.1.0" },
                 "supported": { "min": { "major": 1, "minor": 0 }, "max": { "major": 1, "minor": 0 } },
                 "repository": {
                     "canonicalPath": harness.owned_dir.to_str().unwrap(),
@@ -390,6 +390,7 @@ async fn nested_worker_observed_emits_without_upgrading_declared_capability() {
         vec![],
         false,
         violation_service,
+        None,
     );
 
     let sequence = sink

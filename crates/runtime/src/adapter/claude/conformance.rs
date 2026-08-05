@@ -56,7 +56,7 @@ fn emitted_payloads(events: &[ClaudeEvent]) -> Vec<&batman_runtime::adapter::Ada
         .collect()
 }
 
-async fn probe_scenario() -> (
+pub async fn probe_scenario() -> (
     ScenarioResult,
     Option<String>,
     batman_runtime::adapter::AdapterCapabilities,
@@ -655,19 +655,24 @@ pub async fn fixture_report() -> ConformanceReport {
 }
 
 /// Runs the live conformance suite against the installed `claude` CLI.
-/// Gated on `BATMAN_LIVE_CLAUDE=1`; never runs otherwise.
+///
+/// Real invocation is the default: the `claude` CLI is an ordinary
+/// installed dependency. Set `BATMAN_DISABLE_VENDOR_CLI=1` to forbid it in
+/// CI or on a machine without the CLI installed.
 ///
 /// Every scenario proven by `fixture_report()` needs no model call at
 /// all, so live mode reuses the exact same suite rather than inventing a
-/// separate one -- the only difference worth gating behind
-/// `BATMAN_LIVE_CLAUDE` is that this actually exercises the same real
-/// installed CLI a human deliberately opted into live-testing against.
+/// separate one -- the difference is that this exercises the real
+/// installed CLI rather than recorded fixtures.
 ///
 /// # Errors
-/// Returns a message if `BATMAN_LIVE_CLAUDE` is unset.
+/// Returns a message if `BATMAN_DISABLE_VENDOR_CLI=1` is set.
 pub async fn live_report() -> Result<ConformanceReport, String> {
-    if std::env::var("BATMAN_LIVE_CLAUDE").as_deref() != Ok("1") {
-        return Err("live Claude conformance requires BATMAN_LIVE_CLAUDE=1".to_string());
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        return Err(format!(
+            "live Claude conformance is disabled by {}=1",
+            batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV
+        ));
     }
     let (probe_result, version, declared_capabilities) = probe_scenario().await;
     let mut scenarios = vec![probe_result];

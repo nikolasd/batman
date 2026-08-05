@@ -36,16 +36,21 @@ use super::event_sink::DomainAdapterEventSink;
 use super::mcp_config::AdapterMcpConfig;
 use super::profile::{StartupOptions, WorkerProfile};
 use super::r#trait::{Adapter, AdapterMessage, StartSpec};
+use crate::adapter::CancelScope;
 use crate::conformance;
 use crate::coordination::CoordinationBroker;
 use crate::domain::DomainRepository;
 use crate::service::{AdapterFuture as RunDriverFuture, RunDriver, RunDriverContext};
-use crate::adapter::CancelScope;
 /// adapter, given `effective_capabilities` -- always the conformance-
 /// filtered set, never the adapter's raw declared claims. Production
 /// construction of [`AdapterRegistry`] requires a real implementation;
 /// tests inject an allow/deny fixture (see [`FixtureAuthorization`]).
 pub trait AdapterAuthorization: Send + Sync {
+    /// `policy` is the run's own resolved [`crate::config::RuntimePolicy`]
+    /// -- the startup policy re-merged with that run's `policyOverrides`.
+    /// `None` means "use the authorizer's own startup policy", which is the
+    /// behavior every run without overrides and every test path relies on.
+    ///
     /// # Errors
     /// Returns a human-readable denial reason. The run is never started
     /// when this returns `Err`.
@@ -53,6 +58,7 @@ pub trait AdapterAuthorization: Send + Sync {
         &self,
         profile: &WorkerProfile,
         effective_capabilities: &AdapterCapabilities,
+        policy: Option<&crate::config::RuntimePolicy>,
     ) -> Result<(), String>;
 }
 
@@ -68,51 +74,12 @@ impl AdapterAuthorization for FixtureAuthorization {
         &self,
         _profile: &WorkerProfile,
         _effective_capabilities: &AdapterCapabilities,
+        _policy: Option<&crate::config::RuntimePolicy>,
     ) -> Result<(), String> {
         if self.allow {
             Ok(())
         } else {
             Err("denied by fixture authorization".to_string())
-        }
-    }
-}
-
-/// The production [`AdapterAuthorization`]: denies every worker unless the
-/// development override is explicitly set. Replaced by the Hardening plan's
-/// `PolicyEvaluator`, which owns model/adapter allowlists and ceilings.
-pub struct DenyByDefaultAuthorization {
-    dev_override: bool,
-}
-
-impl DenyByDefaultAuthorization {
-    /// Reads `BATMAN_DEV_ALLOW_ALL_WORKERS` once, at construction.
-    #[must_use]
-    pub fn from_env() -> Self {
-        let dev_override = std::env::var("BATMAN_DEV_ALLOW_ALL_WORKERS").as_deref() == Ok("1");
-        if dev_override {
-            tracing::warn!(
-                code = "dev_authorization_override",
-                "BATMAN_DEV_ALLOW_ALL_WORKERS=1 is set; all workers are authorized. \
-                 This is a development override and must not be used in production."
-            );
-        }
-        Self { dev_override }
-    }
-}
-
-impl AdapterAuthorization for DenyByDefaultAuthorization {
-    fn authorize(
-        &self,
-        _profile: &WorkerProfile,
-        _effective_capabilities: &AdapterCapabilities,
-    ) -> Result<(), String> {
-        if self.dev_override {
-            Ok(())
-        } else {
-            Err("no production authorization policy is configured. Set \
-                 BATMAN_DEV_ALLOW_ALL_WORKERS=1 for local development, or wait for the \
-                 Hardening milestone's PolicyEvaluator."
-                .to_string())
         }
     }
 }
@@ -268,12 +235,32 @@ impl RunDriver for AdapterRegistry {
                     // so it needs no additional wiring.
                     let running_for_watcher = Arc::clone(&running);
                     let mut events_rx = events_tx.subscribe();
+                    // The pane resolved at submit time, so the detach
+                    // names the same backend the attach did without
+                    // re-probing the registry. `None` means no pane was
+                    // ever attached (headless), and a detach without a
+                    // prior attach must never be journaled.
+                    let display = ctx.display.clone();
+                    let db = Arc::clone(&ctx.db);
+                    let project_id = ctx.project_id;
                     tokio::spawn(async move {
                         while let Ok(envelope) = events_rx.recv().await {
                             if is_process_exited_for(&envelope.event, run_id) {
                                 let evicted = running_for_watcher.lock().remove(&run_id);
                                 if let Some(adapter) = evicted {
                                     let _ = adapter.dispose().await;
+                                }
+                                if let Some(selection) = display
+                                    && let Some(backend) = selection.selected
+                                {
+                                    emit_pane_detached(
+                                        &db,
+                                        project_id,
+                                        run_id,
+                                        backend,
+                                        selection.placement,
+                                    )
+                                    .await;
                                 }
                                 break;
                             }
@@ -318,17 +305,50 @@ impl RunDriver for AdapterRegistry {
         running.lock().get(&run_id).cloned()
     }
 
-    fn cancel_run(&self, run_id: RunId, scope: CancelScope) -> RunDriverFuture<'static, Result<(), String>> {
+    fn cancel_run(
+        &self,
+        run_id: RunId,
+        scope: CancelScope,
+    ) -> RunDriverFuture<'static, Result<(), String>> {
         let running = Arc::clone(&self.running);
 
         Box::pin(async move {
-            let adapter = running.lock().get(&run_id).cloned().ok_or_else(|| {
-                RegistryError::NoRunningAdapter(run_id).to_string()
-            })?;
+            let adapter = running
+                .lock()
+                .get(&run_id)
+                .cloned()
+                .ok_or_else(|| RegistryError::NoRunningAdapter(run_id).to_string())?;
 
             adapter.cancel(scope).await.map_err(|e| e.to_string())
         })
     }
+}
+
+/// Journals `DisplayPaneDetached` for a run that has settled.
+///
+/// Failures are swallowed: this runs on a detached watcher task after the
+/// run is already over, so there is no caller to report to and a lost
+/// pane record must never keep a finished adapter alive.
+async fn emit_pane_detached(
+    db: &Arc<crate::db::DatabaseHandle>,
+    project_id: batman_protocol::ProjectId,
+    run_id: RunId,
+    backend: batman_protocol::DisplayBackend,
+    placement: batman_protocol::DisplayPlacement,
+) {
+    let _ = db
+        .run_domain_op(Box::new(move |conn| {
+            let mut repo = crate::domain::DomainRepository::new(conn, project_id);
+            repo.record_display_event(
+                batman_protocol::RuntimeEventKind::DisplayPaneDetached,
+                run_id,
+                backend,
+                placement,
+                String::new(),
+            )
+            .map(|_| serde_json::Value::Null)
+        }))
+        .await;
 }
 
 fn is_process_exited_for(event: &batman_protocol::RuntimeEvent, run_id: RunId) -> bool {
@@ -389,10 +409,29 @@ async fn run_one(
             .await
             .effective_capabilities
     };
+
+    // Policy first: it is the cheaper, machine-independent decision, and
+    // probing a vendor CLI for a run policy already forbids would spawn a
+    // process to answer a question that no longer matters.
     authorization
-        .authorize(&profile, &effective_capabilities)
+        .authorize(&profile, &effective_capabilities, ctx.policy.as_deref())
         .map_err(RegistryError::AuthorizationDenied)
         .map_err(String::from)?;
+
+    // Then availability: deny an unusable vendor CLI here rather than
+    // letting `adapter.start()` fail after a process is spawned. The probe
+    // is a version handshake only -- never a model call -- and is cached
+    // for 60s, so repeated submits do not re-spawn the binary.
+    if let Some(kind) = profile.adapter_kind() {
+        let availability = conformance::probe_availability(kind).await;
+        if !availability.passed {
+            return Err(format!(
+                "adapter {} is unavailable: {}",
+                kind.wire_name(),
+                availability.detail
+            ));
+        }
+    }
 
     // Use the workspace path from the context (isolated worktree or copy)
     // when available; fall back to the repository root.
@@ -415,6 +454,9 @@ async fn run_one(
         org_security_patterns,
         effective_capabilities.nested != NestedCapability::Managed,
         Arc::clone(&ctx.violation_service),
+        ctx.policy
+            .as_deref()
+            .and_then(|p| p.cost_ceiling_per_run_usd),
     ));
     adapter
         .start(

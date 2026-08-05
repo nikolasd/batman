@@ -6,10 +6,9 @@
 //! own `#[cfg(test)]` module instead).
 //!
 //! Never invokes a model: `--fixture` is this milestone's own zero-
-//! model-call design invariant, and every `--live` case here is
-//! deliberately run with no `BATMAN_LIVE_<ADAPTER>` gate set, proving
-//! the CLI degrades to an honest per-adapter error rather than ever
-//! making a real call.
+//! model-call design invariant, and every `--live` case here sets
+//! `BATMAN_DISABLE_VENDOR_CLI=1`, proving the CLI degrades to an honest
+//! per-adapter error rather than ever making a real call.
 
 use std::process::Command;
 
@@ -184,7 +183,7 @@ fn conformance_requires_exactly_one_of_fixture_or_live() {
 }
 
 #[test]
-fn conformance_live_without_the_gate_reports_an_honest_error_not_a_hard_failure() {
+fn conformance_live_with_the_kill_switch_reports_an_honest_error_not_a_hard_failure() {
     let output_path = std::env::temp_dir().join(format!(
         "batman-conformance-test-live-{}.json",
         std::process::id()
@@ -192,14 +191,15 @@ fn conformance_live_without_the_gate_reports_an_honest_error_not_a_hard_failure(
     let output = batcave()
         .args(["conformance", "--adapter", "claude", "--live", "--output"])
         .arg(&output_path)
-        // Explicitly clear the gate so this test is deterministic
-        // regardless of the ambient environment it runs in.
-        .env_remove("BATMAN_LIVE_CLAUDE")
+        // Setting the kill switch is what makes this deterministic: it
+        // forbids the vendor process regardless of whether `claude` happens
+        // to be installed on the machine running the suite.
+        .env(batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV, "1")
         .output()
         .expect("must be runnable");
     assert!(
         output.status.success(),
-        "an unset live gate must not hard-fail the whole command: {}",
+        "a set kill switch must not hard-fail the whole command: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let reports: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -211,9 +211,9 @@ fn conformance_live_without_the_gate_reports_an_honest_error_not_a_hard_failure(
     assert!(
         reports[0]["error"]
             .as_str()
-            .expect("an unset-gate report carries an error string")
-            .contains("BATMAN_LIVE_CLAUDE"),
-        "the error must name the specific gate that was unset: {reports:?}"
+            .expect("a disabled-CLI report carries an error string")
+            .contains(batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV),
+        "the error must name the switch that forbade the invocation: {reports:?}"
     );
     let _ = std::fs::remove_file(&output_path);
 }
