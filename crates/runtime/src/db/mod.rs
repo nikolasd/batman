@@ -8,7 +8,7 @@
 //! event or `serde_json::Value` append API.
 
 mod actor;
-mod migrations;
+pub(crate) mod migrations;
 mod models;
 
 pub use actor::{DatabaseHandle, DbError, DomainClosure};

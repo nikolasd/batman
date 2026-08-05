@@ -25,7 +25,6 @@ use thiserror::Error;
 use crate::db::{DatabaseHandle, DomainClosure};
 use crate::domain::DomainRepository;
 
-
 /// Errors that can occur during crash recovery.
 #[derive(Debug, Error)]
 pub enum RecoveryError {
@@ -211,7 +210,7 @@ impl RecoveryCoordinator {
     ///   are excluded
     /// - If [`RecoveryConfig::recover_waiting`] is `false`, runs in
     ///   `waitingUser` or `waitingPeer` state are excluded
-    async fn find_stuck_runs(&self) -> Result<Vec<StuckRun>, RecoveryError> {
+    pub(crate) async fn find_stuck_runs(&self) -> Result<Vec<StuckRun>, RecoveryError> {
         let cutoff = time::OffsetDateTime::now_utc()
             .checked_sub(time::Duration::seconds(
                 i64::try_from(self.config.stuck_threshold.as_secs()).unwrap_or(i64::MAX),
@@ -258,8 +257,10 @@ impl RecoveryCoordinator {
             .run_domain_op(closure)
             .await
             .map_err(|e| RecoveryError::InvalidDatabase(e.to_string()))?;
-        let rows: Vec<(String, String, String, String)> = serde_json::from_value(value)
-            .map_err(|e| RecoveryError::InvalidDatabase(format!("malformed stuck-run rows: {e}")))?;
+        let rows: Vec<(String, String, String, String)> =
+            serde_json::from_value(value).map_err(|e| {
+                RecoveryError::InvalidDatabase(format!("malformed stuck-run rows: {e}"))
+            })?;
 
         let mut stuck = Vec::new();
         for (run_id_str, state_str, worker_id_str, last_activity) in rows {
@@ -330,14 +331,15 @@ impl RecoveryCoordinator {
                 .map(|c| serde_json::json!({ "sequence": c.sequence }))
         });
 
-        self.db.run_domain_op(closure).await.map_err(|err| {
-            RecoveryError::TransitionFailed {
+        self.db
+            .run_domain_op(closure)
+            .await
+            .map_err(|err| RecoveryError::TransitionFailed {
                 run_id: run_id.to_string(),
                 from_state: stuck_run.current_state.to_string(),
                 to_state: target.to_string(),
                 reason: err.to_string(),
-            }
-        })?;
+            })?;
 
         Ok(target)
     }
@@ -354,19 +356,18 @@ fn target_state_for(current: &RunState) -> Option<RunState> {
     }
 }
 
-
 /// A run that is stuck in a non-terminal state.
-struct StuckRun {
+pub(crate) struct StuckRun {
     /// The run's unique identifier.
-    run_id: RunId,
+    pub(crate) run_id: RunId,
 
     /// The run's current state.
-    current_state: RunState,
+    pub(crate) current_state: RunState,
 
     /// The run's worker identifier.
-    worker_id: WorkerId,
+    pub(crate) worker_id: WorkerId,
 
     /// The RFC 3339 timestamp of the run's last activity (its most recent
     /// journaled event, or its creation time if it has none).
-    last_activity: String,
+    pub(crate) last_activity: String,
 }

@@ -124,6 +124,67 @@ impl<'c> DomainRepository<'c> {
         Self { conn, project_id }
     }
 
+    /// Journals a [`batman_protocol::WorkspaceEvent`] durably. Workspace
+    /// and artifact state lives in the lease database and the artifact
+    /// store, not in a projection table, so this appends the event only --
+    /// but it appends it through the same transaction and sequence
+    /// allocator as every other mutation, so a monitor replaying the
+    /// journal sees workspace activity interleaved with run activity in
+    /// real commit order.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] if the append fails.
+    pub fn record_workspace_event(
+        &mut self,
+        kind: batman_protocol::WorkspaceEvent,
+        run_id: batman_protocol::RunId,
+        lease_id: String,
+    ) -> Result<Committed, DomainError> {
+        self.append_and_apply(
+            &RuntimeEvent::WorkspaceEvent {
+                kind,
+                run_id,
+                lease_id,
+            },
+            None,
+            None,
+            Some(run_id),
+            |_| Ok(()),
+        )
+    }
+
+    /// Journals a display pane attaching to or detaching from a run.
+    ///
+    /// Like workspace events, a pane has no projection table: the durable
+    /// record is the journal entry, so a monitor replaying the journal
+    /// sees pane activity in real commit order against the run it belongs
+    /// to.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] if the append fails.
+    pub fn record_display_event(
+        &mut self,
+        kind: batman_protocol::RuntimeEventKind,
+        run_id: batman_protocol::RunId,
+        backend: batman_protocol::DisplayBackend,
+        placement: batman_protocol::DisplayPlacement,
+        pane_ref: String,
+    ) -> Result<Committed, DomainError> {
+        self.append_and_apply(
+            &RuntimeEvent::DisplayEvent {
+                kind,
+                run_id,
+                backend,
+                placement,
+                pane_ref,
+            },
+            None,
+            None,
+            Some(run_id),
+            |_| Ok(()),
+        )
+    }
+
     /// Appends an event and runs `apply` against the same transaction,
     /// committing both atomically. Returns the assigned sequence number.
     fn append_and_apply<F>(
@@ -335,7 +396,18 @@ impl<'c> DomainRepository<'c> {
 
     /// Submits a run in `queued` state. Requires the task and worker to
     /// exist (enforced by foreign keys). Emits a `RunQueued` event.
-    pub fn submit_run(&mut self, run: &Run) -> Result<Committed, DomainError> {
+    ///
+    /// `policy_fingerprint` is the SHA-256 of the
+    /// merged [`crate::config::RuntimePolicy`] this run was authorized
+    /// under, so a later violation or audit can be resolved against a
+    /// specific policy rather than against whatever is merged today.
+    /// `None` for callers with no merged config (tests, embeddings), which
+    /// leaves the column NULL rather than fabricating a fingerprint.
+    pub fn submit_run(
+        &mut self,
+        run: &Run,
+        policy_fingerprint: Option<&str>,
+    ) -> Result<Committed, DomainError> {
         let event = RuntimeEvent::RunEvent {
             kind: RuntimeEventKind::RunQueued,
             run_id: run.run_id,
@@ -344,6 +416,7 @@ impl<'c> DomainRepository<'c> {
             state: run.state.to_string(),
         };
         let run = run.clone();
+        let policy_fingerprint = policy_fingerprint.map(str::to_string);
         self.append_and_apply(
             &event,
             Some(run.task_id),
@@ -355,8 +428,8 @@ impl<'c> DomainRepository<'c> {
                     "INSERT INTO runs (run_id, task_id, worker_id, state,
                        flags_degraded_control, flags_needs_reconciliation, flags_protocol_unhealthy,
                        flags_policy_quarantined, flags_workspace_dirty, flags_children_active,
-                       vendor_session_id, created_at, started_at, completed_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                       vendor_session_id, created_at, started_at, completed_at, policy_fingerprint)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                     rusqlite::params![
                         run.run_id.to_string(),
                         run.task_id.to_string(),
@@ -372,6 +445,7 @@ impl<'c> DomainRepository<'c> {
                         now.as_str(),
                         run.started_at.as_ref().map(|t| t.as_str().to_string()),
                         run.completed_at.as_ref().map(|t| t.as_str().to_string()),
+                        policy_fingerprint,
                     ],
                 )?;
                 Ok(())
@@ -731,11 +805,16 @@ impl<'c> DomainRepository<'c> {
         })
     }
 
-    /// Records a mid-run nested-worker policy violation: inserts the
-    /// [`policy_violations`] row and appends a `PolicyViolationRecorded`
-    /// event. Does not touch `Run.flags` -- callers apply the quarantine
-    /// flag via [`DomainRepository::set_run_flags`] as a separate commit,
-    /// so existing `RunFlagsChanged` consumers see it without new code.
+    /// Records a mid-run policy violation: inserts the [`policy_violations`]
+    /// row and appends a `PolicyViolationRecorded` event. Does not touch
+    /// `Run.flags` -- callers apply the quarantine flag via
+    /// [`DomainRepository::set_run_flags`] as a separate commit, so existing
+    /// `RunFlagsChanged` consumers see it without new code.
+    ///
+    /// `code` is the machine-readable violation code (`nested_worker_denied`
+    /// or `cost_ceiling_exceeded`). `vendor_child_id`/`vendor_parent_ref` are
+    /// `None` for violations with no vendor child, such as a cost ceiling --
+    /// an empty string there would be a lie rather than an absence.
     ///
     /// # Errors
     /// Returns [`DomainError::NotFound`] if `run_id` does not exist.
@@ -746,23 +825,29 @@ impl<'c> DomainRepository<'c> {
         run_id: RunId,
         task_id: TaskId,
         worker_id: WorkerId,
-        vendor_child_id: &str,
-        vendor_parent_ref: &str,
+        code: &str,
+        observed_event_sequence: u64,
+        policy_fingerprint: &str,
+        vendor_child_id: Option<&str>,
+        vendor_parent_ref: Option<&str>,
         action: &str,
     ) -> Result<Committed, DomainError> {
         let event = RuntimeEvent::PolicyViolationRecorded {
             kind: RuntimeEventKind::PolicyViolationRecorded {
                 violation_id,
-                vendor_child_id: vendor_child_id.to_string(),
-                vendor_parent_ref: vendor_parent_ref.to_string(),
+                code: code.to_string(),
+                observed_event_sequence,
+                policy_fingerprint: policy_fingerprint.to_string(),
+                vendor_child_id: vendor_child_id.map(str::to_string),
+                vendor_parent_ref: vendor_parent_ref.map(str::to_string),
                 action: action.to_string(),
             },
             run_id,
             task_id,
             worker_id,
         };
-        let vendor_child_id = vendor_child_id.to_string();
-        let vendor_parent_ref = vendor_parent_ref.to_string();
+        let vendor_child_id = vendor_child_id.map(str::to_string);
+        let vendor_parent_ref = vendor_parent_ref.map(str::to_string);
         let action = action.to_string();
         self.append_and_apply(
             &event,
@@ -1128,60 +1213,15 @@ mod tests {
     use batman_protocol::{ProjectId, RunId, TaskId, WorkerId, WorkerProfileRef};
     use rusqlite::Connection;
 
+    /// Opens an in-memory database migrated by the *production* migration
+    /// list, never a hand-copied schema -- a projection column added by a
+    /// migration is therefore visible to these tests without a second
+    /// place to update.
     fn open_test_db() -> Connection {
-        let conn = Connection::open_in_memory().expect("in-memory db");
-        conn.execute_batch(
-            "CREATE TABLE events (
-                sequence INTEGER PRIMARY KEY,
-                timestamp TEXT NOT NULL,
-                project_id TEXT NOT NULL,
-                run_id TEXT,
-                event_json TEXT NOT NULL,
-                task_id TEXT,
-                worker_id TEXT,
-                parent_worker_id TEXT,
-                vendor_event_ref TEXT
-            );
-            CREATE TABLE worker_profiles (
-                id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, adapter TEXT NOT NULL,
-                model TEXT NOT NULL, permission_envelope TEXT NOT NULL
-            );
-            CREATE TABLE tasks (
-                task_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
-                owner_client_instance_id TEXT NOT NULL, revision INTEGER NOT NULL,
-                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-            );
-            CREATE TABLE workers (
-                worker_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
-                profile_id TEXT NOT NULL REFERENCES worker_profiles(id),
-                parent_worker_id TEXT REFERENCES workers(worker_id), created_at TEXT NOT NULL,
-                resolved_profile_json TEXT
-            );
-            CREATE TABLE runs (
-                run_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(task_id),
-                worker_id TEXT NOT NULL REFERENCES workers(worker_id), state TEXT NOT NULL,
-                flags_degraded_control INTEGER NOT NULL DEFAULT 0,
-                flags_needs_reconciliation INTEGER NOT NULL DEFAULT 0,
-                flags_protocol_unhealthy INTEGER NOT NULL DEFAULT 0,
-                flags_policy_quarantined INTEGER NOT NULL DEFAULT 0,
-                flags_workspace_dirty INTEGER NOT NULL DEFAULT 0,
-                flags_children_active INTEGER NOT NULL DEFAULT 0,
-                vendor_session_id TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT
-            );
-            CREATE TABLE messages (
-                message_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id),
-                sender_worker_id TEXT NOT NULL, recipient_worker_id TEXT, task_id TEXT NOT NULL,
-                kind TEXT NOT NULL, payload TEXT NOT NULL, delivery_state TEXT NOT NULL,
-                created_at TEXT NOT NULL, sent_at TEXT, acknowledged_at TEXT, reply_to TEXT
-            );
-            CREATE TABLE approvals (
-                approval_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id),
-                task_id TEXT NOT NULL, action TEXT NOT NULL, arguments TEXT NOT NULL,
-                human_required INTEGER NOT NULL DEFAULT 0, policy_reason TEXT NOT NULL,
-                created_at TEXT NOT NULL, decided_at TEXT, decision TEXT
-            );",
-        )
-        .expect("schema");
+        let mut conn = Connection::open_in_memory().expect("in-memory db");
+        conn.pragma_update(None, "foreign_keys", true)
+            .expect("foreign keys");
+        crate::db::migrations::migrate(&mut conn).expect("schema");
         conn
     }
 
@@ -1236,7 +1276,7 @@ mod tests {
         };
 
         let mut repo = DomainRepository::new(&mut conn, project_id);
-        let committed = repo.submit_run(&run).expect("submit_run commits");
+        let committed = repo.submit_run(&run, None).expect("submit_run commits");
         assert_eq!(
             committed.sequence, 3,
             "task upsert (1), worker create (2), run submit (3)"
@@ -1284,7 +1324,7 @@ mod tests {
             completed_at: None,
         };
         let mut repo = DomainRepository::new(&mut conn, project_id);
-        repo.submit_run(&run).unwrap();
+        repo.submit_run(&run, None).unwrap();
 
         let before: i64 = conn
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))

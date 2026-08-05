@@ -72,7 +72,7 @@ async fn seed_run(
             started_at: None,
             completed_at: None,
         };
-        repo.submit_run(&run)?;
+        repo.submit_run(&run, None)?;
         Ok(serde_json::json!({}))
     }))
     .await
@@ -104,7 +104,8 @@ async fn drive_to_state(
         let to = RunState::try_from(*state).expect("valid state");
         db.run_domain_op(Box::new(move |conn| {
             let mut repo = DomainRepository::new(conn, project_id);
-            repo.transition_run(run_id, &to).map(|_| serde_json::json!({}))
+            repo.transition_run(run_id, &to)
+                .map(|_| serde_json::json!({}))
         }))
         .await
         .unwrap_or_else(|e| panic!("drive to {state} failed: {e}"));
@@ -193,7 +194,8 @@ async fn stuck_queued_run_recovers_to_failed() {
     tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, false));
+    let coordinator =
+        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, false));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 1);
@@ -216,7 +218,8 @@ async fn stuck_starting_run_recovers_to_failed() {
     tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, false));
+    let coordinator =
+        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, false));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 1);
@@ -234,7 +237,8 @@ async fn stuck_working_run_recovers_to_failed() {
     tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, false));
+    let coordinator =
+        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, false));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 1);
@@ -253,7 +257,8 @@ async fn stuck_waiting_peer_run_recovers_to_cancelled_when_opted_in() {
     tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, true));
+    let coordinator =
+        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, true));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 1);
@@ -272,10 +277,14 @@ async fn stuck_waiting_user_run_is_untouched_when_not_opted_in() {
     tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, false));
+    let coordinator =
+        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, false));
     let result = coordinator.recover().await.unwrap();
 
-    assert_eq!(result.recovered_count, 0, "waitingUser must stay untouched by default");
+    assert_eq!(
+        result.recovered_count, 0,
+        "waitingUser must stay untouched by default"
+    );
     assert_eq!(run_state(&db, run_id).await, "waitingUser");
 }
 
@@ -289,7 +298,8 @@ async fn stuck_paused_run_recovers_to_cancelled_when_opted_in() {
     tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(true, false));
+    let coordinator =
+        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(true, false));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 1);
@@ -308,7 +318,8 @@ async fn stuck_paused_run_is_untouched_when_not_opted_in() {
     tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, false));
+    let coordinator =
+        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, false));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 0);
@@ -346,14 +357,16 @@ async fn terminal_run_is_never_touched_regardless_of_age() {
     let failed = RunState::try_from("failed").unwrap();
     db.run_domain_op(Box::new(move |conn| {
         let mut repo = DomainRepository::new(conn, project_id);
-        repo.transition_run(run_id, &failed).map(|_| serde_json::json!({}))
+        repo.transition_run(run_id, &failed)
+            .map(|_| serde_json::json!({}))
     }))
     .await
     .unwrap();
     tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(true, true));
+    let coordinator =
+        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(true, true));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 0);
@@ -372,7 +385,8 @@ async fn multiple_stuck_runs_are_all_recovered_independently() {
     tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(true, true));
+    let coordinator =
+        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(true, true));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 3);

@@ -159,6 +159,14 @@ ALTER TABLE events ADD COLUMN parent_worker_id TEXT;
 ALTER TABLE events ADD COLUMN vendor_event_ref TEXT;
 ";
 
+/// Migration 6: the policy snapshot each run was authorized under, so a
+/// violation or audit can be resolved against a specific merged policy.
+/// Nullable, because rows written before this migration have no
+/// fingerprint -- never backfill a fabricated one.
+const MIGRATION_6: &str = "
+ALTER TABLE runs ADD COLUMN policy_fingerprint TEXT;
+";
+
 /// Opens `path` as a private (mode `0600`) SQLite database, configures its
 /// PRAGMAs (`journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`,
 /// `synchronous=FULL`), and migrates it to the latest schema. Migrations
@@ -177,14 +185,27 @@ pub(super) fn open_and_migrate(path: &Path) -> Result<Connection, DbError> {
     conn.pragma_update(None, "busy_timeout", 5000_i64)?;
     conn.pragma_update(None, "synchronous", "FULL")?;
 
+    migrate(&mut conn)?;
+
+    Ok(conn)
+}
+
+/// Applies every migration to an already-open connection, atomically.
+/// The one place the migration list lives: tests open an in-memory
+/// connection and call this rather than hand-copying a schema, so a
+/// projection table can never drift from what production runs against.
+///
+/// # Errors
+/// Returns [`DbError`] if migration fails.
+pub fn migrate(conn: &mut Connection) -> Result<(), DbError> {
     let migrations = Migrations::new(vec![
         M::up(MIGRATION_1),
         M::up(MIGRATION_2),
         M::up(MIGRATION_3),
         M::up(MIGRATION_4),
         M::up(MIGRATION_5),
+        M::up(MIGRATION_6),
     ]);
-    migrations.to_latest(&mut conn)?;
-
-    Ok(conn)
+    migrations.to_latest(conn)?;
+    Ok(())
 }
