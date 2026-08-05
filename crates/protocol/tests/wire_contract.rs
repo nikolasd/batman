@@ -7,7 +7,7 @@ use batman_protocol::{
 fn initialize_params_are_camel_case_and_strict() {
     let value = serde_json::to_value(InitializeParams {
         client: ClientInfo {
-            name: "@satori/batman".into(),
+            name: "@nikolasd/batman".into(),
             version: "0.1.0".into(),
         },
         supported: VersionRange {

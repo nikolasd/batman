@@ -105,6 +105,8 @@
         "coordination/reportBlocked",
         "coordination/askPolicy",
         "coordination/peerWorkspace",
+        "coordination/artifactList",
+        "coordination/artifactFetch",
         "reconcile/omp",
         "profile/register",
         "workspace/acquire",
@@ -1975,11 +1977,32 @@
                 "action": {
                   "type": "string"
                 },
-                "vendor_child_id": {
+                "code": {
+                  "description": "The machine-readable violation code: `nested_worker_denied` or\n`cost_ceiling_exceeded`. New codes are added here, never invented\nat a call site.",
                   "type": "string"
                 },
-                "vendor_parent_ref": {
+                "observed_event_sequence": {
+                  "description": "The sequence of the event that triggered this violation, so an\noperator can correlate the violation to its cause.",
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0
+                },
+                "policy_fingerprint": {
+                  "description": "The SHA-256 fingerprint of the `RuntimePolicy` this run was\nauthorized under, so the violation is auditable against a\nspecific merge of org/repo/user/per-run layers.",
                   "type": "string"
+                },
+                "vendor_child_id": {
+                  "description": "Present only for a nested-worker violation; `None` for any\nviolation with no vendor child, such as a cost ceiling.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "vendor_parent_ref": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "violation_id": {
                   "$ref": "#/$defs/PolicyViolationId"
@@ -1987,8 +2010,9 @@
               },
               "required": [
                 "violation_id",
-                "vendor_child_id",
-                "vendor_parent_ref",
+                "code",
+                "observed_event_sequence",
+                "policy_fingerprint",
                 "action"
               ]
             }

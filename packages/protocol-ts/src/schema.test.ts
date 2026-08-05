@@ -7,6 +7,6 @@ test("schema is draft 2020-12", () => {
 });
 
 test("generated type accepts the golden initialize request", async () => {
-  const value = await Bun.file("fixtures/protocol/initialize.request.json").json() as InitializeParams;
-  expect(value.client.name).toBe("@satori/batman");
+  const value = (await Bun.file("fixtures/protocol/initialize.request.json").json()) as InitializeParams;
+  expect(value.client.name).toBe("@nikolasd/batman");
 });

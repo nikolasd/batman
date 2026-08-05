@@ -4,8 +4,8 @@
 //! wire-format strictness of every orchestration record.
 
 use batman_protocol::{
-    ApprovalDecision, DeliveryState, RuntimeEventKind,
-    Run, RunFlags, RunSpec, RunState, TaskRef, Timestamp, Worker, WorkerProfileRef,
+    ApprovalDecision, DeliveryState, Run, RunFlags, RunSpec, RunState, RuntimeEventKind, TaskRef,
+    Timestamp, Worker, WorkerProfileRef,
 };
 
 // ---------------------------------------------------------------------------
@@ -108,9 +108,19 @@ fn terminal_states_have_is_terminal_true() {
         assert!(state.is_terminal(), "{terminal} should be terminal");
     }
 
-    for non_terminal in ["queued", "starting", "working", "waitingUser", "waitingPeer", "paused"] {
+    for non_terminal in [
+        "queued",
+        "starting",
+        "working",
+        "waitingUser",
+        "waitingPeer",
+        "paused",
+    ] {
         let state: RunState = non_terminal.parse().expect(non_terminal);
-        assert!(!state.is_terminal(), "{non_terminal} should not be terminal");
+        assert!(
+            !state.is_terminal(),
+            "{non_terminal} should not be terminal"
+        );
     }
 }
 
@@ -142,9 +152,18 @@ fn run_flags_serialize_as_independent_booleans() {
     let flags = value.get("flags").expect("flags present");
 
     assert_eq!(flags.get("degradedControl"), Some(&serde_json::json!(true)));
-    assert_eq!(flags.get("needsReconciliation"), Some(&serde_json::json!(true)));
-    assert_eq!(flags.get("protocolUnhealthy"), Some(&serde_json::json!(true)));
-    assert_eq!(flags.get("policyQuarantined"), Some(&serde_json::json!(true)));
+    assert_eq!(
+        flags.get("needsReconciliation"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        flags.get("protocolUnhealthy"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        flags.get("policyQuarantined"),
+        Some(&serde_json::json!(true))
+    );
     assert_eq!(flags.get("workspaceDirty"), Some(&serde_json::json!(true)));
     assert_eq!(flags.get("childrenActive"), Some(&serde_json::json!(true)));
 }
@@ -303,8 +322,8 @@ fn runtime_event_kind_covers_all_variants() {
     for event in events {
         // Each variant must serialize with deny_unknown_fields and
         // camelCase field names.
-        let _value = serde_json::to_value(&event)
-            .unwrap_or_else(|e| panic!("{event:?} serializes: {e}"));
+        let _value =
+            serde_json::to_value(&event).unwrap_or_else(|e| panic!("{event:?} serializes: {e}"));
     }
 }
 
@@ -315,10 +334,9 @@ fn runtime_event_kind_covers_all_variants() {
 #[test]
 fn all_orchestration_methods_exist() {
     use batman_protocol::BatmanMethod::{
-        ApprovalDecide, ApprovalList, CoordinationChildDecide, CoordinationChildList,
-        MessageList, MessageSend, ReconcileOmp,
-        RunCancel, RunGet, RunList, RunRetry, RunSubmit,
-        TaskGet, TaskUpsert, WorkerCreate, WorkerGet, WorkerList,
+        ApprovalDecide, ApprovalList, CoordinationChildDecide, CoordinationChildList, MessageList,
+        MessageSend, ReconcileOmp, RunCancel, RunGet, RunList, RunRetry, RunSubmit, TaskGet,
+        TaskUpsert, WorkerCreate, WorkerGet, WorkerList,
     };
 
     // Ensure each variant maps to the expected wire string.
@@ -326,10 +344,7 @@ fn all_orchestration_methods_exist() {
         serde_json::to_string(&TaskUpsert).unwrap(),
         "\"task/upsert\"",
     );
-    assert_eq!(
-        serde_json::to_string(&TaskGet).unwrap(),
-        "\"task/get\"",
-    );
+    assert_eq!(serde_json::to_string(&TaskGet).unwrap(), "\"task/get\"",);
     assert_eq!(
         serde_json::to_string(&WorkerCreate).unwrap(),
         "\"worker/create\"",
@@ -338,30 +353,12 @@ fn all_orchestration_methods_exist() {
         serde_json::to_string(&WorkerList).unwrap(),
         "\"worker/list\"",
     );
-    assert_eq!(
-        serde_json::to_string(&WorkerGet).unwrap(),
-        "\"worker/get\"",
-    );
-    assert_eq!(
-        serde_json::to_string(&RunSubmit).unwrap(),
-        "\"run/submit\"",
-    );
-    assert_eq!(
-        serde_json::to_string(&RunList).unwrap(),
-        "\"run/list\"",
-    );
-    assert_eq!(
-        serde_json::to_string(&RunGet).unwrap(),
-        "\"run/get\"",
-    );
-    assert_eq!(
-        serde_json::to_string(&RunRetry).unwrap(),
-        "\"run/retry\"",
-    );
-    assert_eq!(
-        serde_json::to_string(&RunCancel).unwrap(),
-        "\"run/cancel\"",
-    );
+    assert_eq!(serde_json::to_string(&WorkerGet).unwrap(), "\"worker/get\"",);
+    assert_eq!(serde_json::to_string(&RunSubmit).unwrap(), "\"run/submit\"",);
+    assert_eq!(serde_json::to_string(&RunList).unwrap(), "\"run/list\"",);
+    assert_eq!(serde_json::to_string(&RunGet).unwrap(), "\"run/get\"",);
+    assert_eq!(serde_json::to_string(&RunRetry).unwrap(), "\"run/retry\"",);
+    assert_eq!(serde_json::to_string(&RunCancel).unwrap(), "\"run/cancel\"",);
     assert_eq!(
         serde_json::to_string(&MessageSend).unwrap(),
         "\"message/send\"",
@@ -398,29 +395,15 @@ fn all_orchestration_methods_exist() {
 
 #[test]
 fn delivery_state_variants_exist() {
-    use DeliveryState::{
-        Acknowledged, Failed, Recorded, Sent, Unknown,
-    };
-    assert_eq!(
-        serde_json::to_string(&Recorded).unwrap(),
-        "\"recorded\"",
-    );
-    assert_eq!(
-        serde_json::to_string(&Sent).unwrap(),
-        "\"sent\"",
-    );
+    use DeliveryState::{Acknowledged, Failed, Recorded, Sent, Unknown};
+    assert_eq!(serde_json::to_string(&Recorded).unwrap(), "\"recorded\"",);
+    assert_eq!(serde_json::to_string(&Sent).unwrap(), "\"sent\"",);
     assert_eq!(
         serde_json::to_string(&Acknowledged).unwrap(),
         "\"acknowledged\"",
     );
-    assert_eq!(
-        serde_json::to_string(&Failed).unwrap(),
-        "\"failed\"",
-    );
-    assert_eq!(
-        serde_json::to_string(&Unknown).unwrap(),
-        "\"unknown\"",
-    );
+    assert_eq!(serde_json::to_string(&Failed).unwrap(), "\"failed\"",);
+    assert_eq!(serde_json::to_string(&Unknown).unwrap(), "\"unknown\"",);
 }
 
 // ---------------------------------------------------------------------------

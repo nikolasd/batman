@@ -12,15 +12,14 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use batman_protocol::{
     ApprovalId, ArtifactId, BatmanMethod, BinarySource, Classified, ClientAuth, ClientCapabilities,
-    ClientInfo, ClientPrincipalSummary, ClientRole, ContentClass, DiagnosticLevel, EventEnvelope,
-    EventSource, InitializeParams, InitializeResult, JsonRpcError, JsonRpcErrorResponse,
-    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, MessageId, OperationId, ProjectId,
-    ProtocolVersion, RepositoryIdentity, RequestId, RunId, RuntimeCapabilities, RuntimeEvent,
-    RuntimeInfo, RuntimeStatus, TaskId, Timestamp, VersionRange, WorkerId,
-    DisplayBackend, DisplayConfig, DisplayStatus,
+    ClientInfo, ClientPrincipalSummary, ClientRole, ContentClass, DiagnosticLevel, DisplayBackend,
+    DisplayConfig, DisplayStatus, EventEnvelope, EventSource, InitializeParams, InitializeResult,
+    JsonRpcError, JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+    MessageId, OperationId, ProjectId, ProtocolVersion, RepositoryIdentity, RequestId, RunId,
+    RuntimeCapabilities, RuntimeEvent, RuntimeInfo, RuntimeStatus, TaskId, Timestamp, VersionRange,
+    WorkerId,
 };
 use clap::Subcommand;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ts_rs::TS;
@@ -53,24 +52,76 @@ enum Command {
         #[arg(long)]
         binary: PathBuf,
     },
+    /// Validate an assembled set of leaf packages together and emit one
+    /// aggregate `release-manifest.json`.
+    PackageSet {
+        /// The release version every leaf must declare.
+        #[arg(long)]
+        version: String,
+        /// Directory containing one `batman-<target>/` per supported target.
+        #[arg(long)]
+        input: PathBuf,
+        /// Directory to write `release-manifest.json` into.
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
-/// The target triples the foundation ships prebuilt `batcave` leaves for.
-/// Windows and any musl libc are explicitly unsupported.
-const SUPPORTED_TARGETS: &[&str] = &[
-    "darwin-arm64",
-    "darwin-x64",
-    "linux-arm64-gnu",
-    "linux-x64-gnu",
-];
+/// One entry of `release/targets.json`, the single source of truth for the
+/// targets this workspace ships. Previously duplicated between a constant
+/// here and `release.yml`'s build matrix; both now read the file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct TargetEntry {
+    leaf: String,
+    rust: String,
+    os: String,
+    cpu: String,
+    libc: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TargetsFile {
+    targets: Vec<TargetEntry>,
+}
+
+/// Reads `release/targets.json`. Windows and musl stay unsupported by
+/// absence: a target missing from this file is rejected, never inferred.
+fn read_targets(root: &Path) -> Result<Vec<TargetEntry>> {
+    let path = root.join("release/targets.json");
+    let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let parsed: TargetsFile =
+        serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    if parsed.targets.is_empty() {
+        bail!("{} lists no targets", path.display());
+    }
+    Ok(parsed.targets)
+}
+
+/// Resolves one target by its leaf name, or fails naming the supported set.
+fn find_target(targets: &[TargetEntry], leaf: &str) -> Result<TargetEntry> {
+    targets
+        .iter()
+        .find(|t| t.leaf == leaf)
+        .cloned()
+        .with_context(|| {
+            format!(
+                "unsupported target {leaf:?}; supported targets are: {}",
+                targets
+                    .iter()
+                    .map(|t| t.leaf.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+}
 
 /// The deterministic checksum/provenance payload written to each leaf
 /// package's `manifest.json`. Field order here is the JSON key order: serde
 /// serializes struct fields in declaration order, so this is stable across
-/// runs without needing a `preserve_order` feature. Carries no timestamp or
-/// other non-reproducible data, so packaging the same binary twice produces
-/// byte-identical output. Unsigned: the release plan signs this payload
-/// later.
+/// runs without needing a `preserve_order` feature. Every field is derived
+/// from the source tree or the binary itself -- never from wall-clock time
+/// -- so packaging the same binary twice produces byte-identical output.
+/// Unsigned: the release plan signs this payload later.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct LeafManifest {
     name: String,
@@ -79,26 +130,30 @@ struct LeafManifest {
     sha256: String,
     #[serde(rename = "sizeBytes")]
     size_bytes: u64,
-}
-
-/// Root schema document referencing every exported request/result/event
-/// type, so that a single `schemars` invocation produces one JSON Schema
-/// with everything reachable from the wire protocol in `$defs`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-struct ProtocolDocument {
-    initialize_params: InitializeParams,
-    initialize_result: InitializeResult,
-    event_envelope: EventEnvelope,
-    runtime_event: RuntimeEvent,
-    display_backend: DisplayBackend,
-    display_config: DisplayConfig,
-    display_status: DisplayStatus,
-    json_rpc_request: JsonRpcRequest<serde_json::Value>,
-    json_rpc_response: JsonRpcResponse<serde_json::Value>,
-    json_rpc_error_response: JsonRpcErrorResponse,
-    json_rpc_notification: JsonRpcNotification<serde_json::Value>,
-    runtime_status: RuntimeStatus,
+    /// `rustc --version`, trimmed.
+    #[serde(rename = "rustVersion")]
+    rust_version: String,
+    /// `git rev-parse HEAD`.
+    #[serde(rename = "sourceCommit")]
+    source_commit: String,
+    /// The wire protocol range this build speaks, e.g. `"1.0-1.0"`.
+    #[serde(rename = "protocolRange")]
+    protocol_range: String,
+    /// SHA-256 of the committed schema document, so a leaf can be matched
+    /// to the exact protocol surface it was generated against.
+    #[serde(rename = "schemaFingerprint")]
+    schema_fingerprint: String,
+    /// From `release/targets.json`.
+    os: String,
+    /// From `release/targets.json`.
+    cpu: String,
+    /// `SOURCE_DATE_EPOCH` as RFC3339. **Never** `now()`: this struct
+    /// promises byte-identical output for the same binary, and a wall-clock
+    /// value would break that. When the variable is unset this is the Unix
+    /// epoch (`1970-01-01T00:00:00Z`), which is a deliberate, reproducible
+    /// placeholder rather than a build time.
+    #[serde(rename = "buildTimestamp")]
+    build_timestamp: String,
 }
 
 fn main() -> Result<()> {
@@ -106,6 +161,11 @@ fn main() -> Result<()> {
     match args.command {
         Command::Generate { check } => run_generate(check),
         Command::Package { target, binary } => package_leaf(&workspace_root(), &target, &binary),
+        Command::PackageSet {
+            version,
+            input,
+            output,
+        } => package_set(&workspace_root(), &version, &input, &output),
     }
 }
 
@@ -120,13 +180,12 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Renders the root `ProtocolDocument` schema as pretty JSON with a trailing
-/// newline.
+/// Renders the canonical protocol schema. The renderer lives in
+/// `batman-protocol` because `batcave doctor`'s `schema_compatibility`
+/// check compares against the same bytes; a second copy here would let the
+/// two drift.
 fn render_schema() -> Result<Vec<u8>> {
-    let schema = schemars::schema_for!(ProtocolDocument);
-    let mut text = serde_json::to_string_pretty(&schema).context("serializing schema to JSON")?;
-    text.push('\n');
-    Ok(text.into_bytes())
+    batman_protocol::render_schema().context("serializing schema to JSON")
 }
 
 /// Exports every `batman-protocol` wire type's TypeScript binding into
@@ -312,9 +371,9 @@ fn run_generate(check: bool) -> Result<()> {
 }
 
 /// This leaf package's `name` field for a given target triple, e.g.
-/// `@satori/batman-darwin-arm64` for `darwin-arm64`.
+/// `@nikolasd/batman-darwin-arm64` for `darwin-arm64`.
 fn leaf_package_name(target: &str) -> String {
-    format!("@satori/batman-{target}")
+    format!("@nikolasd/batman-{target}")
 }
 
 /// The leaf package directory for a given target triple, rooted at
@@ -352,12 +411,8 @@ fn read_extension_version(root: &Path) -> Result<String> {
 /// `root` is the workspace root, parameterized so this is independently
 /// testable against a temporary fixture root rather than the real workspace.
 fn package_leaf(root: &Path, target: &str, binary: &Path) -> Result<()> {
-    if !SUPPORTED_TARGETS.contains(&target) {
-        bail!(
-            "unsupported target {target:?}; supported targets are: {}",
-            SUPPORTED_TARGETS.join(", ")
-        );
-    }
+    let targets = read_targets(root)?;
+    let entry = find_target(&targets, target)?;
 
     let leaf_dir = leaf_package_dir(root, target);
     if !leaf_dir.is_dir() {
@@ -383,16 +438,19 @@ fn package_leaf(root: &Path, target: &str, binary: &Path) -> Result<()> {
             .with_context(|| format!("setting permissions on {}", bin_path.display()))?;
     }
 
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let sha256 = hex::encode(hasher.finalize());
-
     let manifest = LeafManifest {
         name: leaf_package_name(target),
         version: read_extension_version(root)?,
         target: target.to_string(),
-        sha256,
+        sha256: sha256_hex(&bytes),
         size_bytes: bytes.len() as u64,
+        rust_version: rust_version()?,
+        source_commit: source_commit(root)?,
+        protocol_range: batman_protocol::supported_range_text(),
+        schema_fingerprint: schema_fingerprint(root)?,
+        os: entry.os,
+        cpu: entry.cpu,
+        build_timestamp: build_timestamp()?,
     };
 
     let mut manifest_json =
@@ -411,14 +469,244 @@ fn package_leaf(root: &Path, target: &str, binary: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Hex SHA-256 of `bytes`.
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
+/// Runs `program` with `args` and returns its trimmed stdout.
+fn capture(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<String> {
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let output = command
+        .output()
+        .with_context(|| format!("running {program} {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "{program} {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// The compiler that produced this build, e.g. `rustc 1.97.1 (...)`.
+fn rust_version() -> Result<String> {
+    capture("rustc", &["--version"], None)
+}
+
+/// The exact source commit a leaf was built from.
+fn source_commit(root: &Path) -> Result<String> {
+    capture("git", &["rev-parse", "HEAD"], Some(root))
+}
+
+/// SHA-256 of the committed schema document. Ties a leaf to the protocol
+/// surface it was generated against, so `package-set` can refuse a set
+/// assembled from mismatched builds.
+fn schema_fingerprint(root: &Path) -> Result<String> {
+    let path = root.join("packages/protocol-ts/schema/batman.schema.json");
+    let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(sha256_hex(&bytes))
+}
+
+/// `SOURCE_DATE_EPOCH` rendered as RFC3339, or the Unix epoch when unset.
+///
+/// Never `now()`: a wall-clock value would make two packagings of the same
+/// binary differ, which is the one property `LeafManifest` promises.
+fn build_timestamp() -> Result<String> {
+    let epoch: i64 = match std::env::var("SOURCE_DATE_EPOCH") {
+        Ok(raw) => raw
+            .trim()
+            .parse()
+            .with_context(|| format!("SOURCE_DATE_EPOCH is not an integer: {raw:?}"))?,
+        Err(_) => 0,
+    };
+    // Formatted by hand rather than pulling in a date crate: the only input
+    // is a Unix timestamp, and xtask has no other need for time handling.
+    let days = epoch.div_euclid(86_400);
+    let secs_of_day = epoch.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    Ok(format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        secs_of_day / 3600,
+        (secs_of_day % 3600) / 60,
+        secs_of_day % 60
+    ))
+}
+
+/// Days-since-epoch to `(year, month, day)`. Howard Hinnant's `civil_from_days`
+/// algorithm, which is exact for the whole proleptic Gregorian range.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// The aggregate manifest describing one complete release: the fields every
+/// leaf must agree on, plus each leaf's own manifest verbatim.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ReleaseManifest {
+    version: String,
+    #[serde(rename = "sourceCommit")]
+    source_commit: String,
+    #[serde(rename = "schemaFingerprint")]
+    schema_fingerprint: String,
+    #[serde(rename = "buildTimestamp")]
+    build_timestamp: String,
+    leaves: Vec<LeafManifest>,
+}
+
+/// Validates an assembled set of leaf packages *together* -- the checks no
+/// single `package` invocation can make -- and writes one aggregate
+/// `release-manifest.json`.
+///
+/// Every failure is a distinct, specific error: a release that ships a
+/// mismatched set is far worse than one that refuses to build.
+fn package_set(root: &Path, version: &str, input: &Path, output: &Path) -> Result<()> {
+    let targets = read_targets(root)?;
+    let expected_version = read_extension_version(root)?;
+    if version != expected_version {
+        bail!(
+            "--version {version:?} does not match packages/extension/package.json version \
+             {expected_version:?}"
+        );
+    }
+
+    let mut leaves: Vec<LeafManifest> = Vec::with_capacity(targets.len());
+    for entry in &targets {
+        let leaf_dir = input.join(format!("batman-{}", entry.leaf));
+        if !leaf_dir.is_dir() {
+            bail!(
+                "target {:?} is missing from the assembled set: {} does not exist",
+                entry.leaf,
+                leaf_dir.display()
+            );
+        }
+
+        let manifest_path = leaf_dir.join("manifest.json");
+        let raw = fs::read_to_string(&manifest_path)
+            .with_context(|| format!("reading {}", manifest_path.display()))?;
+        let manifest: LeafManifest = serde_json::from_str(&raw)
+            .with_context(|| format!("parsing {}", manifest_path.display()))?;
+
+        if manifest.version != version {
+            bail!(
+                "leaf {:?} declares version {:?} but the release is {version:?}",
+                entry.leaf,
+                manifest.version
+            );
+        }
+        if manifest.target != entry.leaf {
+            bail!(
+                "leaf directory batman-{} contains a manifest for target {:?}",
+                entry.leaf,
+                manifest.target
+            );
+        }
+
+        // The binary must be named `batcave` exactly: the TypeScript loader
+        // resolves `<leaf>/bin/batcave` and nothing else.
+        let bin_path = leaf_dir.join("bin").join("batcave");
+        if !bin_path.is_file() {
+            bail!(
+                "leaf {:?} has no bin/batcave (found nothing at {})",
+                entry.leaf,
+                bin_path.display()
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&bin_path)
+                .with_context(|| format!("reading metadata for {}", bin_path.display()))?
+                .permissions()
+                .mode();
+            if mode & 0o111 == 0 {
+                bail!(
+                    "leaf {:?} bin/batcave is not executable (mode {:o})",
+                    entry.leaf,
+                    mode & 0o777
+                );
+            }
+        }
+
+        let bytes =
+            fs::read(&bin_path).with_context(|| format!("reading {}", bin_path.display()))?;
+        let actual = sha256_hex(&bytes);
+        if actual != manifest.sha256 {
+            bail!(
+                "leaf {:?} checksum mismatch: manifest declares {} but bin/batcave hashes to {}",
+                entry.leaf,
+                manifest.sha256,
+                actual
+            );
+        }
+
+        leaves.push(manifest);
+    }
+
+    // Every leaf must have been generated against the same protocol surface.
+    // A set spanning two schema fingerprints would ship binaries that
+    // disagree about the wire format.
+    let first = &leaves[0];
+    for leaf in &leaves[1..] {
+        if leaf.schema_fingerprint != first.schema_fingerprint {
+            bail!(
+                "schema fingerprint mismatch: leaf {:?} has {} but leaf {:?} has {}",
+                first.target,
+                first.schema_fingerprint,
+                leaf.target,
+                leaf.schema_fingerprint
+            );
+        }
+    }
+
+    let release = ReleaseManifest {
+        version: version.to_string(),
+        source_commit: first.source_commit.clone(),
+        schema_fingerprint: first.schema_fingerprint.clone(),
+        build_timestamp: first.build_timestamp.clone(),
+        leaves,
+    };
+
+    fs::create_dir_all(output).with_context(|| format!("creating {}", output.display()))?;
+    let mut json =
+        serde_json::to_string_pretty(&release).context("serializing release manifest")?;
+    json.push('\n');
+    let path = output.join("release-manifest.json");
+    fs::write(&path, json.as_bytes()).with_context(|| format!("writing {}", path.display()))?;
+
+    println!(
+        "package-set: validated {} leaves and wrote {}",
+        release.leaves.len(),
+        path.display()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod package_tests {
     use super::*;
 
-    /// Builds a fixture workspace root with a `packages/extension/package.json`
-    /// declaring `version` and an empty `packages/batman-<target>` leaf
-    /// directory, mirroring just enough of the real workspace layout for
-    /// `package_leaf` to operate on.
+    /// Builds a fixture workspace root with everything `package_leaf` reads:
+    /// `packages/extension/package.json` declaring `version`, an empty
+    /// `packages/batman-<target>` leaf directory, a `release/targets.json`
+    /// copied from the real one, a committed schema document to fingerprint,
+    /// and an initialized git repository so `git rev-parse HEAD` resolves.
     fn fixture_root(version: &str, target: &str) -> tempfile::TempDir {
         let root = tempfile::tempdir().expect("creating fixture workspace root");
 
@@ -426,7 +714,7 @@ mod package_tests {
         fs::create_dir_all(&extension_dir).expect("creating fixture extension dir");
         fs::write(
             extension_dir.join("package.json"),
-            format!(r#"{{"name": "@satori/batman", "version": "{version}"}}"#),
+            format!(r#"{{"name": "@nikolasd/batman", "version": "{version}"}}"#),
         )
         .expect("writing fixture extension package.json");
 
@@ -435,6 +723,41 @@ mod package_tests {
             .join("packages")
             .join(format!("batman-{target}"));
         fs::create_dir_all(&leaf_dir).expect("creating fixture leaf dir");
+
+        // The real targets file, so a fixture can never drift from the
+        // target set the workspace actually ships.
+        let release_dir = root.path().join("release");
+        fs::create_dir_all(&release_dir).expect("creating fixture release dir");
+        let real_targets = workspace_root().join("release/targets.json");
+        fs::copy(&real_targets, release_dir.join("targets.json"))
+            .expect("copying release/targets.json into the fixture");
+
+        let schema_dir = root.path().join("packages/protocol-ts/schema");
+        fs::create_dir_all(&schema_dir).expect("creating fixture schema dir");
+        fs::write(
+            schema_dir.join("batman.schema.json"),
+            b"{\"fixture\":true}\n",
+        )
+        .expect("writing fixture schema");
+
+        // `source_commit` shells out to git, so the fixture needs a repo with
+        // one commit. Committer identity is set locally so the test does not
+        // depend on the machine's global git config.
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root.path())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("running git in the fixture");
+            assert!(status.success(), "git {args:?} failed in the fixture");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "fixture@test.invalid"]);
+        git(&["config", "user.name", "Fixture"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "fixture", "--no-gpg-sign"]);
 
         root
     }
@@ -475,7 +798,7 @@ mod package_tests {
         assert!(manifest_bytes.ends_with(b"\n"));
 
         let manifest: LeafManifest = serde_json::from_slice(&manifest_bytes).unwrap();
-        assert_eq!(manifest.name, "@satori/batman-darwin-arm64");
+        assert_eq!(manifest.name, "@nikolasd/batman-darwin-arm64");
         assert_eq!(manifest.version, "0.1.0");
         assert_eq!(manifest.target, target);
         assert_eq!(manifest.size_bytes, bytes.len() as u64);

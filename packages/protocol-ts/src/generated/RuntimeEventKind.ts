@@ -7,4 +7,26 @@ import type { PolicyViolationId } from "./PolicyViolationId";
  * Every record creation, lifecycle transition, flag change, message delivery
  * change, and approval request/decision produces one of these variants.
  */
-export type RuntimeEventKind = "taskCreated" | "taskUpdated" | "workerCreated" | "runQueued" | "runStarting" | "runWorking" | "runWaitingUser" | "runWaitingPeer" | "runPaused" | "runSucceeded" | "runFailed" | "runCancelled" | "runLost" | "runFlagsChanged" | "messageRecorded" | "messageSent" | "messageAcknowledged" | "messageFailed" | "approvalRequested" | "approvalDecided" | "childWorkerRequested" | "childWorkerRequestDenied" | "reconcileOwnershipChanged" | "adapterProcessStarted" | "adapterProcessExited" | "adapterVendorSessionEstablished" | "adapterMessageChunk" | "adapterMessageFinal" | "adapterToolStarted" | "adapterToolProgress" | "adapterToolResult" | "adapterUsageReported" | "adapterArtifactProduced" | "adapterProtocolHealthChanged" | "adapterNestedWorkerObserved" | "displayPaneAttached" | "displayPaneDetached" | { "policyViolation": { profile_id: string, adapter: string, model: string, violation_kind: string, reason: string, is_nested: boolean, } } | { "policyViolationRecorded": { violation_id: PolicyViolationId, vendor_child_id: string, vendor_parent_ref: string, action: string, } } | { "policyViolationDecided": { violation_id: PolicyViolationId, resolution: string, resolved_by: string, } };
+export type RuntimeEventKind = "taskCreated" | "taskUpdated" | "workerCreated" | "runQueued" | "runStarting" | "runWorking" | "runWaitingUser" | "runWaitingPeer" | "runPaused" | "runSucceeded" | "runFailed" | "runCancelled" | "runLost" | "runFlagsChanged" | "messageRecorded" | "messageSent" | "messageAcknowledged" | "messageFailed" | "approvalRequested" | "approvalDecided" | "childWorkerRequested" | "childWorkerRequestDenied" | "reconcileOwnershipChanged" | "adapterProcessStarted" | "adapterProcessExited" | "adapterVendorSessionEstablished" | "adapterMessageChunk" | "adapterMessageFinal" | "adapterToolStarted" | "adapterToolProgress" | "adapterToolResult" | "adapterUsageReported" | "adapterArtifactProduced" | "adapterProtocolHealthChanged" | "adapterNestedWorkerObserved" | "displayPaneAttached" | "displayPaneDetached" | { "policyViolation": { profile_id: string, adapter: string, model: string, violation_kind: string, reason: string, is_nested: boolean, } } | { "policyViolationRecorded": { violation_id: PolicyViolationId, 
+/**
+ * The machine-readable violation code: `nested_worker_denied` or
+ * `cost_ceiling_exceeded`. New codes are added here, never invented
+ * at a call site.
+ */
+code: string, 
+/**
+ * The sequence of the event that triggered this violation, so an
+ * operator can correlate the violation to its cause.
+ */
+observed_event_sequence: bigint, 
+/**
+ * The SHA-256 fingerprint of the `RuntimePolicy` this run was
+ * authorized under, so the violation is auditable against a
+ * specific merge of org/repo/user/per-run layers.
+ */
+policy_fingerprint: string, 
+/**
+ * Present only for a nested-worker violation; `None` for any
+ * violation with no vendor child, such as a cost ceiling.
+ */
+vendor_child_id: string | null, vendor_parent_ref: string | null, action: string, } } | { "policyViolationDecided": { violation_id: PolicyViolationId, resolution: string, resolved_by: string, } };

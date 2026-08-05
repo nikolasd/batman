@@ -195,7 +195,6 @@ pub struct RunFlags {
     pub children_active: bool,
 }
 
-
 /// The semantic kind of an orchestration event stored in the durable journal.
 ///
 /// Every record creation, lifecycle transition, flag change, message delivery
@@ -310,8 +309,21 @@ pub enum RuntimeEventKind {
     #[serde(rename = "policyViolationRecorded")]
     PolicyViolationRecorded {
         violation_id: PolicyViolationId,
-        vendor_child_id: String,
-        vendor_parent_ref: String,
+        /// The machine-readable violation code: `nested_worker_denied` or
+        /// `cost_ceiling_exceeded`. New codes are added here, never invented
+        /// at a call site.
+        code: String,
+        /// The sequence of the event that triggered this violation, so an
+        /// operator can correlate the violation to its cause.
+        observed_event_sequence: u64,
+        /// The SHA-256 fingerprint of the `RuntimePolicy` this run was
+        /// authorized under, so the violation is auditable against a
+        /// specific merge of org/repo/user/per-run layers.
+        policy_fingerprint: String,
+        /// Present only for a nested-worker violation; `None` for any
+        /// violation with no vendor child, such as a cost ceiling.
+        vendor_child_id: Option<String>,
+        vendor_parent_ref: Option<String>,
         action: String,
     },
     /// A policy violation was resolved (decided) by the owning OMP client.

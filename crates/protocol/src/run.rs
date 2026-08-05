@@ -8,8 +8,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::ids::{RunId, TaskId, WorkerId};
 use crate::Timestamp;
+use crate::ids::{RunId, TaskId, WorkerId};
 
 // ---------------------------------------------------------------------------
 // RunState
@@ -73,16 +73,8 @@ impl TryFrom<&str> for RunState {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
-            "queued"
-            | "starting"
-            | "working"
-            | "waitingUser"
-            | "waitingPeer"
-            | "paused"
-            | "succeeded"
-            | "failed"
-            | "cancelled"
-            | "lost" => Ok(RunState(value.to_string())),
+            "queued" | "starting" | "working" | "waitingUser" | "waitingPeer" | "paused"
+            | "succeeded" | "failed" | "cancelled" | "lost" => Ok(RunState(value.to_string())),
             _ => Err(format!("unknown run state: {value}")),
         }
     }
@@ -101,7 +93,6 @@ impl std::fmt::Display for RunState {
         f.write_str(&self.0)
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // RunSpec

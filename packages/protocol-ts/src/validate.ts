@@ -79,11 +79,7 @@ export class ValidationError extends Error {
  * The generic parameter narrows `data` to `T` on success so callers can treat
  * a validated payload as its wire type.
  */
-export function assertValid<T>(
-  validate: ValidateFunction,
-  data: unknown,
-  what: string,
-): asserts data is T {
+export function assertValid<T>(validate: ValidateFunction, data: unknown, what: string): asserts data is T {
   if (!validate(data)) {
     throw new ValidationError(what, validate.errors ?? null);
   }

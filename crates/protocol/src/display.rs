@@ -3,12 +3,12 @@
 //! Defines the display backend types and configuration for rendering
 //! Batman output in different environments (Herdr, Tmux, Terminal).
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-use schemars::JsonSchema;
 
 /// Supported display backends.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub enum DisplayBackend {
@@ -26,6 +26,22 @@ impl std::fmt::Display for DisplayBackend {
             DisplayBackend::Herdr => write!(f, "herdr"),
             DisplayBackend::Tmux => write!(f, "tmux"),
             DisplayBackend::Terminal => write!(f, "terminal"),
+        }
+    }
+}
+
+/// Parses a backend's wire name -- the exact string
+/// [`DisplayBackend`]'s `Display` impl produces, and the same one
+/// `DisplayBackendTrait::backend_name` returns.
+impl std::str::FromStr for DisplayBackend {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "herdr" => Ok(DisplayBackend::Herdr),
+            "tmux" => Ok(DisplayBackend::Tmux),
+            "terminal" => Ok(DisplayBackend::Terminal),
+            other => Err(format!("unknown display backend '{other}'")),
         }
     }
 }
@@ -95,4 +111,30 @@ impl DisplayStatus {
             dimensions: None,
         }
     }
+}
+
+/// A caller's ordered display-backend preference, resolved against what is
+/// actually available on the machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export)]
+pub struct DisplayPreference {
+    /// Backends to try, most-preferred first. Empty means "any available".
+    pub ordered: Vec<DisplayBackend>,
+    /// Where to put the pane once a backend is chosen.
+    pub placement: DisplayPlacement,
+}
+
+/// The outcome of resolving a [`DisplayPreference`] against the live registry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export)]
+pub struct DisplaySelection {
+    /// The backend that was attached, or `None` when every candidate was
+    /// unavailable (headless CI). `None` is not an error.
+    pub selected: Option<DisplayBackend>,
+    pub placement: DisplayPlacement,
+    /// Every backend tried, in order, so an operator can see why the
+    /// preferred one lost.
+    pub attempts: Vec<DisplayBackend>,
 }

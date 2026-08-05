@@ -89,6 +89,10 @@ pub enum BatmanMethod {
     CoordinationAskPolicy,
     #[serde(rename = "coordination/peerWorkspace")]
     CoordinationPeerWorkspace,
+    #[serde(rename = "coordination/artifactList")]
+    CoordinationArtifactList,
+    #[serde(rename = "coordination/artifactFetch")]
+    CoordinationArtifactFetch,
 
     // Orchestration: reconcile OMP-native agents
     #[serde(rename = "reconcile/omp")]

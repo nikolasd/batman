@@ -8,8 +8,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::ids::WorkerId;
 use crate::Timestamp;
+use crate::ids::WorkerId;
 
 /// An immutable snapshot of a harness profile.
 ///

@@ -10,10 +10,10 @@
 //!   relative storage path
 
 use batman_protocol::{
-    ApplyRequest, ApplyResult, ApplyStrategy, Artifact, ArtifactFetchResult, ArtifactFetchRequest,
-    ArtifactKind, ArtifactListRequest, ArtifactListResult, InspectRequest, InspectResult,
-    IsolationKind, LeaseMode, LeaseRequest, ReleaseRequest, WorkspaceEvent, WorkspaceInfo,
-    WorkspaceLease, WorkspaceState, ArtifactId, ProjectId, RunId,
+    ApplyRequest, ApplyResult, ApplyStrategy, Artifact, ArtifactFetchRequest, ArtifactFetchResult,
+    ArtifactId, ArtifactKind, ArtifactListRequest, ArtifactListResult, InspectRequest,
+    InspectResult, IsolationKind, LeaseMode, LeaseRequest, ProjectId, ReleaseRequest, RunId,
+    WorkspaceEvent, WorkspaceInfo, WorkspaceLease, WorkspaceState,
 };
 use serde_json::json;
 
@@ -50,12 +50,12 @@ fn sample_artifact() -> Artifact {
     Artifact {
         artifact_id: ArtifactId::parse("01900000-0000-0000-0000-000000000010").unwrap(),
         kind: ArtifactKind::Patch,
-        sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca4959e13ae37a1ff"
-            .to_string(),
+        sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca4959e13ae37a1ff".to_string(),
         byte_length: 0,
         media_type: "text/x-patch".to_string(),
-        storage_path: "artifacts/sha256/e3/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca4959e13ae37a1ff"
-            .to_string(),
+        storage_path:
+            "artifacts/sha256/e3/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca4959e13ae37a1ff"
+                .to_string(),
         run_id: Some("01900000-0000-0000-0000-000000000001".to_string()),
     }
 }
@@ -170,7 +170,10 @@ fn workspace_info_contract() {
     assert!(obj.contains_key("leaseId"));
     assert!(obj.contains_key("path"));
     assert!(obj.contains_key("state"));
-    assert_eq!(obj.get("mode").and_then(|v| v.as_str()).unwrap(), "readOnly");
+    assert_eq!(
+        obj.get("mode").and_then(|v| v.as_str()).unwrap(),
+        "readOnly"
+    );
 }
 
 #[test]
@@ -212,7 +215,10 @@ fn apply_request_and_result_contracts() {
     let val = serialise(&req);
     let obj = val.as_object().unwrap();
     assert!(obj.contains_key("strategy"));
-    assert_eq!(obj.get("strategy").and_then(|v| v.as_str()).unwrap(), "applyPatch");
+    assert_eq!(
+        obj.get("strategy").and_then(|v| v.as_str()).unwrap(),
+        "applyPatch"
+    );
     assert!(obj.contains_key("artifactId"));
     assert!(obj.contains_key("expectedTargetRevision"));
     assert!(obj.contains_key("approvalCorrelationId"));
@@ -267,7 +273,10 @@ fn workspace_event_lease_requested() {
     let obj = val.as_object().expect("workspace event is an object");
     // Adjacently tagged: { "type": "...", "payload": { ... } }
     assert!(obj.contains_key("type"));
-    assert_eq!(obj.get("type").and_then(|v| v.as_str()).unwrap(), "leaseRequested");
+    assert_eq!(
+        obj.get("type").and_then(|v| v.as_str()).unwrap(),
+        "leaseRequested"
+    );
     let payload = obj.get("payload").expect("has payload");
     assert!(payload.as_object().unwrap().contains_key("leaseId"));
     assert!(payload.as_object().unwrap().contains_key("runId"));
@@ -285,7 +294,10 @@ fn workspace_event_lease_acquired() {
     };
     let val = serialise(&event);
     let obj = val.as_object().unwrap();
-    assert_eq!(obj.get("type").and_then(|v| v.as_str()).unwrap(), "leaseAcquired");
+    assert_eq!(
+        obj.get("type").and_then(|v| v.as_str()).unwrap(),
+        "leaseAcquired"
+    );
     let payload = obj.get("payload").unwrap();
     assert!(payload.as_object().unwrap().contains_key("path"));
     assert!(payload.as_object().unwrap().contains_key("isolationKind"));
@@ -300,7 +312,11 @@ fn workspace_event_workspace_dirty() {
     };
     let val = serialise(&event);
     assert_eq!(
-        val.as_object().unwrap().get("type").and_then(|v| v.as_str()).unwrap(),
+        val.as_object()
+            .unwrap()
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap(),
         "workspaceDirty"
     );
 }
@@ -316,7 +332,11 @@ fn workspace_event_workspace_inspected() {
     };
     let val = serialise(&event);
     assert_eq!(
-        val.as_object().unwrap().get("type").and_then(|v| v.as_str()).unwrap(),
+        val.as_object()
+            .unwrap()
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap(),
         "workspaceInspected"
     );
 }
@@ -331,7 +351,11 @@ fn workspace_event_apply_started() {
     };
     let val = serialise(&event);
     assert_eq!(
-        val.as_object().unwrap().get("type").and_then(|v| v.as_str()).unwrap(),
+        val.as_object()
+            .unwrap()
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap(),
         "applyStarted"
     );
 }
@@ -346,7 +370,11 @@ fn workspace_event_apply_completed() {
     };
     let val = serialise(&event);
     assert_eq!(
-        val.as_object().unwrap().get("type").and_then(|v| v.as_str()).unwrap(),
+        val.as_object()
+            .unwrap()
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap(),
         "applyCompleted"
     );
 }
@@ -359,7 +387,11 @@ fn workspace_event_lease_released() {
     };
     let val = serialise(&event);
     assert_eq!(
-        val.as_object().unwrap().get("type").and_then(|v| v.as_str()).unwrap(),
+        val.as_object()
+            .unwrap()
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap(),
         "leaseReleased"
     );
 }
@@ -372,17 +404,22 @@ fn workspace_event_cleanup_failed() {
     };
     let val = serialise(&event);
     assert_eq!(
-        val.as_object().unwrap().get("type").and_then(|v| v.as_str()).unwrap(),
+        val.as_object()
+            .unwrap()
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap(),
         "cleanupFailed"
     );
-    assert!(val
-        .as_object()
-        .unwrap()
-        .get("payload")
-        .unwrap()
-        .as_object()
-        .unwrap()
-        .contains_key("error"));
+    assert!(
+        val.as_object()
+            .unwrap()
+            .get("payload")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("error")
+    );
 }
 
 // ------------------------------------------------------------------ artifact contracts
@@ -428,7 +465,10 @@ fn artifact_deserializes_unknown_fields_fails() {
         "unknownField": "should fail"
     });
     let result: Result<Artifact, _> = serde_json::from_value(raw);
-    assert!(result.is_err(), "deny_unknown_fields should reject unknown fields");
+    assert!(
+        result.is_err(),
+        "deny_unknown_fields should reject unknown fields"
+    );
 }
 
 #[test]
@@ -488,8 +528,7 @@ fn artifact_fetch_result_contract() {
 fn lease_round_trips() {
     let original = sample_lease();
     let json = serde_json::to_string(&original).expect("serializable");
-    let parsed: WorkspaceLease =
-        serde_json::from_str(&json).expect("deserializable");
+    let parsed: WorkspaceLease = serde_json::from_str(&json).expect("deserializable");
     assert_eq!(original, parsed);
 }
 
@@ -497,8 +536,7 @@ fn lease_round_trips() {
 fn artifact_round_trips() {
     let original = sample_artifact();
     let json = serde_json::to_string(&original).expect("serializable");
-    let parsed: Artifact =
-        serde_json::from_str(&json).expect("deserializable");
+    let parsed: Artifact = serde_json::from_str(&json).expect("deserializable");
     assert_eq!(original, parsed);
 }
 
@@ -552,9 +590,13 @@ fn workspace_event_round_trips() {
     ];
     for event in events {
         let json = serde_json::to_string(&event).expect("serializable");
-        let parsed: WorkspaceEvent =
-            serde_json::from_str(&json).expect("deserializable");
-        assert_eq!(event, parsed, "event type mismatch for {}", event_type_name(&event));
+        let parsed: WorkspaceEvent = serde_json::from_str(&json).expect("deserializable");
+        assert_eq!(
+            event,
+            parsed,
+            "event type mismatch for {}",
+            event_type_name(&event)
+        );
     }
 }
 
@@ -624,7 +666,7 @@ fn runtime_event_workspace_event_serializes() {
 
 #[test]
 fn runtime_event_workspace_event_lease_acquired_serializes() {
-    use batman_protocol::{RuntimeEvent};
+    use batman_protocol::RuntimeEvent;
     let ws_event = RuntimeEvent::WorkspaceEvent {
         kind: batman_protocol::WorkspaceEvent::LeaseAcquired {
             lease_id: "ws-002".to_string(),
@@ -646,7 +688,7 @@ fn runtime_event_workspace_event_lease_acquired_serializes() {
 
 #[test]
 fn runtime_event_workspace_event_apply_completed_serializes() {
-    use batman_protocol::{RuntimeEvent};
+    use batman_protocol::RuntimeEvent;
     let ws_event = RuntimeEvent::WorkspaceEvent {
         kind: batman_protocol::WorkspaceEvent::ApplyCompleted {
             lease_id: "ws-003".to_string(),
@@ -667,7 +709,7 @@ fn runtime_event_workspace_event_apply_completed_serializes() {
 
 #[test]
 fn runtime_event_workspace_event_artifact_published_serializes() {
-    use batman_protocol::{RuntimeEvent};
+    use batman_protocol::RuntimeEvent;
     let ws_event = RuntimeEvent::WorkspaceEvent {
         kind: batman_protocol::WorkspaceEvent::ArtifactPublished {
             lease_id: "ws-004".to_string(),
@@ -687,11 +729,12 @@ fn runtime_event_workspace_event_artifact_published_serializes() {
 
 #[test]
 fn runtime_event_workspace_event_apply_conflict_serializes() {
-    use batman_protocol::{RuntimeEvent};
+    use batman_protocol::RuntimeEvent;
     let ws_event = RuntimeEvent::WorkspaceEvent {
         kind: batman_protocol::WorkspaceEvent::ApplyConflict {
             lease_id: "ws-005".to_string(),
-            conflict_artifact_id: ArtifactId::parse("01900000-0000-0000-0000-000000000005").unwrap(),
+            conflict_artifact_id: ArtifactId::parse("01900000-0000-0000-0000-000000000005")
+                .unwrap(),
             strategy: ApplyStrategy::ApplyPatch,
             expected_target_revision: "abc123".to_string(),
         },
@@ -715,13 +758,16 @@ fn artifact_fetch_result_handles_invalid_utf8_via_base64() {
     // not a Rust String that would reject non-UTF-8 bytes.
     let result = ArtifactFetchResult {
         artifact: sample_artifact(),
-        content_base64: "/4A=".to_string(),  // [0xff, 0x80] — invalid UTF-8
+        content_base64: "/4A=".to_string(), // [0xff, 0x80] — invalid UTF-8
         next_offset: None,
         complete: true,
     };
     let json = serialise(&result);
     let obj = json.as_object().expect("is object");
-    assert_eq!(obj.get("contentBase64").and_then(|v| v.as_str()), Some("/4A="));
+    assert_eq!(
+        obj.get("contentBase64").and_then(|v| v.as_str()),
+        Some("/4A=")
+    );
     // Round-trip: deserialize back and verify the base64 string is preserved.
     let parsed: ArtifactFetchResult = deserialise(json);
     assert_eq!(parsed.content_base64, "/4A=");

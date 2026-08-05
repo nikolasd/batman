@@ -7,19 +7,20 @@
 //! from this crate.
 
 mod approval;
+mod artifact;
 mod coordination;
+mod display;
 mod event;
 mod ids;
 mod message;
 mod method;
 mod rpc;
 mod run;
+mod schema;
 mod task;
 mod version;
 mod worker;
 mod workspace;
-mod display;
-mod artifact;
 
 pub use approval::{ApprovalDecision, ApprovalRequest};
 pub use coordination::{
@@ -27,6 +28,10 @@ pub use coordination::{
     CoordinationAskPolicyParams, CoordinationChildDecision, CoordinationPeersParams,
     CoordinationPublishArtifactParams, CoordinationReportBlockedParams,
     CoordinationRequestChildParams, CoordinationSendParams, CoordinationTaskParams,
+};
+pub use display::{
+    DisplayBackend, DisplayConfig, DisplayPlacement, DisplayPreference, DisplaySelection,
+    DisplayStatus,
 };
 pub use event::RunFlags;
 pub use event::{
@@ -47,19 +52,22 @@ pub use rpc::{
 };
 pub use run::{Run, RunSpec, RunState};
 pub use task::TaskRef;
-pub use version::{ProtocolVersion, VersionRange};
+pub use version::{
+    PROTOCOL_VERSION, ProtocolVersion, VersionRange, supported_range_text, supported_versions,
+};
 pub use worker::{Worker, WorkerProfileRef};
 pub use workspace::{
     ApplyRequest, ApplyResult, ApplyStrategy, InspectRequest, InspectResult, IsolationKind,
     LeaseMode, LeaseRequest, ReleaseRequest, WorkspaceEvent, WorkspaceInfo, WorkspaceLease,
     WorkspaceState,
 };
-pub use display::{DisplayBackend, DisplayConfig, DisplayPlacement, DisplayStatus};
 
 pub use artifact::{
-    Artifact, ArtifactFetchResult, ArtifactFetchRequest, ArtifactKind, ArtifactListRequest,
+    Artifact, ArtifactFetchRequest, ArtifactFetchResult, ArtifactKind, ArtifactListRequest,
     ArtifactListResult,
 };
+
+pub use schema::{ProtocolDocument, render_schema};
 
 #[cfg(test)]
 mod tests {

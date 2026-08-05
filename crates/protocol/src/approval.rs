@@ -9,8 +9,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::ids::{ApprovalId, RunId, TaskId};
 use crate::Timestamp;
+use crate::ids::{ApprovalId, RunId, TaskId};
 
 /// An approval request raised by the runtime when an adapter needs
 /// human or policy input.

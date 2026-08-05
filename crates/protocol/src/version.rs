@@ -32,6 +32,33 @@ pub struct VersionRange {
     pub max: ProtocolVersion,
 }
 
+/// The wire protocol version this workspace implements.
+///
+/// Lives here rather than in the runtime because it is a property of the
+/// protocol itself, and two crates need it independently: the runtime
+/// negotiates against it on every `initialize`, and `batman-xtask` records
+/// it as release provenance in each leaf manifest. A second copy would let
+/// a shipped manifest claim a version the runtime does not speak.
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
+
+/// The inclusive range of protocol versions this workspace supports.
+/// Foundation scope implements exactly `1.0`.
+#[must_use]
+pub const fn supported_versions() -> VersionRange {
+    VersionRange {
+        min: PROTOCOL_VERSION,
+        max: PROTOCOL_VERSION,
+    }
+}
+
+/// The supported range as the `"<min>-<max>"` text a leaf manifest records,
+/// e.g. `"1.0-1.0"`.
+#[must_use]
+pub fn supported_range_text() -> String {
+    let VersionRange { min, max } = supported_versions();
+    format!("{}.{}-{}.{}", min.major, min.minor, max.major, max.minor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

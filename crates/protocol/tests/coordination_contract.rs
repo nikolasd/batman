@@ -1,11 +1,11 @@
 //! Wire-contract tests for the coordination broker's worker-safe surface.
 
 use batman_protocol::{
-    BatmanMethod, CoordinationAskPolicyParams, CoordinationChildDecision, CoordinationPeersParams,
+    BatmanMethod, COORDINATION_PAYLOAD_MAX_BYTES, COORDINATION_RATE_LIMIT_PER_MINUTE,
+    CoordinationAskPolicyParams, CoordinationChildDecision, CoordinationPeersParams,
     CoordinationPublishArtifactParams, CoordinationReportBlockedParams,
     CoordinationRequestChildParams, CoordinationSendParams, CoordinationTaskParams, MessageKind,
-    ProjectId, RunId, TaskId, WorkerId, COORDINATION_PAYLOAD_MAX_BYTES,
-    COORDINATION_RATE_LIMIT_PER_MINUTE,
+    ProjectId, RunId, TaskId, WorkerId,
 };
 
 #[test]

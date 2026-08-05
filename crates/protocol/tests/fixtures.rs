@@ -19,7 +19,7 @@ fn golden_initialize_request_deserializes() {
     let params: InitializeParams = serde_json::from_str(REQUEST_FIXTURE)
         .expect("golden initialize request is valid InitializeParams");
 
-    assert_eq!(params.client.name, "@satori/batman");
+    assert_eq!(params.client.name, "@nikolasd/batman");
     assert_eq!(params.client.version, "0.1.0");
     assert_eq!(params.supported.min.major, 1);
     assert_eq!(params.supported.min.minor, 0);
