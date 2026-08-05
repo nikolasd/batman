@@ -115,8 +115,8 @@ pub fn parse_config_file(path: &Path) -> Result<ParsedConfig, ConfigError> {
 
 /// Validates that a parsed YAML document contains no unknown top-level keys.
 /// Known keys: `retention`, `max_workers`, `display`, `security`, `models`,
-/// `concurrency`, `rollout_gates`, `locks`. Unknown keys produce
-/// [`ConfigError::UnknownKey`].
+/// `concurrency`, `rollout_gates`, `locks`, `workspace`, `cost`, `adapters`,
+/// `capabilities`. Unknown keys produce [`ConfigError::UnknownKey`].
 fn validate_no_unknown_keys(value: &serde_json::Value, path: String) -> Result<(), ConfigError> {
     let known_keys = [
         "retention",
@@ -127,6 +127,12 @@ fn validate_no_unknown_keys(value: &serde_json::Value, path: String) -> Result<(
         "concurrency",
         "rollout_gates",
         "locks",
+        // Read by `LayeredConfig::merge`; without them here a config that
+        // sets any of them is rejected before the value is ever read.
+        "workspace",
+        "cost",
+        "adapters",
+        "capabilities",
     ];
 
     if let Some(map) = value.as_object() {

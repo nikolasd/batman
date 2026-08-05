@@ -101,6 +101,15 @@ enum Command {
         /// Output as JSON (machine-readable).
         #[arg(long)]
         json: bool,
+        /// Organization policy layer, as an explicit file path.
+        #[arg(long)]
+        org_config: Option<PathBuf>,
+        /// Repository policy layer, as an explicit file path.
+        #[arg(long)]
+        repo_config: Option<PathBuf>,
+        /// User policy layer, as an explicit file path.
+        #[arg(long)]
+        user_config: Option<PathBuf>,
     },
     /// Serve the worker-coordination MCP proxy for one run over stdio.
     CoordinationMcp {
@@ -231,7 +240,10 @@ pub async fn run() -> ExitCode {
             state_dir,
             repo,
             json,
-        } => run_doctor(state_dir, repo, json).await,
+            org_config,
+            repo_config,
+            user_config,
+        } => run_doctor(state_dir, repo, json, org_config, repo_config, user_config).await,
         Command::CoordinationMcp {
             state_dir,
             repo,
@@ -247,6 +259,19 @@ pub async fn run() -> ExitCode {
             output,
         } => run_conformance(adapter, fixture, live, output).await,
         Command::Adapters { json } => run_adapters(json).await,
+    }
+}
+
+/// Reads the launcher's `BATMAN_BINARY_SOURCE` hint. The extension sets it
+/// when it spawns the daemon (`packages/extension/src/runtime.ts`); a
+/// hand-run `batcave` leaves it unset, which is `Unknown` rather than an
+/// error -- the field is diagnostic, never load-bearing.
+fn binary_source_from_env() -> batman_protocol::BinarySource {
+    use batman_protocol::BinarySource;
+    match std::env::var("BATMAN_BINARY_SOURCE").as_deref() {
+        Ok("override") => BinarySource::Override,
+        Ok("package") => BinarySource::Package,
+        _ => BinarySource::Unknown,
     }
 }
 
@@ -273,7 +298,7 @@ async fn run_serve(
         repo,
         idle_seconds,
         foreground,
-        binary_source: batman_protocol::BinarySource::Unknown,
+        binary_source: binary_source_from_env(),
         org_config,
         repo_config,
         user_config,
@@ -400,9 +425,20 @@ async fn run_audit_export(
     to: Option<String>,
     output: PathBuf,
 ) -> ExitCode {
-    // Use the audit export module (currently a stub that returns Ok(()))
-    let state_dir_resolved =
-        resolve_state_dir(state_dir).unwrap_or_else(|_| PathBuf::from(".batman"));
+    // A failed resolve must not silently fall back to `.batman`: the
+    // export would then report success against a directory that may not
+    // exist.
+    let state_dir_resolved = match resolve_state_dir(state_dir) {
+        Ok(dir) => dir,
+        Err(err) => return fail(&err),
+    };
+
+    let db = match batman_runtime::db::DatabaseHandle::start(state_dir_resolved.join("runtime.db"))
+        .await
+    {
+        Ok(handle) => handle,
+        Err(err) => return fail(&format!("failed to open database: {err}")),
+    };
 
     let mut export = batman_runtime::audit::Export::new(
         repo.to_string_lossy().to_string(),
@@ -412,9 +448,9 @@ async fn run_audit_export(
     export.from = from;
     export.to = to;
 
-    match export.export() {
-        Ok(()) => {
-            println!("events exported to {}", output.display());
+    match export.export(&db).await {
+        Ok(count) => {
+            println!("exported {count} events to {}", output.display());
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -442,76 +478,69 @@ fn resolve_state_dir(state_dir: Option<PathBuf>) -> Result<PathBuf, String> {
     }
 }
 
-/// Runs `batcave doctor`: runs diagnostic checks on the runtime state and configuration.
-async fn run_doctor(state_dir: Option<PathBuf>, repo: PathBuf, json: bool) -> ExitCode {
+/// Runs `batcave doctor`: runs the diagnostic check catalog against the
+/// same paths `serve` uses, so it diagnoses the state a daemon actually
+/// writes rather than a directory only `doctor` believes in.
+async fn run_doctor(
+    state_dir: Option<PathBuf>,
+    repo: PathBuf,
+    json: bool,
+    org_config: Option<PathBuf>,
+    repo_config: Option<PathBuf>,
+    user_config: Option<PathBuf>,
+) -> ExitCode {
     use batman_runtime::doctor::Doctor;
+    use batman_runtime::paths::RuntimePaths;
 
-    let state_dir_resolved = match resolve_state_dir(state_dir) {
-        Ok(dir) => dir,
-        Err(err) => return fail(&err),
-    };
-
-    // Try to open a database handle for the repo
-    let db = match batman_runtime::db::DatabaseHandle::start(state_dir_resolved.join("runtime.db"))
-        .await
-    {
-        Ok(handle) => Some(std::sync::Arc::new(handle)),
-        Err(err) => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "healthy": false,
-                        "error": format!("failed to open database: {err}")
-                    })
-                );
-            } else {
-                eprintln!("failed to open database: {err}");
-            }
-            return ExitCode::FAILURE;
+    /// Reports a fatal condition in the caller's chosen format. Only
+    /// conditions that prevent the catalog from running reach here; an
+    /// individual check's failure is part of the result.
+    fn abort(json: bool, message: &str) -> ExitCode {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({ "healthy": false, "error": message })
+            );
+        } else {
+            eprintln!("{message}");
         }
+        ExitCode::FAILURE
+    }
+
+    let state_root = match resolve_state_dir(state_dir) {
+        Ok(dir) => dir,
+        Err(err) => return abort(json, &err),
     };
 
-    // Load runtime policy (if available)
+    let paths = match RuntimePaths::resolve(&state_root, &repo) {
+        Ok(paths) => paths,
+        Err(err) => return abort(json, &format!("failed to resolve runtime paths: {err}")),
+    };
+
+    let db = match batman_runtime::db::DatabaseHandle::start(paths.database.clone()).await {
+        Ok(handle) => Some(std::sync::Arc::new(handle)),
+        Err(err) => return abort(json, &format!("failed to open database: {err}")),
+    };
+
+    // `--repo` names the repository being diagnosed, never a config file.
+    // Config layers are explicit flags, exactly as they are for `serve`.
     let policy = match batman_runtime::config::LayeredConfig::load(
-        None, // org_config
-        Some(repo.as_path()),
-        None, // user_config
+        org_config.as_deref(),
+        repo_config.as_deref(),
+        user_config.as_deref(),
     ) {
         Ok(config) => match config.merge(None) {
             Ok(policy) => Some(policy),
-            Err(err) => {
-                if json {
-                    println!(
-                        "{}",
-                        serde_json::json!({
-                            "healthy": false,
-                            "error": format!("failed to merge config: {err}")
-                        })
-                    );
-                } else {
-                    eprintln!("failed to merge config: {err}");
-                }
-                return ExitCode::FAILURE;
-            }
+            Err(err) => return abort(json, &format!("failed to merge config: {err}")),
         },
-        Err(err) => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "healthy": false,
-                        "error": format!("failed to load config: {err}")
-                    })
-                );
-            } else {
-                eprintln!("failed to load config: {err}");
-            }
-            return ExitCode::FAILURE;
-        }
+        Err(err) => return abort(json, &format!("failed to load config: {err}")),
     };
 
-    let doctor = Doctor::new(db, Some(state_dir_resolved), policy);
+    let doctor = Doctor::new(db, Some(paths.root.clone()), policy).with_runtime_context(
+        paths.socket.clone(),
+        repo,
+        paths.project_id,
+    );
 
     match doctor.check().await {
         Ok(result) => {
@@ -547,7 +576,11 @@ async fn run_doctor(state_dir: Option<PathBuf>, repo: PathBuf, json: bool) -> Ex
 /// from (and removed from) this process's own inherited environment. All
 /// protocol/auth behavior lives in `batman_runtime::coordination::mcp`;
 /// this function only resolves CLI arguments into that call.
-async fn run_coordination_mcp(state_dir: Option<PathBuf>, repo: PathBuf, run_id: String) -> ExitCode {
+async fn run_coordination_mcp(
+    state_dir: Option<PathBuf>,
+    repo: PathBuf,
+    run_id: String,
+) -> ExitCode {
     use batman_protocol::RunId;
     use batman_runtime::coordination::mcp::{self, ProcessEnvironment};
 
@@ -571,7 +604,9 @@ async fn run_coordination_mcp(state_dir: Option<PathBuf>, repo: PathBuf, run_id:
 /// this only reads availability/version, exactly like `DisplayBackendTrait::status`.
 async fn run_display_probe(backend: String, json: bool) -> ExitCode {
     use batman_protocol::{DisplayBackend as ProtoBackend, DisplayConfig};
-    use batman_runtime::display::{DisplayBackendTrait, HerdrDisplay, TerminalDisplay, TmuxDisplay};
+    use batman_runtime::display::{
+        DisplayBackendTrait, HerdrDisplay, TerminalDisplay, TmuxDisplay,
+    };
 
     let display: Box<dyn DisplayBackendTrait> = match backend.as_str() {
         "herdr" => Box::new(HerdrDisplay::new(DisplayConfig {
@@ -622,9 +657,11 @@ async fn run_display_probe(backend: String, json: bool) -> ExitCode {
 /// Runs `batcave conformance`: runs one or all adapters' fixture or live
 /// conformance suite and writes the resulting report(s) to `output` as a
 /// JSON array, printing the exact same JSON to stdout. Exactly one of
-/// `fixture`/`live` must be set. An unset `BATMAN_LIVE_<ADAPTER>` gate in
-/// live mode is reported as a `passed: false` entry with an `error`
-/// field, never a hard process failure.
+/// `fixture`/`live` must be set. Live mode runs by default; when
+/// `BATMAN_DISABLE_VENDOR_CLI=1` is set, the adapter's `live_report()`
+/// returns `Err`, which this command reports as a `{adapter,
+/// mode:"live", passed:false, error}` entry, never a hard process
+/// failure.
 async fn run_conformance(adapter: String, fixture: bool, live: bool, output: PathBuf) -> ExitCode {
     use batman_runtime::adapter::AdapterKind;
     use batman_runtime::conformance::{run_fixture_conformance, run_live_conformance};
@@ -660,9 +697,7 @@ async fn run_conformance(adapter: String, fixture: bool, live: bool, output: Pat
                 .expect("ConformanceReport serializes")
         } else {
             match run_live_conformance(kind).await {
-                Ok(report) => {
-                    serde_json::to_value(report).expect("ConformanceReport serializes")
-                }
+                Ok(report) => serde_json::to_value(report).expect("ConformanceReport serializes"),
                 Err(err) => serde_json::json!({
                     "adapter": kind.wire_name(),
                     "mode": "live",

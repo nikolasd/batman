@@ -136,7 +136,7 @@ impl Client {
             "id": 1,
             "method": "initialize",
             "params": {
-                "client": { "name": "@satori/batman", "version": "0.1.0" },
+                "client": { "name": "@nikolasd/batman", "version": "0.1.0" },
                 "supported": { "min": { "major": 1, "minor": 0 }, "max": { "major": 1, "minor": 0 } },
                 "repository": { "canonicalPath": agent_dir, "vcsRoot": agent_dir },
                 "auth": auth,

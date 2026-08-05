@@ -203,6 +203,29 @@ impl LayeredConfig {
             })
             .unwrap_or_default();
 
+        // Extract the adapter allowlist. Empty means "every adapter this
+        // runtime knows how to build" -- an explicit list is what an org
+        // sets to forbid a vendor, and is the only supported way to do so
+        // (there is deliberately no environment-variable switch for it).
+        let allowed_adapters: Vec<String> = merged
+            .get("adapters")
+            .and_then(|m| m.get("allowlist"))
+            .and_then(|a| a.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Extract the per-run spend ceiling, in USD. Absent means
+        // unenforced -- the runtime never invents a default budget.
+        let cost_ceiling_per_run_usd: Option<f64> = merged
+            .get("cost")
+            .and_then(|c| c.get("ceiling_per_run_usd"))
+            .and_then(serde_json::Value::as_f64)
+            .filter(|v| *v > 0.0);
+
         // Extract org-level security patterns.
         let org_security_patterns: Vec<String> = merged
             .get("security")
@@ -218,6 +241,54 @@ impl LayeredConfig {
         // Extract rollout gates.
         let rollout_gates = RolloutGates::from_value(merged.get("rollout_gates"));
 
+        // Copy-isolation ceilings. Unlike the cost ceiling these always
+        // have a value: an unbounded tree copy is a disk-exhaustion vector
+        // against the host, so "absent" means the built-in default, never
+        // "unenforced".
+        let copy_max_bytes: u64 = merged
+            .get("workspace")
+            .and_then(|w| w.get("copy_max_bytes"))
+            .and_then(serde_json::Value::as_u64)
+            .filter(|v| *v > 0)
+            .unwrap_or(crate::workspace::DEFAULT_COPY_MAX_BYTES);
+        let copy_max_files: u64 = merged
+            .get("workspace")
+            .and_then(|w| w.get("copy_max_files"))
+            .and_then(serde_json::Value::as_u64)
+            .filter(|v| *v > 0)
+            .unwrap_or(crate::workspace::DEFAULT_COPY_MAX_FILES);
+
+        // Capabilities an org requires every worker to declare. Names are
+        // `AdapterCapabilities`' own serde field names; an unrecognized name
+        // is a config error rather than a silently unenforced requirement,
+        // which is the failure mode this whole dimension exists to remove.
+        let required_capabilities: Vec<String> = merged
+            .get("capabilities")
+            .and_then(|c| c.get("required"))
+            .and_then(|r| r.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for name in &required_capabilities {
+            if !crate::adapter::CAPABILITY_FIELD_NAMES.contains(&name.as_str()) {
+                return Err(ConfigMergeError::InvalidPolicy(format!(
+                    "capabilities.required names unknown capability '{name}'; known: {:?}",
+                    crate::adapter::CAPABILITY_FIELD_NAMES
+                )));
+            }
+        }
+
+        // Daily spend ceiling, in USD, across the whole project. Absent
+        // means unenforced -- the runtime never invents a budget.
+        let cost_ceiling_daily_usd: Option<f64> = merged
+            .get("cost")
+            .and_then(|c| c.get("daily_usd"))
+            .and_then(serde_json::Value::as_f64)
+            .filter(|v| *v > 0.0);
+
         Ok(RuntimePolicy {
             merged,
             fingerprint,
@@ -226,8 +297,14 @@ impl LayeredConfig {
             max_workers,
             concurrency_ceiling,
             allowed_models,
+            allowed_adapters,
+            cost_ceiling_per_run_usd,
             org_security_patterns,
             rollout_gates,
+            copy_max_bytes,
+            copy_max_files,
+            required_capabilities,
+            cost_ceiling_daily_usd,
         })
     }
 }
@@ -403,10 +480,23 @@ pub struct RuntimePolicy {
     pub concurrency_ceiling: u32,
     /// Allowed model identifiers (empty = use adapter defaults).
     pub allowed_models: Vec<String>,
+    /// Allowed adapter wire names (empty = every adapter is permitted).
+    pub allowed_adapters: Vec<String>,
+    /// Per-run spend ceiling in USD (`None` = unenforced).
+    pub cost_ceiling_per_run_usd: Option<f64>,
     /// Organization-defined security redaction patterns.
     pub org_security_patterns: Vec<String>,
     /// Rollout gates that must be resolved before production use.
     pub rollout_gates: RolloutGates,
+    /// Byte ceiling for a copy-isolated workspace materialization.
+    pub copy_max_bytes: u64,
+    /// File-count ceiling for a copy-isolated workspace materialization.
+    pub copy_max_files: u64,
+    /// Capability field names every worker profile must declare as present.
+    /// Empty means no requirement.
+    pub required_capabilities: Vec<String>,
+    /// Project-wide daily spend ceiling in USD (`None` = unenforced).
+    pub cost_ceiling_daily_usd: Option<f64>,
 }
 
 impl RuntimePolicy {

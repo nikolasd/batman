@@ -65,7 +65,7 @@ impl Retention {
     }
 }
 
-fn parse_period(period: &str) -> Result<u64, String> {
+pub(crate) fn parse_period(period: &str) -> Result<u64, String> {
     let period = period.trim();
     if let Some(days) = period.strip_suffix("d") {
         days.parse::<u64>()

@@ -146,10 +146,8 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
     // by an unclean prior shutdown, before anything else touches the
     // database or the socket accepts a single connection. Every run this
     // sweep can see predates this process, so there is no live run to race.
-    let recovery = crate::recovery::RecoveryCoordinator::with_defaults(
-        Arc::clone(&db),
-        paths.project_id,
-    );
+    let recovery =
+        crate::recovery::RecoveryCoordinator::with_defaults(Arc::clone(&db), paths.project_id);
     match recovery.recover().await {
         Ok(result) if result.recovered_count > 0 => {
             for recovered in &result.recovered_runs {
@@ -180,21 +178,31 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
     }
 
     // Use the config paths from ServeOptions (passed through from CLI).
-    let policy = crate::config::resolve_effective_policy(
+    // The layers are retained alongside the merged policy so `run/submit`
+    // can re-merge a run's own `policyOverrides` onto them.
+    let layers = crate::config::LayeredConfig::load(
         opts.org_config.as_deref(),
         opts.repo_config.as_deref(),
         opts.user_config.as_deref(),
-        None,
     )
     .map_err(|e| ServeError::ConfigError(e.to_string()))?;
+    let policy = layers
+        .merge(None)
+        .map_err(|e| ServeError::ConfigError(e.to_string()))?;
+    let layers = Arc::new(layers);
 
-    // Build the redactor with org security patterns (fall back to built-in only on invalid pattern).
-    let redactor = Redactor::with_org_rules(&policy.org_security_patterns).unwrap_or_else(|e| {
-        tracing::warn!(
-            "Failed to compile org security patterns: {e}; falling back to built-in rules only"
-        );
-        Redactor::new()
-    });
+    // Org security patterns fail *closed*. An org configures these to keep
+    // specific secrets out of a durable journal it cannot retroactively
+    // scrub; silently starting with built-in rules only would journal
+    // exactly the text the org asked never to be written, and would do so
+    // behind a warning nobody reads. Refusing to start is recoverable
+    // (fix the pattern); a leaked secret in an append-only journal is not.
+    let redactor = Redactor::with_org_rules(&policy.org_security_patterns).map_err(|e| {
+        ServeError::ConfigError(format!(
+            "org security patterns failed to compile ({e}); refusing to start rather than \
+             journaling text the org's redaction rules were meant to remove"
+        ))
+    })?;
 
     let started = redactor.sanitize(RawRuntimeEvent {
         timestamp: batman_protocol::Timestamp::now(),
@@ -249,8 +257,13 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
     };
     let org_security_patterns = policy.org_security_patterns.clone();
     let nested_violation_action = policy.rollout_gates.nested_violation_action;
+    let policy = Arc::new(policy);
     let registry = Arc::new(AdapterRegistry::new(
-        Arc::new(PolicyEvaluator::new(policy)),
+        Arc::new(
+            PolicyEvaluator::new((*policy).clone()).with_daily_spend(Arc::new(
+                crate::policy::JournalDailySpend::new(paths.database.clone(), paths.project_id),
+            )),
+        ),
         repo_root.clone(),
         mcp,
         org_security_patterns,
@@ -261,6 +274,7 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
         repository: repo_root.clone(),
         worker_verifier: Arc::new(ScopeTokenVerifier::new(Arc::clone(&scope_tokens))),
         nested_violation_action,
+        policy: Some((Arc::clone(&layers), Arc::clone(&policy))),
         ..ServerConfig::default()
     };
     let server = Server::bind(
@@ -280,6 +294,41 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
     // `AdapterRegistry::set_broker`'s own doc comment for why this is a
     // post-construction setter rather than a constructor argument.
     registry.set_broker(server.coordination_broker());
+
+    // Settle messages a crash left in `recorded`/`sent`. Like the
+    // recovery sweep, this runs after bind but before the first
+    // connection is accepted, so no live run can race it. One-shot, not
+    // periodic: a running daemon settles its own messages.
+    match server
+        .coordination_broker()
+        .sweep_unacknowledged_as_unknown()
+        .await
+    {
+        Ok(0) => {}
+        Ok(count) => tracing::info!(count, "unacknowledged_messages_settled_as_unknown"),
+        Err(err) => tracing::warn!(error = %err.message, "message_settlement_sweep_failed"),
+    }
+
+    // Retention: prune once at startup, then every 24 hours. A one-shot
+    // alone leaves a long-lived daemon's journal growing without bound,
+    // which is the whole point of a retention period. A prune failure is
+    // never fatal -- an oversized journal is recoverable, a daemon that
+    // refuses to start is not.
+    let retention = crate::audit::Retention::new(policy.retention.clone());
+    if let Err(err) = retention.prune(&db).await {
+        tracing::warn!(error = %err, "retention_prune_failed");
+    }
+    let retention_db = Arc::clone(&db);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
+        ticker.tick().await; // fires immediately; the startup prune above already ran
+        loop {
+            ticker.tick().await;
+            if let Err(err) = retention.prune(&retention_db).await {
+                tracing::warn!(error = %err, "retention_prune_failed");
+            }
+        }
+    });
 
     server.serve(shutdown_signal()).await?;
 
