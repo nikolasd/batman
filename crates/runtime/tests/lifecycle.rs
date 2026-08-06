@@ -299,10 +299,7 @@ fn concurrent_serve_over_stale_lock_one_wins() {
         winner_child.try_wait().unwrap().is_none(),
         "the winning server should still be running"
     );
-    assert!(
-        find_socket(fixture.state_dir()).is_some(),
-        "the winning server must own a live socket"
-    );
+    wait_for_socket(fixture.state_dir(), deadline);
     kill(winner_child);
 }
 
