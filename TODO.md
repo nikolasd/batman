@@ -32,3 +32,190 @@ Both are real properties of the installed vendor binary, not bugs in this codeba
 - No code change needed. Run `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance to prove these for real when a licensed, billed run is acceptable
 
 **References:** `crates/runtime/src/adapter/codex/conformance.rs`, `crates/runtime/src/adapter/copilot/conformance.rs`, `docs/manual-testing.md` §4c
+
+---
+
+### 68. Unify extension connection identity with task ownership
+
+**Status:** Open (discovered 2026-08-06 during codebase review)
+**Priority:** Critical
+**Labels:** extension, authorization, ownership
+
+**Description:**
+The extension authenticates as constant instance `batman-extension` but writes the OMP session ID as task owner. Approval and policy-violation decisions require an exact owner/principal match, so the creating session cannot decide them; reconciliation can also collapse multiple sessions onto the shared identity.
+
+**Implementation:**
+- Pass the OMP session ID through `ensureRuntime`/`initParams` and use it consistently for task ownership and reconciliation.
+- Add an end-to-end extension test covering task upsert, approval decide, and violation decide.
+
+**References:** `REVIEW.md` (R1), `packages/extension/src/runtime.ts:249`, `packages/extension/src/tools/tasks.ts:41`
+
+---
+
+### 69. Release policy concurrency slots on run settlement
+
+**Status:** Open (discovered 2026-08-06 during codebase review)
+**Priority:** Critical
+**Labels:** policy, runtime, availability
+
+**Description:**
+Each authorization increments the active-run counter, but the production authorization trait has no release operation and the adapter completion watcher never decrements it. After `concurrency_ceiling` cumulative runs, the daemon permanently rejects new runs until restart.
+
+**Implementation:**
+- Add a release operation to the authorization lifecycle and invoke it exactly once on every run settlement/error path.
+- Add an integration test through the real adapter registry that completes the ceiling number of runs and authorizes another.
+
+**References:** `REVIEW.md` (R2), `crates/runtime/src/policy/evaluate.rs:371`, `crates/runtime/src/adapter/registry.rs:188`
+
+---
+
+### 70. Provide a Linux ARM64 linker in release CI
+
+**Status:** Open (discovered 2026-08-06 during codebase review)
+**Priority:** Critical
+**Labels:** release, ci, cross-compilation
+
+**Description:**
+Release CI builds `aarch64-unknown-linux-gnu` on x86_64 Ubuntu but installs only the Rust target. No AArch64 GNU linker/C compiler is installed or configured, while bundled SQLite requires target C compilation.
+
+**Implementation:**
+- Use a native ARM64 Linux runner or install/configure `gcc-aarch64-linux-gnu`, the Cargo target linker, and target `CC`.
+- Add a dry-run CI build for every release target.
+
+**References:** `REVIEW.md` (R3), `.github/workflows/release.yml:29`, `release/targets.json:5`
+
+---
+
+### 71. Preserve batcave executable mode across release artifacts
+
+**Status:** Open (discovered 2026-08-06 during codebase review)
+**Priority:** Critical
+**Labels:** release, packaging, permissions
+
+**Description:**
+`xtask package` creates `bin/batcave` as executable, but zipped GitHub artifact transfer restores files as mode `0644`. `package-set` then correctly rejects every downloaded leaf.
+
+**Implementation:**
+- Preserve mode with a tar artifact or restore `chmod +x` after downloads in both package-set and publish jobs.
+- Keep the package-set executable-mode assertion.
+
+**References:** `REVIEW.md` (R4), `.github/workflows/release.yml:74`, `crates/xtask/src/main.rs:620`
+
+---
+
+### 72. Enforce human-required approvals server-side
+
+**Status:** Open (discovered 2026-08-06 during codebase review)
+**Priority:** High
+**Labels:** approval, security, extension
+
+**Description:**
+The extension shows a human dialog only when UI is available, then falls through to the model-supplied decision in headless mode. The runtime stores `humanRequired` but does not enforce it when deciding.
+
+**Implementation:**
+- Require an authenticated human-decision signal in `ApprovalService::decide`.
+- Fail closed in the extension when a human-required approval has no interactive UI.
+
+**References:** `REVIEW.md` (R5), `packages/extension/src/tools/approvals.ts:73`, `crates/runtime/src/approval/service.rs:145`
+
+---
+
+### 73. Reconnect orchestration tools after cached client closure
+
+**Status:** Open (discovered 2026-08-06 during codebase review)
+**Priority:** High
+**Labels:** extension, ipc, recovery
+
+**Description:**
+`getClient` returns a cached client without checking its closed state. After idle shutdown or socket failure, every orchestration tool and the monitor keeps using the dead client; only the status tool clears the cache.
+
+**Implementation:**
+- Expose client liveness and clear the shared cache on close/error.
+- Reconnect from `getClient` when cached transport is closed, with a non-status recovery test.
+
+**References:** `REVIEW.md` (R6), `packages/extension/src/index.ts:49`, `packages/extension/src/client.ts:135`
+
+---
+
+### 74. Dispatch retried runs through the adapter driver
+
+**Status:** Open (discovered 2026-08-06 during codebase review)
+**Priority:** High
+**Labels:** orchestration, retry, adapter
+
+**Description:**
+`run/retry` creates and broadcasts a fresh queued run but never invokes `run_driver`. No scheduler consumes it, so no work executes and recovery later marks it failed.
+
+**Implementation:**
+- Persist or require the prompt and route retry through submit's authorization, workspace, display, and driver-start path.
+- Add an integration test proving a retry invokes the adapter and leaves queued state.
+
+**References:** `REVIEW.md` (R7), `crates/runtime/src/service/orchestration.rs:742`
+
+---
+
+### 75. Fail releases when conformance reports fail
+
+**Status:** Open (discovered 2026-08-06 during codebase review)
+**Priority:** High
+**Labels:** conformance, release, validation
+
+**Description:**
+Conformance reports compute aggregate `passed`, but the CLI always exits zero and the release validator never checks that field. A canonical scenario regression can therefore pass release after consistent capability downgrading.
+
+**Implementation:**
+- Reject reports whose aggregate `passed` is false and list their failed scenarios.
+- Return non-zero from `batcave conformance` when any requested report fails.
+
+**References:** `REVIEW.md` (R8), `tests/conformance/assert-report.ts:120`, `crates/runtime/src/cli.rs:693`
+
+---
+
+### 76. Validate release tags and every npm package version
+
+**Status:** Open (discovered 2026-08-06 during codebase review)
+**Priority:** High
+**Labels:** release, npm, versioning
+
+**Description:**
+The workflow derives `--version` from the extension package and package-set compares it to the same file. It never checks the leaf packages' published npm versions or the release tag, allowing partial or internally mismatched publication.
+
+**Implementation:**
+- Validate all leaf `package.json` versions against the extension version.
+- Validate `github.ref_name` equals `v<version>` before build/publish.
+
+**References:** `REVIEW.md` (R9), `.github/workflows/release.yml:144`, `crates/xtask/src/main.rs:578`
+
+---
+
+### 77. Enforce task isolation for artifact list and fetch
+
+**Status:** Open (discovered 2026-08-06 during codebase review)
+**Priority:** High
+**Labels:** artifact, authorization, isolation
+
+**Description:**
+OMP and worker MCP contracts say artifacts are scoped to the current task, but list returns every artifact in the repository daemon and fetch accepts any artifact ID without task/run/principal filtering.
+
+**Implementation:**
+- Carry authenticated task scope into list/fetch and reject cross-task artifact IDs.
+- Add two-task isolation tests for both OMP-extension and worker-MCP roles.
+
+**References:** `REVIEW.md` (R10), `crates/runtime/src/service/orchestration.rs:1136`, `crates/runtime/src/workspace/artifact_store.rs:160`
+
+---
+
+### 78. Preserve Copilot ACP stop reasons as runtime outcomes
+
+**Status:** Open (discovered 2026-08-06 during codebase review)
+**Priority:** High
+**Labels:** adapter, copilot, observability
+
+**Description:**
+The Copilot client returns ACP `stopReason`, but initial and follow-up callers discard it. Refusal, cancellation, token exhaustion, and maximum-turn termination are therefore indistinguishable from normal completion.
+
+**Implementation:**
+- Map supported stop reasons to explicit final/health events and fail non-success outcomes.
+- Add fixtures for refusal, cancellation, and limit termination.
+
+**References:** `REVIEW.md` (R11), `crates/runtime/src/adapter/copilot/client.rs:315`, `crates/runtime/src/adapter/copilot/mod.rs:422`
