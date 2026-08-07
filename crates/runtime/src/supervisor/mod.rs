@@ -11,7 +11,7 @@ mod output;
 mod process;
 
 pub use environment::{EnvironmentPolicy, REDACTED_PLACEHOLDER, redacted_env_snapshot};
-pub use output::{MAX_STDERR_CAPTURE_BYTES, MAX_STDOUT_FRAME_BYTES, RotatingCapture};
+pub use output::{install_frame_tap, MAX_STDERR_CAPTURE_BYTES, MAX_STDOUT_FRAME_BYTES, RotatingCapture};
 pub use process::{
     EscalationTimings, ManagedProcess, SpawnSpec, Supervisor, SupervisorError, TerminationOutcome,
 };

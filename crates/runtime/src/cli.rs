@@ -149,6 +149,19 @@ enum Command {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    /// Re-record adapter fixtures from a real vendor CLI.
+    Capture {
+        /// Adapter name: claude, codex, copilot, or ompRpc. No "all" --
+        /// capture spends real vendor turns, so it is always explicit.
+        #[arg(long)]
+        adapter: String,
+        /// Regenerate only this fixture filename instead of every entry.
+        #[arg(long)]
+        fixture: Option<String>,
+        /// Print scrubbed output instead of overwriting the committed files.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -259,6 +272,11 @@ pub async fn run() -> ExitCode {
             output,
         } => run_conformance(adapter, fixture, live, output).await,
         Command::Adapters { json } => run_adapters(json).await,
+        Command::Capture {
+            adapter,
+            fixture,
+            dry_run,
+        } => run_capture(adapter, fixture, dry_run).await,
     }
 }
 
@@ -754,6 +772,55 @@ async fn run_adapters(json: bool) -> ExitCode {
     }
     ExitCode::SUCCESS
 }
+
+/// Runs `batcave capture`: re-records adapter fixtures from a real
+/// vendor CLI, scrubs them deterministically, and overwrites the
+/// committed files in place.
+async fn run_capture(adapter: String, fixture: Option<String>, dry_run: bool) -> ExitCode {
+    use batman_runtime::adapter::AdapterKind;
+    use batman_runtime::conformance::capture;
+
+    if adapter == "all" {
+        return fail(&"capture requires a single adapter; \
+        \"all\" would spend a real turn on every vendor CLI");
+    }
+
+    let kind = match AdapterKind::from_wire_name(&adapter) {
+        Some(kind) => kind,
+        None => {
+            return fail(&format!(
+                "unknown adapter `{adapter}`; expected one of \
+                claude, codex, copilot, or ompRpc"
+            ));
+        }
+    };
+
+    let only = fixture.as_deref();
+
+    match capture::capture_adapter(kind, only, dry_run).await {
+        Ok(outcome) => {
+            for cf in &outcome.written {
+                let status = if cf.unchanged { "unchanged" } else { "rewritten" };
+                println!("{}: {} frames ({})", cf.fixture, cf.frames, status);
+            }
+            if let Some(report) = &outcome.report {
+                println!(
+                    "{}: mode={:?} passed={} scenarios={}",
+                    report.adapter,
+                    report.mode,
+                    report.passed,
+                    report.scenarios.len()
+                );
+                if !report.passed {
+                    return ExitCode::FAILURE;
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => fail(&err),
+    }
+}
+
 /// Prints an error to stderr and returns `ExitCode::FAILURE`.
 fn fail(err: &dyn std::fmt::Display) -> ExitCode {
     eprintln!("{err}");

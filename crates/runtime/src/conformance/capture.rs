@@ -1,0 +1,421 @@
+//! Automated fixture capture: drives a real vendor CLI turn, records every
+//! raw stdout frame, scrubs it deterministically, and overwrites the
+//! committed fixture in place.
+
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use crate::adapter::{
+    Adapter, AdapterEvent, AdapterEventSink, AdapterFuture, AdapterKind,
+    ClaudeStartupOptions, CodexStartupOptions, CopilotStartupOptions, OmpRpcAdapterOptions,
+    StartSpec,
+};
+use crate::conformance::scrub::Scrubber;
+use crate::conformance::{run_fixture_conformance, vendor_cli_invocation_disabled, ConformanceReport};
+use crate::supervisor::install_frame_tap;
+use batman_protocol::{RunId, TaskId, WorkerId};
+use serde_yaml_ng as serde_yaml;
+
+const FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/adapters");
+const MANIFEST_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/adapters/capture-manifest.yml");
+
+/// The on-disk directory name for each adapter kind. Note `ompRpc` maps
+/// to the hyphenated `omp-rpc`.
+fn adapter_fixture_dir(kind: AdapterKind) -> &'static str {
+    match kind {
+        AdapterKind::Claude => "claude",
+        AdapterKind::Codex => "codex",
+        AdapterKind::Copilot => "copilot",
+        AdapterKind::OmpRpc => "omp-rpc",
+    }
+}
+
+/// One fixture file and the invocation that reproduces it.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CaptureEntry {
+    /// The committed fixture filename this entry regenerates.
+    fixture: String,
+    /// The turn text. Absent only when `handshake_only` is set.
+    #[serde(default)]
+    prompt: Option<String>,
+    /// Model selector; required for `ompRpc`, ignored by the others.
+    #[serde(default)]
+    model: Option<String>,
+    /// Adapter-specific startup options.
+    #[serde(default)]
+    startup_options: Option<serde_json::Value>,
+    /// When true, capture stops after the protocol handshake and never
+    /// sends a turn.
+    #[serde(default)]
+    handshake_only: bool,
+}
+
+/// Result of capturing one fixture file.
+#[derive(Debug)]
+pub struct CapturedFixture {
+    /// The fixture filename.
+    pub fixture: String,
+    /// Number of frames captured (after scrubbing).
+    pub frames: usize,
+    /// True when the scrubbed bytes are identical to what was already
+    /// committed — the expected result for an unchanged CLI.
+    pub unchanged: bool,
+}
+
+/// Outcome of a full capture run for one adapter.
+#[derive(Debug)]
+pub struct CaptureOutcome {
+    /// The fixtures that were captured.
+    pub written: Vec<CapturedFixture>,
+    /// The fixture suite result after the rewrite. `None` in dry-run.
+    pub report: Option<ConformanceReport>,
+}
+
+/// Captures every fixture the manifest declares for `kind`, overwriting
+/// each committed file in place, then re-runs `kind`'s fixture
+/// conformance suite so the caller learns immediately whether the new
+/// captures still satisfy it.
+///
+/// # Errors
+/// Returns `Err` when the manifest is unreadable, `kind` has no manifest
+/// entries, the vendor CLI cannot be started, or `BATMAN_DISABLE_VENDOR_CLI=1`
+/// is set.
+pub async fn capture_adapter(
+    kind: AdapterKind,
+    only: Option<&str>,
+    dry_run: bool,
+) -> Result<CaptureOutcome, String> {
+    if vendor_cli_invocation_disabled() {
+        return Err("BATMAN_DISABLE_VENDOR_CLI=1 forbids capture; it spawns real vendor CLIs".to_string());
+    }
+
+    let manifest = load_manifest(&kind)?;
+    let entries: Vec<&CaptureEntry> = manifest
+        .iter()
+        .filter(|e| only.is_none_or(|f| e.fixture == f))
+        .collect();
+
+    if entries.is_empty() {
+        let hint = only
+            .map(|f| format!("; no entry for \"{}\"", f))
+            .unwrap_or_default();
+        return Err(format!(
+            "no manifest entries for {}{}",
+            kind.wire_name(),
+            hint
+        ));
+    }
+
+    // Install the tap once, before the entry loop.
+    let (tap_tx, mut tap_rx) = mpsc::unbounded_channel();
+    install_frame_tap(tap_tx).map_err(|e| format!("failed to install frame tap: {}", e))?;
+
+    // Create a scratch working directory and seed it with config.toml.
+    let scratch = tempfile::tempdir().map_err(|e| format!("failed to create scratch dir: {}", e))?;
+    let scratch_path = scratch.path().to_path_buf();
+    let config_toml = scratch_path.join("config.toml");
+    std::fs::write(&config_toml, "[read_timeout]\nvalue = 30\n")
+        .map_err(|e| format!("failed to write config.toml: {}", e))?;
+
+    let mut written = Vec::new();
+
+    for entry in &entries {
+        let frames = capture_one(&kind, scratch_path.clone(), entry, &mut tap_rx)
+            .await?;
+
+        let fixture_dir = PathBuf::from(FIXTURES_DIR).join(adapter_fixture_dir(kind));
+        let fixture_path = fixture_dir.join(&entry.fixture);
+
+        let content = frames.join("\n") + "\n";
+
+        if dry_run {
+            // Print to stdout instead of writing.
+            let mut out = std::io::stdout().lock();
+            let _ = out.write_all(content.as_bytes());
+            let _ = out.flush();
+        } else {
+            // Ensure the target directory exists.
+            if let Some(parent) = fixture_path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("failed to create dir {}: {}", parent.display(), e))?;
+            }
+            std::fs::write(&fixture_path, &content)
+                .map_err(|e| format!("failed to write {}: {}", fixture_path.display(), e))?;
+        }
+
+        // Check whether the capture changed the committed file.
+        let unchanged = !dry_run
+            && fixture_path.exists()
+            && std::fs::read_to_string(&fixture_path)
+                .is_ok_and(|existing| existing == content);
+
+        written.push(CapturedFixture {
+            fixture: entry.fixture.clone(),
+            frames: frames.len(),
+            unchanged,
+        });
+
+        // Drain remaining frames from the tap before the next entry.
+        drain_tap(&mut tap_rx).await;
+    }
+
+    // Re-run the fixture conformance suite so the caller learns immediately
+    // whether the new captures still satisfy it. Skip in dry-run.
+    let report = if !dry_run {
+        Some(run_fixture_conformance(kind).await)
+    } else {
+        None
+    };
+
+    Ok(CaptureOutcome { written, report })
+}
+
+/// Captures one manifest entry. Returns the scrubbed frame strings.
+async fn capture_one(
+    kind: &AdapterKind,
+    scratch: PathBuf,
+    entry: &CaptureEntry,
+    tap_rx: &mut mpsc::UnboundedReceiver<Vec<u8>>,
+) -> Result<Vec<String>, String> {
+    let adapter = build_adapter(kind, scratch.clone(), entry)?;
+
+    if entry.handshake_only {
+        // Probe performs the handshake with no turn.
+        adapter.probe().await.map_err(|e| format!("probe failed: {}", e))?;
+    } else {
+        let prompt = entry
+            .prompt
+            .as_deref()
+            .unwrap_or("(no prompt)")
+            .to_string();
+        let spec = StartSpec {
+            run_id: RunId::new(),
+            task_id: TaskId::new(),
+            worker_id: WorkerId::new(),
+            prompt,
+            resume: None,
+        };
+        let sink = Arc::new(DiscardingSink);
+        adapter.start(spec, sink).await.map_err(|e| format!("start failed: {}", e))?;
+    }
+
+    // Collect frames until the turn settles or the deadline elapses.
+    let raw_frames = collect_frames(tap_rx).await;
+
+    adapter.dispose().await.ok();
+
+    // Scrub the frames.
+    let cwd = scratch
+        .to_str()
+        .ok_or_else(|| "scratch path is not valid UTF-8".to_string())
+        .map(String::from)?;
+    let mut scrubber = Scrubber::new(cwd);
+    let mut scrubbed = Vec::new();
+    for frame in raw_frames {
+        if let Some(line) = scrubber.scrub_line(&frame) {
+            scrubbed.push(line);
+        }
+    }
+
+    if scrubbed.is_empty() {
+        return Err(format!(
+            "captured no frames for {}; the CLI produced no parseable output",
+            entry.fixture
+        ));
+    }
+
+    Ok(scrubbed)
+}
+
+/// Collects frames from the tap until the turn settles (10s gap) or
+/// the 180s deadline elapses.
+async fn collect_frames(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Vec<Vec<u8>> {
+    let mut frames = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    let mut idle_since = tokio::time::Instant::now();
+
+    loop {
+        // Deadline check.
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let idle_remaining = (idle_since + Duration::from_secs(10))
+            .saturating_duration_since(tokio::time::Instant::now());
+        let timeout = remaining.min(idle_remaining);
+
+        match tokio::time::timeout(timeout, rx.recv()).await {
+            Ok(Some(frame)) => {
+                frames.push(frame);
+                idle_since = tokio::time::Instant::now();
+            }
+            Ok(None) => {
+                // Tap closed (shouldn't happen in capture, but be safe).
+                break;
+            }
+            Err(_) => {
+                // Timeout — idle period elapsed or deadline reached.
+                break;
+            }
+        }
+    }
+
+    frames
+}
+
+/// Drains remaining frames from the tap (used between entries).
+async fn drain_tap(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) {
+    while let Ok(Some(_)) =
+        tokio::time::timeout(Duration::from_millis(100), rx.recv()).await
+    {
+    }
+}
+
+/// Loads the manifest entries for `kind`.
+fn load_manifest(kind: &AdapterKind) -> Result<Vec<CaptureEntry>, String> {
+    let content = std::fs::read_to_string(MANIFEST_PATH)
+        .map_err(|e| format!("failed to read manifest: {}", e))?;
+    let manifest: serde_yaml::Value =
+        serde_yaml::from_str(&content).map_err(|e| format!("failed to parse manifest: {}", e))?;
+
+    let wire_name = kind.wire_name();
+    let entries = manifest
+        .get(wire_name)
+        .ok_or_else(|| format!("no '{}' section in manifest", wire_name))?;
+
+    let seq = entries.as_sequence().ok_or_else(|| {
+        format!("'{}' section in manifest is not a list", wire_name)
+    })?;
+
+    seq.iter()
+        .map(|v| {
+            serde_yaml::from_value(v.clone()).map_err(|e| format!("invalid entry: {}", e))
+        })
+        .collect()
+}
+
+/// Builds an adapter instance for `kind` from the manifest entry.
+fn build_adapter(
+    kind: &AdapterKind,
+    cwd: PathBuf,
+    entry: &CaptureEntry,
+) -> Result<Arc<dyn Adapter>, String> {
+    match kind {
+        AdapterKind::Claude => {
+            let opts: ClaudeStartupOptions = entry
+                .startup_options
+                .as_ref()
+                .map(|v| serde_json::from_value(v.clone()))
+                .unwrap_or(Ok(ClaudeStartupOptions::default()))
+                .map_err(|e| format!("failed to parse Claude startup options: {}", e))?;
+
+            let adapter = crate::adapter::claude::ClaudeAdapter::new(
+                opts,
+                cwd,
+                Vec::new(),
+                RunId::new(),
+                TaskId::new(),
+                WorkerId::new(),
+                None,
+            );
+            Ok(Arc::new(adapter))
+        }
+        AdapterKind::Codex => {
+            let opts: CodexStartupOptions = entry
+                .startup_options
+                .as_ref()
+                .map(|v| serde_json::from_value(v.clone()))
+                .unwrap_or(Ok(CodexStartupOptions::default()))
+                .map_err(|e| format!("failed to parse Codex startup options: {}", e))?;
+
+            let adapter =
+                crate::adapter::codex::CodexAdapter::new(cwd, opts, Vec::new(), None);
+            Ok(Arc::new(adapter))
+        }
+        AdapterKind::Copilot => {
+            let opts: CopilotStartupOptions = entry
+                .startup_options
+                .as_ref()
+                .map(|v| serde_json::from_value(v.clone()))
+                .unwrap_or(Ok(CopilotStartupOptions::default()))
+                .map_err(|e| format!("failed to parse Copilot startup options: {}", e))?;
+
+            let adapter = crate::adapter::copilot::CopilotAdapter::new(
+                PathBuf::from("copilot"),
+                cwd,
+                opts,
+                Vec::new(),
+                RunId::new(),
+                TaskId::new(),
+                WorkerId::new(),
+                None,
+            );
+            Ok(Arc::new(adapter))
+        }
+        AdapterKind::OmpRpc => {
+            let model = entry.model.as_deref().ok_or_else(|| {
+                format!(
+                    "ompRpc capture entry '{}' requires a model selector",
+                    entry.fixture
+                )
+            })?;
+
+            let profile = crate::adapter::omp_rpc::conformance::conformance_profile(model);
+            let adapter = crate::adapter::omp_rpc::OmpRpcAdapter::new(
+                profile,
+                OmpRpcAdapterOptions::default(),
+                None,
+            );
+            Ok(Arc::new(adapter))
+        }
+    }
+}
+
+/// A no-op [`AdapterEventSink`] that discards everything.
+/// Capture wants raw frames from the tap, not normalized events.
+struct DiscardingSink;
+
+impl AdapterEventSink for DiscardingSink {
+    fn emit(&self, _event: AdapterEvent) -> AdapterFuture<'_, u64> {
+        Box::pin(std::future::ready(Ok(0)))
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adapter_fixture_dir_maps_correctly() {
+        assert_eq!(adapter_fixture_dir(AdapterKind::Claude), "claude");
+        assert_eq!(adapter_fixture_dir(AdapterKind::Codex), "codex");
+        assert_eq!(adapter_fixture_dir(AdapterKind::Copilot), "copilot");
+        assert_eq!(adapter_fixture_dir(AdapterKind::OmpRpc), "omp-rpc");
+    }
+
+    #[test]
+    fn load_manifest_parses_claude() {
+        let entries = load_manifest(&AdapterKind::Claude);
+        assert!(entries.is_ok());
+        let entries = entries.unwrap();
+        assert!(!entries.is_empty());
+        assert!(entries.iter().any(|e| e.fixture == "initialize.jsonl"));
+    }
+
+    #[test]
+    fn load_manifest_parses_omprpc() {
+        let entries = load_manifest(&AdapterKind::OmpRpc);
+        assert!(entries.is_ok());
+        let entries = entries.unwrap();
+        assert!(!entries.is_empty());
+        // OMP-RPC entries must have a model.
+        for entry in &entries {
+            assert!(entry.model.is_some(), "ompRpc entry must have a model");
+        }
+    }
+}

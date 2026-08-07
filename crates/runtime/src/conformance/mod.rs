@@ -19,8 +19,10 @@
 //! opt-out [`DISABLE_VENDOR_CLI_ENV`] forbids only the vendor processes
 //! this runtime would spawn purely to *observe* a CLI.
 
+pub mod capture;
 pub mod report;
 pub mod scenario;
+pub mod scrub;
 
 pub use report::{ConformanceMode, ConformanceReport, ScenarioResult};
 

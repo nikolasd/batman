@@ -35,7 +35,7 @@ use super::normalize::{
     normalize_frame,
 };
 
-fn conformance_profile(model: impl Into<String>) -> WorkerProfile {
+pub fn conformance_profile(model: impl Into<String>) -> WorkerProfile {
     WorkerProfile {
         id: ProfileId::new(),
         adapter: "ompRpc".to_string(),

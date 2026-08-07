@@ -4,6 +4,18 @@
   "description": "Root schema document referencing every exported request/result/event\ntype, so that a single `schemars` invocation produces one JSON Schema\nwith everything reachable from the wire protocol in `$defs`.",
   "type": "object",
   "properties": {
+    "initializeParams": {
+      "$ref": "#/$defs/InitializeParams"
+    },
+    "initializeResult": {
+      "$ref": "#/$defs/InitializeResult"
+    },
+    "eventEnvelope": {
+      "$ref": "#/$defs/EventEnvelope"
+    },
+    "runtimeEvent": {
+      "$ref": "#/$defs/RuntimeEvent"
+    },
     "displayBackend": {
       "$ref": "#/$defs/DisplayBackend"
     },
@@ -13,29 +25,17 @@
     "displayStatus": {
       "$ref": "#/$defs/DisplayStatus"
     },
-    "eventEnvelope": {
-      "$ref": "#/$defs/EventEnvelope"
-    },
-    "initializeParams": {
-      "$ref": "#/$defs/InitializeParams"
-    },
-    "initializeResult": {
-      "$ref": "#/$defs/InitializeResult"
-    },
-    "jsonRpcErrorResponse": {
-      "$ref": "#/$defs/JsonRpcErrorResponse"
-    },
-    "jsonRpcNotification": {
-      "$ref": "#/$defs/JsonRpcNotification"
-    },
     "jsonRpcRequest": {
       "$ref": "#/$defs/JsonRpcRequest"
     },
     "jsonRpcResponse": {
       "$ref": "#/$defs/JsonRpcResponse"
     },
-    "runtimeEvent": {
-      "$ref": "#/$defs/RuntimeEvent"
+    "jsonRpcErrorResponse": {
+      "$ref": "#/$defs/JsonRpcErrorResponse"
+    },
+    "jsonRpcNotification": {
+      "$ref": "#/$defs/JsonRpcNotification"
     },
     "runtimeStatus": {
       "$ref": "#/$defs/RuntimeStatus"
@@ -56,76 +56,115 @@
     "runtimeStatus"
   ],
   "$defs": {
-    "ApplyStrategy": {
-      "description": "The mechanical strategy for applying a workspace change.",
-      "type": "string",
-      "enum": [
-        "applyPatch",
-        "cherryPick"
+    "InitializeParams": {
+      "description": "Parameters for the `initialize` request.",
+      "type": "object",
+      "properties": {
+        "client": {
+          "$ref": "#/$defs/ClientInfo"
+        },
+        "supported": {
+          "$ref": "#/$defs/VersionRange"
+        },
+        "repository": {
+          "$ref": "#/$defs/RepositoryIdentity"
+        },
+        "auth": {
+          "$ref": "#/$defs/ClientAuth"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/ClientCapabilities"
+        },
+        "lastSequence": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "client",
+        "supported",
+        "repository",
+        "auth",
+        "capabilities"
       ]
     },
-    "ApprovalId": {
-      "description": "Identifies an approval request raised by the runtime.",
-      "type": "string"
-    },
-    "ArtifactId": {
-      "description": "Identifies an artifact produced by a run.",
-      "type": "string"
-    },
-    "BatmanMethod": {
-      "description": "All JSON-RPC methods implemented by the BATMAN runtime, including\norchestration extension methods.\n\nSerialized as the literal method name string used on the wire.",
-      "type": "string",
-      "enum": [
-        "initialize",
-        "runtime/status",
-        "events/subscribe",
-        "events/replay",
-        "runtime/shutdown",
-        "task/upsert",
-        "task/get",
-        "worker/create",
-        "worker/list",
-        "worker/get",
-        "run/submit",
-        "run/list",
-        "run/get",
-        "run/retry",
-        "run/cancel",
-        "message/send",
-        "message/list",
-        "approval/list",
-        "approval/decide",
-        "coordination/child/list",
-        "coordination/child/decide",
-        "coordination/task",
-        "coordination/peers",
-        "coordination/send",
-        "coordination/requestChild",
-        "coordination/publishArtifact",
-        "coordination/reportBlocked",
-        "coordination/askPolicy",
-        "coordination/peerWorkspace",
-        "coordination/artifactList",
-        "coordination/artifactFetch",
-        "reconcile/omp",
-        "profile/register",
-        "workspace/acquire",
-        "workspace/get",
-        "workspace/release",
-        "workspace/inspect",
-        "workspace/apply",
-        "artifact/list",
-        "artifact/fetch",
-        "policy/violation/decide"
+    "ClientInfo": {
+      "description": "Identifies the connecting client implementation (name + version), for\ndiagnostics only.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version"
       ]
     },
-    "BinarySource": {
-      "description": "Where the running `batcave` binary was loaded from. `override` means a\ndeveloper override path, `package` a bundled/installed binary, and\n`unknown` that the source could not be determined.",
-      "type": "string",
-      "enum": [
-        "override",
-        "package",
-        "unknown"
+    "VersionRange": {
+      "description": "An inclusive range of protocol versions a client (or runtime) supports.",
+      "type": "object",
+      "properties": {
+        "min": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "max": {
+          "$ref": "#/$defs/ProtocolVersion"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "min",
+        "max"
+      ]
+    },
+    "ProtocolVersion": {
+      "description": "A BATMAN protocol version, expressed as `major.minor` with no patch\ncomponent (patch-level changes must be backward compatible).",
+      "type": "object",
+      "properties": {
+        "major": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "minor": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "major",
+        "minor"
+      ]
+    },
+    "RepositoryIdentity": {
+      "description": "Identifies a repository on disk, independent of any particular runtime\ninstance.",
+      "type": "object",
+      "properties": {
+        "canonicalPath": {
+          "type": "string"
+        },
+        "vcsRoot": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "canonicalPath",
+        "vcsRoot"
       ]
     },
     "ClientAuth": {
@@ -134,10 +173,10 @@
         {
           "type": "object",
           "properties": {
-            "agentDirectory": {
+            "instanceId": {
               "type": "string"
             },
-            "instanceId": {
+            "agentDirectory": {
               "type": "string"
             },
             "role": {
@@ -158,12 +197,12 @@
             "instanceId": {
               "type": "string"
             },
+            "scopeToken": {
+              "type": "string"
+            },
             "role": {
               "type": "string",
               "const": "workerMcp"
-            },
-            "scopeToken": {
-              "type": "string"
             }
           },
           "additionalProperties": false,
@@ -211,8 +250,50 @@
         "maxFrameBytes"
       ]
     },
-    "ClientInfo": {
-      "description": "Identifies the connecting client implementation (name + version), for\ndiagnostics only.",
+    "InitializeResult": {
+      "description": "Result of a successful `initialize` request.",
+      "type": "object",
+      "properties": {
+        "runtime": {
+          "$ref": "#/$defs/RuntimeInfo"
+        },
+        "negotiated": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "principal": {
+          "$ref": "#/$defs/ClientPrincipalSummary"
+        },
+        "allowedMethods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BatmanMethod"
+          }
+        },
+        "capabilities": {
+          "$ref": "#/$defs/RuntimeCapabilities"
+        },
+        "nextSequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "runtime",
+        "negotiated",
+        "projectId",
+        "principal",
+        "allowedMethods",
+        "capabilities",
+        "nextSequence"
+      ]
+    },
+    "RuntimeInfo": {
+      "description": "Identifies the runtime implementation (name + version), for diagnostics\nonly.",
       "type": "object",
       "properties": {
         "name": {
@@ -228,15 +309,19 @@
         "version"
       ]
     },
+    "ProjectId": {
+      "description": "Identifies a repository/project managed by the BATMAN runtime.",
+      "type": "string"
+    },
     "ClientPrincipalSummary": {
       "description": "A summary of the authenticated client, echoed back so the client can\nconfirm how the runtime identified it.",
       "type": "object",
       "properties": {
-        "instanceId": {
-          "type": "string"
-        },
         "role": {
           "$ref": "#/$defs/ClientRole"
+        },
+        "instanceId": {
+          "type": "string"
         },
         "scopedRunId": {
           "description": "The run this connection is scoped to. `None` for every role except\n`workerMcp`, whose scope-token binding determines it -- never a\nvalue the client can request or override.",
@@ -287,531 +372,64 @@
         "display"
       ]
     },
-    "DiagnosticLevel": {
-      "description": "The severity of a [`RuntimeEvent::Diagnostic`].",
-      "type": "string",
-      "enum": [
-        "info",
-        "warning",
-        "error"
-      ]
-    },
-    "DisplayBackend": {
-      "description": "Supported display backends.",
-      "oneOf": [
-        {
-          "description": "Herdr terminal multiplexer backend.",
-          "type": "string",
-          "const": "herdr"
-        },
-        {
-          "description": "Tmux terminal multiplexer backend.",
-          "type": "string",
-          "const": "tmux"
-        },
-        {
-          "description": "Raw terminal backend (degraded capabilities).",
-          "type": "string",
-          "const": "terminal"
-        }
-      ]
-    },
-    "DisplayConfig": {
-      "description": "Display configuration.",
-      "type": "object",
-      "properties": {
-        "backend": {
-          "description": "The backend to use.",
-          "$ref": "#/$defs/DisplayBackend"
-        },
-        "height": {
-          "description": "Optional height override (None = auto-detect).",
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0
-        },
-        "width": {
-          "description": "Optional width override (None = auto-detect).",
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "backend"
-      ]
-    },
-    "DisplayPlacement": {
-      "description": "Where a display backend places a pane relative to the caller's own\nterminal. Changes presentation only; never run ownership.",
-      "oneOf": [
-        {
-          "description": "Rendered inside the caller's own OMP session, no separate pane.",
-          "type": "string",
-          "const": "embedded"
-        },
-        {
-          "description": "A new pane split to the right of the current one.",
-          "type": "string",
-          "const": "splitRight"
-        },
-        {
-          "description": "A new pane split below the current one.",
-          "type": "string",
-          "const": "splitDown"
-        },
-        {
-          "description": "A new tab.",
-          "type": "string",
-          "const": "tab"
-        },
-        {
-          "description": "A new workspace (Herdr only; unsupported by tmux).",
-          "type": "string",
-          "const": "workspace"
-        }
-      ]
-    },
-    "DisplayStatus": {
-      "description": "Display status information.",
-      "type": "object",
-      "properties": {
-        "active": {
-          "description": "Whether the backend is currently active.",
-          "type": "boolean"
-        },
-        "available": {
-          "description": "Whether the backend is available.",
-          "type": "boolean"
-        },
-        "backend": {
-          "description": "The backend in use.",
-          "$ref": "#/$defs/DisplayBackend"
-        },
-        "dimensions": {
-          "description": "Terminal dimensions if known.",
-          "type": [
-            "array",
-            "null"
-          ],
-          "maxItems": 2,
-          "minItems": 2,
-          "prefixItems": [
-            {
-              "type": "integer",
-              "format": "uint16",
-              "maximum": 65535,
-              "minimum": 0
-            },
-            {
-              "type": "integer",
-              "format": "uint16",
-              "maximum": 65535,
-              "minimum": 0
-            }
-          ]
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "backend",
-        "available",
-        "active"
-      ]
-    },
-    "EventEnvelope": {
-      "description": "The envelope wrapping every durable runtime event, carrying its sequence\nnumber and routing metadata.",
-      "type": "object",
-      "properties": {
-        "event": {
-          "$ref": "#/$defs/RuntimeEvent"
-        },
-        "parentWorkerId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/WorkerId"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "projectId": {
-          "$ref": "#/$defs/ProjectId"
-        },
-        "runId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RunId"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "sequence": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "source": {
-          "$ref": "#/$defs/EventSource"
-        },
-        "taskId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TaskId"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "timestamp": {
-          "$ref": "#/$defs/Timestamp"
-        },
-        "vendorEventRef": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "workerId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/WorkerId"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "sequence",
-        "timestamp",
-        "projectId",
-        "source",
-        "event"
-      ]
-    },
-    "EventSource": {
-      "description": "Identifies which subsystem produced an event.",
-      "type": "string",
-      "enum": [
-        "runtime"
-      ]
-    },
-    "InitializeParams": {
-      "description": "Parameters for the `initialize` request.",
-      "type": "object",
-      "properties": {
-        "auth": {
-          "$ref": "#/$defs/ClientAuth"
-        },
-        "capabilities": {
-          "$ref": "#/$defs/ClientCapabilities"
-        },
-        "client": {
-          "$ref": "#/$defs/ClientInfo"
-        },
-        "lastSequence": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint64",
-          "minimum": 0
-        },
-        "repository": {
-          "$ref": "#/$defs/RepositoryIdentity"
-        },
-        "supported": {
-          "$ref": "#/$defs/VersionRange"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "client",
-        "supported",
-        "repository",
-        "auth",
-        "capabilities"
-      ]
-    },
-    "InitializeResult": {
-      "description": "Result of a successful `initialize` request.",
-      "type": "object",
-      "properties": {
-        "allowedMethods": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/BatmanMethod"
-          }
-        },
-        "capabilities": {
-          "$ref": "#/$defs/RuntimeCapabilities"
-        },
-        "negotiated": {
-          "$ref": "#/$defs/ProtocolVersion"
-        },
-        "nextSequence": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "principal": {
-          "$ref": "#/$defs/ClientPrincipalSummary"
-        },
-        "projectId": {
-          "$ref": "#/$defs/ProjectId"
-        },
-        "runtime": {
-          "$ref": "#/$defs/RuntimeInfo"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "runtime",
-        "negotiated",
-        "projectId",
-        "principal",
-        "allowedMethods",
-        "capabilities",
-        "nextSequence"
-      ]
-    },
-    "IsolationKind": {
-      "description": "The isolation strategy used to materialize a workspace.\n\n`shared` means no isolation (single path shared by read-only workers);\n`gitWorktree` uses `git worktree add --detach`; `copy` copies the tree\nwithout following symlinks or copying `.git` administrative data.",
-      "type": "string",
-      "enum": [
-        "shared",
-        "gitWorktree",
-        "copy"
-      ]
-    },
-    "JsonRpcError": {
-      "description": "A JSON-RPC 2.0 error object. `data` carries optional, already-sanitized\ndiagnostic detail; it is omitted from the wire form when absent.",
-      "type": "object",
-      "properties": {
-        "code": {
-          "type": "integer",
-          "format": "int32"
-        },
-        "data": true,
-        "message": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "code",
-        "message"
-      ]
-    },
-    "JsonRpcErrorResponse": {
-      "description": "A JSON-RPC 2.0 error response envelope. `id` is `None` when the request\nidentifier could not be determined (for example, on a parse error).",
-      "type": "object",
-      "properties": {
-        "error": {
-          "$ref": "#/$defs/JsonRpcError"
-        },
-        "id": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RequestId"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "jsonrpc": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "jsonrpc",
-        "error"
-      ]
-    },
-    "JsonRpcNotification": {
-      "description": "A JSON-RPC 2.0 notification envelope: a method call with no `id`, for\nwhich no response is expected. BATMAN uses these to push runtime events to\nsubscribed clients via the `events/event` method.",
-      "type": "object",
-      "properties": {
-        "jsonrpc": {
-          "type": "string"
-        },
-        "method": {
-          "type": "string"
-        },
-        "params": true
-      },
-      "additionalProperties": false,
-      "required": [
-        "jsonrpc",
-        "method"
-      ]
-    },
-    "JsonRpcRequest": {
-      "description": "A JSON-RPC 2.0 request envelope.",
-      "type": "object",
-      "properties": {
-        "id": {
-          "$ref": "#/$defs/RequestId"
-        },
-        "jsonrpc": {
-          "type": "string"
-        },
-        "method": {
-          "type": "string"
-        },
-        "params": true
-      },
-      "additionalProperties": false,
-      "required": [
-        "jsonrpc",
-        "id",
-        "method"
-      ]
-    },
-    "JsonRpcResponse": {
-      "description": "A JSON-RPC 2.0 success response envelope.",
-      "type": "object",
-      "properties": {
-        "id": {
-          "$ref": "#/$defs/RequestId"
-        },
-        "jsonrpc": {
-          "type": "string"
-        },
-        "result": true
-      },
-      "additionalProperties": false,
-      "required": [
-        "jsonrpc",
-        "id",
-        "result"
-      ]
-    },
-    "LeaseMode": {
-      "description": "The isolation mode requested for a workspace lease.\n\n`shared` allows multiple read-only workers to share one path;\n`write` requires exclusive isolation (git-worktree or copy).",
-      "type": "string",
-      "enum": [
-        "readOnly",
-        "write"
-      ]
-    },
-    "MessageId": {
-      "description": "Identifies a single message within a run's transcript.",
-      "type": "string"
-    },
-    "PolicyViolationId": {
-      "description": "Identifies a mid-run nested-worker policy violation.",
-      "type": "string"
-    },
-    "ProjectId": {
-      "description": "Identifies a repository/project managed by the BATMAN runtime.",
-      "type": "string"
-    },
-    "ProtocolVersion": {
-      "description": "A BATMAN protocol version, expressed as `major.minor` with no patch\ncomponent (patch-level changes must be backward compatible).",
-      "type": "object",
-      "properties": {
-        "major": {
-          "type": "integer",
-          "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0
-        },
-        "minor": {
-          "type": "integer",
-          "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "major",
-        "minor"
-      ]
-    },
-    "RepositoryIdentity": {
-      "description": "Identifies a repository on disk, independent of any particular runtime\ninstance.",
-      "type": "object",
-      "properties": {
-        "canonicalPath": {
-          "type": "string"
-        },
-        "vcsRoot": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "canonicalPath",
-        "vcsRoot"
-      ]
-    },
-    "RequestId": {
-      "description": "A JSON-RPC request identifier, either a number or a string.",
-      "anyOf": [
-        {
-          "type": "integer",
-          "format": "int64"
-        },
-        {
-          "type": "string"
-        }
-      ]
-    },
-    "RunFlags": {
-      "description": "Independent boolean flags on a run.\n\n`degradedControl`, `needsReconciliation`, `protocolUnhealthy`,\n`policyQuarantined`, `workspaceDirty`, and `childrenActive` are all\nindependent booleans.",
-      "type": "object",
-      "properties": {
-        "childrenActive": {
-          "type": "boolean"
-        },
-        "degradedControl": {
-          "type": "boolean"
-        },
-        "needsReconciliation": {
-          "type": "boolean"
-        },
-        "policyQuarantined": {
-          "type": "boolean"
-        },
-        "protocolUnhealthy": {
-          "type": "boolean"
-        },
-        "workspaceDirty": {
-          "type": "boolean"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "degradedControl",
-        "needsReconciliation",
-        "protocolUnhealthy",
-        "policyQuarantined",
-        "workspaceDirty",
-        "childrenActive"
-      ]
-    },
     "RunId": {
       "description": "Identifies a single run of a task.",
       "type": "string"
+    },
+    "TaskId": {
+      "description": "Identifies a task tracked by the runtime.",
+      "type": "string"
+    },
+    "WorkerId": {
+      "description": "Identifies a worker process spawned by the runtime.",
+      "type": "string"
+    },
+    "BatmanMethod": {
+      "description": "All JSON-RPC methods implemented by the BATMAN runtime, including\norchestration extension methods.\n\nSerialized as the literal method name string used on the wire.",
+      "type": "string",
+      "enum": [
+        "initialize",
+        "runtime/status",
+        "events/subscribe",
+        "events/replay",
+        "runtime/shutdown",
+        "task/upsert",
+        "task/get",
+        "worker/create",
+        "worker/list",
+        "worker/get",
+        "run/submit",
+        "run/list",
+        "run/get",
+        "run/retry",
+        "run/cancel",
+        "message/send",
+        "message/list",
+        "approval/list",
+        "approval/decide",
+        "coordination/child/list",
+        "coordination/child/decide",
+        "coordination/task",
+        "coordination/peers",
+        "coordination/send",
+        "coordination/requestChild",
+        "coordination/publishArtifact",
+        "coordination/reportBlocked",
+        "coordination/askPolicy",
+        "coordination/peerWorkspace",
+        "coordination/artifactList",
+        "coordination/artifactFetch",
+        "reconcile/omp",
+        "profile/register",
+        "workspace/acquire",
+        "workspace/get",
+        "workspace/release",
+        "workspace/inspect",
+        "workspace/apply",
+        "artifact/list",
+        "artifact/fetch",
+        "policy/violation/decide"
+      ]
     },
     "RuntimeCapabilities": {
       "description": "Capabilities the runtime grants for the negotiated session.",
@@ -834,6 +452,94 @@
         "peerCredentialsVerified"
       ]
     },
+    "EventEnvelope": {
+      "description": "The envelope wrapping every durable runtime event, carrying its sequence\nnumber and routing metadata.",
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "timestamp": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "projectId": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "taskId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workerId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkerId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parentWorkerId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkerId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/EventSource"
+        },
+        "event": {
+          "$ref": "#/$defs/RuntimeEvent"
+        },
+        "vendorEventRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "timestamp",
+        "projectId",
+        "source",
+        "event"
+      ]
+    },
+    "Timestamp": {
+      "description": "Canonical UTC RFC 3339 timestamp text, as carried on the wire.\n\nRather than expose [`time::OffsetDateTime`] across generated bindings,\nBATMAN normalizes every timestamp to a UTC RFC 3339 string at\nconstruction time; downstream consumers (including schemars/ts-rs) only\never see a plain string.",
+      "type": "string"
+    },
+    "EventSource": {
+      "description": "Identifies which subsystem produced an event.",
+      "type": "string",
+      "enum": [
+        "runtime"
+      ]
+    },
     "RuntimeEvent": {
       "description": "A sanitized, durable runtime event. Fields are plain, already-sanitized\ntypes (never [`Classified`]) so that raw thinking/secret content can\nnever reach the durable log through this type.",
       "oneOf": [
@@ -845,10 +551,10 @@
               "const": "runtimeStarted"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -858,22 +564,26 @@
               "const": "runtimeStopping"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "diagnostic"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "code": {
-                  "type": "string"
-                },
                 "level": {
                   "$ref": "#/$defs/DiagnosticLevel"
+                },
+                "code": {
+                  "type": "string"
                 },
                 "message": {
                   "type": "string"
@@ -885,27 +595,30 @@
                 "code",
                 "message"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "diagnostic"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A task was created or updated via `task/upsert`.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "taskEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
                 "kind": {
                   "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
                 },
                 "ownerClientInstanceId": {
                   "type": "string"
@@ -914,9 +627,6 @@
                   "type": "integer",
                   "format": "uint64",
                   "minimum": 0
-                },
-                "taskId": {
-                  "$ref": "#/$defs/TaskId"
                 }
               },
               "additionalProperties": false,
@@ -926,33 +636,33 @@
                 "ownerClientInstanceId",
                 "revision"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "taskEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A worker was created via `worker/create`.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "workerEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
                 "kind": {
                   "$ref": "#/$defs/RuntimeEventKind"
                 },
-                "profileId": {
-                  "type": "string"
-                },
                 "workerId": {
                   "$ref": "#/$defs/WorkerId"
+                },
+                "profileId": {
+                  "type": "string"
                 }
               },
               "additionalProperties": false,
@@ -961,22 +671,22 @@
                 "workerId",
                 "profileId"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "workerEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A run entered a new lifecycle state.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "runEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
@@ -986,14 +696,14 @@
                 "runId": {
                   "$ref": "#/$defs/RunId"
                 },
-                "state": {
-                  "type": "string"
-                },
                 "taskId": {
                   "$ref": "#/$defs/TaskId"
                 },
                 "workerId": {
                   "$ref": "#/$defs/WorkerId"
+                },
+                "state": {
+                  "type": "string"
                 }
               },
               "additionalProperties": false,
@@ -1004,30 +714,30 @@
                 "workerId",
                 "state"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "runEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "Flags on a run were changed.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "runFlagsEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "flags": {
-                  "$ref": "#/$defs/RunFlags"
-                },
                 "runId": {
                   "$ref": "#/$defs/RunId"
+                },
+                "flags": {
+                  "$ref": "#/$defs/RunFlags"
                 }
               },
               "additionalProperties": false,
@@ -1035,28 +745,25 @@
                 "runId",
                 "flags"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "runFlagsEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A message was recorded, sent, acknowledged, or failed.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "messageEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "deliveryState": {
-                  "type": "string"
-                },
                 "kind": {
                   "$ref": "#/$defs/RuntimeEventKind"
                 },
@@ -1068,6 +775,9 @@
                 },
                 "taskId": {
                   "$ref": "#/$defs/TaskId"
+                },
+                "deliveryState": {
+                  "type": "string"
                 }
               },
               "additionalProperties": false,
@@ -1078,39 +788,39 @@
                 "taskId",
                 "deliveryState"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "messageEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "An approval request was created.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "approvalEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "action": {
-                  "type": "string"
+                "kind": {
+                  "$ref": "#/$defs/RuntimeEventKind"
                 },
                 "approvalId": {
                   "$ref": "#/$defs/ApprovalId"
-                },
-                "kind": {
-                  "$ref": "#/$defs/RuntimeEventKind"
                 },
                 "runId": {
                   "$ref": "#/$defs/RunId"
                 },
                 "taskId": {
                   "$ref": "#/$defs/TaskId"
+                },
+                "action": {
+                  "type": "string"
                 }
               },
               "additionalProperties": false,
@@ -1121,34 +831,30 @@
                 "taskId",
                 "action"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "approvalEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A child worker was requested or denied.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "childEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "childRunId": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/$defs/RunId"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
+                "kind": {
+                  "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "parentRunId": {
+                  "$ref": "#/$defs/RunId"
                 },
                 "childTaskId": {
                   "anyOf": [
@@ -1170,11 +876,15 @@
                     }
                   ]
                 },
-                "kind": {
-                  "$ref": "#/$defs/RuntimeEventKind"
-                },
-                "parentRunId": {
-                  "$ref": "#/$defs/RunId"
+                "childRunId": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/RunId"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "reason": {
                   "type": [
@@ -1188,38 +898,38 @@
                 "kind",
                 "parentRunId"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "childEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "Ownership of a task was rebound via `reconcile/omp`.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "reconcileEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "newOwnerClientInstanceId": {
-                  "type": "string"
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
                 },
                 "oldOwnerClientInstanceId": {
+                  "type": "string"
+                },
+                "newOwnerClientInstanceId": {
                   "type": "string"
                 },
                 "revision": {
                   "type": "integer",
                   "format": "uint64",
                   "minimum": 0
-                },
-                "taskId": {
-                  "$ref": "#/$defs/TaskId"
                 }
               },
               "additionalProperties": false,
@@ -1229,34 +939,36 @@
                 "newOwnerClientInstanceId",
                 "revision"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "reconcileEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A supervised adapter process started or exited.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "adapterProcessEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "exitCode": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "format": "int32"
-                },
                 "kind": {
                   "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
                 },
                 "pid": {
                   "type": [
@@ -1266,20 +978,18 @@
                   "format": "uint32",
                   "minimum": 0
                 },
-                "runId": {
-                  "$ref": "#/$defs/RunId"
+                "exitCode": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32"
                 },
                 "signal": {
                   "type": [
                     "string",
                     "null"
                   ]
-                },
-                "taskId": {
-                  "$ref": "#/$defs/TaskId"
-                },
-                "workerId": {
-                  "$ref": "#/$defs/WorkerId"
                 }
               },
               "additionalProperties": false,
@@ -1289,22 +999,22 @@
                 "taskId",
                 "workerId"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "adapterProcessEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A worker adapter established (or re-established) its vendor\nsession/thread identifier.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "adapterVendorSessionEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
@@ -1314,11 +1024,11 @@
                 "taskId": {
                   "$ref": "#/$defs/TaskId"
                 },
-                "vendorSessionId": {
-                  "type": "string"
-                },
                 "workerId": {
                   "$ref": "#/$defs/WorkerId"
+                },
+                "vendorSessionId": {
+                  "type": "string"
                 }
               },
               "additionalProperties": false,
@@ -1328,30 +1038,27 @@
                 "workerId",
                 "vendorSessionId"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "adapterVendorSessionEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A visible message chunk or final message from a worker adapter.\n`text` has already crossed the redaction boundary; `None` means\nthe entire fragment was `Thinking`/`Secret`-classified and was\ndropped, not that the message was empty.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "adapterMessageEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
                 "kind": {
                   "$ref": "#/$defs/RuntimeEventKind"
-                },
-                "role": {
-                  "type": "string"
                 },
                 "runId": {
                   "$ref": "#/$defs/RunId"
@@ -1359,14 +1066,17 @@
                 "taskId": {
                   "$ref": "#/$defs/TaskId"
                 },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                },
+                "role": {
+                  "type": "string"
+                },
                 "text": {
                   "type": [
                     "string",
                     "null"
                   ]
-                },
-                "workerId": {
-                  "$ref": "#/$defs/WorkerId"
                 }
               },
               "additionalProperties": false,
@@ -1377,33 +1087,39 @@
                 "workerId",
                 "role"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "adapterMessageEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A tool call lifecycle event from a worker adapter. `detail` has\nalready crossed the redaction boundary; `None` means the detail\nfragment was `Thinking`/`Secret`-classified and was dropped, not\nthat it was empty.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "adapterToolEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "detail": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
                 "kind": {
                   "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                },
+                "toolCallId": {
+                  "type": "string"
                 },
                 "name": {
                   "type": "string"
@@ -1414,17 +1130,11 @@
                     "null"
                   ]
                 },
-                "runId": {
-                  "$ref": "#/$defs/RunId"
-                },
-                "taskId": {
-                  "$ref": "#/$defs/TaskId"
-                },
-                "toolCallId": {
-                  "type": "string"
-                },
-                "workerId": {
-                  "$ref": "#/$defs/WorkerId"
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "additionalProperties": false,
@@ -1436,31 +1146,33 @@
                 "toolCallId",
                 "name"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "adapterToolEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "Usage/cost reported by a worker adapter.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "adapterUsageEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "costUsd": {
-                  "type": [
-                    "number",
-                    "null"
-                  ],
-                  "format": "double"
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
                 },
                 "inputTokens": {
                   "type": "integer",
@@ -1472,14 +1184,12 @@
                   "format": "uint64",
                   "minimum": 0
                 },
-                "runId": {
-                  "$ref": "#/$defs/RunId"
-                },
-                "taskId": {
-                  "$ref": "#/$defs/TaskId"
-                },
-                "workerId": {
-                  "$ref": "#/$defs/WorkerId"
+                "costUsd": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "double"
                 }
               },
               "additionalProperties": false,
@@ -1490,31 +1200,25 @@
                 "inputTokens",
                 "outputTokens"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "adapterUsageEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "An artifact produced by a worker adapter.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "adapterArtifactEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "artifactId": {
-                  "$ref": "#/$defs/ArtifactId"
-                },
-                "artifactKind": {
-                  "type": "string"
-                },
                 "runId": {
                   "$ref": "#/$defs/RunId"
                 },
@@ -1523,6 +1227,12 @@
                 },
                 "workerId": {
                   "$ref": "#/$defs/WorkerId"
+                },
+                "artifactId": {
+                  "$ref": "#/$defs/ArtifactId"
+                },
+                "artifactKind": {
+                  "type": "string"
                 }
               },
               "additionalProperties": false,
@@ -1533,34 +1243,25 @@
                 "artifactId",
                 "artifactKind"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "adapterArtifactEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A worker adapter's protocol health changed. `detail` has already\ncrossed the redaction boundary; `None` means the detail fragment\nwas `Thinking`/`Secret`-classified and was dropped, not that it\nwas empty.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "adapterProtocolHealthEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "detail": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "healthy": {
-                  "type": "boolean"
-                },
                 "runId": {
                   "$ref": "#/$defs/RunId"
                 },
@@ -1569,6 +1270,15 @@
                 },
                 "workerId": {
                   "$ref": "#/$defs/WorkerId"
+                },
+                "healthy": {
+                  "type": "boolean"
+                },
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "additionalProperties": false,
@@ -1578,33 +1288,33 @@
                 "workerId",
                 "healthy"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "adapterProtocolHealthEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A workspace lease lifecycle event (lease acquire/release/inspect/apply/cleanup).",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "workspaceEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
                 "kind": {
                   "$ref": "#/$defs/WorkspaceEvent"
                 },
-                "leaseId": {
-                  "type": "string"
-                },
                 "runId": {
                   "$ref": "#/$defs/RunId"
+                },
+                "leaseId": {
+                  "type": "string"
                 }
               },
               "additionalProperties": false,
@@ -1613,22 +1323,22 @@
                 "runId",
                 "leaseId"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "workspaceEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A worker adapter observed a vendor-created child worker, emitted\neven when the adapter declares `nested: none` -- emission alone\nnever upgrades a declared capability; conformance/policy decide\nwhat an unexpected observation means.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "adapterNestedWorkerEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
@@ -1638,14 +1348,14 @@
                 "taskId": {
                   "$ref": "#/$defs/TaskId"
                 },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                },
                 "vendorChildId": {
                   "type": "string"
                 },
                 "vendorParentRef": {
                   "type": "string"
-                },
-                "workerId": {
-                  "$ref": "#/$defs/WorkerId"
                 }
               },
               "additionalProperties": false,
@@ -1656,59 +1366,21 @@
                 "vendorChildId",
                 "vendorParentRef"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "adapterNestedWorkerEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
           "properties": {
-            "payload": {
-              "type": "object",
-              "properties": {
-                "kind": {
-                  "$ref": "#/$defs/RuntimeEventKind"
-                },
-                "runId": {
-                  "$ref": "#/$defs/RunId"
-                },
-                "taskId": {
-                  "$ref": "#/$defs/TaskId"
-                },
-                "workerId": {
-                  "$ref": "#/$defs/WorkerId"
-                }
-              },
-              "additionalProperties": false,
-              "required": [
-                "kind",
-                "runId",
-                "taskId",
-                "workerId"
-              ]
-            },
             "type": {
               "type": "string",
               "const": "policyViolationRecorded"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "type",
-            "payload"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
+            },
             "payload": {
               "type": "object",
               "properties": {
@@ -1732,40 +1404,78 @@
                 "taskId",
                 "workerId"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "policyViolationDecided"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "policyViolationDecided"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/RuntimeEventKind"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "taskId": {
+                  "$ref": "#/$defs/TaskId"
+                },
+                "workerId": {
+                  "$ref": "#/$defs/WorkerId"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "runId",
+                "taskId",
+                "workerId"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A display backend attached or detached a Batman-owned pane.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "displayEvent"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "backend": {
-                  "$ref": "#/$defs/DisplayBackend"
-                },
                 "kind": {
                   "$ref": "#/$defs/RuntimeEventKind"
                 },
-                "paneRef": {
-                  "description": "The vendor-assigned pane identifier only -- never terminal\ncontents, never an absolute socket or filesystem path.",
-                  "type": "string"
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "backend": {
+                  "$ref": "#/$defs/DisplayBackend"
                 },
                 "placement": {
                   "$ref": "#/$defs/DisplayPlacement"
                 },
-                "runId": {
-                  "$ref": "#/$defs/RunId"
+                "paneRef": {
+                  "description": "The vendor-assigned pane identifier only -- never terminal\ncontents, never an absolute socket or filesystem path.",
+                  "type": "string"
                 }
               },
               "additionalProperties": false,
@@ -1776,33 +1486,33 @@
                 "placement",
                 "paneRef"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "displayEvent"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A human typed directly into a native pane, bypassing the\nadapter. Sets the run's `needsReconciliation` flag.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "outOfBandInput"
+            },
             "payload": {
               "type": "object",
               "properties": {
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
                 "backend": {
                   "$ref": "#/$defs/DisplayBackend"
                 },
                 "paneRef": {
                   "type": "string"
-                },
-                "runId": {
-                  "$ref": "#/$defs/RunId"
                 }
               },
               "additionalProperties": false,
@@ -1811,18 +1521,23 @@
                 "backend",
                 "paneRef"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "outOfBandInput"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         }
+      ]
+    },
+    "DiagnosticLevel": {
+      "description": "The severity of a [`RuntimeEvent::Diagnostic`].",
+      "type": "string",
+      "enum": [
+        "info",
+        "warning",
+        "error"
       ]
     },
     "RuntimeEventKind": {
@@ -1933,23 +1648,23 @@
             "policyViolation": {
               "type": "object",
               "properties": {
-                "adapter": {
+                "profile_id": {
                   "type": "string"
                 },
-                "is_nested": {
-                  "type": "boolean"
+                "adapter": {
+                  "type": "string"
                 },
                 "model": {
                   "type": "string"
                 },
-                "profile_id": {
+                "violation_kind": {
                   "type": "string"
                 },
                 "reason": {
                   "type": "string"
                 },
-                "violation_kind": {
-                  "type": "string"
+                "is_nested": {
+                  "type": "boolean"
                 }
               },
               "required": [
@@ -1962,10 +1677,10 @@
               ]
             }
           },
-          "additionalProperties": false,
           "required": [
             "policyViolation"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A policy violation was recorded for an already-running worker (mid-run\nviolation, not pre-authorization). Quarantine/cancel state is tracked\nin `Run.flags.policy_quarantined`.",
@@ -1974,8 +1689,8 @@
             "policyViolationRecorded": {
               "type": "object",
               "properties": {
-                "action": {
-                  "type": "string"
+                "violation_id": {
+                  "$ref": "#/$defs/PolicyViolationId"
                 },
                 "code": {
                   "description": "The machine-readable violation code: `nested_worker_denied` or\n`cost_ceiling_exceeded`. New codes are added here, never invented\nat a call site.",
@@ -2004,8 +1719,8 @@
                     "null"
                   ]
                 },
-                "violation_id": {
-                  "$ref": "#/$defs/PolicyViolationId"
+                "action": {
+                  "type": "string"
                 }
               },
               "required": [
@@ -2017,10 +1732,10 @@
               ]
             }
           },
-          "additionalProperties": false,
           "required": [
             "policyViolationRecorded"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "A policy violation was resolved (decided) by the owning OMP client.",
@@ -2029,14 +1744,14 @@
             "policyViolationDecided": {
               "type": "object",
               "properties": {
+                "violation_id": {
+                  "$ref": "#/$defs/PolicyViolationId"
+                },
                 "resolution": {
                   "type": "string"
                 },
                 "resolved_by": {
                   "type": "string"
-                },
-                "violation_id": {
-                  "$ref": "#/$defs/PolicyViolationId"
                 }
               },
               "required": [
@@ -2046,112 +1761,60 @@
               ]
             }
           },
-          "additionalProperties": false,
           "required": [
             "policyViolationDecided"
-          ]
+          ],
+          "additionalProperties": false
         }
       ]
     },
-    "RuntimeInfo": {
-      "description": "Identifies the runtime implementation (name + version), for diagnostics\nonly.",
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
-        },
-        "version": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "name",
-        "version"
-      ]
-    },
-    "RuntimeStatus": {
-      "description": "Result of a `runtime/status` request: a snapshot of the runtime's health\nand identity. Kept intentionally small at foundation scope; later tasks\nextend it with richer run/queue detail.",
-      "type": "object",
-      "properties": {
-        "activeRuns": {
-          "description": "Number of active runs. Always `0` at foundation scope.",
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
-        "binarySource": {
-          "description": "Where the running binary was loaded from.",
-          "$ref": "#/$defs/BinarySource"
-        },
-        "projectId": {
-          "description": "The canonical project id this runtime serves.",
-          "$ref": "#/$defs/ProjectId"
-        },
-        "protocol": {
-          "description": "The protocol version the runtime negotiated for this session.",
-          "$ref": "#/$defs/ProtocolVersion"
-        },
-        "protocolHealthy": {
-          "description": "Whether the negotiated protocol is within the runtime's supported\nrange (a self-check that always holds for a live, negotiated session).",
-          "type": "boolean"
-        },
-        "running": {
-          "description": "Whether the runtime is accepting connections and serving requests.",
-          "type": "boolean"
-        },
-        "schemaVersion": {
-          "description": "The durable database schema version currently applied.",
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
-        "uptimeSeconds": {
-          "description": "Seconds the runtime has been up since it started serving.",
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "running",
-        "protocol",
-        "projectId",
-        "activeRuns",
-        "schemaVersion",
-        "protocolHealthy",
-        "uptimeSeconds",
-        "binarySource"
-      ]
-    },
-    "TaskId": {
-      "description": "Identifies a task tracked by the runtime.",
+    "PolicyViolationId": {
+      "description": "Identifies a mid-run nested-worker policy violation.",
       "type": "string"
     },
-    "Timestamp": {
-      "description": "Canonical UTC RFC 3339 timestamp text, as carried on the wire.\n\nRather than expose [`time::OffsetDateTime`] across generated bindings,\nBATMAN normalizes every timestamp to a UTC RFC 3339 string at\nconstruction time; downstream consumers (including schemars/ts-rs) only\never see a plain string.",
-      "type": "string"
-    },
-    "VersionRange": {
-      "description": "An inclusive range of protocol versions a client (or runtime) supports.",
+    "RunFlags": {
+      "description": "Independent boolean flags on a run.\n\n`degradedControl`, `needsReconciliation`, `protocolUnhealthy`,\n`policyQuarantined`, `workspaceDirty`, and `childrenActive` are all\nindependent booleans.",
       "type": "object",
       "properties": {
-        "max": {
-          "$ref": "#/$defs/ProtocolVersion"
+        "degradedControl": {
+          "type": "boolean"
         },
-        "min": {
-          "$ref": "#/$defs/ProtocolVersion"
+        "needsReconciliation": {
+          "type": "boolean"
+        },
+        "protocolUnhealthy": {
+          "type": "boolean"
+        },
+        "policyQuarantined": {
+          "type": "boolean"
+        },
+        "workspaceDirty": {
+          "type": "boolean"
+        },
+        "childrenActive": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false,
       "required": [
-        "min",
-        "max"
+        "degradedControl",
+        "needsReconciliation",
+        "protocolUnhealthy",
+        "policyQuarantined",
+        "workspaceDirty",
+        "childrenActive"
       ]
     },
-    "WorkerId": {
-      "description": "Identifies a worker process spawned by the runtime.",
+    "MessageId": {
+      "description": "Identifies a single message within a run's transcript.",
+      "type": "string"
+    },
+    "ApprovalId": {
+      "description": "Identifies an approval request raised by the runtime.",
+      "type": "string"
+    },
+    "ArtifactId": {
+      "description": "Identifies an artifact produced by a run.",
       "type": "string"
     },
     "WorkspaceEvent": {
@@ -2160,17 +1823,21 @@
         {
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "leaseRequested"
+            },
             "payload": {
               "type": "object",
               "properties": {
                 "leaseId": {
                   "type": "string"
                 },
-                "mode": {
-                  "$ref": "#/$defs/LeaseMode"
-                },
                 "runId": {
                   "$ref": "#/$defs/RunId"
+                },
+                "mode": {
+                  "$ref": "#/$defs/LeaseMode"
                 }
               },
               "additionalProperties": false,
@@ -2179,38 +1846,38 @@
                 "runId",
                 "mode"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "leaseRequested"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "leaseAcquired"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "baseRevision": {
+                "leaseId": {
+                  "type": "string"
+                },
+                "runId": {
+                  "$ref": "#/$defs/RunId"
+                },
+                "path": {
                   "type": "string"
                 },
                 "isolationKind": {
                   "$ref": "#/$defs/IsolationKind"
                 },
-                "leaseId": {
+                "baseRevision": {
                   "type": "string"
-                },
-                "path": {
-                  "type": "string"
-                },
-                "runId": {
-                  "$ref": "#/$defs/RunId"
                 }
               },
               "additionalProperties": false,
@@ -2221,31 +1888,31 @@
                 "isolationKind",
                 "baseRevision"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "leaseAcquired"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "workspaceDirty"
+            },
             "payload": {
               "type": "object",
               "properties": {
+                "leaseId": {
+                  "type": "string"
+                },
                 "dirtyFileCount": {
                   "type": "integer",
                   "format": "uint64",
                   "minimum": 0
-                },
-                "leaseId": {
-                  "type": "string"
                 },
                 "untrackedFileCount": {
                   "type": "integer",
@@ -2259,24 +1926,30 @@
                 "dirtyFileCount",
                 "untrackedFileCount"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "workspaceDirty"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "workspaceInspected"
+            },
             "payload": {
               "type": "object",
               "properties": {
+                "leaseId": {
+                  "type": "string"
+                },
+                "patchArtifactId": {
+                  "$ref": "#/$defs/ArtifactId"
+                },
                 "commitCount": {
                   "type": "integer",
                   "format": "uint64",
@@ -2286,12 +1959,6 @@
                   "type": "integer",
                   "format": "uint64",
                   "minimum": 0
-                },
-                "leaseId": {
-                  "type": "string"
-                },
-                "patchArtifactId": {
-                  "$ref": "#/$defs/ArtifactId"
                 },
                 "untrackedFileCount": {
                   "type": "integer",
@@ -2307,35 +1974,35 @@
                 "dirtyFileCount",
                 "untrackedFileCount"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "workspaceInspected"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "applyStarted"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "artifactId": {
-                  "$ref": "#/$defs/ArtifactId"
-                },
-                "expectedTargetRevision": {
-                  "type": "string"
-                },
                 "leaseId": {
                   "type": "string"
                 },
                 "strategy": {
                   "$ref": "#/$defs/ApplyStrategy"
+                },
+                "artifactId": {
+                  "$ref": "#/$defs/ArtifactId"
+                },
+                "expectedTargetRevision": {
+                  "type": "string"
                 }
               },
               "additionalProperties": false,
@@ -2345,24 +2012,30 @@
                 "artifactId",
                 "expectedTargetRevision"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "applyStarted"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "applyCompleted"
+            },
             "payload": {
               "type": "object",
               "properties": {
+                "leaseId": {
+                  "type": "string"
+                },
+                "success": {
+                  "type": "boolean"
+                },
                 "conflictArtifactId": {
                   "anyOf": [
                     {
@@ -2372,12 +2045,6 @@
                       "type": "null"
                     }
                   ]
-                },
-                "leaseId": {
-                  "type": "string"
-                },
-                "success": {
-                  "type": "boolean"
                 },
                 "targetRevisionAfter": {
                   "type": [
@@ -2391,21 +2058,21 @@
                 "leaseId",
                 "success"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "applyCompleted"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "leaseReleased"
+            },
             "payload": {
               "type": "object",
               "properties": {
@@ -2421,28 +2088,28 @@
                 "leaseId",
                 "runId"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "leaseReleased"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "cleanupFailed"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "error": {
+                "leaseId": {
                   "type": "string"
                 },
-                "leaseId": {
+                "error": {
                   "type": "string"
                 }
               },
@@ -2451,32 +2118,32 @@
                 "leaseId",
                 "error"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "cleanupFailed"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "An artifact was published for a workspace (inspect or apply produced one).",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "artifactPublished"
+            },
             "payload": {
               "type": "object",
               "properties": {
+                "leaseId": {
+                  "type": "string"
+                },
                 "artifactId": {
                   "$ref": "#/$defs/ArtifactId"
                 },
                 "kind": {
-                  "type": "string"
-                },
-                "leaseId": {
                   "type": "string"
                 }
               },
@@ -2486,36 +2153,36 @@
                 "artifactId",
                 "kind"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "artifactPublished"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "description": "An apply attempt produced a conflict that OMP must resolve.",
           "type": "object",
           "properties": {
+            "type": {
+              "type": "string",
+              "const": "applyConflict"
+            },
             "payload": {
               "type": "object",
               "properties": {
-                "conflictArtifactId": {
-                  "$ref": "#/$defs/ArtifactId"
-                },
-                "expectedTargetRevision": {
-                  "type": "string"
-                },
                 "leaseId": {
                   "type": "string"
                 },
+                "conflictArtifactId": {
+                  "$ref": "#/$defs/ArtifactId"
+                },
                 "strategy": {
                   "$ref": "#/$defs/ApplyStrategy"
+                },
+                "expectedTargetRevision": {
+                  "type": "string"
                 }
               },
               "additionalProperties": false,
@@ -2525,18 +2192,351 @@
                 "strategy",
                 "expectedTargetRevision"
               ]
-            },
-            "type": {
-              "type": "string",
-              "const": "applyConflict"
             }
           },
-          "additionalProperties": false,
           "required": [
             "type",
             "payload"
-          ]
+          ],
+          "additionalProperties": false
         }
+      ]
+    },
+    "LeaseMode": {
+      "description": "The isolation mode requested for a workspace lease.\n\n`shared` allows multiple read-only workers to share one path;\n`write` requires exclusive isolation (git-worktree or copy).",
+      "type": "string",
+      "enum": [
+        "readOnly",
+        "write"
+      ]
+    },
+    "IsolationKind": {
+      "description": "The isolation strategy used to materialize a workspace.\n\n`shared` means no isolation (single path shared by read-only workers);\n`gitWorktree` uses `git worktree add --detach`; `copy` copies the tree\nwithout following symlinks or copying `.git` administrative data.",
+      "type": "string",
+      "enum": [
+        "shared",
+        "gitWorktree",
+        "copy"
+      ]
+    },
+    "ApplyStrategy": {
+      "description": "The mechanical strategy for applying a workspace change.",
+      "type": "string",
+      "enum": [
+        "applyPatch",
+        "cherryPick"
+      ]
+    },
+    "DisplayBackend": {
+      "description": "Supported display backends.",
+      "oneOf": [
+        {
+          "description": "Herdr terminal multiplexer backend.",
+          "type": "string",
+          "const": "herdr"
+        },
+        {
+          "description": "Tmux terminal multiplexer backend.",
+          "type": "string",
+          "const": "tmux"
+        },
+        {
+          "description": "Raw terminal backend (degraded capabilities).",
+          "type": "string",
+          "const": "terminal"
+        }
+      ]
+    },
+    "DisplayPlacement": {
+      "description": "Where a display backend places a pane relative to the caller's own\nterminal. Changes presentation only; never run ownership.",
+      "oneOf": [
+        {
+          "description": "Rendered inside the caller's own OMP session, no separate pane.",
+          "type": "string",
+          "const": "embedded"
+        },
+        {
+          "description": "A new pane split to the right of the current one.",
+          "type": "string",
+          "const": "splitRight"
+        },
+        {
+          "description": "A new pane split below the current one.",
+          "type": "string",
+          "const": "splitDown"
+        },
+        {
+          "description": "A new tab.",
+          "type": "string",
+          "const": "tab"
+        },
+        {
+          "description": "A new workspace (Herdr only; unsupported by tmux).",
+          "type": "string",
+          "const": "workspace"
+        }
+      ]
+    },
+    "DisplayConfig": {
+      "description": "Display configuration.",
+      "type": "object",
+      "properties": {
+        "backend": {
+          "description": "The backend to use.",
+          "$ref": "#/$defs/DisplayBackend"
+        },
+        "width": {
+          "description": "Optional width override (None = auto-detect).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "height": {
+          "description": "Optional height override (None = auto-detect).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "backend"
+      ]
+    },
+    "DisplayStatus": {
+      "description": "Display status information.",
+      "type": "object",
+      "properties": {
+        "backend": {
+          "description": "The backend in use.",
+          "$ref": "#/$defs/DisplayBackend"
+        },
+        "available": {
+          "description": "Whether the backend is available.",
+          "type": "boolean"
+        },
+        "active": {
+          "description": "Whether the backend is currently active.",
+          "type": "boolean"
+        },
+        "dimensions": {
+          "description": "Terminal dimensions if known.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "prefixItems": [
+            {
+              "type": "integer",
+              "format": "uint16",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            {
+              "type": "integer",
+              "format": "uint16",
+              "minimum": 0,
+              "maximum": 65535
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "backend",
+        "available",
+        "active"
+      ]
+    },
+    "JsonRpcRequest": {
+      "description": "A JSON-RPC 2.0 request envelope.",
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "jsonrpc",
+        "id",
+        "method"
+      ]
+    },
+    "RequestId": {
+      "description": "A JSON-RPC request identifier, either a number or a string.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "JsonRpcResponse": {
+      "description": "A JSON-RPC 2.0 success response envelope.",
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "result": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ]
+    },
+    "JsonRpcErrorResponse": {
+      "description": "A JSON-RPC 2.0 error response envelope. `id` is `None` when the request\nidentifier could not be determined (for example, on a parse error).",
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "$ref": "#/$defs/JsonRpcError"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "jsonrpc",
+        "error"
+      ]
+    },
+    "JsonRpcError": {
+      "description": "A JSON-RPC 2.0 error object. `data` carries optional, already-sanitized\ndiagnostic detail; it is omitted from the wire form when absent.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "data": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "JsonRpcNotification": {
+      "description": "A JSON-RPC 2.0 notification envelope: a method call with no `id`, for\nwhich no response is expected. BATMAN uses these to push runtime events to\nsubscribed clients via the `events/event` method.",
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": true
+      },
+      "additionalProperties": false,
+      "required": [
+        "jsonrpc",
+        "method"
+      ]
+    },
+    "RuntimeStatus": {
+      "description": "Result of a `runtime/status` request: a snapshot of the runtime's health\nand identity. Kept intentionally small at foundation scope; later tasks\nextend it with richer run/queue detail.",
+      "type": "object",
+      "properties": {
+        "running": {
+          "description": "Whether the runtime is accepting connections and serving requests.",
+          "type": "boolean"
+        },
+        "protocol": {
+          "description": "The protocol version the runtime negotiated for this session.",
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "projectId": {
+          "description": "The canonical project id this runtime serves.",
+          "$ref": "#/$defs/ProjectId"
+        },
+        "activeRuns": {
+          "description": "Number of active runs. Always `0` at foundation scope.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "schemaVersion": {
+          "description": "The durable database schema version currently applied.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "protocolHealthy": {
+          "description": "Whether the negotiated protocol is within the runtime's supported\nrange (a self-check that always holds for a live, negotiated session).",
+          "type": "boolean"
+        },
+        "uptimeSeconds": {
+          "description": "Seconds the runtime has been up since it started serving.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "binarySource": {
+          "description": "Where the running binary was loaded from.",
+          "$ref": "#/$defs/BinarySource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "running",
+        "protocol",
+        "projectId",
+        "activeRuns",
+        "schemaVersion",
+        "protocolHealthy",
+        "uptimeSeconds",
+        "binarySource"
+      ]
+    },
+    "BinarySource": {
+      "description": "Where the running `batcave` binary was loaded from. `override` means a\ndeveloper override path, `package` a bundled/installed binary, and\n`unknown` that the source could not be determined.",
+      "type": "string",
+      "enum": [
+        "override",
+        "package",
+        "unknown"
       ]
     }
   }
