@@ -32,7 +32,7 @@ The reviewed code had the following verified baseline before this document was w
 
 **Impact:** A session cannot decide approvals or release/cancel policy violations for tasks it created. Reconciliation can then rebind tasks to the shared constant, weakening isolation between OMP sessions using the same daemon.
 
-**Suggested fix:** Use one per-session identity end to end. Pass the OMP session ID into `ensureRuntime`/`initParams`, and use that same value for task ownership and reconciliation. Add an integration test covering task upsert followed by approval and violation decisions over the real extension connection.
+**Resolution (2026-08-07):** ✅ Fixed, integration test pending. `EnsureRuntimeOptions` gains optional `sessionId` field; `initParams` uses it for `instanceId` when provided. `tryConnect`, `connectWithBackoff`, `ensureRuntime`, `getClient`, `statusContextFor`, and all tool call sites now thread `sessionId` from `extCtx.sessionManager.getSessionId()`. The status path gap was also fixed. Remaining: end-to-end extension test covering task upsert, approval decide, and violation decide.
 
 #### R2. Concurrency slots are never released in production
 
@@ -42,7 +42,7 @@ The reviewed code had the following verified baseline before this document was w
 
 **Impact:** After `concurrency_ceiling` cumulative runs—not concurrent runs—the daemon rejects every new run until restart. Ordinary use permanently disables the runtime's core function.
 
-**Suggested fix:** Add a release operation to the authorization lifecycle and call it exactly once from every adapter settlement/error path. Defend the real registry wiring with a test that completes `ceiling` runs and successfully authorizes one more.
+**Resolution (2026-08-07):** ✅ Fixed. Added `release()` method to `AdapterAuthorization` trait. `FixtureAuthorization::release()` is a no-op; `PolicyEvaluator::release()` calls `decrement_runs()`. The adapter completion watcher clones `authorization` and calls `release()` after evicting the adapter. `run_one` releases the slot on all post-authorize error paths (availability probe, build_adapter, adapter.start). The watcher handles `Lagged` broadcast errors by continuing, releasing only on `Closed`. Defended with a real-`PolicyEvaluator` registry integration test (`releasing_a_policy_evaluator_slot_frees_the_registry_ceiling` in `crates/runtime/tests/adapter_registry.rs`) that books a `concurrency_ceiling: 1` slot, proves `registry.start()` denies a second run, releases through the trait object, and proves the ceiling denial clears.
 
 #### R3. Linux ARM64 release builds lack a cross-linker
 
@@ -52,7 +52,7 @@ The reviewed code had the following verified baseline before this document was w
 
 **Impact:** The Linux ARM64 matrix leg cannot link, so `build` fails and blocks package assembly, conformance, and publish for every tagged release.
 
-**Suggested fix:** Use a native ARM64 Linux runner, or install/configure `gcc-aarch64-linux-gnu` (including the target linker and `CC_aarch64_unknown_linux_gnu`). Add a CI-only dry-run release build for every target.
+**Resolution (2026-08-07):** ✅ Fixed. Added `gcc-aarch64-linux-gnu` installation step for linux-arm64-gnu target. Set `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER`, `CC_aarch64_unknown_linux_gnu`, and `AR_aarch64_unknown_linux_gnu` env vars. Added dry-run CI build workflow (`.github/workflows/ci-release.yml`) for every release target.
 
 #### R4. GitHub artifact transfer strips the executable bit required by package validation
 
@@ -62,7 +62,7 @@ The reviewed code had the following verified baseline before this document was w
 
 **Impact:** Even after R3 is fixed, every assembled package set fails before publish. Removing the assertion instead would publish non-executable binaries.
 
-**Suggested fix:** Tar each leaf before artifact upload and unpack after download, or restore `chmod +x` after every download in both `package-set` and `publish`. Keep the executable-bit assertion.
+**Resolution (2026-08-07):** ✅ Fixed. Removed broken flatten loops from both `package-set` and `publish` jobs in release.yml. Both jobs now use `find ... -name batcave -exec chmod +x {} +` to restore executable bits after download. The `package-set` executable-mode assertion is preserved.
 
 ### High
 

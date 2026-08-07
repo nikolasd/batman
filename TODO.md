@@ -37,71 +37,78 @@ Both are real properties of the installed vendor binary, not bugs in this codeba
 
 ### 68. Unify extension connection identity with task ownership
 
-**Status:** Open (discovered 2026-08-06 during codebase review)
+**Status:** ⚠️ Partially closed 2026-08-07 — identity threading complete; integration test pending.
 **Priority:** Critical
 **Labels:** extension, authorization, ownership
 
 **Description:**
 The extension authenticates as constant instance `batman-extension` but writes the OMP session ID as task owner. Approval and policy-violation decisions require an exact owner/principal match, so the creating session cannot decide them; reconciliation can also collapse multiple sessions onto the shared identity.
 
-**Implementation:**
-- Pass the OMP session ID through `ensureRuntime`/`initParams` and use it consistently for task ownership and reconciliation.
-- Add an end-to-end extension test covering task upsert, approval decide, and violation decide.
+**Resolution:**
+- `EnsureRuntimeOptions` gains optional `sessionId` field carrying the OMP session ID
+- `initParams` uses `sessionId` for `instanceId` when provided, falling back to `"batman-extension"`
+- `tryConnect`, `connectWithBackoff`, and `ensureRuntime` thread `sessionId` through the connection chain
+- `getClient` in `index.ts` passes `extCtx.sessionManager.getSessionId()` as `sessionId`
+- `statusContextFor` and status tool/command also pass `sessionId` (fixed the status path gap)
+- All tool call sites updated to pass `extCtx` instead of just `cwd` to `getClient`
 
-**References:** `REVIEW.md` (R1), `packages/extension/src/runtime.ts:249`, `packages/extension/src/tools/tasks.ts:41`
+**Remaining:** Add an end-to-end extension test covering task upsert, approval decide, and violation decide.
+
+**References:** `REVIEW.md` (R1), `packages/extension/src/runtime.ts`, `packages/extension/src/index.ts`, `packages/extension/src/tools/*.ts`
 
 ---
 
 ### 69. Release policy concurrency slots on run settlement
 
-**Status:** Open (discovered 2026-08-06 during codebase review)
+**Status:** ✅ Closed 2026-08-07
 **Priority:** Critical
 **Labels:** policy, runtime, availability
 
 **Description:**
 Each authorization increments the active-run counter, but the production authorization trait has no release operation and the adapter completion watcher never decrements it. After `concurrency_ceiling` cumulative runs, the daemon permanently rejects new runs until restart.
 
-**Implementation:**
-- Add a release operation to the authorization lifecycle and invoke it exactly once on every run settlement/error path.
-- Add an integration test through the real adapter registry that completes the ceiling number of runs and authorizes another.
+**Resolution:**
+- Added `release()` method to `AdapterAuthorization` trait
+- `FixtureAuthorization::release()` is a no-op (no slots to release)
+- `PolicyEvaluator::release()` calls `self.decrement_runs()`
+- The adapter completion watcher clones `authorization` and calls `release()` after evicting the adapter
+- `run_one` releases the slot on all post-authorize error paths (availability probe, build_adapter, adapter.start)
+- The watcher handles `Lagged` broadcast errors by continuing, and releases only on `Closed`
+- Defended with a real-`PolicyEvaluator` registry integration test (`releasing_a_policy_evaluator_slot_frees_the_registry_ceiling` in `crates/runtime/tests/adapter_registry.rs`): books the one slot at `concurrency_ceiling: 1`, proves `registry.start()` denies a second run with "concurrency ceiling", releases through the trait object, and proves a subsequent start is no longer ceiling-denied
 
-**References:** `REVIEW.md` (R2), `crates/runtime/src/policy/evaluate.rs:371`, `crates/runtime/src/adapter/registry.rs:188`
-
----
+**References:** `REVIEW.md` (R2), `crates/runtime/src/adapter/registry.rs`, `crates/runtime/src/policy/evaluate.rs`, `crates/runtime/tests/adapter_registry.rs`
 
 ### 70. Provide a Linux ARM64 linker in release CI
 
-**Status:** Open (discovered 2026-08-06 during codebase review)
+**Status:** ✅ Closed 2026-08-07
 **Priority:** Critical
 **Labels:** release, ci, cross-compilation
 
 **Description:**
 Release CI builds `aarch64-unknown-linux-gnu` on x86_64 Ubuntu but installs only the Rust target. No AArch64 GNU linker/C compiler is installed or configured, while bundled SQLite requires target C compilation.
 
-**Implementation:**
-- Use a native ARM64 Linux runner or install/configure `gcc-aarch64-linux-gnu`, the Cargo target linker, and target `CC`.
-- Add a dry-run CI build for every release target.
+**Resolution:**
+- Added `gcc-aarch64-linux-gnu` installation step for linux-arm64-gnu target
+- Set `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER`, `CC_aarch64_unknown_linux_gnu`, and `AR_aarch64_unknown_linux_gnu` env vars
+- Added dry-run CI build workflow (`.github/workflows/ci-release.yml`) for every release target
 
-**References:** `REVIEW.md` (R3), `.github/workflows/release.yml:29`, `release/targets.json:5`
-
----
+**References:** `REVIEW.md` (R3), `.github/workflows/release.yml`, `.github/workflows/ci-release.yml`, `release/targets.json`
 
 ### 71. Preserve batcave executable mode across release artifacts
 
-**Status:** Open (discovered 2026-08-06 during codebase review)
+**Status:** ✅ Closed 2026-08-07
 **Priority:** Critical
 **Labels:** release, packaging, permissions
 
 **Description:**
 `xtask package` creates `bin/batcave` as executable, but zipped GitHub artifact transfer restores files as mode `0644`. `package-set` then correctly rejects every downloaded leaf.
 
-**Implementation:**
-- Preserve mode with a tar artifact or restore `chmod +x` after downloads in both package-set and publish jobs.
-- Keep the package-set executable-mode assertion.
+**Resolution:**
+- Removed broken flatten loops from both `package-set` and `publish` jobs in release.yml
+- Both jobs now use `find ... -name batcave -exec chmod +x {} +` to restore executable bits after download
+- The `package-set` executable-mode assertion is preserved (it still validates the bit)
 
-**References:** `REVIEW.md` (R4), `.github/workflows/release.yml:74`, `crates/xtask/src/main.rs:620`
-
----
+**References:** `REVIEW.md` (R4), `.github/workflows/release.yml`, `crates/xtask/src/main.rs`
 
 ### 72. Enforce human-required approvals server-side
 
