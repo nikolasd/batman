@@ -32,7 +32,7 @@ The reviewed code had the following verified baseline before this document was w
 
 **Impact:** A session cannot decide approvals or release/cancel policy violations for tasks it created. Reconciliation can then rebind tasks to the shared constant, weakening isolation between OMP sessions using the same daemon.
 
-**Resolution (2026-08-07):** ✅ Fixed, integration test pending. `EnsureRuntimeOptions` gains optional `sessionId` field; `initParams` uses it for `instanceId` when provided. `tryConnect`, `connectWithBackoff`, `ensureRuntime`, `getClient`, `statusContextFor`, and all tool call sites now thread `sessionId` from `extCtx.sessionManager.getSessionId()`. The status path gap was also fixed. Remaining: end-to-end extension test covering task upsert, approval decide, and violation decide.
+**Resolution (2026-08-07):** ✅ Fixed and defended. `EnsureRuntimeOptions` gains optional `sessionId` field; `initParams` uses it for `instanceId` when provided. `tryConnect`, `connectWithBackoff`, `ensureRuntime`, `getClient`, `statusContextFor`, and all tool call sites now thread `sessionId` from `extCtx.sessionManager.getSessionId()`. The status path gap was also fixed. Defended by `packages/extension/src/ownership.test.ts`: two live-daemon tests proving the identity chain — matching sessionId succeeds on both approval and violation decide; mismatched sessionId is rejected with "does not own".
 
 #### R2. Concurrency slots are never released in production
 

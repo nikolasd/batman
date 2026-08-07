@@ -37,7 +37,7 @@ Both are real properties of the installed vendor binary, not bugs in this codeba
 
 ### 68. Unify extension connection identity with task ownership
 
-**Status:** ⚠️ Partially closed 2026-08-07 — identity threading complete; integration test pending.
+**Status:** ✅ Closed 2026-08-07 — identity threading complete; integration test passing.
 **Priority:** Critical
 **Labels:** extension, authorization, ownership
 
@@ -51,10 +51,9 @@ The extension authenticates as constant instance `batman-extension` but writes t
 - `getClient` in `index.ts` passes `extCtx.sessionManager.getSessionId()` as `sessionId`
 - `statusContextFor` and status tool/command also pass `sessionId` (fixed the status path gap)
 - All tool call sites updated to pass `extCtx` instead of just `cwd` to `getClient`
+- Defended by `packages/extension/src/ownership.test.ts`: two live-daemon integration tests proving the sessionId → instanceId → ownerClientInstanceId chain. The positive case seeds a task/approval/violation owned by sessionId A, connects as A, and succeeds on both decide calls. The negative case seeds the same data but connects as sessionId B, confirming both decisions fail with "does not own".
 
-**Remaining:** Add an end-to-end extension test covering task upsert, approval decide, and violation decide.
-
-**References:** `REVIEW.md` (R1), `packages/extension/src/runtime.ts`, `packages/extension/src/index.ts`, `packages/extension/src/tools/*.ts`
+**References:** `REVIEW.md` (R1), `packages/extension/src/runtime.ts`, `packages/extension/src/index.ts`, `packages/extension/src/tools/*.ts`, `packages/extension/src/ownership.test.ts`
 
 ---
 
