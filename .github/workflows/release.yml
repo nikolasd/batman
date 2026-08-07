@@ -45,6 +45,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
+      - name: Install Linux ARM64 cross-compiler
+        if: matrix.leaf_target == 'linux-arm64-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=gcc-aarch64-linux-gnu" >> "$GITHUB_ENV"
+          echo "CC_aarch64_unknown_linux_gnu=gcc-aarch64-linux-gnu" >> "$GITHUB_ENV"
+          echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc-ar" >> "$GITHUB_ENV"
 
       - name: Build batcave
         run: cargo build --release --target ${{ matrix.rust_target }} --bin batcave
@@ -140,6 +148,12 @@ jobs:
         with:
           pattern: batman-*
           path: assembled
+      - name: Restore executable bits
+        run: |
+          # actions/upload-artifact zips files and download-artifact restores
+          # them as 0644. package-set validates the executable bit, so we
+          # must restore it before validation.
+          find assembled -name batcave -exec chmod +x {} +
 
       - name: Read release version
         run: echo "RELEASE_VERSION=$(jq -r .version packages/extension/package.json)" >> "$GITHUB_ENV"
@@ -171,12 +185,11 @@ jobs:
           path: packages
           merge-multiple: false
 
-      - name: Restore leaf package layout
+      - name: Restore executable bits
         run: |
-          # actions/download-artifact nests each artifact under
-          # packages/<artifact-name>/, matching packages/batman-<target>/
-          # already -- nothing further to reshape.
-          ls -la packages/
+          # actions/upload-artifact zips files and download-artifact restores
+          # them as 0644. npm publish needs bin/batcave to be executable.
+          find packages -name batcave -exec chmod +x {} +
 
       - uses: oven-sh/setup-bun@v2
         with:
