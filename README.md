@@ -66,7 +66,7 @@ OMP_BATMAN_BINARY="$PWD/target/debug/batcave" \
   omp --extension ./packages/extension/src/index.ts
 ```
 
-Ask the model to use `batman_task`, `batman_worker`, and `batman_run`, then open `/batman` to watch runs live. See [docs/manual-testing.md](docs/manual-testing.md) for the full walkthrough.
+Ask the model to use `batman_task`, `batman_worker`, and `batman_run`, then open `/batman` to watch runs live. See [docs/plugin-usage.md](docs/plugin-usage.md) for the full tool reference and [docs/manual-testing.md](docs/manual-testing.md) for the full walkthrough. For running `batcave` directly instead of through OMP, see [docs/cli-reference.md](docs/cli-reference.md).
 
 ## Contributing
 

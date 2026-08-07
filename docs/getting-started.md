@@ -48,9 +48,11 @@ Configuration files are YAML with strict unknown-key rejection (fails closed wit
 
 ### Configuration File Locations
 
-  - Org config: file path (or path specified by `BATMAN_ORG_CONFIG`)
-  - Repo config: `<repo>/.batman/config.yaml`
-  - User config: `~/.batman/config.yaml`
+There is no auto-discovery: each layer is loaded only from the path you pass explicitly via
+`--org-config`, `--repo-config`, or `--user-config` (to `serve` or `doctor`) — a layer you don't
+pass is simply absent from the merge, and there's no `BATMAN_ORG_CONFIG`-style environment variable
+either. `<repo>/.batman/config.yaml` and `~/.batman/config.yaml` below are conventional locations to
+point those flags at, not defaults BATMAN looks for on its own.
 
 ### Configuration File Example
 
@@ -117,14 +119,18 @@ All gates must be `true` before production use.
 
 ### Start the Server
 
+`--repo` is required; `--state-dir` should point at the same state root the OMP extension would
+resolve for you (see [`cli-reference.md`](cli-reference.md#before-you-start-state-directories) —
+omitting it falls back to a bare `.batman` in the current directory, which is *not* that location):
+
 ```bash
-batcave serve
+batcave serve --repo "$PWD" --state-dir "$HOME/.omp/orchestrator"
 ```
 
-This starts the BATMAN server with default configuration. To use custom configuration files:
+With explicit configuration files:
 
 ```bash
-batcave serve \
+batcave serve --repo "$PWD" --state-dir "$HOME/.omp/orchestrator" \
   --org-config /etc/batman/org.yaml \
   --repo-config .batman/config.yaml \
   --user-config ~/.batman/config.yaml
@@ -132,34 +138,42 @@ batcave serve \
 
 ### Run Status Check with Doctor
 
-```bash
-batcave status
-```
-
-The `status` command runs a comprehensive health check including:
-- Database connectivity
-- State directory accessibility
-- Rollout gate status
-- Configuration validity
-
-To enable crash recovery during status check:
+`batcave status` requires a live runtime — it queries `runtime/status` over the socket:
 
 ```bash
-batcave status --recover
+batcave status --repo "$PWD" --state-dir "$HOME/.omp/orchestrator"
 ```
+
+For diagnostics that don't require a live runtime, use `doctor` instead — it runs the full check
+catalog (database connectivity, state directory permissions, platform support, schema
+compatibility, adapter availability, disk space, stale runs/workspaces, rollout gates, and more —
+see [`cli-reference.md`](cli-reference.md#batcave-doctor) for the complete list):
+
+```bash
+batcave doctor --repo "$PWD" --state-dir "$HOME/.omp/orchestrator" --json
+```
+
+**Note:** there is no `--recover` flag on `status` or `doctor`. Crash recovery is not something you
+trigger manually — it runs automatically, once, every time `serve` starts, before the socket
+accepts any connection (see [Crash Recovery](#crash-recovery) below). `doctor`'s `stale_runs` check
+reports the same stuck-run condition without acting on it, if you want to confirm one exists before
+the next restart sweeps it.
 
 ### Stop the Server
 
 ```bash
-batcave stop
+batcave stop --repo "$PWD" --state-dir "$HOME/.omp/orchestrator"
 ```
 
 ### Audit Export
 
-Export audit events to JSONL format:
+Export audit events to JSONL format. Note that `--state-dir` here must be the repository's actual
+runtime directory (what `serve`/`status`/`doctor` would derive internally from a state root plus
+`--repo`), not a top-level state root — `audit export` opens `<state-dir>/runtime.db` directly and
+does not derive it from `--repo` itself (see [`cli-reference.md`](cli-reference.md#batcave-audit-export)):
 
 ```bash
-batcave audit export --state-dir ~/.batman/state --output /tmp/audit.jsonl
+batcave audit export --repo "$PWD" --state-dir "$HOME/.omp/orchestrator/repos/<repository-id>" --output /tmp/audit.jsonl
 ```
 
 ## Security Features
@@ -173,7 +187,7 @@ BATMAN enforces a strict redaction boundary: raw vendor content (which may conta
 - [`PersistableEvent`] fields are private with no public constructor
 
 ```rust
-let redactor = Redactor::new(builtin_rules);
+let redactor = Redactor::new();
 let sanitized = redactor.sanitize(raw_event)?;
 ```
 
@@ -217,10 +231,11 @@ Events older than the retention period are automatically purged.
 
 ### Export
 
-Export audit events to JSONL format for offline analysis:
+Export audit events to JSONL format for offline analysis — see the note above about `--state-dir`
+meaning the repository's runtime directory here, not a state root:
 
 ```bash
-batcave audit export --state-dir ~/.batman/state --output /tmp/audit.jsonl
+batcave audit export --repo "$PWD" --state-dir "$HOME/.omp/orchestrator/repos/<repository-id>" --output /tmp/audit.jsonl
 ```
 
 ## Crash Recovery
@@ -233,10 +248,13 @@ batcave audit export --state-dir ~/.batman/state --output /tmp/audit.jsonl
 
 ### Manual Recovery
 
-Trigger recovery manually via the `status` command:
+There's no flag to trigger recovery on demand — it only ever runs automatically, once, inside
+`batcave serve` at startup, before the socket accepts any connection. To confirm a run is actually
+stuck without waiting for (or forcing) a restart, check `doctor`'s `stale_runs` check, which reports
+the same condition read-only:
 
 ```bash
-batcave status --recover
+batcave doctor --repo "$PWD" --state-dir "$HOME/.omp/orchestrator" --json
 ```
 
 ### Recovery Configuration
@@ -254,7 +272,8 @@ pub struct RecoveryConfig {
 The [`Doctor`] provides comprehensive health checking:
 
 ```rust
-let doctor = Doctor::new(db, state_dir, policy);
+let doctor = Doctor::new(Some(db), Some(state_dir), Some(policy))
+    .with_runtime_context(socket_path, repo, project_id);
 let result = doctor.check().await?;
 
 if result.healthy {
@@ -266,10 +285,12 @@ if result.healthy {
 
 ### Health Checks
 
-1. **Database connectivity** - Verifies database is accessible
-2. **State directory accessibility** - Checks state directory exists and is writable
-3. **Rollout gate status** - Verifies all gates are resolved
-4. **Configuration validity** - Validates configuration is valid
+The catalog runs 13 checks in total — database connectivity, configuration validity, state
+directory permissions, platform support, binary integrity, socket permissions, schema
+compatibility, per-adapter availability (Claude/Codex/Copilot/OMP-RPC), display backend
+availability, disk space, stale workspaces, stale runs, and rollout gate resolution. See
+[`cli-reference.md`](cli-reference.md#batcave-doctor) for what each one actually verifies — it's
+the single source of truth for the catalog, kept alongside the CLI flags it's exposed through.
 
 ### DoctorResult
 
@@ -308,6 +329,7 @@ cargo test --test copilot_adapter
 cargo test --test database
 cargo test --test display_registry
 cargo test --test display_selector
+cargo test --test doctor
 cargo test --test domain_repository
 cargo test --test herdr_display
 cargo test --test ipc
@@ -316,11 +338,13 @@ cargo test --test monitor_cli
 cargo test --test omp_rpc_adapter
 cargo test --test orchestration_rpc
 cargo test --test paths
+cargo test --test recovery
 cargo test --test redaction
 cargo test --test redaction_boundary
 cargo test --test supervisor
 cargo test --test terminal_adapter
 cargo test --test tmux_display
+cargo test --test vendor_cli_availability
 cargo test --test workspace_apply
 cargo test --test workspace_lease
 cargo test --test workspace_materialize
@@ -328,7 +352,7 @@ cargo test --test workspace_materialize
 
 ### Test Coverage
 
-The test suite includes 31 Rust integration test files (`crates/runtime/tests/`) covering:
+The test suite includes 34 Rust integration test files (`crates/runtime/tests/`) covering:
 - Adapter contract and registry
 - Approval workflows
 - Audit and redaction
@@ -338,56 +362,81 @@ The test suite includes 31 Rust integration test files (`crates/runtime/tests/`)
 - Coordination and MCP integration
 - Database operations
 - Display registry and selection
+- Doctor diagnostics and crash recovery
 - Domain repository
 - IPC and lifecycle
 - Supervisor and terminal adapters
 - Tmux display management
+- Vendor CLI availability probing
 - Workspace operations (apply, lease, materialize)
 
 ## Troubleshooting
 
-### Port Already in Use
+### `serve` exits with code 73
 
-If you see an error like `Address already in use`, another process is using the configured port.
+There is no TCP port to conflict on — `batcave` communicates over a Unix domain socket, not a
+network port, and `serve` has no `--port` flag. Exit code 73 (`EX_TEMPFAIL`) means the repository's
+`runtime.lock` is already held by a live `batcave serve` process; it prints that process's identity
+(pid, project id, socket path) as JSON on stdout when it happens.
 
 **Solution**:
-1. Check what's using the port: `lsof -i :8080` (macOS/Linux) or `netstat -ano | findstr :8080` (Windows)
-2. Kill the process or use a different port: `batcave serve --port 8081`
+1. This usually isn't an error to fix — connect to the existing runtime instead of starting another:
+   `batcave status --repo <path> --state-dir <same state-dir>`.
+2. If you're sure it should have exited (e.g. a previous test run leaked it), find and stop it:
+   `ps aux | grep batcave`, then `batcave stop --repo <path> --state-dir <state-dir>` or `kill <pid>`.
 
 ### Database Connection Errors
 
-If you see database-related errors, ensure the database URL in your configuration is correct and the database file is accessible.
+BATMAN has no configurable database URL — the SQLite file is always `<runtime-dir>/runtime.db`,
+where `<runtime-dir>` is `<state-dir>/repos/<repository-id>/`, derived automatically from
+`--state-dir` and `--repo`. A "failed to open database" error almost always means that directory
+doesn't exist or isn't writable.
 
 **Solution**:
-1. Check the database path in your state directory
-2. Ensure the directory exists and is writable
-3. Run status check: `batcave status`
+1. Confirm the state dir resolves the way you expect (see
+   [`cli-reference.md`](cli-reference.md#before-you-start-state-directories)).
+2. Ensure it exists and is writable — `batcave doctor --json` reports this directly as the
+   `state_dir_writable` and `database_connectivity` checks.
 
 ### Rollout Gates Unresolved
 
-If the doctor reports unresolved rollout gates, you cannot use the runtime in production.
+If `doctor` reports unresolved rollout gates, `native_discovery_reviewed` specifically blocks
+authorization outright; the rest are advisory.
 
 **Solution**:
-1. Review your configuration files
-2. Ensure all `rollout_gates` fields are set to `true` in your config
-3. Check the doctor output: `batcave status`
+1. Review your configuration files.
+2. Ensure the relevant `rollout_gates` fields are set to `true` in whichever config layer you
+   control.
+3. Check current status: `batcave doctor --repo <path> --state-dir <state-dir> --json` — the
+   `unresolved_gates` array and the per-gate `rollout_gate_<gate>` checks name exactly what's left.
 
 ### Permission Errors
 
-If you see permission errors, ensure BATMAN has the necessary permissions to access the configured paths.
-
 **Solution**:
-1. Check file permissions: `ls -la ~/.batman/`
-2. Adjust permissions if necessary: `chmod 755 ~/.batman/`
+1. Check file permissions: `ls -ld <state-dir>` — BATMAN expects its state directory at mode
+   `0700` and its socket at `0600`, both owned by the user running `batcave`.
+2. **Do not widen permissions** (e.g. `chmod 755`) to work around a permission error — that defeats
+   the same-user isolation the redaction/security boundary depends on, and `doctor`'s
+   `state_dir_writable`/`socket_permissions` checks will simply fail again with a different reason.
+   If ownership is wrong, fix ownership (`chown`) or remove and let `batcave` recreate the directory
+   at the correct mode.
 
 ### Recovery Issues
 
-If recovery is not working as expected, check the recovery configuration:
+Recovery isn't independently configurable from the CLI — `stuck_threshold`,
+`recover_paused`, and `recover_waiting` are constructor parameters on `RecoveryConfig`, used by
+whatever code calls `RecoveryCoordinator` (currently just `lifecycle::serve()`'s own defaults). If a
+run looks like it should have been recovered and wasn't:
 
 **Solution**:
-1. Verify `stuck_threshold` is set appropriately (default: 5 minutes)
-2. Check `recover_paused` and `recover_waiting` settings
-3. Review the status output: `batcave status --recover`
+1. Confirm it's actually eligible: recovery only touches `queued`/`starting`/`working` runs whose
+   last event is older than the stuck threshold (5 minutes by default) — `paused`/`waitingUser`/
+   `waitingPeer` runs are left alone unless recovery was built with `recover_paused`/
+   `recover_waiting` enabled.
+2. Recovery only runs at `serve` startup, not continuously — a run that just became stale won't be
+   recovered until the next restart.
+3. Use `batcave doctor --json`'s `stale_runs` check to confirm a run is actually stuck, independent
+   of whether recovery has swept it yet.
 
 ## Contributing
 
@@ -409,7 +458,7 @@ We welcome contributions! Please see the [CONTRIBUTING.md](../CONTRIBUTING.md) f
 
 ## Getting Help
 
-- **Documentation**: See the other files in [`docs/`](.) — start with [architecture.md](architecture.md) and [code-walkthrough.md](code-walkthrough.md)
+- **Documentation**: See the other files in [`docs/`](.) — start with [architecture.md](architecture.md) and [code-walkthrough.md](code-walkthrough.md). For running `batcave` day-to-day, see [`cli-reference.md`](cli-reference.md) (full flag reference) and [`operations.md`](operations.md) (lifecycle procedures).
 - **Issues**: Open a GitHub Issue on this repository
 
 ## License

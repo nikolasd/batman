@@ -170,6 +170,9 @@ When contributing, consider updating documentation:
 - **docs/getting-started.md** - Development setup and workflows
 - **docs/manual-testing.md** - Manual testing procedures
 - **docs/architecture.md** - System design
+- **docs/cli-reference.md** - `batcave` CLI command reference
+- **docs/plugin-usage.md** - OMP extension tool/command usage guide
+- **docs/operations.md** - Daemon lifecycle, crash recovery, install/upgrade procedures
 - **docs/adr/** - Architectural decisions
 
 ## Questions?

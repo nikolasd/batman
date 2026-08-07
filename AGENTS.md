@@ -46,7 +46,7 @@ OMP Extension (TypeScript)  ──JSON-RPC 2.0 over NDJSON──>  batcave daemo
 | `packages/batman-*/` | Per-platform binary leaf packages (npm optionalDependencies) |
 | `fixtures/` | Cross-language golden fixtures (protocol frames, state roots, configs) |
 | `tests/` | Conformance test runner + install tests |
-| `docs/` | Engineering documentation (start with `getting-started.md`, `architecture.md`) |
+| `docs/` | Engineering documentation (start with `getting-started.md`, `architecture.md`; `cli-reference.md` and `plugin-usage.md` cover the two user-facing surfaces) |
 | `scripts/` | Setup and build scripts |
 
 ---

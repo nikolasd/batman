@@ -1,0 +1,264 @@
+# `batcave` CLI Reference
+
+`batcave` is the BATMAN runtime daemon binary. Most users never invoke it directly — the OMP
+extension spawns and connects to it automatically (see [`plugin-usage.md`](plugin-usage.md) and
+[`packages/extension/src/runtime.ts`](../packages/extension/src/runtime.ts)). This document is for
+anyone who needs to run `batcave` by hand: debugging, scripting, CI, or writing a new display
+backend or supervisor integration.
+
+Every subcommand's built-in `--help` is generated from the same `clap` definitions this document
+was written from ([`crates/runtime/src/cli.rs`](../crates/runtime/src/cli.rs)) — if the two ever
+disagree, trust `--help` and file a bug against this file.
+
+## Before you start: state directories
+
+Almost every subcommand takes `--state-dir` and `--repo`. Getting `--state-dir` wrong is the most
+common way to talk to the wrong runtime (or no runtime at all), because **`batcave` resolves it
+differently depending on how you invoke it:**
+
+- **When the extension spawns `batcave`**, it always passes an explicit `--state-dir` computed by
+  [`resolveStateRoot`](../packages/extension/src/state.ts), which mirrors the Rust
+  `StateRoot::resolve` precedence exactly:
+  1. `BATMAN_STATE_DIR` (must be absolute)
+  2. `$XDG_STATE_HOME/omp/batman` when `XDG_STATE_HOME` is set (must be absolute)
+  3. `$HOME/${PI_CONFIG_DIR:-.omp}/orchestrator`
+- **When you run `batcave` by hand and omit `--state-dir`**, the CLI does *not* apply that
+  precedence at all — `serve`/`status`/`stop`/`monitor`/`doctor` each fall back to the bare
+  relative path `.batman` in your current directory, erroring out immediately if it doesn't exist.
+  This is a different default from the one the extension uses, on purpose (the extension's launcher
+  and this bare fallback are separate code paths) — so a `batcave status --repo .` run in a random
+  shell will not find the runtime OMP is using unless you pass the same `--state-dir` the extension
+  resolved.
+
+**To talk to the same runtime OMP is using**, compute the state root with the precedence above (or
+just read it off `batman_status`'s output, which reports the runtime's identity) and pass it
+explicitly:
+
+```bash
+batcave status --state-dir "$HOME/.omp/orchestrator" --repo "$PWD"
+```
+
+For `serve`/`status`/`stop`/`monitor`/`doctor`, `--state-dir` is a **state root**: `batcave` hashes
+the canonicalized repository path into a `repository-id` and derives the actual per-repository
+runtime directory as `<state-dir>/repos/<repository-id>/`, containing `runtime.sock`, `runtime.lock`,
+`runtime.db`, and `runtime.log`. `batcave audit export` is the one exception — see its entry below.
+
+## Commands
+
+### `batcave serve`
+
+Starts the runtime for one repository and serves until stopped.
+
+```bash
+batcave serve --repo <path> [--state-dir <path>] [--idle-seconds <n>] [--foreground]
+              [--org-config <path>] [--repo-config <path>] [--user-config <path>]
+```
+
+| Flag | Required | Default | Meaning |
+|---|---|---|---|
+| `--repo` | yes | — | Repository this runtime instance serves |
+| `--state-dir` | no | `.batman` (relative to cwd) | State root; see above |
+| `--idle-seconds` | no | none — runs until signalled | Exit after this many seconds with zero connections and zero active runs |
+| `--foreground` | no | `false` | Log structured records to stderr instead of `runtime.log` |
+| `--org-config` / `--repo-config` / `--user-config` | no | none | Explicit paths for the three config layers (see `docs/architecture.md`'s config-merge notes) |
+
+**Single-instance enforcement:** `serve` takes an exclusive, non-blocking advisory `flock(2)` on
+`<runtime-dir>/runtime.lock` (not an `O_EXCL` create — the lock file itself is never deleted, only
+the kernel-held `flock` is released, on clean shutdown or process death). If another `batcave serve`
+already holds it, the new process prints the live holder's identity (`pid`, `instance_token`,
+`runtime_version`, `project_id`, `socket_path`) as JSON on stdout and exits **73** (`EX_TEMPFAIL`).
+
+**Shutdown sequence** on `SIGINT`/`SIGTERM`, in-band `runtime/shutdown`, or idle timeout: journal a
+`RuntimeStopping` event → close the database actor → remove `runtime.sock` → release the flock. The
+socket's disappearance is therefore proof the journal already shut down cleanly.
+
+Before accepting any connection, `serve` runs crash recovery once: any run left in `queued`,
+`starting`, or `working` for longer than the stuck threshold (5 minutes) with no live adapter is
+transitioned to `failed`. Runs in `paused`/`waitingUser`/`waitingPeer` are left alone by default
+(they're intentionally waiting on a human or peer), unless recovery is explicitly configured to
+also cancel those.
+
+### `batcave status`
+
+Prints the runtime's `runtime/status` snapshot as JSON and exits.
+
+```bash
+batcave status --repo <path> [--state-dir <path>] [--wait-seconds <n>]
+```
+
+`--wait-seconds` retries the connection for up to N seconds — useful right after `serve` starts, to
+avoid a startup race. Without it, `status` attempts to connect exactly once.
+
+### `batcave stop`
+
+Gracefully stops the runtime serving a repository.
+
+```bash
+batcave stop --repo <path> [--state-dir <path>]
+```
+
+Reads `runtime.lock`; if no live holder is found (the flock is actually free), exits with **1** and
+prints `no runtime running for this repository` — it never signals a pid it can't confirm is alive,
+closing the recycled-pid race a bare `kill(pid, 0)` would leave open. Otherwise sends `SIGTERM` to
+the recorded pid and polls for up to 10 seconds for `runtime.sock` to disappear. Prints
+`runtime stopped` and exits **0** on success; exits nonzero with a timeout error if the daemon
+doesn't shut down in time.
+
+### `batcave monitor`
+
+Replays journaled events, then keeps tailing live events until interrupted (`Ctrl-C`) — there is no
+separate "live" flag; catch-up and live-tail are the same continuous stream.
+
+```bash
+batcave monitor --repo <path> [--state-dir <path>] [--run-id <id>]
+```
+
+Omit `--run-id` to watch every run in the project; pass it (full, untruncated form) to filter to one
+run. If the socket disappears mid-session (daemon restart), `monitor` reconnects automatically and
+resumes from the last sequence it saw, rather than exiting.
+
+### `batcave doctor`
+
+Runs a diagnostic check catalog against the same paths `serve` would use — it diagnoses the state a
+daemon actually writes, not a directory only `doctor` believes in.
+
+```bash
+batcave doctor --repo <path> [--state-dir <path>] [--json]
+              [--org-config <path>] [--repo-config <path>] [--user-config <path>]
+```
+
+Exits **0** if every check passes, **1** if any check fails (the process still ran to completion —
+this is a reported failure, not an abort). A fatal condition that prevents the catalog from running
+at all (unresolvable paths, unreadable config) exits with a generic failure instead and, in `--json`
+mode, prints `{"healthy": false, "error": "..."}`.
+
+Check catalog, in run order:
+
+| Check | Verifies |
+|---|---|
+| `database_connectivity` | Journal is reachable (`SELECT count(*) FROM events`) |
+| `configuration_valid` | Merged policy's `max_workers`/`concurrency_ceiling` are nonzero, retention period parses, security regexes compile |
+| `state_dir_writable` | State dir exists, is mode `0700` owned by the current uid, and accepts a write-then-remove probe |
+| `platform_supported` | OS/arch is one of the four supported targets; on Linux, that a glibc (not musl) loader is present |
+| `binary_integrity` | `current_exe()` resolves |
+| `socket_permissions` | If `runtime.sock` exists: it's actually a socket, owned by the current uid, mode `0600` |
+| `schema_compatibility` | The committed `packages/protocol-ts/schema/batman.schema.json` matches the binary's own rendered schema |
+| `adapter_claude_available`, `adapter_codex_available`, `adapter_copilot_available`, `adapter_omp_rpc_available` | Each vendor CLI is reachable |
+| `display_available` | At least one of Herdr/tmux/terminal display backends reports available |
+| `disk_space` | State dir's filesystem has ≥ 512 MiB free |
+| `stale_workspaces` | Counts workspace leases whose worktree vanished or failed cleanup |
+| `stale_runs` | Counts runs stuck in a non-terminal state with no live adapter |
+| `rollout_gates_resolved` / `rollout_gate_<gate>` | Unresolved rollout gates; `native_discovery_reviewed` unresolved blocks authorization outright, the rest are advisory |
+
+A check that's missing required context (no db handle, no policy, etc.) reports a failure prefixed
+`skipped:` rather than silently passing.
+
+`batman_doctor` (the OMP tool/`,/batman-doctor` command) runs this same check catalog without
+requiring a live runtime connection — see [`plugin-usage.md`](plugin-usage.md).
+
+### `batcave version`
+
+Prints `batcave <version>` and exits 0. Equivalent to `batcave --version` (clap's built-in flag,
+same `CARGO_PKG_VERSION`).
+
+### `batcave schema`
+
+Prints the canonical JSON Schema document to stdout.
+
+```bash
+batcave schema
+```
+
+**Caveat:** this reads `packages/protocol-ts/schema/batman.schema.json` as a path relative to the
+current working directory, not relative to the binary. It only works run from (or under) a checkout
+of this repository — an installed leaf-package binary run from an arbitrary directory will fail to
+find the file. Use `bun run generate --check` (which runs from the repo root) instead of this
+command for CI drift checks.
+
+### `batcave audit export`
+
+Exports journaled events to a JSONL file.
+
+```bash
+batcave audit export --repo <path> --state-dir <path> --output <path> [--from <ts>] [--to <ts>]
+```
+
+**This is the one command where `--state-dir` means something different from every other
+subcommand.** `serve`/`status`/`stop`/`monitor`/`doctor` treat `--state-dir` as a *state root* and
+derive the per-repository runtime directory themselves. `audit export` does not — it opens
+`<state-dir>/runtime.db` directly. Pass it the actual per-repository runtime directory (what the
+other commands would compute as `<state-root>/repos/<repository-id>/`), not the top-level state
+root, or you'll silently get an empty, freshly-migrated database with zero events rather than an
+error.
+
+Other details:
+- `--from`/`--to` should be RFC3339 timestamps. They are **not validated** — the raw strings go into
+  a lexicographic SQL comparison against RFC3339-formatted values, so a malformed timestamp produces
+  a wrong (usually empty) result set rather than an error.
+- `--output` is **required**, despite what `--help` says. The export always writes to the given
+  file path; it never writes to stdout.
+- An empty result still writes an empty file (so a consumer can tell "nothing in range" apart from
+  "the export never ran").
+- Data is exported exactly as journaled — it was already redacted at write time, so there's no
+  second redaction pass on export.
+
+### `batcave coordination-mcp`
+
+Serves the worker-coordination MCP proxy for one run over stdio: `initialize`/`tools/list`/
+`tools/call`, proxied to the `coordination/*` runtime methods.
+
+```bash
+batcave coordination-mcp --repo <path> --run-id <id> [--state-dir <path>]
+```
+
+This is an internal integration point — it's how a supervised worker process (Claude/Codex/Copilot/
+OMP-RPC) reaches BATMAN's coordination tools, not something a human runs directly. It authenticates
+using `BATMAN_WORKER_SCOPE_TOKEN`, which it reads from (and removes from) its own inherited
+environment.
+
+### `batcave display probe`
+
+Probes one display backend's status without activating it.
+
+```bash
+batcave display probe <herdr|tmux|terminal> [--json]
+```
+
+Prints availability, active state, version, and dimensions (when known). Never starts or attaches
+to the backend — this is read-only.
+
+### `batcave conformance`
+
+Runs the fixture or live conformance suite for one adapter (or all four) and writes a JSON report.
+
+```bash
+batcave conformance --adapter <claude|codex|copilot|ompRpc|all> (--fixture | --live) --output <path>
+```
+
+Exactly one of `--fixture`/`--live` must be set. `--fixture` runs entirely offline against golden
+frames; `--live` shells out to the real vendor CLI (gated by adapter-specific env vars, e.g.
+`BATMAN_LIVE_CLAUDE=1`) and reports a structured `{adapter, mode: "live", passed: false, error}`
+entry rather than a hard process failure if the vendor CLI is unavailable or refuses (e.g. out of
+credits). The report is written to `--output` and also printed to stdout.
+
+### `batcave adapters`
+
+Runs every adapter's fixture conformance suite and prints declared vs. effective capabilities — the
+same evidence the adapter registry uses to gate what a worker profile is allowed to claim.
+
+```bash
+batcave adapters [--json]
+```
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success |
+| `1` | `stop`: no runtime was running. `doctor`: the check catalog ran but reported unhealthy. |
+| `73` | `serve`: another instance already holds the repository's lock (`EX_TEMPFAIL`) |
+| nonzero (generic failure) | Any other error: bad arguments, unresolvable paths, connection failure, a `stop` that timed out waiting for shutdown, `doctor` aborting before the catalog could run, `display probe` given an unknown backend, `conformance` failing to write its report, etc. |
+
+See [`docs/architecture.md`](architecture.md#error-codes) for the separate table of JSON-RPC-level
+error codes (`-32700`…`-32004`) returned *inside* the protocol, as opposed to the CLI's own process
+exit codes above.
