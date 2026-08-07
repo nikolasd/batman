@@ -13,6 +13,10 @@ crates/protocol/bindings/
 packages/batman-*/bin/
 packages/batman-*/manifest.json
 
+# Generated fresh by release.yml on every run and uploaded as a CI artifact;
+# never committed to source control.
+release/release-manifest.json
+
 # Agent working plans/specs (superpowers skill) — ephemeral scratch docs,
 # never permanent project documentation.
 docs/superpowers/

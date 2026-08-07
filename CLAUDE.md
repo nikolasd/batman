@@ -108,6 +108,7 @@ structural choice is accidental.
 | `packages/batman-*/` | Per-platform `batcave` binary leaf packages (npm `optionalDependencies`) |
 | `fixtures/` | Cross-language golden fixtures (protocol frames, state roots, repo ids, configs) that Rust and TS tests both read |
 | `tests/conformance/` | Golden-frame adapter conformance runner; `tests/install/` is private-registry install verification |
+| `release/` | Release build inputs and evidence — `targets.json` (platform build matrix, read by xtask and CI) plus per-version release checklists and live adapter conformance results |
 | `docs/` | Start with `getting-started.md` and `architecture.md`; `engineering-lessons.md` documents past bugs and the invariant that closed each one |
 
 ### Cross-language coupling to keep in mind
