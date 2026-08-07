@@ -28,7 +28,7 @@ export function registerProfileTool(pi: ExtensionAPI, ctx: OrchestrationToolCont
     parameters: params,
     approval: () => "exec",
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
-      const client = await ctx.getClient(extCtx.cwd);
+      const client = await ctx.getClient(extCtx);
       return callOrchestration(client, "profile/register", {
         adapter: input.adapter,
         model: input.model,

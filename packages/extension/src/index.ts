@@ -28,8 +28,8 @@ export default function batmanExtension(pi: ExtensionAPI): void {
   // Cached per extension instance (one per OMP session), closed on shutdown.
   let cachedClient: BatmanClient | undefined;
 
-  function statusContextFor(cwd: ExtensionContext["cwd"]): GetRuntimeStatusContext {
-    const { ensureRuntimeOptions } = buildStatusContext({ cwd });
+  function statusContextFor(extCtx: ExtensionContext): GetRuntimeStatusContext {
+    const { ensureRuntimeOptions } = buildStatusContext({ cwd: extCtx.cwd, sessionId: extCtx.sessionManager.getSessionId() });
     return {
       ensureRuntimeOptions,
       cache: {
@@ -46,12 +46,15 @@ export default function batmanExtension(pi: ExtensionAPI): void {
    * repository's runtime on first use. Shared by every orchestration tool so
    * a session holds exactly one runtime connection.
    */
-  async function getClient(cwd: string): Promise<BatmanClient> {
+  async function getClient(extCtx: ExtensionContext): Promise<BatmanClient> {
     if (cachedClient !== undefined) {
       return cachedClient;
     }
-    const { ensureRuntimeOptions } = buildStatusContext({ cwd });
-    const { client } = await ensureRuntime(ensureRuntimeOptions);
+    const { ensureRuntimeOptions } = buildStatusContext({ cwd: extCtx.cwd });
+    const { client } = await ensureRuntime({
+      ...ensureRuntimeOptions,
+      sessionId: extCtx.sessionManager.getSessionId(),
+    });
     cachedClient = client;
     return client;
   }
@@ -61,25 +64,25 @@ export default function batmanExtension(pi: ExtensionAPI): void {
     label: "BATMAN Status",
     description: STATUS_DESCRIPTION,
     parameters: pi.zod.object({}),
-    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-      return getRuntimeStatus(statusContextFor(ctx.cwd));
+    async execute(_toolCallId, _params, _signal, _onUpdate, extCtx) {
+      return getRuntimeStatus(statusContextFor(extCtx));
     },
   });
 
   pi.registerCommand(COMMAND_NAME, {
     description: STATUS_DESCRIPTION,
-    handler: async (_args, ctx) => {
-      const result = await getRuntimeStatus(statusContextFor(ctx.cwd));
+    handler: async (_args, extCtx) => {
+      const result = await getRuntimeStatus(statusContextFor(extCtx));
       const text = result.content.map((block) => block.text).join("\n");
-      // `ctx.ui.notify` is a no-op outside interactive mode (print/RPC), so
+      // `extCtx.ui.notify` is a no-op outside interactive mode (print/RPC), so
       // write directly to stdout instead when there is no UI -- this is the
       // only way `--print` surfaces output for a locally-handled slash
       // command. In interactive mode, raw console.log would corrupt the TUI,
-      // so route exclusively through `ctx.ui.notify`.
-      if (!ctx.hasUI) {
+      // so route exclusively through `extCtx.ui.notify`.
+      if (!extCtx.hasUI) {
         console.log(text);
       } else {
-        ctx.ui.notify(text, result.isError ? "error" : "info");
+        extCtx.ui.notify(text, result.isError ? "error" : "info");
       }
     },
   });
@@ -195,7 +198,7 @@ export default function batmanExtension(pi: ExtensionAPI): void {
       return;
     }
     try {
-      const client = await getClient(extCtx.cwd);
+      const client = await getClient(extCtx);
       for (const correlation of correlations) {
         try {
           await reconcileWithRuntime(client, correlation);

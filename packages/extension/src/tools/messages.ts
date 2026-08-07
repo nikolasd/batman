@@ -35,7 +35,7 @@ export function registerMessageTool(pi: ExtensionAPI, ctx: OrchestrationToolCont
     parameters: params,
     approval: "write",
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
-      const client = await ctx.getClient(extCtx.cwd);
+      const client = await ctx.getClient(extCtx);
       if (input.op === "send") {
         return callOrchestration(client, "message/send", {
           runId: input.runId,

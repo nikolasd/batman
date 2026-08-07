@@ -29,7 +29,7 @@ export function registerRunTool(pi: ExtensionAPI, ctx: OrchestrationToolContext)
     parameters: params,
     approval: (args) => (typeof args === "object" && args !== null && "op" in args && (args.op === "submit" || args.op === "cancel") ? "exec" : "read"),
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
-      const client = await ctx.getClient(extCtx.cwd);
+      const client = await ctx.getClient(extCtx);
       switch (input.op) {
         case "submit":
           return callOrchestration(client, "run/submit", {

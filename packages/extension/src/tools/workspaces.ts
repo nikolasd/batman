@@ -34,7 +34,7 @@ export function registerWorkspaceTool(pi: ExtensionAPI, ctx: OrchestrationToolCo
     parameters: params,
     approval: (args) => (typeof args === "object" && args !== null && "op" in args && (args.op === "acquire" || args.op === "release" || args.op === "apply") ? "exec" : "read"),
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
-      const client = await ctx.getClient(extCtx.cwd);
+      const client = await ctx.getClient(extCtx);
       switch (input.op) {
         case "acquire":
           return callOrchestration(client, "workspace/acquire", {

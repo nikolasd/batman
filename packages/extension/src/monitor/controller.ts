@@ -19,7 +19,7 @@ const WIDGET_KEY = "batman-monitor";
 export const MONITOR_COMMAND_NAME = "batman";
 
 export interface MonitorControllerContext {
-  getClient(cwd: string): Promise<BatmanClient>;
+  getClient(extCtx: ExtensionContext): Promise<BatmanClient>;
 }
 
 /** The subset of `pi.appendEntry`'s session-entry log the controller reads
@@ -108,7 +108,7 @@ export function registerMonitor(pi: ExtensionAPI, ctx: MonitorControllerContext)
     }
     const fromSequence = lastPersistedSequence(extCtx.sessionManager.getEntries() as SessionEntryLike[]);
     try {
-      const client = await ctx.getClient(extCtx.cwd);
+      const client = await ctx.getClient(extCtx);
       controller.start(client, fromSequence, () => refresh(extCtx));
       connected = true;
     } catch (err) {

@@ -30,7 +30,7 @@ export function registerArtifactTool(pi: ExtensionAPI, ctx: OrchestrationToolCon
     parameters: params,
     approval: "read",
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
-      const client = await ctx.getClient(extCtx.cwd);
+      const client = await ctx.getClient(extCtx);
       switch (input.op) {
         case "list":
           return callOrchestration(client, "artifact/list", { kind: input.kind });

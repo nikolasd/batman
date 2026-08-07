@@ -11,7 +11,7 @@ import { BatmanClient, JsonRpcRemoteError } from "../client";
 
 /** Resolves the cached (or newly connected) runtime client for `cwd`. */
 export interface OrchestrationToolContext {
-  getClient(cwd: string): Promise<BatmanClient>;
+  getClient(extCtx: ExtensionContext): Promise<BatmanClient>;
 }
 
 /** The stable, structured shape of a mapped JSON-RPC tool error. */

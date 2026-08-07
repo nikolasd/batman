@@ -37,6 +37,8 @@ export interface BuildStatusContextOptions {
    * hermetic.
    */
   readonly packagedBinaryResolver?: () => string;
+  /** OMP session ID for connection instanceId (for task ownership consistency). */
+  readonly sessionId?: string;
 }
 
 /** The assembled context a `runtime/status` request needs. */
@@ -47,8 +49,7 @@ export interface StatusRuntimeContext {
 
 /**
  * Builds the {@link StatusRuntimeContext} for a status request. Pure aside
- * from the `process.env`/`os.homedir()` defaults, which callers can override
- * (tests always do) to avoid depending on the ambient environment.
+ * from the `process.env`/`os.homedir()` defaults, which callers can override.
  */
 export function buildStatusContext(options: BuildStatusContextOptions = {}): StatusRuntimeContext {
   const env = options.env ?? process.env;
@@ -63,6 +64,7 @@ export function buildStatusContext(options: BuildStatusContextOptions = {}): Sta
       idleSeconds: DEFAULT_IDLE_SECONDS,
       env,
       packagedBinaryResolver: options.packagedBinaryResolver ?? (() => resolveBatcave(process.platform, process.arch, detectLibc(), env).path),
+      sessionId: options.sessionId,
     },
   };
 }

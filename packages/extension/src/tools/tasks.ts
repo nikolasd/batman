@@ -36,7 +36,7 @@ export function registerTaskTool(pi: ExtensionAPI, ctx: OrchestrationToolContext
     // cost the same as mutating one.
     approval: (args) => (typeof args === "object" && args !== null && "op" in args && args.op === "get" ? "read" : "write"),
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
-      const client = await ctx.getClient(extCtx.cwd);
+      const client = await ctx.getClient(extCtx);
       switch (input.op) {
         case "upsert": {
           const taskId = input.taskId ?? crypto.randomUUID();

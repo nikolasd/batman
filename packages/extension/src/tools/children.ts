@@ -30,7 +30,7 @@ export function registerChildTool(pi: ExtensionAPI, ctx: OrchestrationToolContex
     parameters: params,
     approval: (args) => (typeof args === "object" && args !== null && "op" in args && args.op === "decide" ? "exec" : "read"),
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
-      const client = await ctx.getClient(extCtx.cwd);
+      const client = await ctx.getClient(extCtx);
       switch (input.op) {
         case "list":
           return callOrchestration(client, "coordination/child/list", { runId: input.runId });

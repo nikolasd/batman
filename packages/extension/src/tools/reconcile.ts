@@ -23,7 +23,7 @@ export function registerReconcileTool(pi: ExtensionAPI, ctx: OrchestrationToolCo
     parameters: params,
     approval: "write",
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
-      const client = await ctx.getClient(extCtx.cwd);
+      const client = await ctx.getClient(extCtx);
       return callOrchestration(client, "reconcile/omp", {
         taskId: input.taskId,
         revision: input.revision,

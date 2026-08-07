@@ -38,6 +38,12 @@ export interface EnsureRuntimeOptions {
    * fails.
    */
   readonly packagedBinaryResolver?: () => string;
+  /**
+   * The OMP session ID, used as the connection `instanceId` so that task
+   * ownership, approval decisions, and violation decisions all share the
+   * same principal. When omitted, falls back to a constant identity.
+   */
+  readonly sessionId?: string;
 }
 
 /** The result of {@link ensureRuntime}. */
@@ -88,7 +94,7 @@ export async function ensureRuntime(options: EnsureRuntimeOptions): Promise<Ensu
   const socketPath = socketPathFor(options.stateDir, options.repository);
 
   // 1. If a runtime is already serving, connect to it without spawning.
-  const existing = await tryConnect(socketPath, options.repository);
+  const existing = await tryConnect(socketPath, options.repository, options.sessionId);
   if (existing !== undefined) {
     return { client: existing, childStarted: false };
   }
@@ -107,7 +113,7 @@ export async function ensureRuntime(options: EnsureRuntimeOptions): Promise<Ensu
 
   // 4. Retry connecting with bounded exponential backoff. If a different
   //    caller won the lock, we still connect to the winner here.
-  const client = await connectWithBackoff(socketPath, options.repository);
+  const client = await connectWithBackoff(socketPath, options.repository, options.sessionId);
   return { client, childStarted: true };
 }
 
@@ -246,13 +252,13 @@ function selectBinary(env: Readonly<Record<string, string | undefined>>, package
  * the write-capable `ompExtension` role rather than the read-only
  * `display` role a separate, external viewer would use.
  */
-function initParams(repository: string): InitializeParams {
+function initParams(repository: string, sessionId?: string): InitializeParams {
   const canonical = realpathSync(repository);
   return {
     client: { name: "@nikolasd/batman", version: "0.1.0" },
     supported: { min: { major: 1, minor: 0 }, max: { major: 1, minor: 0 } },
     repository: { canonicalPath: canonical, vcsRoot: canonical },
-    auth: { role: "ompExtension", instanceId: "batman-extension", agentDirectory: canonical },
+    auth: { role: "ompExtension", instanceId: sessionId ?? "batman-extension", agentDirectory: canonical },
     capabilities: { eventReplay: false, maxFrameBytes: CONNECT_MAX_FRAME_BYTES },
     lastSequence: null,
   } as InitializeParams;
@@ -262,14 +268,14 @@ function initParams(repository: string): InitializeParams {
  * Attempts one connect + initialize. Resolves to the client on success, or
  * `undefined` if the runtime is absent or the handshake fails.
  */
-async function tryConnect(socketPath: string, repository: string): Promise<BatmanClient | undefined> {
+async function tryConnect(socketPath: string, repository: string, sessionId?: string): Promise<BatmanClient | undefined> {
   if (!existsSync(socketPath)) {
     return undefined;
   }
   const client = new BatmanClient({ socketPath });
   try {
     await client.whenConnected();
-    await client.initialize(initParams(repository));
+    await client.initialize(initParams(repository, sessionId));
     return client;
   } catch {
     client.close();
@@ -281,11 +287,11 @@ async function tryConnect(socketPath: string, repository: string): Promise<Batma
  * Retries {@link tryConnect} with exponential backoff, up to
  * {@link CONNECT_DEADLINE_MS} total.
  */
-async function connectWithBackoff(socketPath: string, repository: string): Promise<BatmanClient> {
+async function connectWithBackoff(socketPath: string, repository: string, sessionId?: string): Promise<BatmanClient> {
   const deadline = Date.now() + CONNECT_DEADLINE_MS;
   let delay = 25;
   for (;;) {
-    const client = await tryConnect(socketPath, repository);
+    const client = await tryConnect(socketPath, repository, sessionId);
     if (client !== undefined) {
       return client;
     }

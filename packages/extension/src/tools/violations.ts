@@ -28,7 +28,7 @@ export function registerViolationTool(pi: ExtensionAPI, ctx: OrchestrationToolCo
     parameters: params,
     approval: "exec",
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
-      const client = await ctx.getClient(extCtx.cwd);
+      const client = await ctx.getClient(extCtx);
       // The runtime takes the deciding identity from the connection
       // principal, so no owner field is sent: an OMP-supplied identity
       // would be unverified and could impersonate another instance.

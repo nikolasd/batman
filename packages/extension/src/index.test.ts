@@ -59,6 +59,32 @@ function createFakeApi(): {
 
   return { api: api as unknown as ExtensionAPI, tools, commands };
 }
+function fakeExtensionContext(cwd: string): ExtensionContext {
+  const sessionManager = {
+    getSessionId: () => "test-session-id-12345",
+  };
+  return {
+    cwd,
+    sessionManager: sessionManager as unknown as ExtensionContext["sessionManager"],
+  } as unknown as ExtensionContext;
+}
+function fakeCommandContext(cwd: string, hasUI: boolean): { ctx: ExtensionCommandContext; notifications: string[] } {
+  const notifications: string[] = [];
+  const sessionManager = {
+    getSessionId: () => "test-session-id-12345",
+  };
+  return {
+    notifications,
+    ctx: {
+      cwd,
+      hasUI,
+      ui: { notify: (message: string) => notifications.push(message) },
+      sessionManager: sessionManager as unknown as ExtensionCommandContext["sessionManager"],
+    } as unknown as ExtensionCommandContext,
+  };
+}
+
+
 
 test("registers batman_status plus every orchestration tool, and both slash commands", () => {
   const { api, tools, commands } = createFakeApi();
@@ -149,7 +175,7 @@ test("batman_status tool reports a healthy runtime for a real foreground daemon"
   extension(api);
   const tool = tools.get("batman_status")!;
 
-  const ctx = { cwd: repoDir } as unknown as ExtensionContext;
+  const ctx = fakeExtensionContext(repoDir);
   const result = await tool.execute("call-1", {}, undefined, undefined, ctx);
 
   expect(result.isError).toBeUndefined();
@@ -160,14 +186,13 @@ test("batman_status tool reports a healthy runtime for a real foreground daemon"
     protocolHealthy: true,
   });
 });
-
 test("batman_status tool reuses the cached client across a second call", async () => {
   setEnv("BATMAN_STATE_DIR", stateDir);
 
   const { api, tools } = createFakeApi();
   extension(api);
   const tool = tools.get("batman_status")!;
-  const ctx = { cwd: repoDir } as unknown as ExtensionContext;
+  const ctx = fakeExtensionContext(repoDir);
 
   const first = await tool.execute("call-1", {}, undefined, undefined, ctx);
   const second = await tool.execute("call-2", {}, undefined, undefined, ctx);
@@ -189,7 +214,7 @@ test("batman_status tool returns a sanitized error when the runtime cannot be re
   const { api, tools } = createFakeApi();
   extension(api);
   const tool = tools.get("batman_status")!;
-  const ctx = { cwd: brokenRepo } as unknown as ExtensionContext;
+  const ctx = fakeExtensionContext(brokenRepo);
 
   const result = await tool.execute("call-1", {}, undefined, undefined, ctx);
 
@@ -247,13 +272,8 @@ test("batman-status command notifies (not console.logs) in interactive mode", as
   extension(api);
   const command = commands.get("batman-status")!;
 
-  const notifications: string[] = [];
+  const { ctx, notifications } = fakeCommandContext(repoDir, true);
   const logSpy = spyOn(console, "log");
-  const ctx = {
-    cwd: repoDir,
-    hasUI: true,
-    ui: { notify: (message: string) => notifications.push(message) },
-  } as unknown as ExtensionCommandContext;
 
   try {
     await command.handler("", ctx);
@@ -274,20 +294,11 @@ test("batman-status command console.logs (not notify) outside interactive mode",
   extension(api);
   const command = commands.get("batman-status")!;
 
+  const { ctx, notifications } = fakeCommandContext(repoDir, false);
   const logged: string[] = [];
   const logSpy = spyOn(console, "log").mockImplementation((message: string) => {
     logged.push(message);
   });
-  // `ctx.ui.notify` is a no-op outside interactive mode; assert the command
-  // never calls it so print/RPC output relies solely on console.log.
-  const notify = () => {
-    throw new Error("ctx.ui.notify must not be called when hasUI is false");
-  };
-  const ctx = {
-    cwd: repoDir,
-    hasUI: false,
-    ui: { notify },
-  } as unknown as ExtensionCommandContext;
 
   try {
     await command.handler("", ctx);
@@ -297,6 +308,8 @@ test("batman-status command console.logs (not notify) outside interactive mode",
 
   expect(logged.length).toBe(1);
   expect(logged[0]).toContain("running");
+  // ctx.ui.notify must not be called when hasUI is false; print/RPC relies on console.log only
+  expect(notifications.length).toBe(0);
 });
 
 test("the golden runtime/status fixture validates against the canonical schema", () => {

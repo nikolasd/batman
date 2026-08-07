@@ -58,7 +58,7 @@ export function registerApprovalTool(pi: ExtensionAPI, ctx: OrchestrationToolCon
     parameters: params,
     approval: { tier: "exec", override: true, reason: "Approval decisions are a user-facing safety action." },
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx): Promise<AgentToolResult<unknown>> {
-      const client = await ctx.getClient(extCtx.cwd);
+      const client = await ctx.getClient(extCtx);
       if (input.op !== "decide") {
         return callOrchestration(client, "approval/list", { runId: input.runId });
       }
