@@ -13,10 +13,14 @@ use std::sync::Arc;
 
 use batman_protocol::{ProjectId, RunId, TaskId, WorkerId};
 use batman_runtime::adapter::{
-    AdapterRegistry, FixtureAuthorization, OmpRpcStartupOptions, StartupOptions, WorkerProfile,
+    AdapterAuthorization, AdapterCapabilities, AdapterRegistry, ApprovalsCapability,
+    DurabilityCapability, FixtureAuthorization, NativeViewCapability, NestedCapability,
+    OmpRpcStartupOptions, ProtocolKind, ResumeCapability, StartupOptions, SteeringCapability,
+    UsageCapability, WorkerProfile, WorkspaceControlCapability,
 };
+use batman_runtime::config::{NestedViolationAction, RolloutGates, RuntimePolicy};
 use batman_runtime::db::DatabaseHandle;
-use batman_runtime::policy::ViolationService;
+use batman_runtime::policy::{PolicyEvaluator, ViolationService};
 use batman_runtime::service::{RunDriver, RunDriverContext};
 
 async fn harness() -> (Arc<DatabaseHandle>, tempfile::TempDir, ProjectId) {
@@ -275,4 +279,108 @@ async fn running_count_tracks_active_adapters() {
 
     // running_count should be 1 (or 0 if start failed)
     assert!(registry.running_count() == 0 || registry.running_count() == 1);
+}
+
+fn test_capabilities() -> AdapterCapabilities {
+    AdapterCapabilities {
+        protocol: ProtocolKind::Structured,
+        resume: ResumeCapability::Session,
+        steering: SteeringCapability::ActiveTurn,
+        approvals: ApprovalsCapability::Controllable,
+        structured_result: true,
+        usage: UsageCapability::PerTurn,
+        nested: NestedCapability::None,
+        native_view: NativeViewCapability::None,
+        workspace_control: WorkspaceControlCapability::ReadOnly,
+        durability: DurabilityCapability::ParentScoped,
+    }
+}
+
+fn ceiling_one_policy() -> RuntimePolicy {
+    RuntimePolicy {
+        merged: serde_json::json!({}),
+        fingerprint: "test".to_string(),
+        display_backend: "auto".to_string(),
+        retention: "30d".to_string(),
+        max_workers: 4,
+        concurrency_ceiling: 1,
+        allowed_models: vec!["gpt-4".to_string()],
+        allowed_adapters: vec![],
+        cost_ceiling_per_run_usd: None,
+        org_security_patterns: vec![],
+        rollout_gates: RolloutGates {
+            vendor_terms_accepted: true,
+            retention_configured: true,
+            model_allowlist_set: true,
+            concurrency_explicit: true,
+            native_discovery_reviewed: true,
+            ornith_identity_set: true,
+            nested_violation_action: NestedViolationAction::QuarantineAndCancel,
+            allow_development_binary_override: false,
+        },
+        copy_max_bytes: batman_runtime::workspace::DEFAULT_COPY_MAX_BYTES,
+        copy_max_files: batman_runtime::workspace::DEFAULT_COPY_MAX_FILES,
+        required_capabilities: vec![],
+        cost_ceiling_daily_usd: None,
+    }
+}
+
+/// Defends the R2 fix at the real `AdapterRegistry` wiring level: a
+/// `PolicyEvaluator` -- the *production* `AdapterAuthorization`, not the
+/// `FixtureAuthorization` every other test in this file uses -- erased
+/// behind `Arc<dyn AdapterAuthorization>`, with a concurrency ceiling of
+/// 1. Booking the one slot (as a real prior run's `authorize()` would
+/// have) must make `registry.start()` deny a second run with a
+/// "concurrency ceiling" message, and releasing that slot through the
+/// trait object -- exactly as the registry's own completion watcher and
+/// post-authorize error paths now do -- must let a subsequent start
+/// proceed past the ceiling check.
+#[tokio::test]
+async fn releasing_a_policy_evaluator_slot_frees_the_registry_ceiling() {
+    let evaluator = Arc::new(PolicyEvaluator::new(ceiling_one_policy()));
+    let authorization: Arc<dyn AdapterAuthorization> = evaluator;
+
+    let mut gpt4_profile = omp_rpc_profile();
+    gpt4_profile.model = "gpt-4".to_string();
+
+    // Book the one slot directly, as a real prior `run_one` authorize
+    // call would have.
+    authorization
+        .authorize(&gpt4_profile, &test_capabilities(), None)
+        .expect("the first slot is within the ceiling of 1");
+
+    let (db, _dir, project_id) = harness().await;
+    let (run_id, task_id, worker_id) =
+        seed_worker_and_run(&db, project_id, Some(&gpt4_profile)).await;
+    let registry = AdapterRegistry::new(
+        Arc::clone(&authorization),
+        PathBuf::from("/tmp"),
+        None,
+        vec![],
+    );
+
+    let err = registry
+        .start(ctx(db.clone(), project_id, run_id, task_id, worker_id))
+        .await
+        .expect_err("the booked slot must exhaust the ceiling of 1");
+    assert!(
+        err.contains("concurrency ceiling"),
+        "unexpected error message: {err}"
+    );
+
+    // Settle the booked run exactly as the registry's completion watcher
+    // does on process exit, then retry: the ceiling denial must be gone.
+    authorization.release();
+
+    let (run_id2, task_id2, worker_id2) =
+        seed_worker_and_run(&db, project_id, Some(&gpt4_profile)).await;
+    let result = registry
+        .start(ctx(db, project_id, run_id2, task_id2, worker_id2))
+        .await;
+    if let Err(err) = &result {
+        assert!(
+            !err.contains("concurrency ceiling"),
+            "the released slot must not still be booked: {err}"
+        );
+    }
 }

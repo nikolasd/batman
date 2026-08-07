@@ -60,6 +60,11 @@ pub trait AdapterAuthorization: Send + Sync {
         effective_capabilities: &AdapterCapabilities,
         policy: Option<&crate::config::RuntimePolicy>,
     ) -> Result<(), String>;
+
+    /// Releases a previously-booked concurrency slot when a run settles.
+    /// Called exactly once from every settlement path (success, error,
+    /// cancellation). Safe to call even if no slot was booked.
+    fn release(&self);
 }
 
 /// A deterministic allow/deny fixture for tests. Production callers must
@@ -81,6 +86,10 @@ impl AdapterAuthorization for FixtureAuthorization {
         } else {
             Err("denied by fixture authorization".to_string())
         }
+    }
+
+    fn release(&self) {
+        // No-op: fixture authorization has no concurrency slots.
     }
 }
 
@@ -234,6 +243,7 @@ impl RunDriver for AdapterRegistry {
                     // `events_tx` `RunDriverContext` already supplies,
                     // so it needs no additional wiring.
                     let running_for_watcher = Arc::clone(&running);
+                    let authorization_for_watcher = Arc::clone(&authorization);
                     let mut events_rx = events_tx.subscribe();
                     // The pane resolved at submit time, so the detach
                     // names the same backend the attach did without
@@ -244,25 +254,40 @@ impl RunDriver for AdapterRegistry {
                     let db = Arc::clone(&ctx.db);
                     let project_id = ctx.project_id;
                     tokio::spawn(async move {
-                        while let Ok(envelope) = events_rx.recv().await {
-                            if is_process_exited_for(&envelope.event, run_id) {
-                                let evicted = running_for_watcher.lock().remove(&run_id);
-                                if let Some(adapter) = evicted {
-                                    let _ = adapter.dispose().await;
+                        loop {
+                            match events_rx.recv().await {
+                                Ok(envelope) => {
+                                    if is_process_exited_for(&envelope.event, run_id) {
+                                        let evicted = running_for_watcher.lock().remove(&run_id);
+                                        if let Some(adapter) = evicted {
+                                            let _ = adapter.dispose().await;
+                                        }
+                                        // Release the concurrency slot now that the run has settled.
+                                        authorization_for_watcher.release();
+                                        if let Some(selection) = display
+                                            && let Some(backend) = selection.selected
+                                        {
+                                            emit_pane_detached(
+                                                &db,
+                                                project_id,
+                                                run_id,
+                                                backend,
+                                                selection.placement,
+                                            )
+                                            .await;
+                                        }
+                                        break;
+                                    }
                                 }
-                                if let Some(selection) = display
-                                    && let Some(backend) = selection.selected
-                                {
-                                    emit_pane_detached(
-                                        &db,
-                                        project_id,
-                                        run_id,
-                                        backend,
-                                        selection.placement,
-                                    )
-                                    .await;
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                    // Missed some notifications; continue waiting.
+                                    continue;
                                 }
-                                break;
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                    // Sender dropped (runtime shutting down); release slot and exit.
+                                    authorization_for_watcher.release();
+                                    break;
+                                }
                             }
                         }
                     });
@@ -425,6 +450,7 @@ async fn run_one(
     if let Some(kind) = profile.adapter_kind() {
         let availability = conformance::probe_availability(kind).await;
         if !availability.passed {
+            authorization.release();
             return Err(format!(
                 "adapter {} is unavailable: {}",
                 kind.wire_name(),
@@ -436,8 +462,7 @@ async fn run_one(
     // Use the workspace path from the context (isolated worktree or copy)
     // when available; fall back to the repository root.
     let cwd = ctx.workspace_path.as_deref().unwrap_or(repo_root);
-
-    let adapter = build_adapter(
+    let adapter = match build_adapter(
         &profile,
         cwd,
         ctx.run_id,
@@ -445,8 +470,13 @@ async fn run_one(
         ctx.worker_id,
         mcp,
         broker,
-    )
-    .map_err(String::from)?;
+    ) {
+        Ok(adapter) => adapter,
+        Err(err) => {
+            authorization.release();
+            return Err(err.into());
+        }
+    };
     let sink = Arc::new(DomainAdapterEventSink::new(
         Arc::clone(&ctx.db),
         ctx.project_id,
@@ -458,7 +488,7 @@ async fn run_one(
             .as_deref()
             .and_then(|p| p.cost_ceiling_per_run_usd),
     ));
-    adapter
+    if let Err(err) = adapter
         .start(
             StartSpec {
                 run_id: ctx.run_id,
@@ -470,7 +500,10 @@ async fn run_one(
             sink,
         )
         .await
-        .map_err(|err| err.to_string())?;
+    {
+        authorization.release();
+        return Err(err.to_string());
+    }
     Ok(adapter)
 }
 

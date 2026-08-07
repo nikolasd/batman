@@ -429,6 +429,10 @@ impl AdapterAuthorization for PolicyEvaluator {
         self.evaluate(profile, effective_capabilities, false, policy)
             .map_err(|e| e.to_string())
     }
+
+    fn release(&self) {
+        self.decrement_runs();
+    }
 }
 
 /// A policy evaluation result, including any violations.
