@@ -122,7 +122,7 @@ The reviewed code had the following verified baseline before this document was w
 
 **Resolution:** `44093d4` — `Artifact.run_id` is now populated by `WorkspaceInspector` and `WorkspaceApplier` (previously `None`). `artifact/list` and `artifact/fetch` scope results by the caller's `owner_client_instance_id` through `owned_run_ids_op`. Extension `batman_artifact` passes `taskId` for per-task narrowing. `workspace/inspect` now stores its patch in the artifact store and is behind the quarantine gate. Behavioral test `artifact_isolation_enforces_task_ownership_scoping` verifies two owners cannot see each other's artifacts or fetch cross-owner artifacts.
 
-#### R11. Copilot turn stop reasons are discarded
+#### R11. Copilot turn stop reasons are discarded ~RESOLVED~
 
 **Location:** `crates/runtime/src/adapter/copilot/client.rs:315-344`; `crates/runtime/src/adapter/copilot/mod.rs:422-426,462-489`; `crates/runtime/src/adapter/copilot/normalize.rs:18-89`
 
@@ -130,7 +130,7 @@ The reviewed code had the following verified baseline before this document was w
 
 **Impact:** Refused or limit-terminated turns are indistinguishable from successful completion to the journal, monitor, and retry/alerting automation.
 
-**Suggested fix:** Map every supported stop reason to an explicit final/health event and treat non-success reasons as failures. Add fixture coverage for refusal, cancellation, and limit termination.
+**Resolution:** `bcff4ce` — `copilot_normalize_stop_reason()` maps every stop reason to `ProtocolHealthChanged` events and a failure disposition. `settle_turn()` emits events and fails the turn for refusal, token exhaustion, max turn requests, and unknown reasons. Cancellation emits a health event but does not fail (avoids racing `run/cancel`). Defended by 8 unit tests.
 
 ### Medium
 

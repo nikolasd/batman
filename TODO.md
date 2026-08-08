@@ -219,15 +219,13 @@ Committed as `44093d4`. `Artifact.run_id` is now populated by `WorkspaceInspecto
 
 ### 78. Preserve Copilot ACP stop reasons as runtime outcomes
 
-**Status:** Open (discovered 2026-08-06 during codebase review)
+**Status:** ✅ Closed 2026-08-08
 **Priority:** High
-**Labels:** adapter, copilot, observability
+**Labels:** copilot, adapter, stop-reason
 
 **Description:**
-The Copilot client returns ACP `stopReason`, but initial and follow-up callers discard it. Refusal, cancellation, token exhaustion, and maximum-turn termination are therefore indistinguishable from normal completion.
+`session_prompt` returns ACP's `stopReason`, but both `start` and `send` callers discard the string. Refusal, cancellation, token exhaustion, and max-turn termination are indistinguishable from `end_turn` in the journal.
 
-**Implementation:**
-- Map supported stop reasons to explicit final/health events and fail non-success outcomes.
-- Add fixtures for refusal, cancellation, and limit termination.
-
+**Resolution:**
+Committed as `bcff4ce`. `copilot_normalize_stop_reason()` maps reasons to `ProtocolHealthChanged` events and failure disposition. `settle_turn()` emits events and fails the turn for non-success reasons. 8 unit tests defend the mapping.
 **References:** `REVIEW.md` (R11), `crates/runtime/src/adapter/copilot/client.rs:315`, `crates/runtime/src/adapter/copilot/mod.rs:422`
