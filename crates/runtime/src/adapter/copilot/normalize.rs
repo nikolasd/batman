@@ -125,3 +125,168 @@ fn tool_call_content_text(items: Option<&Vec<Value>>) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// The runtime consequence of one ACP v1 turn `stopReason`.
+pub struct StopOutcome {
+    /// Events to emit before the turn returns. Empty for a clean end.
+    pub events: Vec<AdapterEventPayload>,
+    /// `Some(detail)` when the turn must be reported as a failure rather
+    /// than a completion. `None` for `end_turn` and for `cancelled`,
+    /// which is a requested outcome, not a fault.
+    pub failure: Option<String>,
+}
+
+/// Maps an ACP v1 `session/prompt` `stopReason` onto the events and
+/// failure disposition it represents.
+///
+/// Matching is case- and separator-insensitive (`end_turn`, `endTurn`,
+/// and `EndTurn` are one reason) because ACP v1 specifies snake_case but
+/// the installed Copilot CLI's exact casing is not pinned by any
+/// committed fixture. An unrecognized reason is a failure carrying the
+/// raw string: a silent success on an outcome this adapter does not
+/// understand is exactly the defect being fixed.
+///
+/// `cancelled` emits the health event but does **not** fail, deliberately:
+/// `run/cancel` already drives the run to `cancelled`, and returning `Err`
+/// from `start` would race that into `failed` instead.
+#[must_use]
+pub fn copilot_normalize_stop_reason(stop_reason: &str) -> StopOutcome {
+    let normalized = stop_reason.replace(['_', '-'], "").to_ascii_lowercase();
+    match normalized.as_str() {
+        "endturn" => StopOutcome {
+            events: Vec::new(),
+            failure: None,
+        },
+        "cancelled" | "canceled" => StopOutcome {
+            events: vec![AdapterEventPayload::ProtocolHealthChanged {
+                healthy: false,
+                detail: visible("cancelled: the turn ended before completing".to_string()),
+            }],
+            failure: None,
+        },
+        "refusal" => StopOutcome {
+            events: vec![AdapterEventPayload::ProtocolHealthChanged {
+                healthy: false,
+                detail: visible("refusal: the model refused the request".to_string()),
+            }],
+            failure: Some(format!(
+                "copilot turn ended with stopReason \"{stop_reason}\""
+            )),
+        },
+        "maxtokens" => StopOutcome {
+            events: vec![AdapterEventPayload::ProtocolHealthChanged {
+                healthy: false,
+                detail: visible("maxTokens: the turn exhausted its token budget".to_string()),
+            }],
+            failure: Some("copilot turn ended with stopReason \"max_tokens\"".to_string()),
+        },
+        "maxturnrequests" => StopOutcome {
+            events: vec![AdapterEventPayload::ProtocolHealthChanged {
+                healthy: false,
+                detail: visible("maxTurnRequests: the turn hit its request ceiling".to_string()),
+            }],
+            failure: Some("copilot turn ended with stopReason \"max_turn_requests\"".to_string()),
+        },
+        other => StopOutcome {
+            events: vec![AdapterEventPayload::ProtocolHealthChanged {
+                healthy: false,
+                detail: visible(format!("unknownStopReason: {other}")),
+            }],
+            failure: Some(format!(
+                "copilot turn ended with an unrecognized stopReason {stop_reason:?}"
+            )),
+        },
+    }
+}
+
+fn visible(value: String) -> Classified<String> {
+    Classified {
+        class: ContentClass::Visible,
+        value,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn end_turn_is_a_clean_completion_with_no_events() {
+        let outcome = copilot_normalize_stop_reason("end_turn");
+        assert!(outcome.events.is_empty());
+        assert!(outcome.failure.is_none());
+    }
+
+    #[test]
+    fn a_refusal_fails_the_turn_and_reports_unhealthy_protocol() {
+        let outcome = copilot_normalize_stop_reason("refusal");
+        assert_eq!(outcome.events.len(), 1);
+        let event = &outcome.events[0];
+        if let AdapterEventPayload::ProtocolHealthChanged { healthy, detail } = event {
+            assert!(!*healthy);
+            assert!(detail.value.contains("refusal"));
+        } else {
+            panic!("expected ProtocolHealthChanged");
+        }
+        assert!(outcome.failure.is_some());
+    }
+
+    #[test]
+    fn a_cancellation_reports_unhealthy_but_does_not_fail_the_turn() {
+        let outcome = copilot_normalize_stop_reason("cancelled");
+        assert_eq!(outcome.events.len(), 1);
+        if let AdapterEventPayload::ProtocolHealthChanged { healthy, detail } = &outcome.events[0] {
+            assert!(!*healthy);
+            assert!(detail.value.contains("cancelled"));
+        } else {
+            panic!("expected ProtocolHealthChanged");
+        }
+        assert!(outcome.failure.is_none());
+    }
+
+    #[test]
+    fn a_cancellation_with_us_spelling_also_succeeds() {
+        let outcome = copilot_normalize_stop_reason("canceled");
+        assert!(outcome.failure.is_none());
+    }
+
+    #[test]
+    fn token_exhaustion_fails_the_turn() {
+        let outcome = copilot_normalize_stop_reason("max_tokens");
+        assert!(outcome.failure.is_some());
+    }
+
+    #[test]
+    fn a_max_turn_request_limit_fails_the_turn() {
+        let outcome = copilot_normalize_stop_reason("max_turn_requests");
+        assert!(outcome.failure.is_some());
+    }
+
+    #[test]
+    fn an_unrecognized_stop_reason_fails_the_turn_and_echoes_the_raw_value() {
+        let outcome = copilot_normalize_stop_reason("some_bizarre_reason");
+        assert!(outcome.failure.is_some());
+        assert!(
+            outcome
+                .failure
+                .as_ref()
+                .unwrap()
+                .contains("some_bizarre_reason")
+        );
+    }
+
+    #[test]
+    fn stop_reason_matching_ignores_case_and_separators() {
+        let outcomes = ["endTurn", "end_turn", "END-TURN"].map(copilot_normalize_stop_reason);
+        for outcome in outcomes {
+            assert!(
+                outcome.events.is_empty(),
+                "expected no events for end_turn variant"
+            );
+            assert!(
+                outcome.failure.is_none(),
+                "expected no failure for end_turn variant"
+            );
+        }
+    }
+}

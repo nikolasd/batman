@@ -24,7 +24,9 @@ pub use compatibility::{
     COPILOT_KNOWN_CLI_VERSIONS, COPILOT_MAX_ACP_PROTOCOL_VERSION, COPILOT_MIN_ACP_PROTOCOL_VERSION,
     copilot_acp_protocol_version_supported, copilot_cli_version_known,
 };
+pub use normalize::StopOutcome;
 pub use normalize::copilot_normalize_session_update;
+pub use normalize::copilot_normalize_stop_reason;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -67,6 +69,7 @@ struct AdapterState {
     client: Option<Arc<CopilotAcpClient>>,
     vendor_session_id: Option<String>,
     event_drain: Option<JoinHandle<()>>,
+    sink: Option<Arc<dyn AdapterEventSink>>,
 }
 
 /// The `copilot` worker adapter: one supervised `copilot --acp` process
@@ -320,6 +323,33 @@ impl CopilotAdapter {
             }
         })
     }
+
+    /// Emits the events an ACP `stopReason` implies and converts a
+    /// non-success reason into an `AdapterError`.
+    async fn settle_turn(
+        &self,
+        stop_reason: &str,
+        sink: &Arc<dyn AdapterEventSink>,
+        run_id: batman_protocol::RunId,
+        task_id: batman_protocol::TaskId,
+        worker_id: batman_protocol::WorkerId,
+    ) -> Result<(), AdapterError> {
+        let outcome =
+            crate::adapter::copilot::normalize::copilot_normalize_stop_reason(stop_reason);
+        for payload in outcome.events {
+            sink.emit(AdapterEvent {
+                run_id,
+                task_id,
+                worker_id,
+                payload,
+            })
+            .await?;
+        }
+        if let Some(detail) = outcome.failure {
+            return Err(AdapterError::protocol("copilot", "session/prompt", &detail));
+        }
+        Ok(())
+    }
 }
 
 impl Adapter for CopilotAdapter {
@@ -417,12 +447,13 @@ impl Adapter for CopilotAdapter {
             {
                 let mut state = self.state.lock().await;
                 state.event_drain = Some(event_drain);
+                state.sink = Some(sink.clone());
             }
 
             // Runs the initial turn to completion. Real model-invoking
-            // work from here on; deliberately not exercised by this
-            // crate's test suite.
-            client.session_prompt(&session_id, &spec.prompt).await?;
+            let stop = client.session_prompt(&session_id, &spec.prompt).await?;
+            self.settle_turn(&stop, &sink, spec.run_id, spec.task_id, spec.worker_id)
+                .await?;
             Ok(())
         })
     }
@@ -450,10 +481,11 @@ impl Adapter for CopilotAdapter {
             })
             .await?;
 
-            let event_drain = self.spawn_event_drain(client, sink);
+            let event_drain = self.spawn_event_drain(client, sink.clone());
             {
                 let mut state = self.state.lock().await;
                 state.event_drain = Some(event_drain);
+                state.sink = Some(sink);
             }
             Ok(())
         })
@@ -463,9 +495,13 @@ impl Adapter for CopilotAdapter {
         Box::pin(async move {
             match message {
                 AdapterMessage::FollowUp { text } => {
-                    let client = {
+                    let (client, session_id, sink) = {
                         let state = self.state.lock().await;
-                        state.client.clone()
+                        (
+                            state.client.clone(),
+                            state.vendor_session_id.clone(),
+                            state.sink.clone(),
+                        )
                     };
                     let Some(client) = client else {
                         return Err(AdapterError::invalid_vendor_state(
@@ -474,10 +510,6 @@ impl Adapter for CopilotAdapter {
                             "no active vendor session to follow up on",
                         ));
                     };
-                    let session_id = {
-                        let state = self.state.lock().await;
-                        state.vendor_session_id.clone()
-                    };
                     let Some(session_id) = session_id else {
                         return Err(AdapterError::invalid_vendor_state(
                             "copilot",
@@ -485,7 +517,25 @@ impl Adapter for CopilotAdapter {
                             "no active vendor session to follow up on",
                         ));
                     };
-                    client.session_prompt(&session_id, &text).await?;
+                    let stop = client.session_prompt(&session_id, &text).await?;
+                    if let Some(sink) = sink {
+                        self.settle_turn(&stop, &sink, self.run_id, self.task_id, self.worker_id)
+                            .await?;
+                    } else {
+                        // No sink available (shouldn't happen in normal flow),
+                        // but still fail for non-success stop reasons.
+                        let outcome =
+                            crate::adapter::copilot::normalize::copilot_normalize_stop_reason(
+                                &stop,
+                            );
+                        if let Some(detail) = outcome.failure {
+                            return Err(AdapterError::protocol(
+                                "copilot",
+                                "session/prompt",
+                                &detail,
+                            ));
+                        }
+                    }
                     Ok(())
                 }
                 // ACP v1 has no mid-turn steering distinct from a
