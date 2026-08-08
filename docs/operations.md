@@ -1,9 +1,12 @@
 # BATMAN Operations Guide
 
-This guide covers running and troubleshooting the `batcave` daemon in practice: lifecycle
-procedures, crash recovery, upgrades, and the real (as opposed to imagined) install/uninstall path.
-For the full flag-by-flag command reference, see [`cli-reference.md`](cli-reference.md) — this guide
-doesn't repeat flags, only the procedures around them.
+**Audience & purpose:** end users and operators who need to run `batcave` by hand, troubleshoot a
+stuck daemon, or upgrade/uninstall — a companion to [`plugin-usage.md`](plugin-usage.md), the user
+manual (day-to-day tool usage doesn't need this document; troubleshooting does). This guide covers
+running and troubleshooting the `batcave` daemon in practice: lifecycle procedures, crash recovery,
+upgrades, and the real (as opposed to imagined) install/uninstall path. For the full flag-by-flag
+command reference, see [`cli-reference.md`](cli-reference.md) — this guide doesn't repeat flags,
+only the procedures around them.
 
 ## Daemon Lifecycle
 

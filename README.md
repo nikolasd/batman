@@ -39,6 +39,9 @@ This installs:
 - Plugin: `~/.omp/plugins/node_modules/@nikolasd/batman` (TypeScript extension)
 - Runtime: `batcave` binary from the installed leaf package (discovered by the extension via `import.meta.resolve`)
 
+Once installed, [`docs/plugin-usage.md`](docs/plugin-usage.md) is the user manual: every tool and
+command the extension registers, and the recommended flow for running a task through it.
+
 **To uninstall:**
 ```bash
 omp plugin uninstall @nikolasd/batman
@@ -48,7 +51,7 @@ Requires access to the private npm registry `@nikolasd/*` packages are published
 
 ## Development
 
-For contributors building or modifying BATMAN itself (not for end users — see [Installation](#installation) above):
+For contributors building or modifying BATMAN itself (not for end users — see [Installation](#installation) above). [`docs/getting-started.md`](docs/getting-started.md) is the developer manual — start there for the full setup/build/test/config walkthrough.
 
 **Prerequisites:** Bun 1.3.14+, macOS or glibc Linux on arm64/x64, and Rust — via [rustup](https://rustup.rs) (recommended: automatically respects the pinned `1.97.1` in `rust-toolchain.toml`) or your system package manager. For the full OMP integration you also need OMP ≥ 17.0.7.
 
@@ -76,7 +79,8 @@ Contributions are welcome. Before submitting a PR:
 2. Run `bun run check` — schema drift, build, and all tests must pass.
 3. Follow the [Non-Negotiable Invariants](CONTRIBUTING.md#non-negotiable-invariants) — changes that weaken them will be rejected.
 4. Use descriptive commit messages. Reference issue numbers when applicable.
-5. Fill out the PR template completely, link related issues, and request review.
+5. Describe what changed and why, link related issues, and request review. (There is no PR
+   template to fill out — just write a clear description.)
 
 For detailed guidelines, see [`CONTRIBUTING.md`](CONTRIBUTING.md). For the release/publishing process, see [CONTRIBUTING.md's Releasing section](CONTRIBUTING.md#releasing).
 

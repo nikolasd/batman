@@ -1,17 +1,22 @@
 # The BATMAN journal — a narrative of how this got built
 
-This is the companion to [the Rust primer](rust-primer.md). The primer teaches you Rust using
-this codebase as the textbook; this document tells you the *story* of the codebase itself — every
-commit, in order, with the problem it solved, the decision made, the alternatives that lost, and
-the test that proved it. Read [architecture.md](architecture.md) for the finished design and
+**Audience & purpose:** anyone curious how the codebase got this way — optional reading for either
+manual's audience, not required for either. This is the companion to
+[the Rust primer](rust-primer.md). The primer teaches you Rust using this codebase as the
+textbook; this document tells you the *story* of the codebase itself — every commit, in order,
+with the problem it solved, the decision made, the alternatives that lost, and the test that
+proved it. Read [architecture.md](architecture.md) for the finished design and
 [code-walkthrough.md](code-walkthrough.md) for how to navigate it; read this when you want to
 know *why* it looks the way it does, and what it looked like before it did.
 
-Ninety-nine commits, four milestones, one running theme: **OMP is the brain, BATMAN is the hands.**
-Every decision below either draws that boundary more precisely or discovers where it had blurred.
-Where a decision is significant enough to outlive its commit, it has a matching entry in
-[`docs/adr/`](adr/) — this journal narrates the *how*; the ADRs record the *what was decided* in
+Two hundred and sixteen commits, nine milestones, one running theme: **OMP is the brain, BATMAN is
+the hands.** Every decision below either draws that boundary more precisely or discovers where it
+had blurred. Where a decision is significant enough to outlive its commit, it has a matching entry
+in [`docs/adr/`](adr/) — this journal narrates the *how*; the ADRs record the *what was decided* in
 a form meant to survive being read out of context, years from now, by someone who wasn't here.
+Parts I–IV (the first 99 commits) close with the very first version of this document; no new ADR
+was written for anything in Parts V–IX below — none of those decisions were judged significant
+enough to outlive their commit, and this journal says so rather than inventing one to look complete.
 
 ---
 
@@ -1114,15 +1119,700 @@ it outright is not a footnote, it's the work.
 
 ---
 
+## Part V — Distribution honesty: finding the one true install method
+
+Part IV closed with `037bda2`, and the very next commit (`1ee09b9`) wrote the first version of
+this journal — the one that narrated Parts I–IV as "ninety-nine commits, four milestones." That
+commit's own message is worth recording here because it is this document talking about itself:
+"every commit hash from git log is referenced; every ADR link resolves; stubs are documented as
+stubs, not working code." Part V picks up immediately after, and its very first commits are a
+documentation-accuracy sweep discovering exactly the kind of drift that discipline exists to catch
+— module counts wrong, dangling section references, a corrupted file. The rest of the Part is a
+longer, more interesting version of the same instinct: repeatedly trying an install method, finding
+it doesn't actually work end-to-end, and removing it rather than leaving it half-documented.
+
+### 64. A documentation-accuracy sweep, immediately (7898f25, 042b8ab, 333163a, 14f0e2a, 374447c, 984b221)
+
+Six commits, all docs, none of them adding a feature — the project checking its own homework right
+after writing it down. `7898f25` records four adapter conformance gaps straight from test output.
+`042b8ab` merges `known-gaps.md` into `known-limitations.md` and deletes `m4-hardening-release.md`
+outright as redundant with doc comments already in the source. `333163a` fixes two module-count
+typos this journal itself would have inherited (`crates/protocol`: 13 → 14; `crates/runtime`: 16 →
+18, both undercounts that had missed newly-added modules) and updates the runtime file map to
+match the actual directory. `14f0e2a` fixes a real omission in `architecture.md`'s Level 3
+diagram: the `config`/`policy` modules existed in the code but not in the picture, and the fix is
+careful to record that `PolicyEvaluator` implements `AdapterAuthorization` but is **not yet wired**
+into production (`ServerConfig::default()` still used `DenyByDefaultAuthorization`) — accurate for
+this exact commit, a claim Part VIII later needs to update again as the wiring changes.
+
+`374447c` and `984b221` are the two commits worth reading in full if you want to see what
+"describe the system as it stands, not as it was written" actually costs when it's skipped even
+once. `374447c` finds that an earlier documentation edit had **literally injected the elision
+markers a file-reading tool leaves behind** (`…`, `331:`, `355:`) as if they were real file content
+— corrupting `getting-started.md`'s Testing/Troubleshooting/Contributing/License sections outright
+— alongside a false claim that BATMAN was MIT-licensed when `Cargo.toml` actually said
+`license.workspace = true → "UNLICENSED"` at the time, and three fabricated support channels
+(`docs.batman.dev`, a Discord, a support email) with no grounding anywhere in the repository.
+`984b221` finds that `architecture.md` had been rewritten onto the C4 model (this journal's own
+Part IV, commit 62) with zero numbered `§N` sections left in it, while five other documents —
+`engineering-lessons.md`, `code-walkthrough.md`, `rust-primer.md`, `known-limitations.md`, even
+`README.md` — still cited `§4` through `§18` as if that structure still existed. Every dangling
+reference is redirected to what actually exists (mostly `engineering-lessons.md`'s own anchors and
+the matching ADRs), and the same pass catches a real diagram bug — two nodes referenced in mermaid
+edges but never declared in the subgraph, rendering unlabeled — plus five extension files missing
+from both the diagram and the key-components list. Two commits, zero new features, and together
+they are the best argument in this journal for why "the docs describe what's actually there" has
+to be re-checked, not assumed to hold once it's been true.
+
+### 65. Legal and cosmetic housekeeping (1eb4b33, 7d7cc1f, 3fd3cb2, d5b9af4)
+
+Four small commits: an acronym-expansion formatting fix, a `.gitignore` entry for macOS's
+`.DS_Store`, logo/favicon assets in two color variants, and — the one with actual consequence —
+`d5b9af4` adding a real `LICENSE` file (MIT, Oh My Pi copyright) and flipping the workspace
+`Cargo.toml` from `license = "UNLICENSED"` to `"MIT"`, which every sub-crate inherits via
+`license.workspace = true`. This is the fix that makes `374447c`'s corrected claim (three commits
+earlier, "BATMAN is *not* MIT-licensed yet") retroactively become true — the kind of ordering this
+journal's honesty rule cares about: the correction came first, the fact catching up to it came
+second, and neither commit pretends otherwise.
+
+### 66. Six attempts at "how does a user actually install this" (7db3edd, 8495889, 9124642, f34605d, c21f32a, fea66b6)
+
+This is where the saga starts, and it's worth reading as a sequence rather than six independent
+commits, because the sequence *is* the point. `7db3edd` rewrites `README.md` for first-time
+visitors — a "Why BATMAN?" section, a 5-minute get-started path, and (for the first time) a
+"Known Limitations" section stating plainly what doesn't work yet. `8495889` splits Installation
+into "For users" (Homebrew or pre-built binaries) and "For developers" (build from source) — a
+reasonable-sounding split that `9124642`, one commit later, discovers describes infrastructure that
+doesn't exist: no Homebrew formula, no GitHub Releases, no pre-built binaries, full stop. `9124642`
+fixes the claim to be honest that users currently must build from source too. `f34605d` then
+*builds* the Homebrew formula the doc had promised (`Formula/batman.rb`, platform detection for
+four targets) — but notes explicitly that GitHub Releases must exist before the formula's tap can
+actually resolve anything, so it's still not usable yet. `c21f32a` is a one-line fix inside that
+formula: the GitHub owner was hardcoded to `can1357` (the upstream OMP author) instead of
+`nikolasd` (this repository's actual owner) in both the formula and the README — the kind of typo
+that would have made the formula 100% non-functional for anyone who tried it, caught before anyone
+did. `fea66b6` adds a `curl | bash` install script as a second parallel path, explicit that this
+one is meant to actually work once releases exist, not a placeholder.
+
+### 67. Building the release pipeline the install methods above were waiting on (c759a19, e298fb1)
+
+`c759a19` adds a `Publish` subcommand to `xtask` that reads the version from
+`packages/extension/package.json`, creates a `v<version>` git tag, and pushes it — the one command
+meant to trigger `release.yml`'s existing binary-build-and-publish pipeline. `e298fb1` documents
+that command in the README. Both commits are straightforward; the interesting part is what happens
+to this exact command four commits later.
+
+### 68. Realizing "runtime-only" was never the actual requirement (4eb3db1, b6e1e1d, b773cb6)
+
+`4eb3db1` notices that everything built so far (`install.sh`, the Homebrew formula) installs only
+the `batcave` **runtime** binary — a user still has to separately install the OMP **extension**
+themselves, which was never actually documented as a step. Rewritten to install both: the runtime
+to `~/.batman/bin/batcave`, the extension to `~/.batman/lib/node_modules/@satori/batman`, no root
+privileges required, uninstall reduced to `rm -rf ~/.batman`. `b6e1e1d` goes further and makes a
+**local** variant (`install-local.sh`) that works *right now*, on this machine, without any
+published release at all — copying the locally-built binary out of
+`packages/batman-darwin-arm64/bin/batcave` and `bun add`-ing the extension from the local
+checkout — because every method built in commits 66–67 still depended on a release that had never
+actually been published. `b773cb6` is the honesty pass on top: the README is rewritten to state,
+without hedging, what works **right now** (the local installer, on macOS ARM) versus what's
+described for a future that doesn't exist yet (GitHub Releases, Homebrew) — closing a gap where an
+earlier version of the doc implied things worked on a fresh clone that, in fact, immediately failed
+without a prior build step.
+
+### 69. The one true method, arrived at by elimination (4606fde)
+
+The commit that ends the saga, and it's worth reading in full for how thoroughly it closes the
+book on everything commits 66–68 built. Verified against a live `omp` binary rather than inferred
+from its `--help` text: `omp install <npm-spec>` (an alias of `omp plugin install`) installs to
+`~/.omp/plugins` — a user-owned directory, no root required — and it resolves the extension
+package **and** its matching `@satori/batman-<platform>` leaf package (containing `batcave`)
+*together*, via the existing npm `optionalDependencies` mechanism this project had already built
+for exactly this purpose back in Foundation (commit 9, [ADR-0010](adr/0010-platform-binaries-as-npm-optional-leaf-packages.md)).
+One command, both halves, registered for automatic discovery on every future `omp` launch — no
+`--extension` flag needed, unlike every prior approach in this saga. `omp plugin uninstall` /
+`omp plugin upgrade` give a real, symmetric lifecycle for free.
+
+This supersedes and deletes every previously-proposed method in one commit: `Formula/batman.rb`,
+`scripts/install.sh`, `scripts/install-local.sh`, and `xtask`'s `Publish` subcommand (commit 67 —
+tagging is two plain git commands, documented in the README, not worth a bespoke wrapper). What's
+added instead is the plumbing `omp install` actually needs to work: `publishConfig.registry` on the
+extension and all four platform leaf packages (a placeholder URL, documented as a placeholder, not
+claimed functional), `.npmrc` scoping the `@satori` npm scope to that registry, and
+`release.yml` repurposed from uploading GitHub Release binary assets (which fed the now-deleted
+paths) to building all four platform binaries, assembling leaf packages via `xtask package`, and
+`bun publish`-ing all five packages to the private registry on tag push — catching two pre-existing
+bugs in that workflow file along the way (a renamed GitHub Action, and a `--access public` flag
+that had been silently overriding the extension's own restricted `publishConfig`). The README is
+rewritten a final time around three sections that actually match reality: Installation (one
+method), Development (contributor build-from-source), Publishing (tag + CI, for maintainers) — no
+more "For users"/"future" sections narrating infrastructure that doesn't exist.
+
+### 70. Closing the loop: a real contributor setup and doc reconciliation (278af15, b9c16fc, e5b431a, c450639, 4d50bb8)
+
+`278af15` removes leftover Serena MCP configuration and scripts — unrelated tooling that had
+drifted into the repo. `b9c16fc` answers a question implicit since Foundation: is there a real,
+single-command setup for a *contributor* (as opposed to an end user)? No — `bun install` only
+bootstraps the JS workspace; nothing guaranteed the pinned Rust toolchain was present. Fixed with
+`scripts/setup.sh` (verifies `cargo`/`bun` are on `PATH`, *warns* rather than silently building
+against a version mismatch when `rustup` isn't managing the toolchain — deliberately not assuming
+`rustup`, since this was verified on a machine with Rust installed directly via Homebrew, no
+`rustup` at all) and `bun run setup` wiring it into `package.json`. The same commit fixes a stale
+`github.com/your-org/batman` placeholder in `CONTRIBUTING.md` that had never been updated to the
+real repository, and reconciles its Setup section to the same command so the two docs stop
+drifting from each other. `e5b431a` propagates the same "two install methods, name them explicitly"
+discipline into `getting-started.md` and `manual-testing.md`, replacing three loose manual build
+commands with the verified `bun run setup` / `bun run build` pair everywhere. `c450639` adds a
+design spec for the monitor-widget work Part VI covers next. `4d50bb8` removes `scripts/install.sh`
+outright — it duplicated `omp install`'s own resolution logic and, on inspection, had three real
+bugs (a checksum check broken by whitespace-sensitive grep against pretty-printed JSON, a version
+precheck that queried the wrong package unauthenticated and picked the *oldest* published version
+instead of the latest, and a hardcoded `/usr/local/bin` target with no writability fallback) — this
+journal's running theme of "if a mistake is yours, remove it outright, don't deprecate it" holding
+one more time. The same commit fixes a dead anchor link, an unclosed code fence that had been
+silently swallowing half of `README.md` into a malformed code block, adds the `bun install`/
+`bun run build` steps `release.yml`'s publish job had been missing (verified via
+`bun publish --dry-run` before and after — without this, a real release would have published the
+extension package missing the exact `dist/index.js` file its own `exports` field points at), and
+moves the Publishing section out of the user-facing README into `CONTRIBUTING.md`'s new Releasing
+section, where a maintainer-only, `SATORI_NPM_TOKEN`-gated procedure actually belongs.
+
+## Part VI — The widget gets a border
+
+A short, self-contained Part: six feature commits and two real bugs, entirely inside the embedded
+monitor's rendering layer. Part II (commit 22) shipped the monitor as plain text lines; this Part
+gives it a bordered box, per-state icons and colors, and finds two genuinely subtle rendering bugs
+in the process of doing it.
+
+### 71. Design-first, again (bf7ec0f, 3b1a8f1)
+
+Two documentation commits before any rendering code: `bf7ec0f` simplifies the widget's border
+design down to hand-assembled strings (rejecting a fancier approach in favor of one that's easy to
+reason about character-by-character — exactly the kind of decision that matters once the bugs in
+commit 73 show up), and `3b1a8f1` writes the implementation plan the next four commits execute.
+
+### 72. Icons, header, and box (a963fb8, c80f4e4, f24584b)
+
+`a963fb8` adds per-`RunState` icon and color lookups. `c80f4e4` adds `renderWidgetHeader`, which
+splices a bat-icon header directly into the box's top border line. `f24584b` adds
+`renderWidgetBox`, assembling the bordered box around the existing row content with per-state
+color applied.
+
+### 73. A UTF-16 surrogate-pair bug, caught by its own test's tautology (6c17348)
+
+Every Nerd Font glyph this widget uses (`BAT_ICON`, every `STATE_ICONS` entry) lives on an astral
+Unicode plane, meaning it's stored in JavaScript as a UTF-16 **surrogate pair** — two 16-bit code
+units for one visual character. `assembleBox`'s width/padding/fill arithmetic measured every line
+with plain `.length`, which counts code *units*, not code *points* — so every icon-bearing line
+(every content row, and the header-carrying top border) was over-measured by exactly one unit
+relative to the plain bottom border and the icon-free empty-state line, misaligning the box border
+by one column. The fix is a `codePointLength` helper (`Array.from(text).length`, which iterates by
+code point) swapped in at the four `.length` measurement sites — no arithmetic constant changed,
+only what the arithmetic measures.
+
+The more interesting part of this commit is what it says about the *existing* "equal total width"
+test: it had been comparing `.length` to `.length`, which is tautologically true no matter how
+padding is computed, so it could never have caught this bug even in principle. Rewritten to compare
+`codePointLength` instead, plus a second test isolating the exact case that exposed the original
+bug (a header carrying an icon, a content line that doesn't) — both verified to fail against a
+reverted, `.length`-based `assembleBox` before confirming they pass against the fix. This is the
+same lesson this journal has repeated since commit 17: an assertion that can't fail regardless of
+the bug is worse than no assertion, because it looks like coverage.
+
+### 74. Wiring it into the live extension, then a second real bug (045f60a, 6a56b15)
+
+`045f60a` renders the bordered widget for real inside the extension. `6a56b15` finds that the OMP
+host's `ctx.ui.setWidget` truncates array-content widgets at **10 total lines** — not 10 rows, as
+the pre-existing `MAX_WIDGET_ROWS = 10` constant had assumed. Once `renderWidgetBox` wraps content
+in a 2-line border, the worst case (10 rows + 1 overflow line + 2 border lines = 13 lines) blew
+past that cap, and the host's own truncation silently ate the bottom border — rendering a box that
+never visually closes. Fixed by lowering `MAX_WIDGET_ROWS` to 7, so the worst case (2 border + 7
+rows + 1 overflow = 10) fits exactly, with the header comment rewritten to state the real
+10-total-lines constraint instead of the wrong 10-rows one. The same commit deletes a now-dead
+`renderWidgetLines` function (no production callers once `controller.ts` called `renderWidgetBox`
+directly) along with its three tests — confirmed, before deleting, that the behaviors those tests
+covered (empty state, overflow) remain covered by `renderWidgetBox`'s own tests — and documents a
+residual limitation left deliberately unfixed: some terminals render Nerd Font glyphs as visually
+double-width despite being a single code point, so the border can still be off by one cell per icon
+in those terminals; a full fix needs `wcwidth`/east-asian-width logic, explicitly out of scope here.
+`docs/manual-testing.md`'s "Reading the widget line" section (which [`code-walkthrough.md`](code-walkthrough.md)
+and this journal both point readers at) is updated in the same commit to describe the real
+bordered/iconed/colored format and the corrected 7-row cap, not the pre-Part-VI plain-text shape.
+
+## Part VII — M2/M3 gap closure: doctor, CI, and an honest stub
+
+The "M2/M3 gap-closure" plan named a batch of things the project had claimed were done but weren't
+fully wired: a real `doctor` command, a CI workflow that runs on every push (not just release
+tags), a conformance gate on release, and operator-facing docs that hadn't been split out yet. This
+Part closes most of that list — and is unusually candid about the one piece it closes with a stub
+instead of a real implementation, which is exactly the point.
+
+### 75. Naming the gaps before closing them (10a95bb)
+
+Seven new TODO items (10–16), found by re-reading the M2/M3 plan against the running code: no
+`coordination-mcp` CLI entry point despite the plan marking it "Closed" (Part VIII closes this for
+real), no `batcave display probe` subcommand despite the same claim, crash recovery as a single
+untested file instead of the planned kill-point-tested coordinator, no CI workflow on ordinary
+pushes/PRs, no conformance gate on releases, no `doctor` command or `/batman-doctor` OMP command at
+all, and operator docs not yet split out per the plan. Every item below traces back to one of these
+seven.
+
+### 76. Compile errors and a corrupted CLI function, fixed before anything else could proceed (d61050b, 0aac0cd, 339cd39)
+
+`d61050b` fixes a batch of compile errors blocking the doctor/config work: duplicate `#[error]`
+attributes on `DbError`, an unnamed-lifetime issue in `config/merge.rs`, a `ToSql` trait issue in
+`retention.rs`, a missing `is_blocked()` method on `RolloutGates`, and a `Serve` command pattern
+match that hadn't been updated for new config fields. `0aac0cd` finds `run_doctor` itself was
+corrupted — three nested, duplicate `match` blocks where one clean block belonged — and adds the
+missing `Serialize` derive to `DoctorResult`/`FailedCheck` so `--json` output can actually be
+produced. `339cd39` adds the first integration tests for `batcave doctor`: missing database,
+JSON-output mode against a missing database, a nonexistent state directory, a nonexistent
+repository — verifying both exit codes and output shape.
+
+### 77. A real doctor, reachable from a chat session (0231a8f, b78d38b)
+
+`0231a8f` adds `packages/extension/src/doctor.ts` (`runDoctorCommand`, `buildDoctorContext`) and
+registers `batman_doctor`/`/batman-doctor` — the tool shells out to the `batcave` binary directly
+rather than going through a live runtime connection, which is the entire point: it's the diagnostic
+that works precisely when `batman_status` can't. `b78d38b` marks the TODO item closed, citing the
+4/4 passing integration tests and a manual smoke test.
+
+### 78. A CI workflow, immediately trimmed to what actually exists (f20abd3, 8531a05)
+
+`f20abd3` adds the first CI workflow to run on every push/PR (not just release tags): format,
+clippy, test (Rust + TypeScript, on Ubuntu and macOS), `generate --check`, and a security job
+(`cargo audit` + a secret scanner). `8531a05`, one commit later, removes the JS/TS half of the
+format job — no formatter was actually configured yet, so that check could only ever pass
+vacuously. (Part VIII's commit 94 fixes this properly by adding Biome.)
+
+### 79. A conformance gate that starts as a no-op, and is caught being one (cbdef62, 41f6bca, a165436, a17a500, c813368, 9516797, e469725, c950d8f, 647ab1a, 94659ab, 2289f0d, 3da37ff, c9ab423, 366b6f4)
+
+This is the longest single arc in Part VII, and it's the clearest example in this journal of a
+team catching its own premature "done" claim in writing, in real time, across a dozen small
+commits. `cbdef62` adds `tests/conformance/run.ts` and `assert-report.ts` as explicit **stubs** —
+`run.ts` writes empty reports, `assert-report.ts` only checks that expected fields are present, and
+the commit message says so plainly. `41f6bca` wires a conformance job into the release workflow
+ahead of publish, with the same honesty: "conformance job is a stub that always passes." `a165436`
+writes the *first* versions of `docs/compatibility.md` and `docs/operations.md` (Task 7 of the same
+plan) — a detail worth pausing on, since both documents exist, in evolved form, at the center of
+the documentation review this very journal entry belongs to; their earliest ancestor's commit
+message is explicit that "only verified claims from actual codebase" made it in. `a17a500` is an
+unrelated `clippy`-driven cleanup landing in the same window (deriving `Default` for
+`NestedViolationAction` instead of hand-writing it). `c813368` records five pre-existing, unrelated
+`adapter_registry.rs` failures in the release checklist rather than hiding them. `9516797` marks
+Tasks 14–16 (conformance gates, doctor, operator docs) "completed" in TODO.md — and `e469725`, one
+commit later, walks that back with more precision: Task 14 specifically is only "partially
+implemented — structural gate wired, but the conformance runner is a stub," because `run.ts`/
+`assert-report.ts` write empty reports that a real check would need to reject. `c950d8f` folds that
+same honesty into `README.md`'s Known Limitations. `647ab1a` fixes a release checklist file that
+had accidentally accreted invalid Markdown after its JSON content (caught because it stopped
+parsing under `python3 -m json.tool`).
+
+Then the gate is actually hardened, in three steps: `94659ab` makes `assert-report.ts` throw if any
+adapter reports zero scenarios, or if none of its scenarios passed — turning the gate from a
+guaranteed-pass no-op into something that can genuinely fail CI, while noting plainly that the
+*real* fix (spawning `batcave conformance` for real reports) still doesn't exist yet. `2289f0d`
+closes the loop: `release.yml`'s stub report generator now produces an *empty* report on purpose,
+which the hardened validator correctly rejects — the gate is now "intentionally blocking release,"
+its own commit message's words, until the real runner exists. `3da37ff`, `c9ab423`, and `366b6f4`
+are three small follow-up fixes to `assert-report.ts` itself (a duplicated header/import block, a
+genuinely missing `readFileSync` import, a stray blank line) — the kind of typo that a stub
+implementation, precisely because nothing depended on it working yet, could carry for a commit or
+two before being noticed.
+
+### 80. Recovery gets tests before it gets wired (85ea9b9, 1dfa6c9)
+
+`85ea9b9` adds integration tests for crash recovery — explicitly framed as "stub verification,"
+since `RecoveryCoordinator` (Part IV, commit 58) still isn't constructed anywhere in
+`lifecycle::serve()` at this point; the tests prove the coordinator's own logic works in isolation,
+not that it's reachable in production. `1dfa6c9` records the test status in the release checklist.
+Part VIII's commit 84 is where the coordinator finally gets wired in for real — and, in a detail
+worth flagging now so it doesn't read as a contradiction later, wired in with `#[expect(dead_code)]`
+still attached, because the wiring and the *removal from the live daemon lifecycle* turn out to be
+two different, sequential decisions this journal narrates in order as they actually happened.
+
+### 81. Two real runtime bugs, found while hardening retention and redaction (7c05d19, 5afa064, d1ac7bb)
+
+`7c05d19` fixes `retention::prune()`: the cutoff timestamp was bound as an `i64` against a column
+the schema stores as RFC3339 **text**, a type mismatch that would have made every prune query
+compare the wrong representation; and the terminal-state list it filtered against used states that
+don't exist (`"completed"` instead of the real `RunState` names `succeeded`/`failed`/`cancelled`/
+`lost`) — meaning, before this fix, retention could never have correctly identified which runs were
+safe to prune. `5afa064` wires org-configured redaction patterns (Part IV, commit 57) all the way
+through `AdapterRegistry::new()` and `DomainAdapterEventSink::new()`, adding a fail-open fallback
+in the event-sink construction path that mirrors the one already in `lifecycle.rs` — a decision
+this journal flags now because Part IX's review cycle (R14) later finds this exact fallback and
+asks whether it's reachable with different behavior than the startup path; the answer at review
+time is no, because both paths reuse the same already-validated pattern list, but the trap remains
+structurally present for a future change to fall into. `d1ac7bb` retires `known-limitations.md`
+outright, folding its two still-uncaptured sections into `TODO.md` and repointing every other
+document at `TODO.md` instead — the same "one source of truth for open gaps" discipline `TODO.md`'s
+own header still states today — and corrects a stale claim caught in the process:
+`PolicyEvaluator` *was* actually wired into `lifecycle.rs` by this point, contradicting a doc that
+still described `DenyByDefaultAuthorization` as the only implementation in use.
+
+## Part VIII — The TODO validation era: coordination MCP, policy violations, and workspace isolation
+
+This Part has no single plan behind it the way Parts I–VII each did — it's a sustained, repeated
+cycle of the same move: re-read `TODO.md` (or the Obsidian vault plans behind it) against the
+running code, find what's stale, fix what's fixable, and write down what's still genuinely open.
+Twenty-two commits are pure "the tracking document drifted, here's the correction" work; the rest
+are the real features that cycle turned up as missing.
+
+### 82. Coordination MCP gets a CLI entry point, and cross-checking it finds two more bugs (2537d25, 80069a3)
+
+`2537d25` closes the single largest gap Part VII's commit 75 had named: every worker adapter's MCP
+launch config (Part III, commit 37) had always pointed at a `coordination-mcp` CLI subcommand that
+simply didn't exist — `clap` rejected it outright with an unrecognized-subcommand error the moment
+any adapter tried to use it. The fix wires `Command::CoordinationMcp` to the already-implemented,
+already-tested `coordination::mcp::run` proxy from Part III, commit 36. The pre-existing
+`coordination_mcp.rs` test suite (9 tests, unmodified) goes from a mix of failures to 9/9 — 4 tests
+that had been failing with "closed the connection before responding" now pass because the proxy
+actually serves stdio, and the other 5 (rejecting missing/expired/mismatched/revoked-token
+connections) had been *coincidentally* passing all along against clap's own unrelated
+unrecognized-subcommand exit code — verified, after the fix, that they now fail for the real
+documented reason instead. A full workspace regression check with `--no-fail-fast` and the change
+reverted via `git stash` confirms six pre-existing, unrelated failures aren't new. `80069a3`, found
+during the same review pass, fixes three unrelated drift bugs: a hardcoded test expectation for
+`ompExtension`'s allowed-methods list that had never been updated after `policy/violation/decide`
+was added to the real dispatch table, and two doctests (`recovery.rs`, `doctor.rs`) that used
+`Arc<DatabaseHandle>` without importing `Arc` at all, failing `cargo test --doc`.
+
+### 83. A TODO rewrite that finds real gaps, then a second one that fixes a real schema bug (360f0df, 015fafd)
+
+`360f0df` closes the coordination-mcp item, adds three newly-discovered gaps (missing
+`batcave conformance`/`adapters` CLI subcommands the Worker Adapters plan's own Task 8 required,
+conformance reports omitting the canonical `result_usage_artifacts` scenario, an untracked Copilot
+CLI version), and corrects a second stale claim: the `workerMcp` credential store was **not**
+reject-all in production by this point — `ScopeTokenVerifier` had already been wired in via
+`lifecycle::serve()` the same way `PolicyEvaluator` was — a correction that also lands in
+`architecture.md`'s Role Table Summary, verified line-by-line against `ipc/mod.rs`'s real
+`allowed_methods()` and `protocol/method.rs`'s real wire names rather than trusted from memory
+(exactly the verification this current documentation pass repeats for the same table). `015fafd`
+finds the actual root cause behind five long-failing `adapter_registry.rs` tests: its shared setup
+helper inserted raw rows into columns that had never been migrated (`workers.task_id`,
+`adapter_kind`, `profile_kind`, `status`; `runs.status`, `updated_at`) and omitted two `NOT NULL`
+columns the real schema requires — including a foreign key TODO.md's own note had mis-described as
+pointing at `adapter_profiles` when the real table is `worker_profiles`. Fixing the shared fixture
+exposes a second, fully latent bug underneath it: an assertion checking for `"already started"` or
+`"duplicate"` in an error string that the real `RegistryError::DuplicateStart` message never
+contains at all (`"run {id} already has a running adapter instance"`) — invisible before because
+every one of the five tests crashed in the broken shared setup *before* reaching that assertion.
+
+### 84. Three more TODO rewrites, a provenance-unclear commit handled with unusual explicitness, and a full-suite validation sweep (b22f693, 9702090, 16d6972, 30ef336, cee535c)
+
+`b22f693` closes the `adapter_registry.rs` item and, in the same rewrite, finds that
+`tests/domain_repository.rs` — 723 lines, claiming in its own module doc to verify the real
+`DomainRepository` — never actually imports or calls that type at all, instead maintaining a
+separate, hand-copied schema that had already drifted from the real migrated one. Not a functional
+bug (the real `DomainRepository` is correctly tested elsewhere), but misleading coverage that would
+keep drifting further from reality the longer it went unnoticed — tracked, not fixed, in this
+commit. `9702090` adds the implementation plan for that schema fix. `16d6972` is the one commit in
+this entire journal whose own message states it doesn't know who wrote the change it's committing:
+a dead `org_security_patterns` field and some needless test cleanup were found already staged in
+the working tree, present and unchanged for roughly 38 hours of otherwise-active work, attributable
+to no session's own history. Committed anyway, on the user's explicit instruction, only after
+independently verifying the change compiles and all 8 redaction unit tests still pass — this
+journal's honesty rule extending, for one commit, to "the provenance of this exact diff is
+genuinely unknown, and that fact is worth recording rather than glossing over with a plausible
+authorial attribution."
+
+`30ef336` is the most thorough validation pass in this Part: every open TODO item checked against
+`cargo test --workspace --no-fail-fast` *and*, for the first time in any validation pass, a full
+`bun test` run. Result: zero regressions among previously-tracked items, one stale claim corrected
+(the OMP-RPC approval-normalization gap had, in fact, already been fixed and was proven by a
+passing conformance test — though the artifact-production half of that same item remained
+genuinely open), and two new gaps the `bun test` run surfaced for the first time:
+`runtime/status.binarySource` always reporting `"unknown"` because `cli.rs` never read the
+`BATMAN_BINARY_SOURCE` environment variable the extension had been setting all along, and a stale
+tool/command list in `index.test.ts` that predated `batman_doctor`. `cee535c` closes out three
+fully-executed implementation plans (this one, the coordination-mcp CLI fix, and the monitor widget
+work) by deleting them from the repo's scratch-plan folder and gitignoring it going forward — it's
+agent working space, not permanent documentation.
+
+### 85. Real work the TODO cycle turned up: workspace RPC wiring and a proof that cancel kills a real OS process (ae8f279, 4c639ff)
+
+`ae8f279` routes `WorkspaceAcquire`/`WorkspaceGet`/`WorkspaceRelease`/`WorkspaceInspect`/
+`WorkspaceApply`/`ArtifactList`/`ArtifactFetch` from `connection.rs` to
+`OrchestrationService::dispatch` for the first time — previously every one of those methods,
+despite being fully implemented in Part IV, was unreachable over the wire, rejected with
+`METHOD_NOT_FOUND` before `OrchestrationService` ever saw the request. `4c639ff` adds the test this
+journal's own recurring theme (commit 17, commit 45) keeps asking for: not "does `run/cancel`
+return `Ok`," but does the underlying OS process actually die. It constructs a real `OmpRpcAdapter`
+against the `fake-worker` fixture, submits a run through the full RPC surface, calls `run/cancel`,
+and polls until the fake-worker's real OS pid is confirmed dead — closing the gap between a prior
+test (proving `ManagedProcess::terminate()` kills a process in isolation) and the real adapter chain
+end to end. It does not prove `SIGKILL` escalation (`fake-worker`'s mode dies on the first `SIGINT`,
+so escalation is never exercised by this particular test) — noted explicitly rather than implied.
+
+### 86. Closing the `policy/violation/decide` stub for real (364dee4, d9bb6ff)
+
+`364dee4` is the single largest feature commit in this Part (24 files, 2 new), and it closes a stub
+this journal has mentioned twice already (Part IV commit 55's Phase 8 note, and every mention of
+`policy/violation/decide` since). `ViolationService::record()` is idempotent — the quarantine/cancel
+action applies exactly once, but a `PolicyViolationRecorded` event journals on every observation,
+so a second identical observation is provably not silently dropped, just not re-actioned.
+`ViolationService::decide()` enforces ownership, refuses to re-decide an already-decided violation,
+and refuses `release` outright against a run that's already terminal — the same three-part
+enforcement shape (ownership, idempotency, settled-run rejection) commit 21's `ApprovalService`
+established for a structurally identical problem. `MIGRATION_4` adds the `policy_violations` table;
+`PolicyViolationId` becomes the ninth UUIDv7 newtype in `crates/protocol/src/ids.rs` (the eight from
+Foundation, commit 2, gain a peer). `DomainAdapterEventSink` calls `record()` whenever a
+`NestedWorkerObserved` event arrives and the run's effective nested-capability isn't `Managed` —
+covering both the `None` and `Observable` cases, since either one means the observation itself was
+already outside what the run was authorized to do. Enforcement gates land in three call sites that
+previously had none: `message/send`, `workspace/apply`, and `coordination/publishArtifact` all now
+check `Run.flags.policyQuarantined` and return a new dedicated error code
+(`POLICY_QUARANTINED`, -32101) — a run that's quarantined is *actually* blocked from further
+progress, not just marked as such for a UI to display. A `nested_violation_action` config knob
+(`Quarantine` / `Cancel` / `QuarantineAndCancel`) threads the policy's own choice of remedy from
+`RuntimePolicy.rollout_gates` through to `ViolationService`. Four new integration tests prove the
+shape holds: quarantine actually blocks `message/send` until released, `decide` is forbidden for a
+non-owning client, `release` is refused against a terminal run, and a second observation on an
+already-actioned run never double-cancels. `d9bb6ff` is a one-line follow-up removing a stray
+leftover header line from the TODO entry this commit closed.
+
+### 87. Naming what's still unreachable from a chat session (b00e863, 633a7d7, 1ee41db, 499e659, b590002)
+
+`b00e863` names a specific, narrow gap: `profile/register` (and a `profileId` field on
+`batman_worker`) had no OMP tool wrapping it at all, so a real Claude/Codex/Copilot worker
+genuinely could not be created from a live chat session, even though every byte of the underlying
+RPC and runtime machinery had worked and been tested since Part III. `633a7d7` is a far larger
+sweep: all eight Obsidian vault planning documents re-read in full, one independent reviewer per
+document, each verified against the *running code* rather than trusting the plan's own prose. The
+Foundation (M0) plan had nothing new to report — already fully implemented, matching this
+journal's own Part I. Everywhere else turned up real gaps, most significantly that
+`PolicyEvaluator` enforced only two of the six authorization dimensions the Hardening plan actually
+specified: cost ceilings and adapter-kind allowlisting had no implementation at all, not even a
+stub. `1ee41db` is a one-line, immediately-actionable fix that same sweep produced: the default
+concurrency ceiling (applied whenever a layered config omits `concurrency.ceiling` entirely) was
+raised from 2 to 8 — 2 having been discovered as impractically low for real use. `499e659` documents
+the same `profile/register` gap from a second angle (items 15–16: several RPC methods, not just
+`profile/register`, had no OMP tool wrapper — `policy/violation`, `coordination/child`,
+`workspace/*`, `artifact/*` were all fully implemented in the runtime and completely unreachable
+from a chat session). `b590002` is a pure bookkeeping fix, but a thorough one: a concurrent session
+had renumbered nearly every TODO item but only partially updated the internal "item N"
+cross-references those items make to each other, leaving several pointing at the wrong item.
+Fixed with a script mapping every old number to its new one and checking every "item N" mention in
+the body text against that mapping — 27 stale references across 14 items found and fixed, including
+two range mentions that no longer corresponded to contiguous ranges at all, spelled out explicitly
+instead of left as a range. Re-run after the fix: zero mismatches.
+
+### 88. Tool descriptions, a real conformance CLI, and a genuinely missing events-table column (a033371, 631cacb, 6fcc20b, 7a78a06)
+
+`a033371` rewrites every OMP tool's description to explain when to use it, its key operations, and
+typical workflows — aimed squarely at helping a model choose the right tool and invoke it
+correctly, not at documenting the RPC shape underneath it (that's what `architecture.md` and
+`plugin-usage.md` are for). `631cacb` closes four TODO items at once: `scenario::ALL` had only 12
+entries where it needed 14 (missing `RESULT_USAGE_ARTIFACTS` and `UNEXPECTED_CHILD_OBSERVATION`),
+which was silently causing three adapters' conformance tests to panic — fixed by extending the
+array and adding the missing Copilot scenario function, which in turn exposed that the OMP-RPC
+adapter's own `conformance.rs` had never wired either scenario into `build_scenarios()` at all (one
+function didn't exist yet; the other existed behind `#[allow(dead_code)]` and was simply never
+called). The same commit adds real `batcave conformance`, `batcave adapters`, and
+`batcave display probe` CLI subcommands, wired to logic that had already existed and already been
+tested — unblocking the conformance release gate Part VII's commit 79 had built as an honest stub.
+And it finds a genuinely missing piece of the events schema: the `events` table had no
+`task_id`/`worker_id` columns at all, even though `append_and_apply` had been building them into the
+in-memory `EventEnvelope` for live broadcast the whole time — they simply evaporated on persist,
+and `events/replay` had been hardcoding both to `None` ever since. Fixed with a new migration and
+threading both columns through the insert and replay paths (two more columns,
+`parent_worker_id`/`vendor_event_ref`, are added in the same migration but remain `NULL` — no write
+path supplies them yet, tracked as a separate, still-open gap rather than silently populated with a
+guess). `6fcc20b` and `7a78a06` are the paired doc-fix/feature-implementation halves of the same
+change: `RecoveryCoordinator` is documented as wired into `lifecycle.rs`'s startup sequence but
+still carrying `#[expect(dead_code)]` — the wiring this journal flagged as pending back in commit
+80 landing for real, described precisely as "wired but not yet live" rather than either extreme.
+
+### 89. Fixing a bug that would have broken the cross-agent scenario before it could ever start (07619b0, b8994b3, 383bcf1, 354371a)
+
+Four commits, and together they're the difference between "workspace isolation exists in the type
+system" and "two workers can actually run in two different git worktrees at the same time." `07619b0`
+persists `isolation_kind` in the `workspace_leases` table for the first time (it had always been
+hardcoded to `"shared"` before this commit, regardless of what was actually requested) and moves
+lease acquisition to two phases — an `allocating` row inserted first, promoted to `active` only
+after the workspace is actually materialized — so that isolated workspaces (`GitWorktree`/`Copy`)
+can coexist with each other and with shared workspaces, since they occupy disjoint paths and no
+longer need the old global write-exclusion to stay safe. `b8994b3` finds the bug that same
+restructuring was needed to fix: `workspace_acquire`'s original implementation called
+`materialize()` and then discarded its result with `let _ = materialize()` — meaning it created a
+*real* git worktree on disk but returned a *fake* `/tmp/ws-…` path to the caller, and leaked the
+`allocating` row forever if materialization failed. The rewrite makes the response carry the real,
+persisted path from `activate()`, and releases the lease on materialization failure instead of
+leaking it. `383bcf1` threads that real path all the way to where it matters: `RunDriverContext`
+gains an optional `workspace_path`, `run_one` uses it as the adapter's working directory instead of
+the repository root whenever one is present, and `run/submit` acquires an isolated lease whenever
+`workspaceMode` is `"isolated"` or `"copy"` — the commit message states plainly what this makes
+possible for the first time: two runs with `workspaceMode: "isolated"` now execute in two genuinely
+separate git worktrees. `354371a` fixes the two bugs that would have made all of this untestable
+from an actual chat session: `batman_run`'s submit path was silently dropping the `prompt`
+parameter (every worker would have started with an empty instruction), and `batman_worker`'s create
+path was silently dropping `profileId` (Claude and Codex workers would have failed
+`PROFILE_REQUIRED` immediately) — both parameters had existed in the schema and simply never made
+it into the RPC call.
+
+### 90. The eighth tool, and letting a worker see its peer's workspace (a47c191, 4f0d154, 114291d, 11477e6)
+
+`a47c191` adds `batman_profile` (wrapping `profile/register`) and `batman_workspace` (wrapping
+`workspace/acquire|get|release|inspect`) — the two tool gaps commits 87 and 89 had already named as
+blocking the cross-agent scenario — bringing the OMP tool count to eight. `4f0d154` adds
+`CoordinationPeerWorkspace`, a new RPC method letting a worker resolve a same-task peer's workspace
+path/mode/isolation-kind/state for direct cross-workspace code review, exposed as an eighth
+worker-safe MCP tool (`batman_peer_workspace`) alongside a fix that `batman_peers` had been omitting
+each peer's `runId` from its response the whole time. `114291d` updates every document this journal
+has been checking for staleness throughout this Part — `architecture.md`, `code-walkthrough.md`,
+`manual-testing.md` (which gains a new §5 for the cross-agent workspace-isolation scenario),
+`getting-started.md` — to say "eight tools" and "RecoveryCoordinator is wired," and is explicit that
+this journal's own earlier "six tools" references (Foundation-era, Part II) are deliberately left
+unchanged as historical record rather than silently updated to match the current count. `11477e6`
+closes four TODO items this Part's work resolved (workspace-mode threading, the two new tools, peer
+workspace resolution) while leaving one open on purpose — worker-MCP artifact list/fetch was
+deliberately excluded from the plan's scope, not forgotten — and removes crash recovery from
+README's Known Limitations now that it's genuinely wired.
+
+## Part IX — A hardening squash, then a review that finds what it missed
+
+Part IX closes this journal, and it does so with two very different textures back to back. The
+first eleven commits are a wide, parallel-authored hardening pass across almost every subsystem at
+once — each commit's own message is a single terse line with no body, which this journal notes
+plainly rather than inventing detail the commits themselves don't provide. The second half is the
+opposite: a formal, four-reviewer codebase review (`REVIEW.md`) that re-reads the entire hardened
+system with fresh eyes and finds four critical, production-blocking bugs the tests had missed —
+followed by the same-day discipline this journal has praised since commit 10: finding them, fixing
+them, and writing down exactly what was fixed and what's still open.
+
+### 91. A parallel hardening squash across nine subsystems (38c8c3f, 6a08785, 4fad81c, fc5f9db, cb6842f, 274b0d5, 4621add, 7a7a4c0, 56507fa, 9f85dc3, 02f3426)
+
+`38c8c3f` adds the Biome formatter and a CI format gate for TypeScript — the gap Part VII's commit
+78 had explicitly deferred, closed here for real; its own commit message notes that TypeScript
+formatting changes from this point on travel with the commits that own them, rather than arriving
+as a single repo-wide reformatting diff. `6a08785` regenerates the shared schema/TS-bindings
+codegen in one reproducible commit, keeping Rust protocol definitions and their generated output
+never more than one commit apart — the same discipline `bun run generate --check` has enforced
+since Foundation, commit 3. The next seven commits are titled by subsystem rather than by story —
+`feat(runtime/db,domain): harden event persistence and recovery`,
+`feat(runtime/policy,security): enforce run policy and fail closed`,
+`feat(runtime/workspace): harden leases, conflicts, and artifact limits`,
+`feat(runtime/adapter): harden live conformance and event normalization`,
+`feat(runtime/ipc): expose workspace, artifact, child, and display workflows`,
+`feat(runtime/cli): add audit export, doctor checks, and startup sweeps`,
+`feat(extension): add OMP tools and restart reconciliation` — and none of the seven carries a
+commit body beyond that one line. This journal records that plainly rather than reconstructing a
+narrative these commits didn't write down themselves: each is a substantial, subsystem-scoped
+hardening pass, landed together, and the accurate account of *what* changed in each is the source
+tree at that commit and the tests that shipped with it, not a retrospective story. `9f85dc3` adds a
+release provenance matrix and makes the conformance gate real (superseding Part VII's honest stub).
+`02f3426` is a documentation commit refreshing closed gaps and pruning completed items out of
+`TODO.md` — the routine maintenance this journal has shown recurring throughout Part VIII, once
+more, after a large batch of work lands.
+
+### 92. One eager-cleanup fix and one flaky-test hardening (3907e8f, a79d4ee)
+
+`3907e8f` makes subscription-forwarder tasks exit as soon as the writer half of a connection
+closes, instead of waiting for another broadcast to notice — closing out TODO item 49 and a small
+resource-cleanup gap in `ipc/connection.rs`. `a79d4ee` fixes a genuine race in the lifecycle lock
+tests: the *losing* process in a singleton-flock race can exit the instant it observes the winner's
+lock, before the winner has finished opening its database and binding its socket — a test asserting
+the winner's socket exists *immediately* after the loser exits was racing the winner's own startup.
+Fixed by using the test suite's existing bounded wait instead of an instantaneous assertion.
+
+### 93. A four-reviewer codebase review, and four critical fixes the same day (889cbd8, b004857, 6a4c506, 86244da, 3678b99, cafa0e0, 26dcf07)
+
+`889cbd8` is `REVIEW.md`'s first commit — the document this documentation pass has been
+cross-referencing throughout Parts VII and VIII. Its own method section is worth restating here
+because it's a real methodology, not filler: the tree was split across four parallel reviews
+(runtime core; adapters/policy/security; TypeScript/OMP integration; build/docs/release), every
+Critical and High finding was re-read against its cited source before inclusion, and leads that
+turned out to be strengths rather than bugs were removed rather than kept for volume. Four Critical
+findings came out of it, and three are fixed in this journal's very next three commits — the same
+same-day-fix discipline this journal has praised in every prior review-shaped commit (23, 45, 55)
+holding one more time.
+
+`6a4c506` fixes **R1**: the extension authenticated every runtime connection with the constant
+`instanceId: "batman-extension"`, while `batman_task upsert` recorded the real OMP session ID as
+`ownerClientInstanceId` — meaning approval and policy-violation decisions, which require exact
+identity equality, could *never* be decided by the session that created them. Fixed by threading an
+optional `sessionId` through `EnsureRuntimeOptions`, `initParams`, `tryConnect`,
+`connectWithBackoff`, `ensureRuntime`, `getClient`, `statusContextFor`, and all eleven tool call
+sites — closing the status-path gap in the same commit rather than leaving it as a known follow-up.
+`86244da` fixes **R2**, the single highest-impact bug this review found: each successful worker
+authorization incremented `PolicyEvaluator`'s `active_runs` counter, but `PolicyEvaluator` was
+immediately erased behind the `AdapterAuthorization` trait object, whose interface had no release
+method at all — meaning after `concurrency_ceiling` **cumulative** runs (not concurrent — every run
+ever authorized, forever), the daemon would permanently refuse every new run until restart. Ordinary
+sustained use would eventually and silently disable the runtime's core function. Fixed by adding a
+`release()` method to the trait (a no-op for `FixtureAuthorization`, a real `decrement_runs()` call
+for `PolicyEvaluator`), called by the adapter completion watcher after evicting a settled adapter,
+and by `run_one` on every post-authorize error path — defended by an integration test that books a
+`concurrency_ceiling: 1` slot through the real `PolicyEvaluator`, proves a second run is denied,
+releases the slot through the trait object, and proves the ceiling denial clears. `b004857` fixes
+**R3** and **R4** together, both in the release pipeline: R3 was that the Linux ARM64 release
+target built on an x86_64 GitHub runner with no AArch64 cross-linker installed at all (fixed by
+installing `gcc-aarch64-linux-gnu` and setting the matching `CARGO_TARGET_*`/`CC_*`/`AR_*`
+environment variables, plus a new dry-run CI workflow exercising every release target on every
+push); R4 was that GitHub's artifact-upload/download cycle silently strips the executable bit
+`xtask package` had set, which the package-set assembly step correctly rejected — meaning even
+after R3's fix, no release could complete without a person noticing the rejection and manually
+`chmod +x`-ing something. Fixed by removing the release workflow's destructive flatten loops and
+having both the package-set and publish jobs run `find ... -name batcave -exec chmod +x {} +` after
+every artifact download, restoring the bit the platform itself removes.
+
+`3678b99` records the resolutions for all four in both `TODO.md` and `REVIEW.md` — R2–R4 fully
+closed, R1 (the identity fix) marked partially closed pending a dedicated end-to-end test rather
+than claimed complete on the strength of the fix alone. `cafa0e0` adds that test: two live-daemon
+integration tests proving the full `sessionId → instanceId → ownerClientInstanceId` chain — the
+positive case seeds a task/approval/violation owned by session A, connects as A, and confirms both
+decide calls succeed; the negative case seeds the same data but connects as session B, confirming
+both decisions are rejected with "does not own." `26dcf07` marks R1 and TODO item 68 fully resolved
+on the strength of that test — the same pattern this journal has called out since commit 21: no
+fix is recorded as closed until the test proving it exists, not just the diff implementing it.
+
+### 94. Repo guidance for future sessions, and the exact commits this documentation pass grew out of (eba1556, 60e8fa3, d1ef420, 0f670dc)
+
+`eba1556` adds `AGENTS.md` (the canonical, exhaustive directory table and invariant reference) and
+`CLAUDE.md` (a working summary that defers to it) — the two files whose own text this journal's
+Parts VII through IX have been cross-checking claims against throughout. `60e8fa3` is the direct
+ancestor of the documentation review this very journal entry is part of: it adds
+`docs/cli-reference.md` and `docs/plugin-usage.md` as new documents for the first time (covering
+every `batcave` subcommand/flag and all eleven orchestration tools respectively), and rewrites
+`docs/operations.md` to remove content that had never been true — invented Homebrew/apt uninstall
+steps, a fabricated Herdr-restart feature, a fake compatibility matrix — while fixing real,
+verified inaccuracies (the lock mechanism, the state-dir default, missing subcommands) and
+deferring to the new `cli-reference.md` for flags instead of duplicating them. The same commit fixes
+a fabricated `--port` flag and `--recover` flag in `getting-started.md`, a fabricated config
+auto-discovery path, a wrong `Redactor::new()` call, an incomplete health-check list, a stale test
+count, and permission-error guidance that told readers to `chmod 755` their state directory —
+directly contradicting that same document's own `0700`/`0600` security claims two sections above
+it. `d1ef420` adds `batcave capture`, automated tooling to regenerate adapter conformance fixtures
+from real vendor CLI output (a deterministic scrubber replacing session IDs, timestamps, costs, and
+paths with stable placeholders while preserving the correlation IDs conformance suites assert on,
+so re-capturing an unchanged CLI is byte-identical) — replacing what had been, until this commit,
+hand-authored fixture JSON. `0f670dc`, the commit this journal's Part IX ends on, adds `release/` to
+`AGENTS.md` and `CLAUDE.md`'s directory tables (a top-level, cross-language directory that both the
+Rust build tooling and CI had been reading without either guidance document mentioning it) and
+gitignores the release manifest CI generates fresh on every run — closing this journal at the same
+kind of small, unglamorous accuracy fix it opened Part V with, which is a fitting place to stop:
+the discipline this document has narrated since commit 10 is still the same discipline in commit
+217, wherever the next one after this journal's own writing turns out to be.
+
 ## Reading order, if you're new here
+
+If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
+with [`plugin-usage.md`](plugin-usage.md) — the user manual. Everything below is for someone
+contributing to or maintaining the codebase itself.
 
 1. **README.md** — what this is, in two paragraphs.
 2. **This journal** — how it got to be that, commit by commit.
 3. **`docs/adr/`** — the decisions that outlived their commit, in a form built to survive being
    read out of context.
 4. **architecture.md** — the finished design, with no history in it at all.
-5. **code-walkthrough.md** — how to find anything, trace a request, and debug it.
-6. **rust-primer.md** — if Rust itself is still new, read this alongside the journal; every "Day"
+5. **[`getting-started.md`](getting-started.md)** — the developer manual: build, configure, test.
+6. **code-walkthrough.md** — how to find anything, trace a request, and debug it.
+7. **rust-primer.md** — if Rust itself is still new, read this alongside the journal; every "Day"
    in the primer is the concept behind one of the commits above.
-7. **manual-testing.md** — every live/manual verification step this journal references by name,
+8. **manual-testing.md** — every live/manual verification step this journal references by name,
    runnable, including the environment variables each worker adapter's live suite gates on.
+9. **engineering-lessons.md** — the specific bugs this journal narrates as history, indexed by
+   file/ADR instead of by commit, for when you're debugging something that feels familiar.
+10. **operations.md** / **cli-reference.md** / **compatibility.md** — day-to-day references once
+    you're past onboarding: running `batcave` by hand, its full flag set, and what's actually
+    proven to work against which platform/adapter version.

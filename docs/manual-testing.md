@@ -1,5 +1,10 @@
 # Manual testing
 
+**Audience & purpose:** contributors doing pre-release or post-change QA — a companion to
+[getting-started.md](getting-started.md), the developer manual. Not for end users; if you're
+looking for how to *use* BATMAN rather than verify a change to it, see
+[plugin-usage.md](plugin-usage.md).
+
 Every automated suite (`bun run check`) runs without a model call and without a human watching a
 screen. Some things can only be verified by actually running `omp`, calling a tool with a real
 model, and looking at what comes back — this document is the complete, current list of those
@@ -28,9 +33,6 @@ Several environment variables control BATMAN's behavior. Set these once per shel
 # Override the state directory location (must be absolute)
 export BATMAN_STATE_DIR=/path/to/state
 
-# Path to org config file (overrides default discovery)
-export BATMAN_ORG_CONFIG=/path/to/org.yaml
-
 # Vendor CLIs (claude, codex, copilot, the local omp model server) are ordinary installed
 # dependencies. Live conformance and the availability probe run by default -- no gate needs to be
 # set to exercise a real vendor CLI. Set this only to forbid observation-only vendor invocation
@@ -47,10 +49,12 @@ export OMP_BATMAN_BINARY="$PWD/target/debug/batcave"
 2. `$XDG_STATE_HOME/omp/batman` when `XDG_STATE_HOME` is set (must be absolute)
 3. `$HOME/${PI_CONFIG_DIR:-.omp}/orchestrator`
 
-**Configuration file locations** (in precedence order, lowest to highest):
-1. **Org config** — file path (or path specified by `BATMAN_ORG_CONFIG`)
-2. **Repo config** — `<repo>/.batman/config.yaml`
-3. **User config** — `~/.batman/config.yaml`
+**Configuration file locations** (in precedence order, lowest to highest). There is no
+auto-discovery and no `BATMAN_ORG_CONFIG`-style environment variable for any layer — each is
+loaded only from the path passed explicitly via `--org-config`/`--repo-config`/`--user-config`:
+1. **Org config** — path passed to `--org-config`
+2. **Repo config** — path passed to `--repo-config`, conventionally `<repo>/.batman/config.yaml`
+3. **User config** — path passed to `--user-config`, conventionally `~/.batman/config.yaml`
 
 Configuration files are YAML with strict unknown-key rejection (fails closed with line/column diagnostics). Example:
 
@@ -199,7 +203,7 @@ monitor but exposed as a CLI subcommand for direct testing.
 
 ## 3. The orchestration tools (needs a real model call)
 
-The eight orchestration tools (`batman_task`, `batman_worker`, `batman_profile`, `batman_run`, `batman_workspace`, `batman_message`, `batman_approval`, `batman_reconcile`) are regular OMP tools the model *chooses* to call — this
+The 11 orchestration tools (`batman_profile`, `batman_worker`, `batman_task`, `batman_run`, `batman_workspace`, `batman_artifact`, `batman_child`, `batman_violation`, `batman_message`, `batman_approval`, `batman_reconcile` — see [`plugin-usage.md`](plugin-usage.md) for what each does) are regular OMP tools the model *chooses* to call — this
 genuinely needs a model, and each step below takes something like ten seconds to a couple of
 minutes. Work in a scratch repository, never this one:
 
@@ -338,8 +342,12 @@ Codex/Copilot/OMP-RPC process. This section covers the four supervised adapters,
 suites, and the worker coordination MCP surface.
 
 
-The `batcave conformance` and `batcave adapters` CLI subcommands are now wired to the tool registry. Run `batcave adapters --json` to verify the conformance CLI surfaces are available.
-Conformance testing is done through `cargo test` integration tests, not through a CLI command.
+The `batcave conformance` and `batcave adapters` CLI subcommands (see
+[`cli-reference.md`](cli-reference.md#batcave-conformance)) run the same fixture/live suites as
+the `cargo test` commands below and write a JSON report; `batcave adapters --json` is the quick
+one-shot check that every adapter's fixture suite still passes. Use the CLI when you want a report
+file or to check outside a Rust dev environment; use `cargo test` (below) when you want the
+integration test harness's own assertions and `#[ignore]`/live gating.
 
 ### 4a. Prerequisites
 

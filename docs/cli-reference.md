@@ -1,10 +1,14 @@
 # `batcave` CLI Reference
 
 `batcave` is the BATMAN runtime daemon binary. Most users never invoke it directly — the OMP
-extension spawns and connects to it automatically (see [`plugin-usage.md`](plugin-usage.md) and
-[`packages/extension/src/runtime.ts`](../packages/extension/src/runtime.ts)). This document is for
-anyone who needs to run `batcave` by hand: debugging, scripting, CI, or writing a new display
-backend or supervisor integration.
+extension spawns and connects to it automatically (see [`plugin-usage.md`](plugin-usage.md), the
+user manual, and [`packages/extension/src/runtime.ts`](../packages/extension/src/runtime.ts)).
+
+**Audience & purpose:** anyone who needs to run `batcave` by hand: debugging, scripting, CI, or
+writing a new display backend or supervisor integration. A companion reference to both
+[`plugin-usage.md`](plugin-usage.md) (the user manual) and [`getting-started.md`](getting-started.md)
+(the developer manual) — this document is pure flag reference, not a workflow guide; see
+[`operations.md`](operations.md) for the procedures these flags are used in.
 
 Every subcommand's built-in `--help` is generated from the same `clap` definitions this document
 was written from ([`crates/runtime/src/cli.rs`](../crates/runtime/src/cli.rs)) — if the two ever

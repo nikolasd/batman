@@ -1,8 +1,13 @@
 # BATMAN Getting Started Guide
 
-This guide covers everything you need to **build BATMAN from source as a contributor** — from setup to troubleshooting. It covers all M4 hardening features including configuration, security, recovery, doctor, and release management.
+**This is the BATMAN developer manual.** Audience: contributors building, configuring, or testing
+BATMAN from source. This guide covers everything you need to **build BATMAN from source as a
+contributor** — from setup to troubleshooting, including configuration, security, recovery,
+doctor, and testing. Its companions are [`code-walkthrough.md`](code-walkthrough.md) (source map
+and debugging playbook), [`rust-primer.md`](rust-primer.md) (Rust via this codebase), and
+[`manual-testing.md`](manual-testing.md) (QA verification steps).
 
-> **Just want to use BATMAN, not build it?** See [README.md's Installation section](../README.md#installation) — `omp install @nikolasd/batman` installs both the extension and the runtime with no build step. This guide is for developing BATMAN itself.
+> **Just want to use BATMAN, not build it?** See [README.md's Installation section](../README.md#installation) — `omp install @nikolasd/batman` installs both the extension and the runtime with no build step. Then see [`plugin-usage.md`](plugin-usage.md), the user manual. This guide is for developing BATMAN itself.
 
 ## Prerequisites
 

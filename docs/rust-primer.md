@@ -1,5 +1,9 @@
 # Rust in a week — a fast track grounded in this codebase
 
+**Audience & purpose:** contributors with a TypeScript background who are new to Rust — a
+companion to [getting-started.md](getting-started.md), the developer manual, and to
+[journal.md](journal.md) (each "Day" below is the concept behind one of that document's commits).
+
 You know TypeScript. You don't know Rust. This guide gets you productive in the BATMAN Rust crates
 in about a week by teaching each concept with the code that's already in this repository. Every
 section names real files — open them next to this document.
@@ -85,7 +89,7 @@ will complain about the type mismatch.
 
 ### Modules
 
-`crates/protocol/src/lib.rs` is the crate root. It declares 14 child modules (`approval`, `coordination`, `event`, `ids`, `message`, `method`, `rpc`, `run`, `task`, `version`, `worker`, `workspace`, `display`, `artifact`) and re-exports their public items so users write `batman_protocol::Timestamp` instead of `batman_protocol::event::Timestamp`.
+`crates/protocol/src/lib.rs` is the crate root. It declares 15 child modules (`approval`, `artifact`, `coordination`, `display`, `event`, `ids`, `message`, `method`, `rpc`, `run`, `schema`, `task`, `version`, `worker`, `workspace`) and re-exports their public items so users write `batman_protocol::Timestamp` instead of `batman_protocol::event::Timestamp`.
 
 This is the same pattern as a TypeScript barrel `index.ts`, except visibility is enforced: without `pub`, an item is private to its module — a fact Day 5 turns into a security mechanism.
 
@@ -280,15 +284,15 @@ Traits also give you *seams* for testing without a mocking framework: `ipc/mod.r
 `SystemPeerCredentialReader` / `RejectAllWorkerVerifier`, tests inject fakes. That's dependency
 injection, Rust-style: a trait object or generic parameter instead of a DI container.
 
-The runtime crate's `lib.rs` exposes 16 public modules — `adapter`, `approval`, `audit`,
-`conformance`, `coordination`, `db`, `doctor`, `domain`, `display`, `ipc`, `lifecycle`, `paths`,
+The runtime crate's `lib.rs` exposes 19 public modules — `adapter`, `approval`, `audit`, `config`,
+`conformance`, `coordination`, `db`, `display`, `doctor`, `domain`, `ipc`, `lifecycle`, `paths`,
 `policy`, `recovery`, `security`, `service`, `supervisor`, `workspace` — each re-exporting its
 key types. When you're lost about where something lives, start from `lib.rs`.
 
 **Do now:** pick `RuntimeStatus` in `rpc.rs`, follow it to
 `packages/protocol-ts/src/generated/RuntimeStatus.ts` and to its entry in
 `packages/protocol-ts/schema/batman.schema.json`. Change nothing; just see that the Rust struct is
-The runtime crate's `lib.rs` exposes 18 public modules — `adapter`, `approval`, `audit`, `conformance`, `coordination`, `db`, `doctor`, `domain`, `display`, `ipc`, `lifecycle`, `paths`, `policy`, `recovery`, `security`, `service`, `supervisor`, `workspace`, `config` — each re-exporting its key types. When you're lost about where something lives, start from `lib.rs`.
+the one place that shape is defined, and that both other files are downstream of it.
 
 ## Day 5 — Visibility as a security boundary ("make illegal states unrepresentable")
 
@@ -318,8 +322,8 @@ for operation payloads.
 Two supporting ideas in the same file/area:
 
 - **Newtypes.** `pub struct SanitizedJson(String);` wraps a plain `String` in a distinct type so
-  it can't be confused with an arbitrary string. All 8 id types (`ProjectId`, `TaskId`, `RunId`,
-  `OperationId`, `MessageId`, `ArtifactId`, `ApprovalId`, `WorkerId` — in
+  it can't be confused with an arbitrary string. All 9 id types (`ProjectId`, `TaskId`, `RunId`,
+  `OperationId`, `MessageId`, `ArtifactId`, `ApprovalId`, `WorkerId`, `PolicyViolationId` — in
   `crates/protocol/src/ids.rs`) are newtypes over UUIDv7 strings — you cannot pass a `TaskId`
   where a `RunId` is expected, even though both are "just strings" on the wire. The `uuid_id!`
   macro generates them (macros: Day 7).
@@ -452,7 +456,7 @@ You don't need to *write* macros for a long time, but you'll read three kinds he
    tell.
 2. Derive macros: `#[derive(Serialize, ...)]` — Day 4.
 3. One local declarative macro: `uuid_id!` in `crates/protocol/src/ids.rs`, which stamps out the
-   eight id newtypes from one template. Read it once to demystify `macro_rules!`; it's
+   nine id newtypes from one template. Read it once to demystify `macro_rules!`; it's
    find-and-replace with hygiene.
 
 ### Fluency drills (in increasing order of ambition)

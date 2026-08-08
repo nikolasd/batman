@@ -2,6 +2,10 @@
 
 Thank you for your interest in contributing to BATMAN! This document provides guidelines and instructions for contributing to the project.
 
+**Audience & purpose:** contributors — the process guide (branch/PR/release flow, non-negotiable
+invariants). For the technical *how* of building and testing BATMAN itself, see
+[`docs/getting-started.md`](docs/getting-started.md), the developer manual.
+
 ## Development Environment
 
 ### Prerequisites
@@ -48,7 +52,7 @@ cargo test --features "feature1,feature2"
 bun test
 
 # Run specific test file
-bun test packages/extension/src/__tests__/approval-ui.test.ts
+bun test packages/extension/src/approval-ui.test.ts
 ```
 
 ### Full Test Suite
@@ -137,7 +141,8 @@ docs/                     Engineering documentation (start here: docs/getting-st
    - Has a clear description of what changes and why
 
 2. Submit your PR:
-   - Fill out the PR template completely
+   - There is no PR template — write a clear description covering what changed, why, and how you
+     verified it (test output, manual-testing steps run, etc.)
    - Link any related issues
    - Request review from maintainers
 
@@ -167,13 +172,18 @@ Pushing a `v*` tag triggers [`.github/workflows/release.yml`](.github/workflows/
 
 When contributing, consider updating documentation:
 
-- **docs/getting-started.md** - Development setup and workflows
-- **docs/manual-testing.md** - Manual testing procedures
-- **docs/architecture.md** - System design
-- **docs/cli-reference.md** - `batcave` CLI command reference
-- **docs/plugin-usage.md** - OMP extension tool/command usage guide
-- **docs/operations.md** - Daemon lifecycle, crash recovery, install/upgrade procedures
-- **docs/adr/** - Architectural decisions
+- **docs/plugin-usage.md** — the user manual: every tool/command an OMP session can call
+- **docs/getting-started.md** — the developer manual: building, configuring, and testing BATMAN from source
+- **docs/code-walkthrough.md** / **docs/rust-primer.md** — developer-manual companions: source map, debugging playbook, Rust-via-this-codebase tutorial
+- **docs/manual-testing.md** — manual/QA verification procedures
+- **docs/architecture.md** — system design (the C4-model "why")
+- **docs/cli-reference.md** — `batcave` CLI command reference
+- **docs/operations.md** — daemon lifecycle, crash recovery, install/upgrade procedures
+- **docs/compatibility.md** — supported platforms and the adapter conformance matrix
+- **docs/engineering-lessons.md** — hard-won lessons from real bugs, cross-referenced by file/ADR
+- **docs/future-features.md** — consciously deferred features with decision triggers
+- **docs/journal.md** — the commit-by-commit narrative of how the codebase got this way
+- **docs/adr/** — architectural decisions
 
 ## Questions?
 
