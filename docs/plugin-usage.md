@@ -1,10 +1,13 @@
 # Using the `@nikolasd/batman` OMP Extension
 
-This is the user-facing guide to the OMP extension itself: what it registers, what each tool is
-for, and the recommended flow for running a task through an external harness. For installing the
-extension see the [README](../README.md#installation); for how the daemon it talks to behaves, see
-[`cli-reference.md`](cli-reference.md); for the wire protocol and internal architecture, see
-[`architecture.md`](architecture.md).
+**This is the BATMAN user manual.** Audience: anyone using BATMAN through OMP — you never need to
+touch the source or build anything. This is the user-facing guide to the OMP extension itself:
+what it registers, what each tool is for, and the recommended flow for running a task through an
+external harness. For installing the extension see the [README](../README.md#installation); for
+running/troubleshooting the daemon directly, see [`operations.md`](operations.md) and
+[`cli-reference.md`](cli-reference.md); for whether your platform/adapter is supported, see
+[`compatibility.md`](compatibility.md); for the wire protocol and internal architecture (a
+contributor concern, not a usage one), see [`architecture.md`](architecture.md).
 
 Once installed, the extension registers **11 tools** an LLM (or you, via slash commands) can call,
 plus **3 slash commands**. Every tool shares one runtime connection per OMP session — the first
@@ -91,8 +94,10 @@ journal, survives session disconnects, and can be retried/cancelled/reconciled a
 `op: "submit"` requires `taskId`, `workerId`, and `prompt` (the instruction text the worker
 executes — BATMAN stores no task text on its own). Optionally `workspaceMode`
 (`shared`/`isolated`/`copy`) and `priority`. `op: "get"` checks a run's progress; `op: "list"` lists
-runs for a task. `op: "retry"` retries a terminal run — this always creates a **new** `runId`, it
-never resurrects the prior one (requires `priorRunId`). `op: "cancel"` stops a running run.
+runs for a task. `op: "retry"` re-executes a terminal run by starting a fresh worker process;
+it always creates a **new** `runId` (never mutates the prior one), requires `priorRunId` and
+`prompt` again, and accepts `workspaceMode` to match the original submission. Like `submit` and
+`cancel`, `retry` is `exec` tier. `op: "cancel"` stops a running run.
 
 Because `run/submit`'s error response carries no `runId`, if you need the id right after
 submitting, follow up with `batman_run { op: "list", taskId }` rather than assuming submit
