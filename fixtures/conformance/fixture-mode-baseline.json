@@ -1,0 +1,9 @@
+{
+  "comment": "Scenarios that cannot pass in fixture mode because of a property of the installed vendor CLI or its protocol, not a regression. See TODO.md item 55. Any other failing scenario fails the release gate; an entry here that starts passing also fails the gate and must be removed.",
+  "expectedFailures": {
+    "claude": [],
+    "codex": ["follow_up", "cancellation_scope", "session_resume", "runtime_restart"],
+    "copilot": ["session_resume", "runtime_restart", "unexpected_child_observation"],
+    "ompRpc": []
+  }
+}

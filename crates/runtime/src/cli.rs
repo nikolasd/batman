@@ -11,6 +11,14 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use batman_runtime::VERSION;
+/// The committed fixture-mode baseline loaded from
+/// `fixtures/conformance/fixture-mode-baseline.json`. Maps each adapter to
+/// the scenario names that are expected to fail in fixture mode.
+#[derive(serde::Deserialize)]
+struct FixtureBaseline {
+    #[serde(rename = "expectedFailures")]
+    expected_failures: std::collections::HashMap<String, Vec<String>>,
+}
 
 /// The BATMAN runtime daemon.
 #[derive(Parser)]
@@ -682,7 +690,9 @@ async fn run_display_probe(backend: String, json: bool) -> ExitCode {
 /// failure.
 async fn run_conformance(adapter: String, fixture: bool, live: bool, output: PathBuf) -> ExitCode {
     use batman_runtime::adapter::AdapterKind;
-    use batman_runtime::conformance::{run_fixture_conformance, run_live_conformance};
+    use batman_runtime::conformance::{
+        ConformanceReport, run_fixture_conformance, run_live_conformance,
+    };
 
     if fixture == live {
         return fail(&format!(
@@ -708,23 +718,32 @@ async fn run_conformance(adapter: String, fixture: bool, live: bool, output: Pat
         }
     };
 
-    let mut reports = Vec::with_capacity(kinds.len());
+    let mut reports: Vec<serde_json::Value> = Vec::with_capacity(kinds.len());
+    let mut typed_reports: Vec<ConformanceReport> = Vec::new();
     for kind in kinds {
-        let report = if fixture {
-            serde_json::to_value(run_fixture_conformance(kind).await)
-                .expect("ConformanceReport serializes")
+        if fixture {
+            let report = run_fixture_conformance(kind).await;
+            typed_reports.push(report);
         } else {
             match run_live_conformance(kind).await {
-                Ok(report) => serde_json::to_value(report).expect("ConformanceReport serializes"),
-                Err(err) => serde_json::json!({
-                    "adapter": kind.wire_name(),
-                    "mode": "live",
-                    "passed": false,
-                    "error": err,
-                }),
+                Ok(report) => typed_reports.push(report),
+                Err(err) => {
+                    // Live failures are reported as entries, never a hard
+                    // process failure.
+                    reports.push(serde_json::json!({
+                        "adapter": kind.wire_name(),
+                        "mode": "live",
+                        "passed": false,
+                        "error": err,
+                    }));
+                    continue;
+                }
             }
-        };
-        reports.push(report);
+        }
+    }
+    // Convert typed reports to JSON.
+    for report in &typed_reports {
+        reports.push(serde_json::to_value(report).expect("ConformanceReport serializes"));
     }
 
     let rendered = serde_json::to_string_pretty(&reports).expect("reports serialize");
@@ -732,6 +751,79 @@ async fn run_conformance(adapter: String, fixture: bool, live: bool, output: Pat
         return fail(&format!("failed to write {}: {err}", output.display()));
     }
     println!("{rendered}");
+
+    // In fixture mode, gate against the committed baseline.
+    if fixture {
+        let baseline_path = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/conformance/fixture-mode-baseline.json"
+        ));
+        let baseline_text = match std::fs::read_to_string(&baseline_path) {
+            Ok(t) => t,
+            Err(err) => {
+                return fail(&format!(
+                    "cannot read fixture-mode baseline {}: {err}",
+                    baseline_path.display()
+                ));
+            }
+        };
+        let baseline: FixtureBaseline = match serde_json::from_str(&baseline_text) {
+            Ok(b) => b,
+            Err(err) => {
+                return fail(&format!(
+                    "fixture-mode baseline {} is malformed: {err}",
+                    baseline_path.display()
+                ));
+            }
+        };
+        for report in &typed_reports {
+            let adapter = &report.adapter;
+            let expected_failures: Vec<String> = baseline
+                .expected_failures
+                .get(adapter.as_str())
+                .cloned()
+                .unwrap_or_default();
+            let actual_failures: Vec<String> = report
+                .scenarios
+                .iter()
+                .filter(|s| !s.passed)
+                .map(|s| s.name.to_string())
+                .collect();
+            // Check for unexpected failures (not in baseline).
+            let unexpected: Vec<&String> = actual_failures
+                .iter()
+                .filter(|name| !expected_failures.contains(name))
+                .collect();
+            if !unexpected.is_empty() {
+                return fail(&format!(
+                    "adapter {} failed scenario(s) not in the fixture-mode baseline: {}",
+                    adapter,
+                    unexpected
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            // Check for baseline entries that now pass (rotting baseline).
+            let now_passing: Vec<&String> = expected_failures
+                .iter()
+                .filter(|name| !actual_failures.contains(name))
+                .collect();
+            if !now_passing.is_empty() {
+                return fail(&format!(
+                    "adapter {} baseline scenario(s) now pass — remove from baseline: {}",
+                    adapter,
+                    now_passing
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+    }
+
     ExitCode::SUCCESS
 }
 
@@ -781,8 +873,10 @@ async fn run_capture(adapter: String, fixture: Option<String>, dry_run: bool) ->
     use batman_runtime::conformance::capture;
 
     if adapter == "all" {
-        return fail(&"capture requires a single adapter; \
-        \"all\" would spend a real turn on every vendor CLI");
+        return fail(
+            &"capture requires a single adapter; \
+        \"all\" would spend a real turn on every vendor CLI",
+        );
     }
 
     let kind = match AdapterKind::from_wire_name(&adapter) {
@@ -800,7 +894,11 @@ async fn run_capture(adapter: String, fixture: Option<String>, dry_run: bool) ->
     match capture::capture_adapter(kind, only, dry_run).await {
         Ok(outcome) => {
             for cf in &outcome.written {
-                let status = if cf.unchanged { "unchanged" } else { "rewritten" };
+                let status = if cf.unchanged {
+                    "unchanged"
+                } else {
+                    "rewritten"
+                };
                 println!("{}: {} frames ({})", cf.fixture, cf.frames, status);
             }
             if let Some(report) = &outcome.report {
