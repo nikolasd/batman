@@ -205,18 +205,15 @@ The workflow derives `--version` from the extension package and package-set comp
 
 ### 77. Enforce task isolation for artifact list and fetch
 
-**Status:** Open (discovered 2026-08-06 during codebase review)
+**Status:** ✅ Closed 2026-08-08
 **Priority:** High
 **Labels:** artifact, authorization, isolation
 
 **Description:**
 OMP and worker MCP contracts say artifacts are scoped to the current task, but list returns every artifact in the repository daemon and fetch accepts any artifact ID without task/run/principal filtering.
 
-**Implementation:**
-- Carry authenticated task scope into list/fetch and reject cross-task artifact IDs.
-- Add two-task isolation tests for both OMP-extension and worker-MCP roles.
-
-**References:** `REVIEW.md` (R10), `crates/runtime/src/service/orchestration.rs:1136`, `crates/runtime/src/workspace/artifact_store.rs:160`
+**Resolution:**
+Committed as `44093d4`. `Artifact.run_id` is now populated by `WorkspaceInspector` and `WorkspaceApplier`. `artifact/list` and `artifact/fetch` scope by `owner_client_instance_id` through `owned_run_ids_op`. Extension passes `taskId` for narrowing. Behavioral test `artifact_isolation_enforces_task_ownership_scoping` proves two owners cannot see each other's artifacts.
 
 ---
 

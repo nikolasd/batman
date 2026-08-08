@@ -116,15 +116,11 @@ The reviewed code had the following verified baseline before this document was w
 
 **Suggested fix:** Validate every leaf `package.json` version and the `v<version>` tag before building or publishing. Publish only after all package metadata passes as one set.
 
-#### R10. Artifact APIs are project-scoped despite claiming task isolation
+#### R10. Artifact APIs are project-scoped despite claiming task isolation ~RESOLVED~
 
 **Location:** `packages/extension/src/tools/artifacts.ts:25-42`; `crates/runtime/src/coordination/mcp_protocol.rs:133-156`; `crates/runtime/src/service/orchestration.rs:1136-1177`; `crates/runtime/src/workspace/artifact_store.rs:160-222`
 
-**Evidence:** Both OMP and worker MCP descriptions say artifacts are limited to the current task. `artifact_list` forwards only an optional kind; the store lists every artifact in the repository daemon. `artifact_fetch` accepts any artifact ID in that store. Neither path filters by task, run, or principal.
-
-**Impact:** One task can enumerate and read another task's patches, conflict reports, and workspace manifests. A model trusting the documented boundary can apply an unrelated patch to the working tree.
-
-**Suggested fix:** Carry task scope from the authenticated principal/request into list and fetch, reject cross-task IDs, and add two-task isolation tests for both OMP and worker MCP callers.
+**Resolution:** `44093d4` — `Artifact.run_id` is now populated by `WorkspaceInspector` and `WorkspaceApplier` (previously `None`). `artifact/list` and `artifact/fetch` scope results by the caller's `owner_client_instance_id` through `owned_run_ids_op`. Extension `batman_artifact` passes `taskId` for per-task narrowing. `workspace/inspect` now stores its patch in the artifact store and is behind the quarantine gate. Behavioral test `artifact_isolation_enforces_task_ownership_scoping` verifies two owners cannot see each other's artifacts or fetch cross-owner artifacts.
 
 #### R11. Copilot turn stop reasons are discarded
 
