@@ -84,8 +84,6 @@ function fakeCommandContext(cwd: string, hasUI: boolean): { ctx: ExtensionComman
   };
 }
 
-
-
 test("registers batman_status plus every orchestration tool, and both slash commands", () => {
   const { api, tools, commands } = createFakeApi();
   extension(api);

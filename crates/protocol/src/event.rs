@@ -10,12 +10,12 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use ts_rs::TS;
 
+use crate::approval::DecidedBy;
 use crate::display::{DisplayBackend, DisplayPlacement};
 use crate::ids::{
     ApprovalId, ArtifactId, MessageId, PolicyViolationId, ProjectId, RunId, TaskId, WorkerId,
 };
 use crate::workspace::WorkspaceEvent;
-use crate::approval::DecidedBy;
 
 /// Canonical UTC RFC 3339 timestamp text, as carried on the wire.
 ///

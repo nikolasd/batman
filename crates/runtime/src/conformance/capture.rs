@@ -2,24 +2,28 @@
 //! raw stdout frame, scrubs it deterministically, and overwrites the
 //! committed fixture in place.
 
+use crate::adapter::{
+    Adapter, AdapterEvent, AdapterEventSink, AdapterFuture, AdapterKind, ClaudeStartupOptions,
+    CodexStartupOptions, CopilotStartupOptions, OmpRpcAdapterOptions, StartSpec,
+};
+use crate::conformance::scrub::Scrubber;
+use crate::conformance::{
+    ConformanceReport, run_fixture_conformance, vendor_cli_invocation_disabled,
+};
+use crate::supervisor::install_frame_tap;
+use batman_protocol::{RunId, TaskId, WorkerId};
+use serde_yaml_ng as serde_yaml;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use crate::adapter::{
-    Adapter, AdapterEvent, AdapterEventSink, AdapterFuture, AdapterKind,
-    ClaudeStartupOptions, CodexStartupOptions, CopilotStartupOptions, OmpRpcAdapterOptions,
-    StartSpec,
-};
-use crate::conformance::scrub::Scrubber;
-use crate::conformance::{run_fixture_conformance, vendor_cli_invocation_disabled, ConformanceReport};
-use crate::supervisor::install_frame_tap;
-use batman_protocol::{RunId, TaskId, WorkerId};
-use serde_yaml_ng as serde_yaml;
 
 const FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/adapters");
-const MANIFEST_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/adapters/capture-manifest.yml");
+const MANIFEST_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/adapters/capture-manifest.yml"
+);
 
 /// The on-disk directory name for each adapter kind. Note `ompRpc` maps
 /// to the hyphenated `omp-rpc`.
@@ -89,7 +93,9 @@ pub async fn capture_adapter(
     dry_run: bool,
 ) -> Result<CaptureOutcome, String> {
     if vendor_cli_invocation_disabled() {
-        return Err("BATMAN_DISABLE_VENDOR_CLI=1 forbids capture; it spawns real vendor CLIs".to_string());
+        return Err(
+            "BATMAN_DISABLE_VENDOR_CLI=1 forbids capture; it spawns real vendor CLIs".to_string(),
+        );
     }
 
     let manifest = load_manifest(&kind)?;
@@ -114,7 +120,8 @@ pub async fn capture_adapter(
     install_frame_tap(tap_tx).map_err(|e| format!("failed to install frame tap: {}", e))?;
 
     // Create a scratch working directory and seed it with config.toml.
-    let scratch = tempfile::tempdir().map_err(|e| format!("failed to create scratch dir: {}", e))?;
+    let scratch =
+        tempfile::tempdir().map_err(|e| format!("failed to create scratch dir: {}", e))?;
     let scratch_path = scratch.path().to_path_buf();
     let config_toml = scratch_path.join("config.toml");
     std::fs::write(&config_toml, "[read_timeout]\nvalue = 30\n")
@@ -123,8 +130,7 @@ pub async fn capture_adapter(
     let mut written = Vec::new();
 
     for entry in &entries {
-        let frames = capture_one(&kind, scratch_path.clone(), entry, &mut tap_rx)
-            .await?;
+        let frames = capture_one(&kind, scratch_path.clone(), entry, &mut tap_rx).await?;
 
         let fixture_dir = PathBuf::from(FIXTURES_DIR).join(adapter_fixture_dir(kind));
         let fixture_path = fixture_dir.join(&entry.fixture);
@@ -149,8 +155,7 @@ pub async fn capture_adapter(
         // Check whether the capture changed the committed file.
         let unchanged = !dry_run
             && fixture_path.exists()
-            && std::fs::read_to_string(&fixture_path)
-                .is_ok_and(|existing| existing == content);
+            && std::fs::read_to_string(&fixture_path).is_ok_and(|existing| existing == content);
 
         written.push(CapturedFixture {
             fixture: entry.fixture.clone(),
@@ -184,13 +189,12 @@ async fn capture_one(
 
     if entry.handshake_only {
         // Probe performs the handshake with no turn.
-        adapter.probe().await.map_err(|e| format!("probe failed: {}", e))?;
+        adapter
+            .probe()
+            .await
+            .map_err(|e| format!("probe failed: {}", e))?;
     } else {
-        let prompt = entry
-            .prompt
-            .as_deref()
-            .unwrap_or("(no prompt)")
-            .to_string();
+        let prompt = entry.prompt.as_deref().unwrap_or("(no prompt)").to_string();
         let spec = StartSpec {
             run_id: RunId::new(),
             task_id: TaskId::new(),
@@ -199,7 +203,10 @@ async fn capture_one(
             resume: None,
         };
         let sink = Arc::new(DiscardingSink);
-        adapter.start(spec, sink).await.map_err(|e| format!("start failed: {}", e))?;
+        adapter
+            .start(spec, sink)
+            .await
+            .map_err(|e| format!("start failed: {}", e))?;
     }
 
     // Collect frames until the turn settles or the deadline elapses.
@@ -269,10 +276,7 @@ async fn collect_frames(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Vec<Vec<u8
 
 /// Drains remaining frames from the tap (used between entries).
 async fn drain_tap(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) {
-    while let Ok(Some(_)) =
-        tokio::time::timeout(Duration::from_millis(100), rx.recv()).await
-    {
-    }
+    while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {}
 }
 
 /// Loads the manifest entries for `kind`.
@@ -287,14 +291,12 @@ fn load_manifest(kind: &AdapterKind) -> Result<Vec<CaptureEntry>, String> {
         .get(wire_name)
         .ok_or_else(|| format!("no '{}' section in manifest", wire_name))?;
 
-    let seq = entries.as_sequence().ok_or_else(|| {
-        format!("'{}' section in manifest is not a list", wire_name)
-    })?;
+    let seq = entries
+        .as_sequence()
+        .ok_or_else(|| format!("'{}' section in manifest is not a list", wire_name))?;
 
     seq.iter()
-        .map(|v| {
-            serde_yaml::from_value(v.clone()).map_err(|e| format!("invalid entry: {}", e))
-        })
+        .map(|v| serde_yaml::from_value(v.clone()).map_err(|e| format!("invalid entry: {}", e)))
         .collect()
 }
 
@@ -332,8 +334,7 @@ fn build_adapter(
                 .unwrap_or(Ok(CodexStartupOptions::default()))
                 .map_err(|e| format!("failed to parse Codex startup options: {}", e))?;
 
-            let adapter =
-                crate::adapter::codex::CodexAdapter::new(cwd, opts, Vec::new(), None);
+            let adapter = crate::adapter::codex::CodexAdapter::new(cwd, opts, Vec::new(), None);
             Ok(Arc::new(adapter))
         }
         AdapterKind::Copilot => {
@@ -384,7 +385,6 @@ impl AdapterEventSink for DiscardingSink {
         Box::pin(std::future::ready(Ok(0)))
     }
 }
-
 
 #[cfg(test)]
 mod tests {

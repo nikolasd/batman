@@ -56,16 +56,14 @@ impl Scrubber {
             Value::Array(arr) => {
                 Value::Array(arr.into_iter().map(|v| self.walk(Value::Null, v)).collect())
             }
-            Value::Object(obj) => {
-                Value::Object(
-                    obj.into_iter()
-                        .map(|(k, v)| {
-                            let pk = Value::String(k.clone());
-                            (k, self.walk(pk, v))
-                        })
-                        .collect(),
-                )
-            }
+            Value::Object(obj) => Value::Object(
+                obj.into_iter()
+                    .map(|(k, v)| {
+                        let pk = Value::String(k.clone());
+                        (k, self.walk(pk, v))
+                    })
+                    .collect(),
+            ),
             v => v,
         }
     }
@@ -227,10 +225,9 @@ mod tests {
     /// capture will not churn committed fixtures.
     #[test]
     fn scrubbing_scrubbed_fixture_is_identity() {
-        let fixture_path =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/adapters/claude/initialize.jsonl");
-        let content =
-            std::fs::read_to_string(&fixture_path).expect("fixture must be readable");
+        let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/adapters/claude/initialize.jsonl");
+        let content = std::fs::read_to_string(&fixture_path).expect("fixture must be readable");
         let mut scrubber = Scrubber::new("/workspace/batman".into());
 
         for line in content.lines() {
@@ -252,9 +249,7 @@ mod tests {
     fn preserves_correlation_ids() {
         let mut scrubber = Scrubber::new("/tmp/capture-123".into());
         let input = r#"{"session_id":"real-session-uuid","message":{"id":"msg_01ABC","content":[{"type":"tool_use","id":"toolu_01READ","name":"Read"}]}}"#;
-        let scrubbed = scrubber
-            .scrub_line(input.as_bytes())
-            .expect("must parse");
+        let scrubbed = scrubber.scrub_line(input.as_bytes()).expect("must parse");
         let obj: Value = serde_json::from_str(&scrubbed).expect("scrubbed must be valid JSON");
         let obj = obj.as_object().expect("must be object");
 
@@ -277,12 +272,13 @@ mod tests {
     fn rewrites_cwd_paths() {
         let mut scrubber = Scrubber::new("/tmp/capture-123".into());
         let input = r#"{"cwd":"/tmp/capture-123","file_path":"/tmp/capture-123/config.toml"}"#;
-        let scrubbed = scrubber
-            .scrub_line(input.as_bytes())
-            .expect("must parse");
+        let scrubbed = scrubber.scrub_line(input.as_bytes()).expect("must parse");
         let obj: Value = serde_json::from_str(&scrubbed).expect("scrubbed must be valid JSON");
         let obj = obj.as_object().expect("must be object");
-        assert_eq!(obj.get("cwd").unwrap().as_str().unwrap(), "/workspace/batman");
+        assert_eq!(
+            obj.get("cwd").unwrap().as_str().unwrap(),
+            "/workspace/batman"
+        );
         assert_eq!(
             obj.get("file_path").unwrap().as_str().unwrap(),
             "/workspace/batman/config.toml"
@@ -294,9 +290,7 @@ mod tests {
     fn rewrites_numeric_timestamps() {
         let mut scrubber = Scrubber::new("/workspace/batman".into());
         let input = r#"{"startedAtMs":1732400000000,"completedAtMs":1732400001000}"#;
-        let scrubbed = scrubber
-            .scrub_line(input.as_bytes())
-            .expect("must parse");
+        let scrubbed = scrubber.scrub_line(input.as_bytes()).expect("must parse");
         let obj: Value = serde_json::from_str(&scrubbed).expect("scrubbed must be valid JSON");
         let obj = obj.as_object().expect("must be object");
         assert_eq!(

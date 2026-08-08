@@ -101,7 +101,11 @@ function seedTestData(ownerInstanceId: string): { taskId: string; runId: string;
   db.run(
     `INSERT INTO tasks (task_id, project_id, owner_client_instance_id, revision, created_at, updated_at)
      VALUES (?1, ?2, ?3, ?4, ?5, ?5)`,
-    taskId, pid, ownerInstanceId, 0, now,
+    taskId,
+    pid,
+    ownerInstanceId,
+    0,
+    now,
   );
 
   // worker_profiles: id, fingerprint, adapter, model, permission_envelope (no created_at)
@@ -109,14 +113,21 @@ function seedTestData(ownerInstanceId: string): { taskId: string; runId: string;
   db.run(
     `INSERT INTO worker_profiles (id, fingerprint, adapter, model, permission_envelope)
      VALUES (?1, ?2, ?3, ?4, ?5)`,
-    profileId, "sha256:test", "claude", "claude-sonnet-4-20250514", "{}",
+    profileId,
+    "sha256:test",
+    "claude",
+    "claude-sonnet-4-20250514",
+    "{}",
   );
 
   // workers: worker_id, project_id, profile_id, parent_worker_id, created_at, resolved_profile_json
   db.run(
     `INSERT INTO workers (worker_id, project_id, profile_id, parent_worker_id, created_at)
      VALUES (?1, ?2, ?3, NULL, ?4)`,
-    workerId, pid, profileId, now,
+    workerId,
+    pid,
+    profileId,
+    now,
   );
 
   // runs: run in 'waitingUser' state (the state after approval request is created)
@@ -126,7 +137,10 @@ function seedTestData(ownerInstanceId: string): { taskId: string; runId: string;
                        flags_policy_quarantined, flags_workspace_dirty, flags_children_active,
                        created_at, started_at)
      VALUES (?1, ?2, ?3, 'waitingUser', 0, 0, 0, 0, 0, 0, ?4, ?4)`,
-    runId, taskId, workerId, now,
+    runId,
+    taskId,
+    workerId,
+    now,
   );
 
   // approvals: approval_id, run_id, task_id, action, arguments, human_required, policy_reason, created_at
@@ -134,7 +148,13 @@ function seedTestData(ownerInstanceId: string): { taskId: string; runId: string;
     `INSERT INTO approvals (approval_id, run_id, task_id, action, arguments,
                             human_required, policy_reason, created_at)
      VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7)`,
-    approvalId, runId, taskId, "write file", '{"path":"/tmp/test"}', "file write requires approval", now,
+    approvalId,
+    runId,
+    taskId,
+    "write file",
+    '{"path":"/tmp/test"}',
+    "file write requires approval",
+    now,
   );
 
   // policy_violations: violation_id, run_id, task_id, worker_id, vendor_child_id, vendor_parent_ref, action, created_at
@@ -142,7 +162,14 @@ function seedTestData(ownerInstanceId: string): { taskId: string; runId: string;
     `INSERT INTO policy_violations (violation_id, run_id, task_id, worker_id,
                                     vendor_child_id, vendor_parent_ref, action, created_at)
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
-    violationId, runId, taskId, workerId, "child-1", "parent-1", "quarantine", now,
+    violationId,
+    runId,
+    taskId,
+    workerId,
+    "child-1",
+    "parent-1",
+    "quarantine",
+    now,
   );
 
   db.close();
@@ -175,13 +202,7 @@ function restoreEnvVars(): void {
 
 interface FakeToolDefinition {
   readonly name: string;
-  readonly execute: (
-    toolCallId: string,
-    params: unknown,
-    signal: AbortSignal | undefined,
-    onUpdate: undefined,
-    ctx: ExtensionContext,
-  ) => Promise<unknown>;
+  readonly execute: (toolCallId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext) => Promise<unknown>;
 }
 
 interface FakeRegisteredCommand {
@@ -236,12 +257,18 @@ test("matching sessionId allows task owner to decide approval and violation", as
 
   // Decide the approval — should succeed because instanceId (from sessionId)
   // matches the task's ownerClientInstanceId.
-  const approvalResult = await approvalTool.execute("call-1", {
-    op: "decide",
-    approvalId,
-    decision: "approve",
-    reason: "test approval",
-  }, undefined, undefined, ctx);
+  const approvalResult = await approvalTool.execute(
+    "call-1",
+    {
+      op: "decide",
+      approvalId,
+      decision: "approve",
+      reason: "test approval",
+    },
+    undefined,
+    undefined,
+    ctx,
+  );
 
   expect(approvalResult.isError).toBeUndefined();
   if (typeof approvalResult === "object" && approvalResult !== null && "details" in approvalResult) {
@@ -251,11 +278,17 @@ test("matching sessionId allows task owner to decide approval and violation", as
   }
 
   // Decide the violation — should succeed for the same reason.
-  const violationResult = await violationTool.execute("call-2", {
-    op: "decide",
-    violationId,
-    resolution: "release",
-  }, undefined, undefined, ctx);
+  const violationResult = await violationTool.execute(
+    "call-2",
+    {
+      op: "decide",
+      violationId,
+      resolution: "release",
+    },
+    undefined,
+    undefined,
+    ctx,
+  );
 
   expect(violationResult.isError).toBeUndefined();
   if (typeof violationResult === "object" && violationResult !== null && "details" in violationResult) {
@@ -283,12 +316,18 @@ test("mismatched sessionId forbids approval and violation decisions", async () =
   const violationTool = tools.get("batman_violation")!;
 
   // Approval decide should fail with Forbidden.
-  const approvalResult = await approvalTool.execute("call-3", {
-    op: "decide",
-    approvalId,
-    decision: "approve",
-    reason: "should be rejected",
-  }, undefined, undefined, ctx);
+  const approvalResult = await approvalTool.execute(
+    "call-3",
+    {
+      op: "decide",
+      approvalId,
+      decision: "approve",
+      reason: "should be rejected",
+    },
+    undefined,
+    undefined,
+    ctx,
+  );
 
   expect(approvalResult.isError).toBe(true);
   if (typeof approvalResult === "object" && approvalResult !== null && "details" in approvalResult) {
@@ -303,11 +342,17 @@ test("mismatched sessionId forbids approval and violation decisions", async () =
   }
 
   // Violation decide should also fail with Forbidden.
-  const violationResult = await violationTool.execute("call-4", {
-    op: "decide",
-    violationId,
-    resolution: "release",
-  }, undefined, undefined, ctx);
+  const violationResult = await violationTool.execute(
+    "call-4",
+    {
+      op: "decide",
+      violationId,
+      resolution: "release",
+    },
+    undefined,
+    undefined,
+    ctx,
+  );
 
   expect(violationResult.isError).toBe(true);
   if (typeof violationResult === "object" && violationResult !== null && "details" in violationResult) {
