@@ -11,9 +11,12 @@ This file consolidates the original codebase review, the implementation-gap trac
 
 The committed tree was split across four parallel reviews: runtime core;
 adapters/policy/security; TypeScript/OMP integration; and build/docs/release. Every
-finding below was re-read against cited source before inclusion. The R5-R11 fix commits
-were then independently re-reviewed by 16 reviewer agents grouped by locality; their
-findings appear as R33+ below, each re-verified against the current tree in this pass.
+finding below was re-read against cited source before inclusion, and every Low/Medium item
+carried forward from the 2026-08-06 baseline was independently re-verified against the current
+tree again on 2026-08-08 (see R19-R32 below — six were found stale/resolved and one overstated
+during that re-verification, all corrected in place). The R5-R11 fix commits were then
+independently re-reviewed by 16 reviewer agents grouped by locality; their findings appear as
+R33+ below, each re-verified against the current tree in this pass.
 
 ## Baseline
 
@@ -143,7 +146,7 @@ Tool accepts any string; runtime accepts only `release`/`cancel`. Use a closed Z
 
 **Location:** `packages/protocol-ts/src/index.ts:1-50`; `crates/xtask/src/main.rs:206-247`; `packages/extension/src/tools/workspaces.ts:20-24`; `packages/extension/src/tools/artifacts.ts:16-20`
 
-Barrel omits generated workspace/display enums; tools hand-copy literals. **Open.**
+**Evidence (re-verified 2026-08-08):** The barrel (`index.ts:1-39`) exports 35 types through `WorkerId` alphabetically but omits at least `ApplyStrategy`, `DecidedBy`, `DisplayBackend`, `DisplayConfig`, `DisplayPlacement`, `IsolationKind`, and `LeaseMode` — all present under `generated/` (48+ files total). `workspaces.ts:20,21,23` hand-writes `pi.zod.enum(["readOnly", "write"])`, `pi.zod.enum(["shared", "gitWorktree", "copy"])`, and `pi.zod.enum(["applyPatch", "cherryPick"])` — literal-for-literal copies of generated `LeaseMode`, `IsolationKind`, and `ApplyStrategy` respectively, with no import tying them together. A future variant added to any of the three Rust enums silently desyncs the tool schema from the wire type. **Open.**
 
 #### R18. Detached runtime spawn has no `error` listener
 
@@ -155,7 +158,7 @@ An async `ChildProcess` error (`EAGAIN`/`EMFILE`) has no listener. **Open.**
 
 **Location:** `docs/architecture.md:750-758`; `crates/runtime/src/ipc/mod.rs:226-300`
 
-Document says 22/9 methods; code allows 30/12, omitting peer workspace and artifact list/fetch from the worker row. **Open.**
+Document currently says 22/9 methods, code allows 30/12 when this claim was written — [OK] RESOLVED (re-verified 2026-08-08): `architecture.md:758,760` now reads "All 29 mutation/read methods" for `ompExtension` and "12 methods" for `workerMcp`, explicitly naming `coordination/peerWorkspace`, `coordination/artifactList`, and `coordination/artifactFetch` in the worker row — an exact match for `ipc/mod.rs:244-304`'s `allowed_methods()` (29 and 12 respectively, counted directly). Fixed by other work since this item was filed; no doc change needed now.
 
 #### R33. `serde_json/preserve_order` silently breaks two fingerprint invariants and one secret-shape gate
 
@@ -203,7 +206,7 @@ Document says 22/9 methods; code allows 30/12, omitting peer workspace and artif
 
 **Location:** `packages/batman-linux-x64-gnu/package.json:1-17` and peer leaves; `README.md:28-47`; `docs/operations.md:7-75`
 
-Leaf packages declare no npm `bin` shim; docs use bare `batcave` throughout. **Open.**
+Leaf packages declare no npm `bin` shim (`packages/batman-linux-x64-gnu/package.json`'s `exports` maps only `"."`/`"./package.json"`, no `bin` field) and every doc example invokes bare `batcave ...` (`operations.md:16,37,49,52,64`; `README.md`) as if it were on `PATH`. **Open** — re-verified 2026-08-08.
 
 #### R21. Documentation names CLI flags that do not exist — ✅ RESOLVED (fixed during this consolidation)
 
@@ -221,41 +224,41 @@ Leaf packages declare no npm `bin` shim; docs use bare `batcave` throughout. **O
 
 **Fix applied:** Added `--repo /path/to/repo` to every `serve`/`status`/`stop`/`audit export` example in `AGENTS.md`/`CLAUDE.md`.
 
-#### R23. Tool documentation describes eight tools while eleven are registered
+#### R23. Tool documentation describes eight tools while eleven are registered — ✅ RESOLVED (already fixed by other work, not this pass)
 
 **Location:** `docs/architecture.md:196-207`; `docs/code-walkthrough.md:124-135`; `docs/manual-testing.md:202`; `packages/extension/src/tools/index.ts:38-51`
 
-Docs omit artifact, child, violation, and registered doctor surface. **Open.**
+**Evidence (re-verified 2026-08-08):** `architecture.md:200` lists all 11 tools by name (`batman_profile`, `batman_worker`, `batman_task`, `batman_run`, `batman_workspace`, `batman_artifact`, `batman_child`, `batman_violation`, `batman_message`, `batman_approval`, `batman_reconcile`), matching `index.ts:41-51`'s registration order exactly. `code-walkthrough.md:138` says "Registers all 11 tools with OMP"; `manual-testing.md:206` lists the same 11 by name. No doc omits artifact/child/violation. Stale when filed; already corrected elsewhere.
 
-#### R24. Current docs name two deleted TypeScript modules
+#### R24. Current docs name two deleted TypeScript modules — ✅ RESOLVED (already fixed by other work, not this pass)
 
 **Location:** `docs/code-walkthrough.md:125`; `docs/architecture.md:207`
 
-`config.ts` and `conformance/index.ts` were removed; docs still reference them. **Open.**
+**Evidence (re-verified 2026-08-08):** Neither `config.ts` nor `conformance/index.ts` is referenced at the cited lines or anywhere in the current `code-walkthrough.md`/`architecture.md` extension-component tables; both files are confirmed absent from `packages/extension/src/`. Stale when filed; already corrected elsewhere.
 
-#### R25. The current release checklist and compatibility guide retain disproven stub claims
+#### R25. The release checklist and compatibility guide retain disproven stub claims — narrowed (partially stale)
 
 **Location:** `release/0.1.0-checklist.json`; `docs/compatibility.md:189`
 
-**Open.**
+**Evidence (re-verified 2026-08-08):** `docs/compatibility.md` is now only 136 lines — line 189 does not exist. The file was narrowed to exactly two tables (supported platforms, adapter conformance versions) and explicitly defers everything else to other docs (`compatibility.md:3-8`); it makes none of the stub claims this item originally cited. That half is moot. `release/0.1.0-checklist.json` is a dated, timestamped snapshot (`"generated": "2026-08-01"`) of a specific hardening pass, structurally like `docs/journal.md` — a point-in-time record, not a current-state doc; its stale entries (e.g. `task_3_recovery_tests` calling `recovery.rs` "still a stub") describe what was true on 2026-08-01, not a live claim about today's `RecoveryCoordinator` (confirmed non-stub, wired into `lifecycle.rs:150`). **Open** only if this file is meant to be a living doc rather than a dated snapshot — recommend explicitly labeling it historical (matching `journal.md`'s convention) to close this permanently, or deleting it if the 0.1.0 release already shipped.
 
-#### R26. Compatibility docs omit three shipped coordination methods
+#### R26. Compatibility docs omit three shipped coordination methods — ✅ RESOLVED (moot — already fixed by other work, not this pass)
 
 **Location:** `docs/compatibility.md:172-189`; `crates/protocol/src/method.rs:79-84`
 
-Missing `coordination/peerWorkspace`, `coordination/artifactList`, `coordination/artifactFetch`. **Open.**
+**Evidence (re-verified 2026-08-08):** `docs/compatibility.md` (136 lines total) no longer contains a coordination-method list of any kind — it was narrowed to platform support + adapter conformance tables only, with protocol methods explicitly deferred to `architecture.md` (line 7). There is nothing left to omit. Stale when filed; already corrected elsewhere.
 
-#### R27. Uninstall and rollback instructions use nonexistent distribution channels
+#### R27. Uninstall and rollback instructions use nonexistent distribution channels — ✅ RESOLVED (already fixed by other work, not this pass)
 
 **Location:** `docs/operations.md:180-231`; `README.md:28-47`
 
-Cites Homebrew/apt/`omp uninstall`; only npm/OMP plugin path is shipped. **Open.**
+**Evidence (re-verified 2026-08-08):** `operations.md`'s Install/Upgrade/Uninstall section (92 lines total in the file; cited range 180-231 is past EOF) explicitly states "**There is no Homebrew formula, apt/deb/rpm package, or any other system package**" and documents only `omp install @nikolasd/batman` / `omp plugin uninstall @nikolasd/batman`. It cites no Homebrew/apt path as real. Stale when filed; already corrected elsewhere.
 
-#### R28. Manual-testing guidance contradicts itself about CLI conformance
+#### R28. Manual-testing guidance contradicts itself about CLI conformance — ✅ RESOLVED (moot — no contradiction found, not this pass)
 
 **Location:** `docs/manual-testing.md:341-342`; `crates/runtime/src/cli.rs:139-152`
 
-**Open.**
+**Evidence (re-verified 2026-08-08):** `manual-testing.md:129-132` says the CLI's `serve`/`status`/`stop`/`schema` subcommands are "fully implemented"; `:344-350` says `batcave conformance`/`batcave adapters` "run the same fixture/live suites as the `cargo test` commands below" — consistent with `cli.rs:139-153`'s real `Conformance`/`Adapters` subcommand definitions (not stubs). No internal contradiction found in the current text. Stale when filed; already corrected elsewhere or never reproduced.
 
 #### R29. `workspaceMode` is an open string
 
@@ -269,11 +272,13 @@ Runtime rejects unknown values safely; a closed Zod enum would avoid round trips
 
 **Open.**
 
-#### R31. CONTRIBUTING references nonexistent tests, features, and PR template
+#### R31. CONTRIBUTING references a cargo-features example with no real features to substitute — narrowed (2 of 3 original sub-claims false)
 
-**Location:** `CONTRIBUTING.md:34,47,140`
+**Location:** `CONTRIBUTING.md:34-46,143-146`
 
-**Open.**
+**Evidence (re-verified 2026-08-08):** Two of the three things this item claimed were "nonexistent" are not: `cargo test --test adapter_contract` / `--test approval` / `--test audit` (`:39-41`) name real integration test binaries — all three exist under `crates/runtime/tests/`. And `:144` already reads "There is no PR template — write a clear description..." — the doc correctly discloses the absence rather than falsely referencing one. The one real issue: `:45`'s `cargo test --features "feature1,feature2"` example names placeholder features that don't exist — no crate in the workspace declares a `[features]` table, so this line would error (`error: none of the selected packages contains these features`) if run literally.
+
+**Fix:** Delete the `cargo test --features "feature1,feature2"` example (or replace with a real, currently-empty-features caveat) — no fix needed for the test-binary or PR-template lines, which are already accurate.
 
 #### R32. The extension header lists only six of eleven orchestration tools
 
@@ -406,5 +411,5 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 - **Critical:** 0 open (R1-R4 resolved)
 - **High:** 0 fully open; R5-R11 resolved with 4 follow-on findings (R33, R35, R36, R44)
 - **Medium:** R12-R18, R34, R37, R38, R39, R41, R42, R45 — 14 open
-- **Low:** R19, R20, R23-R32 (R21/R22 resolved during this consolidation — see above), R40, R43, R46 — 15 open, mostly documentation
+- **Low:** R20, R25 (narrowed), R29, R30, R31 (narrowed), R32, R40, R43, R46 — 9 open, mostly documentation (R19, R23, R24, R26, R27, R28 resolved 2026-08-08 — already fixed by other work, not this pass; see entries above for evidence)
 - **Environment (not actionable in-repo):** former TODO #55, folded in above
