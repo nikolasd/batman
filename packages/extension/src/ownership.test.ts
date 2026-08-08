@@ -133,7 +133,7 @@ function seedTestData(ownerInstanceId: string): { taskId: string; runId: string;
   db.run(
     `INSERT INTO approvals (approval_id, run_id, task_id, action, arguments,
                             human_required, policy_reason, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)`,
+     VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7)`,
     approvalId, runId, taskId, "write file", '{"path":"/tmp/test"}', "file write requires approval", now,
   );
 

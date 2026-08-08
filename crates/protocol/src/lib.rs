@@ -22,7 +22,7 @@ mod version;
 mod worker;
 mod workspace;
 
-pub use approval::{ApprovalDecision, ApprovalRequest};
+pub use approval::{ApprovalDecision, ApprovalRequest, DecidedBy};
 pub use coordination::{
     COORDINATION_PAYLOAD_MAX_BYTES, COORDINATION_RATE_LIMIT_PER_MINUTE,
     CoordinationAskPolicyParams, CoordinationChildDecision, CoordinationPeersParams,

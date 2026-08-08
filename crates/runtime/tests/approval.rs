@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use batman_protocol::{ApprovalId, ApprovalRequest, ProjectId, RunId, TaskId, Timestamp, WorkerId};
+use batman_protocol::{ApprovalId, ApprovalRequest, DecidedBy, ProjectId, RunId, TaskId, Timestamp, WorkerId};
 use batman_runtime::approval::{
     ApprovalCallback, ApprovalService, CallbackFuture, NoopApprovalCallback,
 };
@@ -287,7 +287,7 @@ async fn only_the_owning_instance_can_decide() {
         .call(
             2,
             "approval/decide",
-            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok", "decidedBy": "human" }),
         )
         .await;
     assert_eq!(
@@ -299,7 +299,7 @@ async fn only_the_owning_instance_can_decide() {
         .call(
             5,
             "approval/decide",
-            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok", "decidedBy": "human" }),
         )
         .await;
     assert!(
@@ -329,7 +329,7 @@ async fn display_and_worker_mcp_cannot_reach_approval_decide() {
         }))
         .await;
     client.recv().await;
-    let result = client.call(2, "approval/decide", json!({ "approvalId": ApprovalId::new().to_string(), "decision": "approve", "reason": "x" })).await;
+    let result = client.call(2, "approval/decide", json!({ "approvalId": ApprovalId::new().to_string(), "decision": "approve", "reason": "x", "decidedBy": "human" })).await;
     assert_eq!(
         result["error"]["code"], -32601,
         "display must get METHOD_NOT_FOUND: {result:?}"
@@ -349,7 +349,7 @@ async fn duplicate_identical_decision_is_idempotent_and_never_recalls_the_adapte
         .call(
             5,
             "approval/decide",
-            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok", "decidedBy": "human" }),
         )
         .await;
     assert_eq!(first["result"]["outcome"], "decided");
@@ -358,7 +358,7 @@ async fn duplicate_identical_decision_is_idempotent_and_never_recalls_the_adapte
         .call(
             6,
             "approval/decide",
-            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok", "decidedBy": "human" }),
         )
         .await;
     assert!(
@@ -379,12 +379,12 @@ async fn conflicting_second_decision_fails() {
         .call(
             5,
             "approval/decide",
-            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok", "decidedBy": "human" }),
         )
         .await;
     assert_eq!(first["result"]["outcome"], "decided");
 
-    let conflicting = owner.call(6, "approval/decide", json!({ "approvalId": approval_id.to_string(), "decision": "deny", "reason": "changed my mind" })).await;
+    let conflicting = owner.call(6, "approval/decide", json!({ "approvalId": approval_id.to_string(), "decision": "deny", "reason": "changed my mind", "decidedBy": "human" })).await;
     assert_eq!(conflicting["error"]["code"], -32602, "{conflicting:?}");
 }
 
@@ -421,7 +421,7 @@ async fn a_decision_cannot_target_a_settled_run() {
         .call(
             5,
             "approval/decide",
-            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok", "decidedBy": "human" }),
         )
         .await;
     assert_eq!(
@@ -446,7 +446,7 @@ async fn a_failed_callback_keeps_the_decision_and_marks_protocol_unhealthy() {
         .call(
             5,
             "approval/decide",
-            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok", "decidedBy": "human" }),
         )
         .await;
     assert!(result.get("error").is_none(), "{result:?}");
@@ -458,7 +458,7 @@ async fn a_failed_callback_keeps_the_decision_and_marks_protocol_unhealthy() {
         .call(
             6,
             "approval/decide",
-            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok", "decidedBy": "human" }),
         )
         .await;
     assert_eq!(repeat["result"]["outcome"], "alreadyDecided");
@@ -482,7 +482,7 @@ async fn a_successful_callback_returns_the_run_to_working() {
         .call(
             5,
             "approval/decide",
-            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok", "decidedBy": "human" }),
         )
         .await;
     assert_eq!(result["result"]["outcome"], "decided");
@@ -517,7 +517,7 @@ async fn identical_repeat_decision_never_re_invokes_the_adapter_callback() {
     let (events_tx, _events_rx) = broadcast::channel(64);
     let service = ApprovalService::new(db, harness.project_id, counting, events_tx);
     let first = service
-        .decide(approval_id, "omp-owner", "approve", "ok")
+        .decide(approval_id, "omp-owner", "approve", "ok", DecidedBy::Human)
         .await
         .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -527,7 +527,7 @@ async fn identical_repeat_decision_never_re_invokes_the_adapter_callback() {
     ));
 
     let second = service
-        .decide(approval_id, "omp-owner", "approve", "ok")
+        .decide(approval_id, "omp-owner", "approve", "ok", DecidedBy::Human)
         .await
         .unwrap();
     assert_eq!(
@@ -573,7 +573,7 @@ async fn pending_request_survives_reconcile_and_only_the_rebound_owner_can_decid
         .call(
             5,
             "approval/decide",
-            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok", "decidedBy": "human" }),
         )
         .await;
     assert_eq!(stale_attempt["error"]["code"], -32602, "{stale_attempt:?}");
@@ -583,7 +583,7 @@ async fn pending_request_survives_reconcile_and_only_the_rebound_owner_can_decid
         .call(
             4,
             "approval/decide",
-            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok", "decidedBy": "human" }),
         )
         .await;
     assert!(
@@ -591,4 +591,120 @@ async fn pending_request_survives_reconcile_and_only_the_rebound_owner_can_decid
         "{rebound_attempt:?}"
     );
     assert_eq!(rebound_attempt["result"]["outcome"], "decided");
+}
+
+#[tokio::test]
+async fn a_human_required_approval_is_rejected_when_decided_by_the_model() {
+    let harness = Harness::start(|_| {}).await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let (approval_id, _run_id, _task_id) = seed_pending_approval(&harness, &mut client, "omp-1").await;
+
+    // Decide with decidedBy: "model" — should be rejected for human_required approval.
+    let result = client
+        .call(
+            5,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok", "decidedBy": "model" }),
+        )
+        .await;
+    assert_eq!(
+        result["error"]["code"], -32602,
+        "model decision on human_required approval must be rejected: {result:?}"
+    );
+    assert!(
+        result["error"]["message"].as_str().unwrap().contains("requires a human decision"),
+        "error message must mention human requirement: {result:?}"
+    );
+
+    // The approval is still undecided.
+    let list = client.call(6, "approval/list", json!({})).await;
+    let approvals = list["result"]["approvals"].as_array().unwrap();
+    assert_eq!(approvals.len(), 1);
+    assert!(
+        approvals[0]["decision"].is_null(),
+        "approval must still be undecided: {list:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_human_required_approval_is_accepted_when_decided_by_a_human() {
+    let harness = Harness::start(|_| {}).await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let (approval_id, _run_id, _task_id) = seed_pending_approval(&harness, &mut client, "omp-1").await;
+
+    // Decide with decidedBy: "human" — should succeed.
+    let result = client
+        .call(
+            5,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok", "decidedBy": "human" }),
+        )
+        .await;
+    assert!(
+        result.get("error").is_none(),
+        "human decision on human_required approval must succeed: {result:?}"
+    );
+    assert_eq!(result["result"]["outcome"], "decided");
+}
+
+#[tokio::test]
+async fn an_approval_not_human_required_is_decidable_by_the_model() {
+    let harness = Harness::start(|_| {}).await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let (approval_id, _run_id, _task_id) = seed_pending_approval(&harness, &mut client, "omp-1").await;
+
+    // Override the human_required flag to false in the database.
+    let db = Arc::new(
+        DatabaseHandle::start(harness.database.clone())
+            .await
+            .unwrap(),
+    );
+    db.run_domain_op(Box::new(move |conn| {
+        let approval_id_str = approval_id.to_string();
+        conn.execute(
+            "UPDATE approvals SET human_required = 0 WHERE approval_id = ?1",
+            rusqlite::params![approval_id_str],
+        )?;
+        Ok(json!({}))
+    }))
+    .await
+    .unwrap();
+
+    // Decide with decidedBy: "model" — should succeed since human_required is false.
+    let result = client
+        .call(
+            5,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok", "decidedBy": "model" }),
+        )
+        .await;
+    assert!(
+        result.get("error").is_none(),
+        "model decision on non-human_required approval must succeed: {result:?}"
+    );
+    assert_eq!(result["result"]["outcome"], "decided");
+}
+
+#[tokio::test]
+async fn an_approval_without_decided_by_defaults_to_model_and_fails_human_required() {
+    let harness = Harness::start(|_| {}).await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let (approval_id, _run_id, _task_id) = seed_pending_approval(&harness, &mut client, "omp-1").await;
+
+    // Omit decidedBy entirely — defaults to Model, which must be rejected for human_required.
+    let result = client
+        .call(
+            5,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "ok" }),
+        )
+        .await;
+    assert_eq!(
+        result["error"]["code"], -32602,
+        "missing decidedBy defaults to model, which must be rejected: {result:?}"
+    );
 }

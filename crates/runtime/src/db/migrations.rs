@@ -167,6 +167,14 @@ const MIGRATION_6: &str = "
 ALTER TABLE runs ADD COLUMN policy_fingerprint TEXT;
 ";
 
+/// Migration 7: records who decided each approval, so a `human_required`
+/// decision is auditable after the fact. Nullable -- rows written before
+/// this migration have no provenance and are never backfilled with a
+/// fabricated one.
+const MIGRATION_7: &str = "
+ALTER TABLE approvals ADD COLUMN decided_by TEXT;
+";
+
 /// Opens `path` as a private (mode `0600`) SQLite database, configures its
 /// PRAGMAs (`journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`,
 /// `synchronous=FULL`), and migrates it to the latest schema. Migrations
@@ -205,6 +213,7 @@ pub fn migrate(conn: &mut Connection) -> Result<(), DbError> {
         M::up(MIGRATION_4),
         M::up(MIGRATION_5),
         M::up(MIGRATION_6),
+        M::up(MIGRATION_7),
     ]);
     migrations.to_latest(conn)?;
     Ok(())

@@ -58,3 +58,16 @@ pub struct ApprovalDecision {
     /// The reason for this decision.
     pub reason: String,
 }
+
+/// Who produced an approval decision. Sent by `approval/decide` and
+/// enforced by the runtime: an approval created with
+/// `human_required: true` may only be decided by [`DecidedBy::Human`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum DecidedBy {
+    /// A human answered an interactive dialog.
+    Human,
+    /// The calling model supplied the decision itself.
+    Model,
+}

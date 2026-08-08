@@ -59,6 +59,10 @@ pub enum ApprovalError {
         approval_id: ApprovalId,
         run_id: RunId,
     },
+    /// The approval requires a human decision, but the caller identified
+    /// as a model.
+    #[error("approval {approval_id} requires a human decision")]
+    HumanRequired { approval_id: ApprovalId },
     /// A referenced record was not found.
     #[error("{kind} {id} not found")]
     NotFound { kind: &'static str, id: String },
@@ -148,6 +152,7 @@ impl ApprovalService {
         principal_instance_id: &str,
         decision: &str,
         reason: &str,
+        decided_by: batman_protocol::DecidedBy,
     ) -> Result<DecideOutcome, ApprovalError> {
         let snapshot = self.load_snapshot(approval_id).await?;
 
@@ -156,6 +161,10 @@ impl ApprovalService {
                 instance_id: principal_instance_id.to_string(),
                 approval_id,
             });
+        }
+
+        if snapshot.human_required && decided_by != batman_protocol::DecidedBy::Human {
+            return Err(ApprovalError::HumanRequired { approval_id });
         }
 
         if let Some(existing) = &snapshot.decision {
@@ -182,11 +191,12 @@ impl ApprovalService {
         let project_id = self.project_id;
         let decision_owned = decision.to_string();
         let reason_owned = reason.to_string();
+        let decided_by_owned = decided_by;
         let mut decide_result = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.decide_approval(approval_id, &decision_owned, &reason_owned)
+                repo.decide_approval(approval_id, &decision_owned, &reason_owned, decided_by_owned)
                     .map(|c| {
                         embed_envelope(serde_json::json!({ "sequence": c.sequence }), &c.envelope)
                     })
@@ -257,7 +267,8 @@ impl ApprovalService {
                 conn.query_row(
                     "SELECT a.run_id, a.decision, t.owner_client_instance_id, r.state,
                             r.flags_degraded_control, r.flags_needs_reconciliation, r.flags_protocol_unhealthy,
-                            r.flags_policy_quarantined, r.flags_workspace_dirty, r.flags_children_active
+                            r.flags_policy_quarantined, r.flags_workspace_dirty, r.flags_children_active,
+                            a.human_required
                      FROM approvals a
                      JOIN runs r ON a.run_id = r.run_id
                      JOIN tasks t ON a.task_id = t.task_id
@@ -276,7 +287,8 @@ impl ApprovalService {
                                 "policyQuarantined": row.get::<_, i64>(7)? != 0,
                                 "workspaceDirty": row.get::<_, i64>(8)? != 0,
                                 "childrenActive": row.get::<_, i64>(9)? != 0,
-                            }
+                            },
+                            "humanRequired": row.get::<_, i64>(10)? != 0,
                         }))
                     },
                 )
@@ -312,6 +324,7 @@ impl ApprovalService {
                 workspace_dirty: value["flags"]["workspaceDirty"].as_bool().unwrap_or(false),
                 children_active: value["flags"]["childrenActive"].as_bool().unwrap_or(false),
             },
+            human_required: value["humanRequired"].as_bool().unwrap_or(false),
         })
     }
 }
@@ -322,4 +335,5 @@ struct ApprovalSnapshot {
     owner_client_instance_id: String,
     run_state: String,
     run_flags: RunFlags,
+    human_required: bool,
 }

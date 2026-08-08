@@ -6,7 +6,8 @@
 // `decide` checks the approval's `humanRequired` flag before trusting the
 // caller-provided decision: when true and interactive UI is available, it
 // shows the human approval dialog (see `../approval-ui`) and decides with
-// the human's actual answer instead, redacting arguments before display.
+// the human's actual answer. When humanRequired is true but no UI is
+// available, it returns an error without calling the server (fail-closed).
 // A dialog timeout leaves the request pending rather than falling back to
 // the model-provided decision.
 
@@ -67,31 +68,38 @@ export function registerApprovalTool(pi: ExtensionAPI, ctx: OrchestrationToolCon
           approvalId: input.approvalId,
           decision: input.decision,
           reason: input.reason,
+          decidedBy: "model",
         });
       }
 
-      if (extCtx.hasUI) {
-        const pending = await findPendingApproval(client, input.approvalId);
-        if (pending?.humanRequired === true) {
-          const human = await showApprovalDialog(extCtx.ui, pending);
-          if (human === undefined) {
-            return {
-              content: [{ type: "text", text: `Approval dialog timed out; ${input.approvalId} remains pending.` }],
-              details: { approvalId: input.approvalId, outcome: "pending" },
-            };
-          }
-          return callOrchestration(client, "approval/decide", {
-            approvalId: input.approvalId,
-            decision: human.decision,
-            reason: human.reason,
-          });
+      const pending = await findPendingApproval(client, input.approvalId);
+      if (pending?.humanRequired === true) {
+        if (!extCtx.hasUI) {
+          return {
+            content: [{ type: "text", text: `Approval ${input.approvalId} requires a human decision and no interactive UI is available; it remains pending.` }],
+            details: { approvalId: input.approvalId, outcome: "pending", reason: "humanRequiredWithoutUi" },
+          };
         }
+        const human = await showApprovalDialog(extCtx.ui, pending);
+        if (human === undefined) {
+          return {
+            content: [{ type: "text", text: `Approval dialog timed out; ${input.approvalId} remains pending.` }],
+            details: { approvalId: input.approvalId, outcome: "pending" },
+          };
+        }
+        return callOrchestration(client, "approval/decide", {
+          approvalId: input.approvalId,
+          decision: human.decision,
+          reason: human.reason,
+          decidedBy: "human",
+        });
       }
 
       return callOrchestration(client, "approval/decide", {
         approvalId: input.approvalId,
         decision: input.decision,
         reason: input.reason,
+        decidedBy: "model",
       });
     },
   });

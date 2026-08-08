@@ -762,6 +762,7 @@ impl<'c> DomainRepository<'c> {
         approval_id: batman_protocol::ApprovalId,
         decision: &str,
         reason: &str,
+        decided_by: batman_protocol::DecidedBy,
     ) -> Result<Committed, DomainError> {
         let (run_id_str, task_id_str, action): (String, String, String) = self
             .conn
@@ -798,8 +799,8 @@ impl<'c> DomainRepository<'c> {
             let now = Timestamp::now();
             let _ = reason;
             tx.execute(
-                "UPDATE approvals SET decision = ?1, decided_at = ?2 WHERE approval_id = ?3",
-                rusqlite::params![decision, now.as_str(), approval_id.to_string()],
+                "UPDATE approvals SET decision = ?1, decided_at = ?2, decided_by = ?3 WHERE approval_id = ?4",
+                rusqlite::params![decision, now.as_str(), serde_json::to_string(&decided_by).expect("DecidedBy always serializes"), approval_id.to_string()],
             )?;
             Ok(())
         })

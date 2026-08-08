@@ -84,7 +84,7 @@ impl From<crate::approval::ApprovalError> for ServiceError {
                 code: error_code::INVALID_PARAMS,
                 message: err.to_string(),
             },
-            ApprovalError::Conflict { .. } | ApprovalError::RunSettled { .. } => Self {
+            ApprovalError::Conflict { .. } | ApprovalError::RunSettled { .. } | ApprovalError::HumanRequired { .. } => Self {
                 code: error_code::INVALID_PARAMS,
                 message: err.to_string(),
             },
@@ -1396,9 +1396,19 @@ impl OrchestrationService {
         }
         let reason = str_field(params, "reason")?;
 
+        let decided_by = match params.get("decidedBy").and_then(Value::as_str) {
+            Some("human") => batman_protocol::DecidedBy::Human,
+            Some("model") | None => batman_protocol::DecidedBy::Model,
+            Some(other) => {
+                return Err(ServiceError::invalid_params(format!(
+                    "decidedBy must be \"human\" or \"model\"; got {other:?}"
+                )));
+            }
+        };
+
         let outcome = self
             .approval
-            .decide(approval_id, &principal.instance_id, &decision, &reason)
+            .decide(approval_id, &principal.instance_id, &decision, &reason, decided_by)
             .await
             .map_err(ServiceError::from)?;
 
