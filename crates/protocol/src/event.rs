@@ -15,6 +15,7 @@ use crate::ids::{
     ApprovalId, ArtifactId, MessageId, PolicyViolationId, ProjectId, RunId, TaskId, WorkerId,
 };
 use crate::workspace::WorkspaceEvent;
+use crate::approval::DecidedBy;
 
 /// Canonical UTC RFC 3339 timestamp text, as carried on the wire.
 ///
@@ -396,6 +397,7 @@ pub enum RuntimeEvent {
         run_id: RunId,
         task_id: TaskId,
         action: String,
+        decided_by: Option<DecidedBy>,
     },
     /// A child worker was requested or denied.
     ChildEvent {

@@ -821,6 +821,16 @@
                 },
                 "action": {
                   "type": "string"
+                },
+                "decidedBy": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/DecidedBy"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "additionalProperties": false,
@@ -1812,6 +1822,21 @@
     "ApprovalId": {
       "description": "Identifies an approval request raised by the runtime.",
       "type": "string"
+    },
+    "DecidedBy": {
+      "description": "Who produced an approval decision. Sent by `approval/decide` and\nenforced by the runtime: an approval created with\n`human_required: true` may only be decided by [`DecidedBy::Human`].",
+      "oneOf": [
+        {
+          "description": "A human answered an interactive dialog.",
+          "type": "string",
+          "const": "human"
+        },
+        {
+          "description": "The calling model supplied the decision itself.",
+          "type": "string",
+          "const": "model"
+        }
+      ]
     },
     "ArtifactId": {
       "description": "Identifies an artifact produced by a run.",

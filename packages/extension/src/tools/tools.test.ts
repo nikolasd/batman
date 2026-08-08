@@ -279,3 +279,64 @@ test("batman_worker tool maps a JSON-RPC error to a stable, non-throwing tool er
 
   cached?.close();
 });
+
+test("batman_approval fails closed when humanRequired and no UI is available", async () => {
+  // Create a stub client that returns a human_required approval.
+  const stubClient = {
+    request: async (method: string) => {
+      if (method === "approval/list") {
+        return {
+          approvals: [
+            {
+              approvalId: "test-approval-1",
+              action: "write file",
+              arguments: { path: "/tmp/test" },
+              policyReason: "write requires approval",
+              humanRequired: true,
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    },
+  };
+
+  // Track if approval/decide was called (it should NOT be for the fail-closed path).
+  let decideCalled = false;
+  const trackingClient = {
+    request: async (method: string) => {
+      if (method === "approval/decide") {
+        decideCalled = true;
+      }
+      return stubClient.request(method);
+    },
+  };
+
+  const { api, tools } = createFakeApi();
+  registerOrchestrationTools(api, {
+    getClient: () => trackingClient as unknown as BatmanClient,
+  });
+
+  const approvalTool = tools.get("batman_approval");
+  if (!approvalTool) throw new Error("approval tool not found");
+
+  // Context with no UI (hasUI: false).
+  const ctx = {
+    ...fakeExtensionContext("/tmp"),
+    hasUI: false,
+  } as unknown as ExtensionContext;
+
+  const result = await approvalTool.execute(
+    "call-1",
+    { op: "decide", approvalId: "test-approval-1", decision: "approve", reason: "ok" },
+    undefined,
+    undefined,
+    ctx,
+  );
+
+  // The fail-closed path returns an error without calling the server.
+  expect(result.isError).toBe(true);
+  expect(decideCalled).toBe(false);
+  const details = result.details as { reason: string };
+  expect(details.reason).toBe("humanRequiredWithoutUi");
+});

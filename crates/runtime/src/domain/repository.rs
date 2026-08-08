@@ -722,6 +722,7 @@ impl<'c> DomainRepository<'c> {
             run_id: approval.run_id,
             task_id: approval.task_id,
             action: approval.action.clone(),
+            decided_by: None,
         };
         let approval = approval.clone();
         self.append_and_apply(
@@ -792,6 +793,7 @@ impl<'c> DomainRepository<'c> {
             run_id,
             task_id,
             action,
+            decided_by: Some(decided_by),
         };
         let decision = decision.to_string();
         let reason = reason.to_string();

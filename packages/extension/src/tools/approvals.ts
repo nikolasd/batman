@@ -78,6 +78,7 @@ export function registerApprovalTool(pi: ExtensionAPI, ctx: OrchestrationToolCon
           return {
             content: [{ type: "text", text: `Approval ${input.approvalId} requires a human decision and no interactive UI is available; it remains pending.` }],
             details: { approvalId: input.approvalId, outcome: "pending", reason: "humanRequiredWithoutUi" },
+            isError: true,
           };
         }
         const human = await showApprovalDialog(extCtx.ui, pending);
