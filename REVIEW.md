@@ -74,7 +74,7 @@ The reviewed code had the following verified baseline before this document was w
 
 **Impact:** In non-interactive OMP modes, a model can approve an operation explicitly marked as requiring a human. This bypasses the safety property at the point where no human is likely to be watching.
 
-**Suggested fix:** Enforce the invariant server-side with an authenticated human-decision channel/marker, and fail closed in the extension when a human-required approval is encountered without UI.
+**Resolution (2026-08-08):** Added `DecidedBy` enum to protocol for decision provenance. Server enforces: a `human_required` approval rejects any decision not marked `Human`. Extension fails closed when no UI is available. `decided_by` persisted to database and included in `ApprovalDecided` event.
 
 #### R6. A dead cached runtime client breaks all tools until status is called
 

@@ -111,18 +111,24 @@ Release CI builds `aarch64-unknown-linux-gnu` on x86_64 Ubuntu but installs only
 
 ### 72. Enforce human-required approvals server-side
 
-**Status:** Open (discovered 2026-08-06 during codebase review)
+**Status:** ✅ Closed 2026-08-08
 **Priority:** High
 **Labels:** approval, security, extension
 
 **Description:**
 The extension shows a human dialog only when UI is available, then falls through to the model-supplied decision in headless mode. The runtime stores `humanRequired` but does not enforce it when deciding.
 
-**Implementation:**
-- Require an authenticated human-decision signal in `ApprovalService::decide`.
-- Fail closed in the extension when a human-required approval has no interactive UI.
+**Resolution:**
+- Added `DecidedBy` enum (`Human`/`Model`) to protocol types for approval decision provenance
+- Added `MIGRATION_7` to persist `decided_by` on approvals (nullable, no backfill)
+- `ApprovalService::decide` now requires `DecidedBy`; rejects a `Model` decision on a `human_required` approval
+- `approval_decide` RPC handler parses `decidedBy`, defaulting to `Model` (fail-closed for human_required)
+- `decided_by` is included in the `ApprovalDecided` event payload for auditability
+- Extension approval tool fails closed when `humanRequired` is true and no UI is available
+- Sends `decidedBy: "human"` for dialog answers, `decidedBy: "model"` for model decisions
+- Defended by four new Rust tests and one extension unit test
 
-**References:** `REVIEW.md` (R5), `packages/extension/src/tools/approvals.ts:73`, `crates/runtime/src/approval/service.rs:145`
+**References:** `REVIEW.md` (R5), `crates/protocol/src/approval.rs`, `crates/runtime/src/approval/service.rs`, `packages/extension/src/tools/approvals.ts`
 
 ---
 
