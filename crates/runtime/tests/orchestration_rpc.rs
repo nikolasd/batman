@@ -1293,6 +1293,204 @@ async fn run_submit_with_fake_driver_reaches_working_and_retry_creates_new_run()
         retry["result"]["taskId"], task_id,
         "retry must retain the same TaskId"
     );
+
+    // The retried run must also reach working, proving retry actually starts the adapter.
+    let get_retry = client
+        .call(8, "run/get", json!({ "runId": new_run_id }))
+        .await;
+    assert_eq!(
+        get_retry["result"]["state"], "working",
+        "retried run must reach working: {get_retry:?}"
+    );
+}
+
+/// A [`RunDriver`] that captures every [`RunDriverContext`] passed to `start()`
+/// and delegates the actual state transitions to a [`FakeRunDriver`].
+#[derive(Default)]
+struct StartCapturingRunDriver {
+    started: parking_lot::Mutex<Vec<RunDriverContext>>,
+    inner: FakeRunDriver,
+}
+
+impl RunDriver for StartCapturingRunDriver {
+    fn start(&self, ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
+        self.started.lock().push(ctx.clone());
+        self.inner.start(ctx)
+    }
+
+    fn send_follow_up(
+        &self,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        prompt: String,
+    ) -> AdapterFuture<'static, Result<(), String>> {
+        self.inner
+            .send_follow_up(run_id, task_id, worker_id, prompt)
+    }
+
+    fn running_adapter(&self, run_id: RunId) -> Option<Arc<dyn Adapter>> {
+        self.inner.running_adapter(run_id)
+    }
+
+    fn cancel_run(
+        &self,
+        run_id: RunId,
+        scope: CancelScope,
+    ) -> AdapterFuture<'static, Result<(), String>> {
+        self.inner.cancel_run(run_id, scope)
+    }
+}
+
+#[tokio::test]
+async fn retry_starts_the_adapter_with_the_supplied_prompt() {
+    let driver = Arc::new(StartCapturingRunDriver::default());
+
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::clone(&driver) as Arc<dyn RunDriver>);
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let task = client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+    let worker = client
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+
+    // Submit with prompt "first".
+    let submit = client
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id, "prompt": "first" }),
+        )
+        .await;
+    assert!(
+        submit.get("error").is_none(),
+        "run/submit failed: {submit:?}"
+    );
+    let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
+
+    // Cancel to reach terminal state.
+    let cancel = client
+        .call(5, "run/cancel", json!({ "runId": run_id }))
+        .await;
+    assert!(
+        cancel.get("error").is_none(),
+        "run/cancel failed: {cancel:?}"
+    );
+
+    // Retry with prompt "second".
+    let retry = client
+        .call(
+            6,
+            "run/retry",
+            json!({ "priorRunId": run_id, "workerId": worker_id, "prompt": "second" }),
+        )
+        .await;
+    assert!(retry.get("error").is_none(), "run/retry failed: {retry:?}");
+    let new_run_id = retry["result"]["runId"].as_str().unwrap().to_string();
+
+    // Assert the driver was started twice, and the second start carried the retry prompt.
+    let started = driver.started.lock();
+    assert_eq!(started.len(), 2, "driver should have started twice");
+    assert_eq!(
+        started[0].prompt.as_deref(),
+        Some("first"),
+        "first run should have had prompt 'first'"
+    );
+    assert_eq!(
+        started[1].prompt.as_deref(),
+        Some("second"),
+        "retried run should have had prompt 'second'"
+    );
+    assert_eq!(
+        started[1].run_id.to_string(),
+        new_run_id,
+        "retried run should have the new run id"
+    );
+}
+
+#[tokio::test]
+async fn retry_without_a_driver_reports_adapter_unavailable_and_preserves_the_queued_run() {
+    // Harness with no driver injected.
+    let harness = Harness::start(|_| {}).await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let task = client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+    let worker = client
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+
+    // Submit fails with adapter_unavailable, but the queued run is preserved.
+    let submit = client
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id }),
+        )
+        .await;
+    assert_eq!(submit["error"]["message"], "adapter_unavailable");
+
+    // Get the run id from the list.
+    let list = client
+        .call(5, "run/list", json!({ "taskId": task_id }))
+        .await;
+    let runs = list["result"]["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["state"], "queued");
+    let run_id = runs[0]["runId"].as_str().unwrap().to_string();
+
+    // Manually transition to cancelled so we have a terminal state to retry from.
+    let cancel = client
+        .call(6, "run/cancel", json!({ "runId": run_id }))
+        .await;
+    assert!(
+        cancel.get("error").is_none(),
+        "run/cancel failed: {cancel:?}"
+    );
+
+    // Retry without a driver should also fail with adapter_unavailable.
+    let retry = client
+        .call(
+            7,
+            "run/retry",
+            json!({ "priorRunId": run_id, "workerId": worker_id }),
+        )
+        .await;
+    assert_eq!(retry["error"]["message"], "adapter_unavailable");
+
+    // The retried run is still queued (preserved).
+    let list2 = client
+        .call(8, "run/list", json!({ "taskId": task_id }))
+        .await;
+    let runs2 = list2["result"]["runs"].as_array().unwrap();
+    assert_eq!(runs2.len(), 2, "should have original and retried runs");
+    assert_eq!(runs2[1]["state"], "queued", "retried run should be queued");
 }
 
 #[tokio::test]

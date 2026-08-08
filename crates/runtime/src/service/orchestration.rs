@@ -525,6 +525,118 @@ impl OrchestrationService {
 
     // -------------------------------------------------------------- run
 
+    /// Everything `run/submit` and `run/retry` share once a `queued` run row
+    /// exists: the display-pane event, the driver check, workspace
+    /// materialization, and `RunDriver::start`. Returns the resolved
+    /// workspace path so the caller can report it.
+    ///
+    /// # Errors
+    /// Returns `ADAPTER_UNAVAILABLE` when no driver is injected,
+    /// `invalid_params` for an unrecognized `workspace_mode`, and an internal
+    /// error when the lease, materializer, or driver start fails.
+    #[allow(clippy::too_many_arguments)]
+    async fn start_queued_run(
+        &self,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        prompt: Option<String>,
+        workspace_mode: Option<&str>,
+        policy: Option<Arc<crate::config::RuntimePolicy>>,
+        display: Option<batman_protocol::DisplaySelection>,
+        display_placement: batman_protocol::DisplayPlacement,
+    ) -> Result<Option<std::path::PathBuf>, ServiceError> {
+        // A pane is journaled only once the run row exists, so a replayer
+        // never sees a pane attach to a run it has not seen created. No
+        // available backend means no event at all -- headless is a normal
+        // outcome, not a failure.
+        if let Some(backend) = display.as_ref().and_then(|s| s.selected) {
+            let placement = display_placement;
+            let project_id = self.project_id;
+            let mut attached = self
+                .db
+                .run_domain_op(Box::new(move |conn| {
+                    let mut repo = DomainRepository::new(conn, project_id);
+                    repo.record_display_event(
+                        batman_protocol::RuntimeEventKind::DisplayPaneAttached,
+                        run_id,
+                        backend,
+                        placement,
+                        // The registry resolves availability without
+                        // activating a backend, so no vendor pane id
+                        // exists yet. Never a filesystem path.
+                        String::new(),
+                    )
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+                }))
+                .await
+                .map_err(ServiceError::from)?;
+            self.broadcast(&mut attached);
+        }
+
+        let Some(driver) = self.run_driver.clone() else {
+            // The queued run is preserved; the caller learns the adapter
+            // registry is unavailable without a fabricated "started" state.
+            return Err(ServiceError {
+                code: error_code::ADAPTER_UNAVAILABLE,
+                message: "adapter_unavailable".to_string(),
+            });
+        };
+
+        // Resolve the workspace. `shared` (and an absent mode) runs in the
+        // repository itself; `isolated` and `copy` each materialize a real
+        // per-run workspace. An unrecognized mode is the caller's error
+        // rather than a silent downgrade: falling back to the shared
+        // repository would let a typo run a write-capable agent directly
+        // against the user's working tree.
+        let isolation = match workspace_mode {
+            None | Some("shared") => None,
+            Some("isolated") => Some(IsolationKind::GitWorktree),
+            Some("copy") => Some(IsolationKind::Copy),
+            Some(other) => {
+                return Err(ServiceError::invalid_params(format!(
+                    "workspaceMode must be one of shared, isolated, copy; got {other:?}"
+                )));
+            }
+        };
+        let workspace_path = if let Some(isolation) = isolation {
+            let lease = self
+                .lease_service
+                .acquire(run_id, LeaseMode::Write, Some(isolation))
+                .map_err(|e| ServiceError::internal(e.to_string()))?;
+            let materializer = self.materializer()?;
+            let real_path = materializer
+                .materialize(run_id, lease.isolation_kind)
+                .map_err(|e| ServiceError::internal(e.to_string()))?;
+            self.lease_service
+                .activate(lease.lease_id, real_path.to_string_lossy().to_string())
+                .map_err(|e| ServiceError::internal(e.to_string()))?;
+            Some(real_path)
+        } else {
+            None
+        };
+
+        let project_id = self.project_id;
+        let ctx = RunDriverContext {
+            db: self.db.clone(),
+            project_id,
+            run_id,
+            task_id,
+            worker_id,
+            prompt,
+            events_tx: self.events_tx.clone(),
+            violation_service: Arc::clone(&self.violation),
+            workspace_path: workspace_path.clone(),
+            policy,
+            display,
+        };
+        // Orchestration-test-scope: awaited synchronously so the caller
+        // observes the final committed state deterministically.
+        driver.start(ctx).await.map_err(ServiceError::internal)?;
+
+        Ok(workspace_path)
+    }
+
     async fn run_submit(&self, params: &Value) -> Result<Value, ServiceError> {
         let task_id = parse_task_id(params.get("taskId"))?;
         let worker_id = parse_worker_id(params.get("workerId"))?;
@@ -604,91 +716,18 @@ impl OrchestrationService {
             .map_err(ServiceError::from)?;
         self.broadcast(&mut submit_result);
 
-        // A pane is journaled only once the run row exists, so a replayer
-        // never sees a pane attach to a run it has not seen created. No
-        // available backend means no event at all -- headless is a normal
-        // outcome, not a failure.
-        if let Some(backend) = display.as_ref().and_then(|s| s.selected) {
-            let placement = display_preference.placement;
-            let mut attached = self
-                .db
-                .run_domain_op(Box::new(move |conn| {
-                    let mut repo = DomainRepository::new(conn, project_id);
-                    repo.record_display_event(
-                        batman_protocol::RuntimeEventKind::DisplayPaneAttached,
-                        run_id,
-                        backend,
-                        placement,
-                        // The registry resolves availability without
-                        // activating a backend, so no vendor pane id
-                        // exists yet. Never a filesystem path.
-                        String::new(),
-                    )
-                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
-                }))
-                .await
-                .map_err(ServiceError::from)?;
-            self.broadcast(&mut attached);
-        }
-
-        let Some(driver) = self.run_driver.clone() else {
-            // The queued run is preserved; the caller learns the adapter
-            // registry is unavailable without a fabricated "started" state.
-            return Err(ServiceError {
-                code: error_code::ADAPTER_UNAVAILABLE,
-                message: "adapter_unavailable".to_string(),
-            });
-        };
-
-        // Resolve the workspace. `shared` (and an absent mode) runs in the
-        // repository itself; `isolated` and `copy` each materialize a real
-        // per-run workspace. An unrecognized mode is the caller's error
-        // rather than a silent downgrade: falling back to the shared
-        // repository would let a typo run a write-capable agent directly
-        // against the user's working tree.
-        let isolation = match workspace_mode.as_deref() {
-            None | Some("shared") => None,
-            Some("isolated") => Some(IsolationKind::GitWorktree),
-            Some("copy") => Some(IsolationKind::Copy),
-            Some(other) => {
-                return Err(ServiceError::invalid_params(format!(
-                    "workspaceMode must be one of shared, isolated, copy; got {other:?}"
-                )));
-            }
-        };
-        let workspace_path = if let Some(isolation) = isolation {
-            let lease = self
-                .lease_service
-                .acquire(run_id, LeaseMode::Write, Some(isolation))
-                .map_err(|e| ServiceError::internal(e.to_string()))?;
-            let materializer = self.materializer()?;
-            let real_path = materializer
-                .materialize(run_id, lease.isolation_kind)
-                .map_err(|e| ServiceError::internal(e.to_string()))?;
-            self.lease_service
-                .activate(lease.lease_id, real_path.to_string_lossy().to_string())
-                .map_err(|e| ServiceError::internal(e.to_string()))?;
-            Some(real_path)
-        } else {
-            None
-        };
-
-        let ctx = RunDriverContext {
-            db: self.db.clone(),
-            project_id,
-            run_id,
-            task_id,
-            worker_id,
-            prompt,
-            events_tx: self.events_tx.clone(),
-            violation_service: Arc::clone(&self.violation),
-            workspace_path: workspace_path.clone(),
-            policy: policy.clone(),
-            display: display.clone(),
-        };
-        // Orchestration-test-scope: awaited synchronously so the caller
-        // observes the final committed state deterministically.
-        driver.start(ctx).await.map_err(ServiceError::internal)?;
+        let workspace_path = self
+            .start_queued_run(
+                run_id,
+                task_id,
+                worker_id,
+                prompt,
+                workspace_mode.as_deref(),
+                policy,
+                display.clone(),
+                display_preference.placement,
+            )
+            .await?;
 
         let mut result = json!({
             "runId": run_id.to_string(),
@@ -739,12 +778,39 @@ impl OrchestrationService {
         Ok(result)
     }
 
-    /// `run/retry` takes the prior `RunId` and a new `WorkerId`; the result
-    /// always contains a distinct `RunId` and the same `TaskId`. The prior
-    /// run must be in a terminal state (no in-place resurrection).
+    /// `run/retry` takes a prior `RunId` (must be terminal) and a `WorkerId`,
+    /// and optionally a `prompt`, `workspaceMode`, and `displayPreference`. It
+    /// creates a distinct `RunId` inheriting the prior run's `TaskId`, then
+    /// routes through the same adapter start path as `run/submit`. When no
+    /// driver is available it returns `adapter_unavailable` while preserving
+    /// the queued run row, identical to submit's behavior.
     async fn run_retry(&self, params: &Value) -> Result<Value, ServiceError> {
         let prior_run_id = parse_run_id(params.get("priorRunId"))?;
         let worker_id = parse_worker_id(params.get("workerId"))?;
+
+        // Parse optional prompt, workspaceMode, and displayPreference the same
+        // way run_submit does, so retry can drive the adapter with the same
+        // knobs.
+        let prompt = params
+            .get("prompt")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let workspace_mode = params
+            .get("workspaceMode")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let display_preference: batman_protocol::DisplayPreference = params
+            .get("displayPreference")
+            .map(|v| serde_json::from_value(v.clone()))
+            .transpose()
+            .map_err(|e| {
+                ServiceError::invalid_params(format!("displayPreference is malformed: {e}"))
+            })?
+            .unwrap_or(batman_protocol::DisplayPreference {
+                ordered: Vec::new(),
+                placement: batman_protocol::DisplayPlacement::Embedded,
+            });
+        let display = Some(self.display.resolve(&display_preference));
 
         let prior = self
             .db
@@ -789,12 +855,37 @@ impl OrchestrationService {
             .map_err(ServiceError::from)?;
         self.broadcast(&mut sequence);
 
-        Ok(json!({
+        // Route retry through the same start path as submit, so the adapter
+        // actually runs. A failure here preserves the queued run row (same
+        // as submit).
+        let workspace_path = self
+            .start_queued_run(
+                new_run_id,
+                task_id,
+                worker_id,
+                prompt,
+                workspace_mode.as_deref(),
+                self.policy.clone(),
+                display.clone(),
+                display_preference.placement,
+            )
+            .await?;
+
+        let mut result = json!({
             "runId": new_run_id.to_string(),
             "taskId": task_id.to_string(),
             "priorRunId": prior_run_id.to_string(),
             "sequence": sequence["sequence"],
-        }))
+        });
+        if let Some(path) = &workspace_path {
+            result["workspacePath"] = json!(path.to_string_lossy().to_string());
+            result["workspaceMode"] = json!("isolated");
+        }
+        if let Some(selection) = &display {
+            result["display"] = serde_json::to_value(selection)
+                .expect("DisplaySelection always serializes to JSON");
+        }
+        Ok(result)
     }
 
     /// OMP may request cancellation; the transition is applied only after

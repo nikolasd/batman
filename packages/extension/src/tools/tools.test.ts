@@ -78,7 +78,7 @@ test("read-only ops resolve to tier read, mutating worker/run ops resolve to tie
   expect(runApproval({ op: "cancel" })).toBe("exec");
   expect(runApproval({ op: "list" })).toBe("read");
   expect(runApproval({ op: "get" })).toBe("read");
-  expect(runApproval({ op: "retry" })).toBe("read");
+  expect(runApproval({ op: "retry" })).toBe("exec");
 });
 
 test("every op's approval tier matches whether it mutates", () => {

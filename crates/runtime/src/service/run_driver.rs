@@ -83,6 +83,7 @@ pub trait RunDriver: Send + Sync {
 
 /// A deterministic driver for orchestration tests and fixtures: acknowledges
 /// immediately and transitions `queued -> starting -> working`.
+#[derive(Default)]
 pub struct FakeRunDriver;
 
 impl RunDriver for FakeRunDriver {
