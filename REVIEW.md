@@ -102,7 +102,7 @@ The reviewed code had the following verified baseline before this document was w
 
 **Resolution:** `de07022` — `batcave conformance --fixture` now compares results against `fixtures/conformance/fixture-mode-baseline.json`. Unexpected failures fail the gate; baseline entries that start passing also fail (prevents silent rot). The seven documented fixture-mode failures (4 codex, 3 copilot) are properties of installed vendor CLIs, not regressions. Gate verified: exits 0 with correct baseline, exits 1 with a bogus baseline entry.
 
-#### R9. Release version checks do not validate the packages npm publishes
+#### R9. Release version checks do not validate the packages npm publishes ~RESOLVED~
 
 **Location:** `.github/workflows/release.yml:144-152,195-206`; `crates/xtask/src/main.rs:578-611`; `packages/extension/package.json:3`; `packages/batman-darwin-arm64/package.json:3` and peer leaf packages
 
@@ -110,7 +110,7 @@ The reviewed code had the following verified baseline before this document was w
 
 **Impact:** A missed leaf version bump can pass package-set and then fail partway through sequential publishing, or publish an extension whose installed leaf version fails runtime integrity checks.
 
-**Suggested fix:** Validate every leaf `package.json` version and the `v<version>` tag before building or publishing. Publish only after all package metadata passes as one set.
+**Resolution:** `bb209eb` — `package-set` now reads each leaf's `package.json` from the workspace and verifies the version matches. Added `version-gate` CI job that verifies the git tag matches `v<version>` before any build work. Tag check gated on `GITHUB_REF_TYPE=tag` so `workflow_dispatch` skips it.
 
 #### R10. Artifact APIs are project-scoped despite claiming task isolation ~RESOLVED~
 

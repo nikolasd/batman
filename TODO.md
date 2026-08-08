@@ -187,17 +187,15 @@ Committed as `de07022`. Conformance now gates against `fixtures/conformance/fixt
 
 ### 76. Validate release tags and every npm package version
 
-**Status:** Open (discovered 2026-08-06 during codebase review)
+**Status:** ✅ Closed 2026-08-08
 **Priority:** High
-**Labels:** release, npm, versioning
+**Labels:** release, versioning, CI
 
 **Description:**
-The workflow derives `--version` from the extension package and package-set compares it to the same file. It never checks the leaf packages' published npm versions or the release tag, allowing partial or internally mismatched publication.
+Nothing validated each leaf `package.json` version or the git tag against the release version. A stale leaf version could publish under the wrong version, and a mismatched tag could publish the wrong version.
 
-**Implementation:**
-- Validate all leaf `package.json` versions against the extension version.
-- Validate `github.ref_name` equals `v<version>` before build/publish.
-
+**Resolution:**
+Committed as `bb209eb`. `package-set` reads each leaf's `package.json` and verifies the version. Added `version-gate` CI job that verifies the git tag matches `v<version>` before any build work.
 **References:** `REVIEW.md` (R9), `.github/workflows/release.yml:144`, `crates/xtask/src/main.rs:578`
 
 ---
