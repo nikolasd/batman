@@ -196,10 +196,13 @@ impl ApprovalService {
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.decide_approval(approval_id, &decision_owned, &reason_owned, decided_by_owned)
-                    .map(|c| {
-                        embed_envelope(serde_json::json!({ "sequence": c.sequence }), &c.envelope)
-                    })
+                repo.decide_approval(
+                    approval_id,
+                    &decision_owned,
+                    &reason_owned,
+                    decided_by_owned,
+                )
+                .map(|c| embed_envelope(serde_json::json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
             .map_err(ApprovalError::Domain)?;

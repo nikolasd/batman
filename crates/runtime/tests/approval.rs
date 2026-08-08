@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use batman_protocol::{ApprovalId, ApprovalRequest, DecidedBy, ProjectId, RunId, TaskId, Timestamp, WorkerId};
+use batman_protocol::{
+    ApprovalId, ApprovalRequest, DecidedBy, ProjectId, RunId, TaskId, Timestamp, WorkerId,
+};
 use batman_runtime::approval::{
     ApprovalCallback, ApprovalService, CallbackFuture, NoopApprovalCallback,
 };
@@ -598,7 +600,8 @@ async fn a_human_required_approval_is_rejected_when_decided_by_the_model() {
     let harness = Harness::start(|_| {}).await;
     let mut client = omp_client(&harness, "omp-1").await;
 
-    let (approval_id, _run_id, _task_id) = seed_pending_approval(&harness, &mut client, "omp-1").await;
+    let (approval_id, _run_id, _task_id) =
+        seed_pending_approval(&harness, &mut client, "omp-1").await;
 
     // Decide with decidedBy: "model" — should be rejected for human_required approval.
     let result = client
@@ -613,7 +616,10 @@ async fn a_human_required_approval_is_rejected_when_decided_by_the_model() {
         "model decision on human_required approval must be rejected: {result:?}"
     );
     assert!(
-        result["error"]["message"].as_str().unwrap().contains("requires a human decision"),
+        result["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("requires a human decision"),
         "error message must mention human requirement: {result:?}"
     );
 
@@ -632,7 +638,8 @@ async fn a_human_required_approval_is_accepted_when_decided_by_a_human() {
     let harness = Harness::start(|_| {}).await;
     let mut client = omp_client(&harness, "omp-1").await;
 
-    let (approval_id, _run_id, _task_id) = seed_pending_approval(&harness, &mut client, "omp-1").await;
+    let (approval_id, _run_id, _task_id) =
+        seed_pending_approval(&harness, &mut client, "omp-1").await;
 
     // Decide with decidedBy: "human" — should succeed.
     let result = client
@@ -654,7 +661,8 @@ async fn an_approval_not_human_required_is_decidable_by_the_model() {
     let harness = Harness::start(|_| {}).await;
     let mut client = omp_client(&harness, "omp-1").await;
 
-    let (approval_id, _run_id, _task_id) = seed_pending_approval(&harness, &mut client, "omp-1").await;
+    let (approval_id, _run_id, _task_id) =
+        seed_pending_approval(&harness, &mut client, "omp-1").await;
 
     // Override the human_required flag to false in the database.
     let db = Arc::new(
@@ -693,7 +701,8 @@ async fn an_approval_without_decided_by_defaults_to_model_and_fails_human_requir
     let harness = Harness::start(|_| {}).await;
     let mut client = omp_client(&harness, "omp-1").await;
 
-    let (approval_id, _run_id, _task_id) = seed_pending_approval(&harness, &mut client, "omp-1").await;
+    let (approval_id, _run_id, _task_id) =
+        seed_pending_approval(&harness, &mut client, "omp-1").await;
 
     // Omit decidedBy entirely — defaults to Model, which must be rejected for human_required.
     let result = client

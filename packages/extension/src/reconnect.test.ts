@@ -87,13 +87,7 @@ afterAll(async () => {
 
 interface FakeToolDefinition {
   readonly name: string;
-  readonly execute: (
-    toolCallId: string,
-    params: unknown,
-    signal: AbortSignal | undefined,
-    onUpdate: undefined,
-    ctx: ExtensionContext,
-  ) => Promise<unknown>;
+  readonly execute: (toolCallId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext) => Promise<unknown>;
 }
 
 function createFakeApi(): {
@@ -132,13 +126,7 @@ test("a tool reconnects after the daemon exits", async () => {
 
   // First call succeeds and populates the cache.
   const taskTool = tools.get("batman_task")!;
-  const result1 = (await taskTool.execute(
-    "call-1",
-    { op: "upsert", revision: 1 },
-    undefined,
-    undefined,
-    ctx,
-  )) as AgentToolResult<unknown>;
+  const result1 = (await taskTool.execute("call-1", { op: "upsert", revision: 1 }, undefined, undefined, ctx)) as AgentToolResult<unknown>;
   expect(result1.isError).toBeFalsy();
 
   // Stop the daemon, then start it again with the same state dir and repo.
@@ -146,12 +134,6 @@ test("a tool reconnects after the daemon exits", async () => {
 
   // The second call must succeed despite the cached client being closed.
   // Against pre-fix code this fails with "connection closed by runtime".
-  const result2 = (await taskTool.execute(
-    "call-2",
-    { op: "upsert", revision: 2 },
-    undefined,
-    undefined,
-    ctx,
-  )) as AgentToolResult<unknown>;
+  const result2 = (await taskTool.execute("call-2", { op: "upsert", revision: 2 }, undefined, undefined, ctx)) as AgentToolResult<unknown>;
   expect(result2.isError).toBeFalsy();
 }, 60_000);

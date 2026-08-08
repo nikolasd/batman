@@ -146,11 +146,10 @@ during an active multi-worker run; `op: "list"` reviews a run's message history.
 
 `op: "list"` (optionally filtered by `runId`) shows pending approvals, including whether each is
 `humanRequired`; `op: "decide"` applies an `approve`/`deny` decision with an optional `reason`. The
-runtime enforces `humanRequired` — this tool never auto-approves, not even on `list`. When a
-decision targets a `humanRequired: true` approval and a UI is present, OMP shows an interactive
-dialog (redacting any argument that looks like a token/secret/password/credential) instead of
-trusting whatever decision the model supplied; the dialog times out after 5 minutes, leaving the
-approval pending rather than deciding it either way.
+runtime enforces `humanRequired` server-side — a model-supplied decision is rejected for a
+human-required approval. When a UI is present, an interactive dialog appears (redacting secrets)
+and the human's answer is sent with `decidedBy: "human"`. Without a UI, the tool returns an error
+and the approval stays pending (fail-closed). A dialog timeout also leaves the approval pending.
 
 ### Reclaiming a session's tasks — `batman_reconcile`
 

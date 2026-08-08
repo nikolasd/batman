@@ -326,13 +326,7 @@ test("batman_approval fails closed when humanRequired and no UI is available", a
     hasUI: false,
   } as unknown as ExtensionContext;
 
-  const result = await approvalTool.execute(
-    "call-1",
-    { op: "decide", approvalId: "test-approval-1", decision: "approve", reason: "ok" },
-    undefined,
-    undefined,
-    ctx,
-  );
+  const result = await approvalTool.execute("call-1", { op: "decide", approvalId: "test-approval-1", decision: "approve", reason: "ok" }, undefined, undefined, ctx);
 
   // The fail-closed path returns an error without calling the server.
   expect(result.isError).toBe(true);
