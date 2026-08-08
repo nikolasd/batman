@@ -609,6 +609,27 @@ fn package_set(root: &Path, version: &str, input: &Path, output: &Path) -> Resul
                 manifest.version
             );
         }
+        // Validate the leaf's own package.json version matches the release.
+        // This is what bun publish actually publishes, so a stale version
+        // would publish the leaf under the wrong version and the extension
+        // would pin a version that may not exist.
+        let leaf_pkg_path = leaf_package_dir(root, &entry.leaf).join("package.json");
+        let leaf_pkg_text = fs::read_to_string(&leaf_pkg_path)
+            .with_context(|| format!("reading {}", leaf_pkg_path.display()))?;
+        let leaf_pkg: serde_json::Value = serde_json::from_str(&leaf_pkg_text)
+            .with_context(|| format!("parsing {}", leaf_pkg_path.display()))?;
+        let leaf_pkg_version = leaf_pkg
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("{} has no version field", leaf_pkg_path.display()))?;
+        if leaf_pkg_version != version {
+            bail!(
+                "leaf package {} declares package.json version {:?} but the release is {version:?}; \
+                 every leaf package.json must be bumped with packages/extension/package.json",
+                leaf_package_name(&entry.leaf),
+                leaf_pkg_version
+            );
+        }
         if manifest.target != entry.leaf {
             bail!(
                 "leaf directory batman-{} contains a manifest for target {:?}",
