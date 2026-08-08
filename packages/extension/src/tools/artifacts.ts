@@ -13,10 +13,8 @@ export const BATMAN_ARTIFACT_TOOL_NAME = "batman_artifact";
 export function registerArtifactTool(pi: ExtensionAPI, ctx: OrchestrationToolContext): void {
   const params = pi.zod.object({
     op: pi.zod.enum(["list", "fetch"]).describe("Which artifact operation to perform."),
-    // Closed enum on purpose: the runtime maps exactly these four strings
-    // and silently treats anything else as "no filter", so an open string
-    // would let a typo return every artifact while appearing to filter.
     kind: pi.zod.enum(["patch", "commitList", "conflictReport", "workspaceManifest"]).optional().describe("Optional filter for list: only return artifacts of this kind. Omit to list every kind."),
+    taskId: pi.zod.string().optional().describe("Optional for list: narrow to artifacts from a specific task. Defaults to all tasks owned by the current session."),
     artifactId: pi.zod.string().optional().describe("Required for fetch: the artifact id to read."),
     offset: pi.zod.number().int().optional().describe("Optional for fetch: byte offset to start from. Defaults to 0."),
     length: pi.zod.number().int().optional().describe("Optional for fetch: how many bytes to read. The runtime caps this; the response's nextOffset says where to resume."),
@@ -33,7 +31,7 @@ export function registerArtifactTool(pi: ExtensionAPI, ctx: OrchestrationToolCon
       const client = await ctx.getClient(extCtx);
       switch (input.op) {
         case "list":
-          return callOrchestration(client, "artifact/list", { kind: input.kind });
+          return callOrchestration(client, "artifact/list", { kind: input.kind, taskId: input.taskId });
         case "fetch":
           return callOrchestration(client, "artifact/fetch", {
             artifactId: input.artifactId,

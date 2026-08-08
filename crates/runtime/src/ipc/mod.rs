@@ -178,6 +178,10 @@ pub struct ServerConfig {
         std::sync::Arc<crate::config::LayeredConfig>,
         std::sync::Arc<crate::config::RuntimePolicy>,
     )>,
+    /// Test hook: inject a shared artifact store so the test can seed
+    /// artifacts before exercising isolation gates. `None` creates a fresh
+    /// store (production default).
+    pub artifact_store: Option<std::sync::Arc<crate::workspace::ArtifactStore>>,
 }
 
 impl Default for ServerConfig {
@@ -194,6 +198,7 @@ impl Default for ServerConfig {
             approval_callback: Arc::new(crate::approval::NoopApprovalCallback),
             nested_violation_action: crate::config::NestedViolationAction::default(),
             policy: None,
+            artifact_store: None,
         }
     }
 }

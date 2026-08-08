@@ -20,20 +20,27 @@ pub enum InspectError {
 pub struct WorkspaceInspector {
     path: std::path::PathBuf,
     store: Option<Arc<crate::workspace::ArtifactStore>>,
+    run_id: Option<batman_protocol::RunId>,
 }
 
 impl WorkspaceInspector {
     pub fn new(path: std::path::PathBuf) -> Self {
-        WorkspaceInspector { path, store: None }
+        WorkspaceInspector {
+            path,
+            store: None,
+            run_id: None,
+        }
     }
 
     pub fn with_store(
         path: std::path::PathBuf,
         store: Arc<crate::workspace::ArtifactStore>,
+        run_id: batman_protocol::RunId,
     ) -> Self {
         WorkspaceInspector {
             path,
             store: Some(store),
+            run_id: Some(run_id),
         }
     }
 
@@ -67,7 +74,7 @@ impl WorkspaceInspector {
                 byte_length: patch_content.len() as u64,
                 media_type: "application/x-git-diff".to_string(),
                 storage_path: format!("patches/{}.patch", patch_content.len()),
-                run_id: None,
+                run_id: self.run_id.as_ref().map(|r| r.to_string()),
             };
             store
                 .store(artifact, patch_content)

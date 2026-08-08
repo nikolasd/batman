@@ -261,3 +261,37 @@ fn row_to_approval_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
 use ApprovalId as _ApprovalId;
 #[allow(unused_imports)]
 use MessageId as _MessageId;
+pub fn owned_run_ids_op(
+    owner_instance_id: String,
+    task_id: Option<TaskId>,
+    project_id: ProjectId,
+) -> DomainClosure {
+    Box::new(move |conn| {
+        let sql = if task_id.is_some() {
+            "SELECT r.run_id FROM runs r JOIN tasks t ON r.task_id = t.task_id WHERE t.project_id = ?1 AND t.owner_client_instance_id = ?2 AND t.task_id = ?3"
+        } else {
+            "SELECT r.run_id FROM runs r JOIN tasks t ON r.task_id = t.task_id WHERE t.project_id = ?1 AND t.owner_client_instance_id = ?2"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let ids: Vec<String> = if let Some(task_id) = task_id {
+            stmt.query_map(
+                rusqlite::params![
+                    project_id.to_string(),
+                    owner_instance_id,
+                    task_id.to_string()
+                ],
+                |row| row.get(0),
+            )?
+            .filter_map(|r| r.ok())
+            .collect()
+        } else {
+            stmt.query_map(
+                rusqlite::params![project_id.to_string(), owner_instance_id],
+                |row| row.get(0),
+            )?
+            .filter_map(|r| r.ok())
+            .collect()
+        };
+        Ok(json!(ids))
+    })
+}

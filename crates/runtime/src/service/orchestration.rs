@@ -84,7 +84,9 @@ impl From<crate::approval::ApprovalError> for ServiceError {
                 code: error_code::INVALID_PARAMS,
                 message: err.to_string(),
             },
-            ApprovalError::Conflict { .. } | ApprovalError::RunSettled { .. } | ApprovalError::HumanRequired { .. } => Self {
+            ApprovalError::Conflict { .. }
+            | ApprovalError::RunSettled { .. }
+            | ApprovalError::HumanRequired { .. } => Self {
                 code: error_code::INVALID_PARAMS,
                 message: err.to_string(),
             },
@@ -294,8 +296,8 @@ impl OrchestrationService {
             BatmanMethod::WorkspaceRelease => self.workspace_release(params).await,
             BatmanMethod::WorkspaceInspect => self.workspace_inspect(params).await,
             BatmanMethod::WorkspaceApply => self.workspace_apply(params).await,
-            BatmanMethod::ArtifactList => self.artifact_list(params).await,
-            BatmanMethod::ArtifactFetch => self.artifact_fetch(params).await,
+            BatmanMethod::ArtifactList => self.artifact_list(principal, params).await,
+            BatmanMethod::ArtifactFetch => self.artifact_fetch(principal, params).await,
             _ => Err(ServiceError::internal(
                 "method is not routed through OrchestrationService",
             )),
@@ -1103,9 +1105,13 @@ impl OrchestrationService {
             .lease_service
             .get(request.lease_id.clone())
             .map_err(|e| ServiceError::internal(e.to_string()))?;
+        self.ensure_not_quarantined(lease.run_id).await?;
 
-        let inspector =
-            crate::workspace::WorkspaceInspector::new(std::path::PathBuf::from(&lease.path));
+        let inspector = crate::workspace::WorkspaceInspector::with_store(
+            std::path::PathBuf::from(&lease.path),
+            self.artifact_store.clone(),
+            lease.run_id,
+        );
         let result = inspector
             .inspect(&request)
             .await
@@ -1161,6 +1167,7 @@ impl OrchestrationService {
         let applier = crate::workspace::WorkspaceApplier::from_store(
             std::path::PathBuf::from(&lease.path),
             self.artifact_store.clone(),
+            lease.run_id,
         );
         self.emit_workspace_event(
             batman_protocol::WorkspaceEvent::ApplyStarted {
@@ -1224,7 +1231,11 @@ impl OrchestrationService {
         }))
     }
 
-    async fn artifact_list(&self, params: &Value) -> Result<Value, ServiceError> {
+    async fn artifact_list(
+        &self,
+        principal: &crate::ipc::ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
         let kind_str = str_field(params, "kind").ok();
         let kind = kind_str.as_ref().and_then(|k| match k.as_str() {
             "patch" => Some(batman_protocol::ArtifactKind::Patch),
@@ -1233,13 +1244,52 @@ impl OrchestrationService {
             "workspaceManifest" => Some(batman_protocol::ArtifactKind::WorkspaceManifest),
             _ => None,
         });
+        let task_id = params
+            .get("taskId")
+            .and_then(Value::as_str)
+            .map(TaskId::parse)
+            .transpose()
+            .map_err(|_| ServiceError::invalid_params("taskId is not a valid id"))?;
+        // Resolve the scope: run ids belonging to tasks this session owns.
+        let project_id = self.project_id;
+        let scope: Vec<String> = self
+            .db
+            .run_domain_op(crate::service::query::owned_run_ids_op(
+                principal.instance_id.clone(),
+                task_id,
+                project_id,
+            ))
+            .await
+            .map_err(ServiceError::from)?
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Fetch all artifacts and filter by scope.
         let result = self.artifact_store.list(kind).await;
+        let scoped = result
+            .artifacts
+            .iter()
+            .filter(|a| {
+                a.run_id
+                    .as_deref()
+                    .is_some_and(|id| scope.iter().any(|s| s == id))
+            })
+            .map(|a| serde_json::to_value(a).expect("Artifact is serializable"))
+            .collect::<Vec<_>>();
         Ok(json!({
-            "artifacts": result.artifacts.iter().map(|a| serde_json::to_value(a).expect("Artifact is serializable")).collect::<Vec<_>>(),
+            "artifacts": scoped,
         }))
     }
-
-    async fn artifact_fetch(&self, params: &Value) -> Result<Value, ServiceError> {
+    async fn artifact_fetch(
+        &self,
+        principal: &crate::ipc::ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
         use batman_protocol::ArtifactId;
         let artifact_id: ArtifactId = serde_json::from_value(
             params
@@ -1254,11 +1304,46 @@ impl OrchestrationService {
             .and_then(Value::as_u64)
             .unwrap_or(crate::workspace::ARTIFACT_FETCH_MAX_BYTES);
 
+        // Resolve the scope and check the artifact belongs to it.
+        let project_id = self.project_id;
+        let scope: Vec<String> = self
+            .db
+            .run_domain_op(crate::service::query::owned_run_ids_op(
+                principal.instance_id.clone(),
+                None,
+                project_id,
+            ))
+            .await
+            .map_err(ServiceError::from)?
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let result = self
             .artifact_store
             .fetch_chunked(&artifact_id, offset, length)
-            .await
-            .map_err(|e| ServiceError::internal(e.to_string()))?;
+            .await;
+        // One error message for both "unknown id" and "out of scope" — no oracle.
+        let Ok(result) = result else {
+            return Err(ServiceError::invalid_params(
+                "artifactId is not an artifact on a task you own",
+            ));
+        };
+        let in_scope = result
+            .artifact
+            .run_id
+            .as_deref()
+            .is_some_and(|id| scope.iter().any(|s| s == id));
+        if !in_scope {
+            return Err(ServiceError::invalid_params(
+                "artifactId is not an artifact on a task you own",
+            ));
+        }
 
         Ok(json!({
             "artifact": serde_json::to_value(&result.artifact).expect("Artifact is serializable"),
@@ -1408,7 +1493,13 @@ impl OrchestrationService {
 
         let outcome = self
             .approval
-            .decide(approval_id, &principal.instance_id, &decision, &reason, decided_by)
+            .decide(
+                approval_id,
+                &principal.instance_id,
+                &decision,
+                &reason,
+                decided_by,
+            )
             .await
             .map_err(ServiceError::from)?;
 

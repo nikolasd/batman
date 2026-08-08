@@ -27,20 +27,27 @@ pub enum ApplyError {
 pub struct WorkspaceApplier {
     path: std::path::PathBuf,
     store: Option<Arc<crate::workspace::ArtifactStore>>,
+    run_id: Option<batman_protocol::RunId>,
 }
 
 impl WorkspaceApplier {
     pub fn new(path: std::path::PathBuf) -> Self {
-        WorkspaceApplier { path, store: None }
+        WorkspaceApplier {
+            path,
+            store: None,
+            run_id: None,
+        }
     }
 
     pub fn from_store(
         path: std::path::PathBuf,
         store: Arc<crate::workspace::ArtifactStore>,
+        run_id: batman_protocol::RunId,
     ) -> Self {
         WorkspaceApplier {
             path,
             store: Some(store),
+            run_id: Some(run_id),
         }
     }
 
@@ -95,7 +102,7 @@ impl WorkspaceApplier {
                     byte_length: content.len() as u64,
                     media_type: "text/plain; charset=utf-8".to_string(),
                     storage_path: format!("conflicts/{lease_id}.txt"),
-                    run_id: None,
+                    run_id: self.run_id.as_ref().map(|r| r.to_string()),
                 };
                 store.store(artifact, content).await.ok()
             }

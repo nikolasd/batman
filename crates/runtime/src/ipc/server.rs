@@ -133,7 +133,10 @@ impl Server {
             crate::workspace::LeaseService::open(project_id, &lease_db_path)
                 .expect("failed to open lease service database"),
         );
-        let artifact_store = Arc::new(crate::workspace::ArtifactStore::new());
+        let artifact_store = config
+            .artifact_store
+            .clone()
+            .unwrap_or_else(|| Arc::new(crate::workspace::ArtifactStore::new()));
 
         // The mid-run nested-worker policy violation service (Hardening
         // plan Task 1). Constructed here (not in `lifecycle::serve()`

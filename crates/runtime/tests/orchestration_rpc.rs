@@ -5,6 +5,7 @@
 //! `run/submit|list|get|retry|cancel`, `message/send|list`,
 //! `approval/list|decide`, and `reconcile/omp`.
 
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -18,6 +19,7 @@ use batman_runtime::db::DatabaseHandle;
 use batman_runtime::ipc::{PeerCredentialReader, PeerCredentials, Server, ServerConfig};
 use batman_runtime::paths::RuntimePaths;
 use batman_runtime::service::{AdapterFuture, FakeRunDriver, RunDriver, RunDriverContext};
+use batman_runtime::workspace::ArtifactStore;
 use nix::unistd::Uid;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -2283,4 +2285,167 @@ async fn run_cancel_reaches_real_omprpc_adapter_and_kills_process() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+// -------------------------------------------------------- artifact isolation
+
+/// Regression test for R10: artifact APIs must scope results by the
+/// caller's task ownership. Two OMP-extension clients connecting to the
+/// same daemon, each owning a different task, should never see each
+/// other's artifacts.
+#[tokio::test]
+async fn artifact_isolation_enforces_task_ownership_scoping() {
+    let store = Arc::new(ArtifactStore::new());
+
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+        c.artifact_store = Some(Arc::clone(&store));
+    })
+    .await;
+
+    // Client A creates a task, worker, and run
+    let mut client_a = omp_client(&harness, "omp-A").await;
+    let task_a = client_a
+        .call(
+            10,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-A", "revision": 1 }),
+        )
+        .await;
+    let task_a_id = task_a["result"]["taskId"].as_str().unwrap().to_string();
+
+    let worker_a = client_a
+        .call(
+            11,
+            "worker/create",
+            json!({ "fingerprint": "sha256:a", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_a_id = worker_a["result"]["workerId"].as_str().unwrap().to_string();
+
+    let submit_a = client_a
+        .call(
+            12,
+            "run/submit",
+            json!({ "taskId": task_a_id, "workerId": worker_a_id }),
+        )
+        .await;
+    assert!(
+        submit_a.get("error").is_none(),
+        "submit A failed: {submit_a:?}"
+    );
+    let run_a_id = submit_a["result"]["runId"].as_str().unwrap().to_string();
+
+    // Client B creates a task, worker, and run
+    let mut client_b = omp_client(&harness, "omp-B").await;
+    let task_b = client_b
+        .call(
+            20,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-B", "revision": 1 }),
+        )
+        .await;
+    let task_b_id = task_b["result"]["taskId"].as_str().unwrap().to_string();
+
+    let worker_b = client_b
+        .call(
+            21,
+            "worker/create",
+            json!({ "fingerprint": "sha256:b", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_b_id = worker_b["result"]["workerId"].as_str().unwrap().to_string();
+
+    let submit_b = client_b
+        .call(
+            22,
+            "run/submit",
+            json!({ "taskId": task_b_id, "workerId": worker_b_id }),
+        )
+        .await;
+    assert!(
+        submit_b.get("error").is_none(),
+        "submit B failed: {submit_b:?}"
+    );
+    let run_b_id = submit_b["result"]["runId"].as_str().unwrap().to_string();
+
+    // Seed artifacts for each run
+    let artifact_a = seed_artifact(&store, "artifact-from-A\n", Some(run_a_id.clone())).await;
+    let artifact_b = seed_artifact(&store, "artifact-from-B\n", Some(run_b_id.clone())).await;
+
+    // Client A lists artifacts — should only see their own
+    let list_a = client_a.call(30, "artifact/list", json!({})).await;
+    let artifacts_a: Vec<String> = list_a["result"]["artifacts"]
+        .as_array()
+        .expect("artifacts is an array")
+        .iter()
+        .filter_map(|a| {
+            a.get("artifactId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    assert!(
+        artifacts_a.contains(&artifact_a.to_string()),
+        "Client A should see their own artifact, got: {artifacts_a:?}"
+    );
+    assert!(
+        !artifacts_a.contains(&artifact_b.to_string()),
+        "Client A should NOT see Client B's artifact, got: {artifacts_a:?}"
+    );
+
+    // Client B lists artifacts — should only see their own
+    let list_b = client_b.call(31, "artifact/list", json!({})).await;
+    let artifacts_b: Vec<String> = list_b["result"]["artifacts"]
+        .as_array()
+        .expect("artifacts is an array")
+        .iter()
+        .filter_map(|a| {
+            a.get("artifactId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    assert!(
+        artifacts_b.contains(&artifact_b.to_string()),
+        "Client B should see their own artifact, got: {artifacts_b:?}"
+    );
+    assert!(
+        !artifacts_b.contains(&artifact_a.to_string()),
+        "Client B should NOT see Client A's artifact, got: {artifacts_b:?}"
+    );
+
+    // Client A tries to fetch B's artifact — should fail
+    let fetch_cross = client_a
+        .call(
+            32,
+            "artifact/fetch",
+            json!({ "artifactId": artifact_b.to_string() }),
+        )
+        .await;
+    assert!(
+        fetch_cross.get("error").is_some(),
+        "Client A should NOT be able to fetch Client B's artifact, got: {fetch_cross:?}"
+    );
+}
+
+/// Seeds an artifact in the store with the given body and run_id.
+async fn seed_artifact(
+    store: &ArtifactStore,
+    body: &str,
+    run_id: Option<String>,
+) -> batman_protocol::ArtifactId {
+    let content = body.as_bytes().to_vec();
+    let mut hasher = Sha256::new();
+    hasher.update(&content);
+    let artifact = batman_protocol::Artifact {
+        artifact_id: batman_protocol::ArtifactId::new(),
+        kind: batman_protocol::ArtifactKind::Patch,
+        sha256: format!("{:x}", hasher.finalize()),
+        byte_length: content.len() as u64,
+        media_type: "application/x-git-diff".to_string(),
+        storage_path: format!("patches/{}.patch", content.len()),
+        run_id,
+    };
+    store.store(artifact, content).await.unwrap()
 }

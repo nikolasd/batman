@@ -1,5 +1,6 @@
 //! Workspace apply integration tests.
 
+use batman_protocol::RunId;
 use batman_protocol::{ApplyRequest, ApplyStrategy, Artifact, ArtifactId, ArtifactKind, ProjectId};
 use batman_runtime::workspace::{
     ARTIFACT_FETCH_MAX_BYTES, ArtifactStore, ArtifactStoreError, WorkspaceApplier,
@@ -237,7 +238,11 @@ async fn workspace_apply_with_real_patch() {
         .trim()
         .to_string();
 
-    let applier = WorkspaceApplier::from_store(repo.clone(), std::sync::Arc::new(store.clone()));
+    let applier = WorkspaceApplier::from_store(
+        repo.clone(),
+        std::sync::Arc::new(store.clone()),
+        RunId::new(),
+    );
 
     let request = ApplyRequest {
         lease_id: "test-lease".to_string(),
@@ -284,7 +289,11 @@ index 0000000..1111111 100644\n\
     let artifact_id = store.store(artifact, patch_content).await.unwrap();
 
     let head = head_of(&repo);
-    let applier = WorkspaceApplier::from_store(repo.clone(), std::sync::Arc::new(store.clone()));
+    let applier = WorkspaceApplier::from_store(
+        repo.clone(),
+        std::sync::Arc::new(store.clone()),
+        RunId::new(),
+    );
     let result = applier
         .apply(&ApplyRequest {
             lease_id: "conflict-lease".to_string(),
@@ -345,7 +354,11 @@ async fn workspace_cherry_pick_conflict_aborts_and_records_an_artifact() {
     let artifact_id = store.store(artifact, content).await.unwrap();
 
     let head = head_of(&repo);
-    let applier = WorkspaceApplier::from_store(repo.clone(), std::sync::Arc::new(store.clone()));
+    let applier = WorkspaceApplier::from_store(
+        repo.clone(),
+        std::sync::Arc::new(store.clone()),
+        RunId::new(),
+    );
     let result = applier
         .apply(&ApplyRequest {
             lease_id: "pick-lease".to_string(),
@@ -436,7 +449,11 @@ async fn workspace_apply_stale_revision_returns_conflict() {
     // Use a STALE revision (not the current HEAD)
     let stale_revision = "0000000000000000000000000000000000000000";
 
-    let applier = WorkspaceApplier::from_store(repo.clone(), std::sync::Arc::new(store.clone()));
+    let applier = WorkspaceApplier::from_store(
+        repo.clone(),
+        std::sync::Arc::new(store.clone()),
+        RunId::new(),
+    );
 
     let request = ApplyRequest {
         lease_id: "test-lease".to_string(),
@@ -466,8 +483,11 @@ async fn workspace_inspect_captures_real_evidence() {
     // Create an untracked file
     std::fs::write(repo.join("untracked.txt"), "untracked\n").unwrap();
 
-    let inspector =
-        WorkspaceInspector::with_store(repo.clone(), std::sync::Arc::new(store.clone()));
+    let inspector = WorkspaceInspector::with_store(
+        repo.clone(),
+        std::sync::Arc::new(store.clone()),
+        RunId::new(),
+    );
 
     let request = batman_protocol::InspectRequest {
         lease_id: "test-lease".to_string(),
