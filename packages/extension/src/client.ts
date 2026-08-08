@@ -142,6 +142,15 @@ export class BatmanClient {
     this.#failPending(new Error("client closed"));
   }
 
+  /**
+   * True once the socket has closed or errored. A closed client rejects
+   * every request, so callers holding a cached instance must re-resolve
+   * rather than reuse it.
+   */
+  get isClosed(): boolean {
+    return this.#closed;
+  }
+
   #send(method: string, params: unknown): Promise<unknown> {
     return new Promise<unknown>((resolve, reject) => {
       if (this.#closed) {

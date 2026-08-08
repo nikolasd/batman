@@ -14,11 +14,10 @@ import { buildStatusContext } from "./context";
 import { normalizeEventPayload, normalizeLifecyclePayload, normalizeProgressPayload } from "./omp-native/events";
 import { OMP_NATIVE_FACT_ENTRY_TYPE, persistedCorrelations, persistedFacts, type SessionEntryLike } from "./omp-native/persistence";
 import { OmpNativeReconciler, createOmpProcessEpoch, reconcileAcrossRestart, reconcileWithRuntime } from "./omp-native/reconcile";
-import { getRuntimeStatus, type GetRuntimeStatusContext } from "./status";
+import { resolveClient, getRuntimeStatus, type GetRuntimeStatusContext } from "./status";
 import { runDoctorCommand, buildDoctorContext, type DoctorContext } from "./doctor";
 import { registerOrchestrationTools } from "./tools";
 import { registerMonitor } from "./monitor/controller";
-import { ensureRuntime } from "./runtime";
 
 const TOOL_NAME = "batman_status";
 const COMMAND_NAME = "batman-status";
@@ -43,20 +42,12 @@ export default function batmanExtension(pi: ExtensionAPI): void {
 
   /**
    * Resolves the cached client for `cwd`, connecting (or spawning) the
-   * repository's runtime on first use. Shared by every orchestration tool so
-   * a session holds exactly one runtime connection.
+   * repository's runtime on first use. Reuses the cached connection while
+   * its socket is still open; a closed cached client is replaced so a daemon
+   * idle-exit or socket failure repairs itself on the next call.
    */
   async function getClient(extCtx: ExtensionContext): Promise<BatmanClient> {
-    if (cachedClient !== undefined) {
-      return cachedClient;
-    }
-    const { ensureRuntimeOptions } = buildStatusContext({ cwd: extCtx.cwd });
-    const { client } = await ensureRuntime({
-      ...ensureRuntimeOptions,
-      sessionId: extCtx.sessionManager.getSessionId(),
-    });
-    cachedClient = client;
-    return client;
+    return resolveClient(statusContextFor(extCtx));
   }
 
   pi.registerTool({

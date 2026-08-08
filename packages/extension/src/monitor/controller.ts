@@ -95,7 +95,7 @@ export class MonitorController {
 /** Registers the `/batman` command and the replay-first monitor lifecycle. */
 export function registerMonitor(pi: ExtensionAPI, ctx: MonitorControllerContext): void {
   const controller = new MonitorController();
-  let connected = false;
+  let subscribedClient: BatmanClient | undefined;
 
   function refresh(extCtx: ExtensionContext): void {
     extCtx.ui.setWidget(WIDGET_KEY, renderWidgetBox(controller.getState(), extCtx.ui.theme), { placement: "aboveEditor" });
@@ -103,18 +103,24 @@ export function registerMonitor(pi: ExtensionAPI, ctx: MonitorControllerContext)
   }
 
   async function connect(extCtx: ExtensionContext): Promise<void> {
-    if (connected) {
+    if (subscribedClient !== undefined && !subscribedClient.isClosed) {
       return;
     }
-    const fromSequence = lastPersistedSequence(extCtx.sessionManager.getEntries() as SessionEntryLike[]);
+    if (subscribedClient !== undefined) {
+      // The prior subscription is dead with it; drop it before resubscribing.
+      controller.stop();
+      subscribedClient = undefined;
+    }
+    // Resume from whichever is further ahead: what was persisted to the
+    // session log, or what this controller has already reduced in memory.
+    // `reduceEvent` ignores an event at or below a row's applied sequence,
+    // so overlapping replay is a no-op rather than a double-count.
+    const fromSequence = Math.max(lastPersistedSequence(extCtx.sessionManager.getEntries() as SessionEntryLike[]), Number(controller.getState().lastSequence));
     try {
       const client = await ctx.getClient(extCtx);
       controller.start(client, fromSequence, () => refresh(extCtx));
-      connected = true;
+      subscribedClient = client;
     } catch (err) {
-      // The runtime is not reachable yet (e.g. no batcave binary available
-      // in this environment). The monitor degrades to inactive rather than
-      // failing session startup; `/batman` retries the connection.
       pi.logger.warn("batman monitor: runtime unavailable", {
         error: err instanceof Error ? err.message : String(err),
       });

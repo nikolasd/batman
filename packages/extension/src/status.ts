@@ -1,7 +1,7 @@
 // The single status path shared by both the `batman_status` tool and the
-// `/batman-status` command: connect to (or spawn) the repository's `batcave`
-// runtime, call `runtime/status`, and shape the result. Kept independent of
-// OMP's extension types so it is trivial to unit test.
+// `/batman-status` command, plus the shared cached-client resolver used by
+// every orchestration tool and the monitor: connect to (or spawn) the
+// repository's `batcave` runtime, call `runtime/status`, and shape the
 
 import { BinarySelectionError, ensureRuntime, type EnsureRuntimeOptions } from "./runtime";
 import { BinaryIntegrityError, UnsupportedPlatformError } from "./platform";
@@ -52,6 +52,33 @@ export interface GetRuntimeStatusContext {
   readonly cache: BatmanClientCache;
 }
 
+/**
+ * Returns a live client for `ctx`, reusing the cached one only while its
+ * socket is still open. A closed cached client is closed again (to release
+ * its listeners) and dropped before reconnecting, so a daemon idle-exit or
+ * socket failure repairs itself on the next call instead of breaking every
+ * tool for the rest of the session.
+ *
+ * @throws whatever `ensureRuntime` throws when the runtime cannot be
+ * reached or started.
+ */
+export async function resolveClient(ctx: GetRuntimeStatusContext): Promise<BatmanClient> {
+  const cached = ctx.cache.get();
+  if (cached !== undefined) {
+    if (!cached.isClosed) {
+      return cached;
+    }
+    try {
+      cached.close();
+    } catch {
+      // Best-effort: the client is already being discarded.
+    }
+    ctx.cache.set(undefined);
+  }
+  const { client } = await ensureRuntime(ctx.ensureRuntimeOptions);
+  ctx.cache.set(client);
+  return client;
+}
 const GENERIC_FAILURE_MESSAGE = "The BATMAN runtime is not reachable for this repository. Run the doctor command below for details.";
 
 /**
@@ -61,16 +88,11 @@ const GENERIC_FAILURE_MESSAGE = "The BATMAN runtime is not reachable for this re
  * reported as a sanitized {@link RuntimeStatusError} instead.
  */
 export async function getRuntimeStatus(ctx: GetRuntimeStatusContext): Promise<RuntimeStatusResult> {
-  let client = ctx.cache.get();
-
-  if (client === undefined) {
-    try {
-      const connected = await ensureRuntime(ctx.ensureRuntimeOptions);
-      client = connected.client;
-      ctx.cache.set(client);
-    } catch (err) {
-      return failureResult(ctx.ensureRuntimeOptions, err);
-    }
+  let client: BatmanClient;
+  try {
+    client = await resolveClient(ctx);
+  } catch (err) {
+    return failureResult(ctx.ensureRuntimeOptions, err);
   }
 
   try {
