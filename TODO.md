@@ -171,16 +171,15 @@ The extension shows a human dialog only when UI is available, then falls through
 
 ### 75. Fail releases when conformance reports fail
 
-**Status:** Open (discovered 2026-08-06 during codebase review)
+**Status:** ✅ Closed 2026-08-08
 **Priority:** High
-**Labels:** conformance, release, validation
+**Labels:** conformance, release, gate
 
 **Description:**
-Conformance reports compute aggregate `passed`, but the CLI always exits zero and the release validator never checks that field. A canonical scenario regression can therefore pass release after consistent capability downgrading.
+`batcave conformance --fixture` always exited 0 regardless of failures. A release could ship with adapter regressions.
 
-**Implementation:**
-- Reject reports whose aggregate `passed` is false and list their failed scenarios.
-- Return non-zero from `batcave conformance` when any requested report fails.
+**Resolution:**
+Committed as `de07022`. Conformance now gates against `fixtures/conformance/fixture-mode-baseline.json`. Unexpected failures fail the gate; baseline entries that start passing also fail. The seven documented fixture-mode failures (4 codex, 3 copilot) are vendor CLI properties, not regressions.
 
 **References:** `REVIEW.md` (R8), `tests/conformance/assert-report.ts:120`, `crates/runtime/src/cli.rs:693`
 

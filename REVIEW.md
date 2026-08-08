@@ -96,15 +96,11 @@ The reviewed code had the following verified baseline before this document was w
 
 **Suggested fix:** Persist or require the prompt and route retry through the same authorization, workspace, display, and driver-start path as submit. Until then, do not describe retry as execution.
 
-#### R8. The release conformance gate ignores aggregate failure
+#### R8. The release conformance gate ignores aggregate failure ~RESOLVED~
 
 **Location:** `crates/runtime/src/conformance/report.rs:99-117`; `crates/runtime/src/cli.rs:693-717`; `tests/conformance/assert-report.ts:101-148`; `.github/workflows/release.yml:80-123,160-163`
 
-**Evidence:** Reports compute `passed` as all scenarios passing. The CLI always exits success after writing reports, and the TypeScript validator never checks `report.passed`; it only requires one passing scenario and internally consistent capability downgrades.
-
-**Impact:** A real canonical scenario can regress, produce `passed: false`, and still pass the release job because the failed capability is downgraded consistently.
-
-**Suggested fix:** Reject any adapter report whose aggregate `passed` is not true, list failed scenarios, and make the CLI return a non-zero exit code for failed reports. Add a gate test with one failed canonical scenario.
+**Resolution:** `de07022` — `batcave conformance --fixture` now compares results against `fixtures/conformance/fixture-mode-baseline.json`. Unexpected failures fail the gate; baseline entries that start passing also fail (prevents silent rot). The seven documented fixture-mode failures (4 codex, 3 copilot) are properties of installed vendor CLIs, not regressions. Gate verified: exits 0 with correct baseline, exits 1 with a bogus baseline entry.
 
 #### R9. Release version checks do not validate the packages npm publishes
 
