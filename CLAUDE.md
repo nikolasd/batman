@@ -57,10 +57,10 @@ OMP_BATMAN_BINARY="$PWD/target/debug/batcave" \
   omp --extension ./packages/extension/src/index.ts
 
 # batcave CLI directly
-batcave serve [--org-config ... --repo-config ... --user-config ...]
-batcave status [--recover]
-batcave stop
-batcave audit export --state-dir ~/.batman/state --output /tmp/audit.jsonl
+batcave serve --repo /path/to/repo [--org-config ... --repo-config ... --user-config ...]
+batcave status --repo /path/to/repo
+batcave stop --repo /path/to/repo
+batcave audit export --repo /path/to/repo --state-dir ~/.batman/state --output /tmp/audit.jsonl
 ```
 
 `BATMAN_DISABLE_VENDOR_CLI=1` skips live vendor CLI calls — set it for any local test run to avoid
@@ -160,7 +160,6 @@ These are enforced in review, not just style preference:
 
 ## Source-of-truth docs (read before assuming a gap is unintentional)
 
-- `TODO.md` — single source of truth for open implementation gaps, verified against the current code (not planning docs).
+- `REVIEW.md` — single source of truth for open implementation gaps and findings by severity, verified against the current code (not planning docs); check before re-reporting something already tracked.
 - `docs/future-features.md` — items deliberately deferred, each with a decision trigger.
 - `docs/engineering-lessons.md` — past bugs and the invariant/test that now guards against each.
-- `REVIEW.md` — most recent full codebase review with findings by severity; check before re-reporting something already tracked.

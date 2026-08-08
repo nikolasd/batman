@@ -1,15 +1,23 @@
 # BATMAN Codebase Review
 
-**Reviewed:** 2026-08-06  
-**Commit:** `3907e8fb8d31f5d275293a9e9302600d436cee44`
+**Reviewed:** 2026-08-06 (baseline) · **Updated:** 2026-08-08 (R5-R11 fix verification + PR review of those fixes)
+**Baseline commit:** `3907e8fb8d31f5d275293a9e9302600d436cee44` · **Fix commits:** `8331a34` `9720c63` `8457de5` `6bd6a00` `f9e95c4` `797d5e6` `e8204da` `44093d4` `e4befb8` `bcff4ce` `143e1b3` `de07022` `60fd4de` `bb209eb` `e8e5f4b` `5c9444f`
+
+This file consolidates the original codebase review, the implementation-gap tracker
+(formerly `TODO.md`), and the PR review of the R5-R11 remediation commits (formerly
+`review-summary.md`) into one current document. All three are superseded by this file.
 
 ## Scope and method
 
-The committed tree was split across four parallel reviews: runtime core; adapters/policy/security; TypeScript/OMP integration; and build/docs/release. Scout output was treated as raw input. Every Critical and High finding below was re-read against the cited source before inclusion. Unconfirmed leads and findings that were actually strengths were removed. The earlier `.git` symlink lead was rejected: TypeScript and Rust both test marker presence without dereferencing, and both have coverage for a broken `.git` symlink.
+The committed tree was split across four parallel reviews: runtime core;
+adapters/policy/security; TypeScript/OMP integration; and build/docs/release. Every
+finding below was re-read against cited source before inclusion. The R5-R11 fix commits
+were then independently re-reviewed by 16 reviewer agents grouped by locality; their
+findings appear as R33+ below, each re-verified against the current tree in this pass.
 
 ## Baseline
 
-The reviewed code had the following verified baseline before this document was written:
+Verified before this document was last written:
 
 - `cargo check --workspace --all-targets` — clean
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` — clean
@@ -20,113 +28,84 @@ The reviewed code had the following verified baseline before this document was w
 - `bun test packages` — 123 passed, 0 failed
 - `bun test tests/conformance` — 10 passed, 0 failed
 
+**Not re-run for this update** — the findings below (R33+) were verified by direct code
+reading (`grep`/`read`), not by re-executing the suite. Run the commands above plus
+`bunx tsc --noEmit` before merge to confirm they still hold.
+
 ## Findings
 
 ### Critical
 
-#### R1. Extension identity and task ownership can never match
+#### R1. Extension identity and task ownership can never match — ✅ RESOLVED
 
 **Location:** `packages/extension/src/runtime.ts:249-258`; `packages/extension/src/tools/tasks.ts:41-47`; `crates/runtime/src/approval/service.rs:145-159`; `crates/runtime/src/policy/violation.rs:487-525`
 
-**Evidence:** The extension authenticates every runtime connection with the constant `instanceId: "batman-extension"`, but `batman_task upsert` records the OMP session ID as `ownerClientInstanceId`. Approval and violation decisions require exact equality between those values.
+**Resolution (2026-08-07):** `EnsureRuntimeOptions` gains optional `sessionId` field; `initParams` uses it for `instanceId` when provided. All connection/tool call sites thread `sessionId` from `extCtx.sessionManager.getSessionId()`. Defended by `packages/extension/src/ownership.test.ts`.
 
-**Impact:** A session cannot decide approvals or release/cancel policy violations for tasks it created. Reconciliation can then rebind tasks to the shared constant, weakening isolation between OMP sessions using the same daemon.
-
-**Resolution (2026-08-07):** ✅ Fixed and defended. `EnsureRuntimeOptions` gains optional `sessionId` field; `initParams` uses it for `instanceId` when provided. `tryConnect`, `connectWithBackoff`, `ensureRuntime`, `getClient`, `statusContextFor`, and all tool call sites now thread `sessionId` from `extCtx.sessionManager.getSessionId()`. The status path gap was also fixed. Defended by `packages/extension/src/ownership.test.ts`: two live-daemon tests proving the identity chain — matching sessionId succeeds on both approval and violation decide; mismatched sessionId is rejected with "does not own".
-
-#### R2. Concurrency slots are never released in production
+#### R2. Concurrency slots are never released in production — ✅ RESOLVED
 
 **Location:** `crates/runtime/src/policy/evaluate.rs:271-275,371-401`; `crates/runtime/src/adapter/registry.rs:48-63,188-268`; `crates/runtime/src/lifecycle.rs:258-270`
 
-**Evidence:** Each successful authorization increments `active_runs`. `PolicyEvaluator::release` is the only decrement path, but `PolicyEvaluator` is immediately erased behind `AdapterAuthorization`, whose trait has no release method. The adapter completion watcher removes and disposes the adapter without releasing the slot.
+**Resolution (2026-08-07):** Added `release()` to `AdapterAuthorization` trait; `PolicyEvaluator::release()` calls `decrement_runs()`. Watcher releases the slot after eviction and on all post-authorize error paths. Defended by `releasing_a_policy_evaluator_slot_frees_the_registry_ceiling` in `crates/runtime/tests/adapter_registry.rs`.
 
-**Impact:** After `concurrency_ceiling` cumulative runs—not concurrent runs—the daemon rejects every new run until restart. Ordinary use permanently disables the runtime's core function.
-
-**Resolution (2026-08-07):** ✅ Fixed. Added `release()` method to `AdapterAuthorization` trait. `FixtureAuthorization::release()` is a no-op; `PolicyEvaluator::release()` calls `decrement_runs()`. The adapter completion watcher clones `authorization` and calls `release()` after evicting the adapter. `run_one` releases the slot on all post-authorize error paths (availability probe, build_adapter, adapter.start). The watcher handles `Lagged` broadcast errors by continuing, releasing only on `Closed`. Defended with a real-`PolicyEvaluator` registry integration test (`releasing_a_policy_evaluator_slot_frees_the_registry_ceiling` in `crates/runtime/tests/adapter_registry.rs`) that books a `concurrency_ceiling: 1` slot, proves `registry.start()` denies a second run, releases through the trait object, and proves the ceiling denial clears.
-
-#### R3. Linux ARM64 release builds lack a cross-linker
+#### R3. Linux ARM64 release builds lack a cross-linker — ✅ RESOLVED
 
 **Location:** `.github/workflows/release.yml:29-50`; `release/targets.json:5`; `Cargo.toml:18`
 
-**Evidence:** `aarch64-unknown-linux-gnu` is built on an x86_64 `ubuntu-latest` runner. The workflow installs the Rust target only; it installs no AArch64 GNU compiler/linker and configures no target linker. The bundled SQLite dependency also requires a C compiler for the target.
+**Resolution (2026-08-07):** Added `gcc-aarch64-linux-gnu` install step, target-specific linker/CC/AR env vars, and a dry-run CI build workflow (`.github/workflows/ci-release.yml`).
 
-**Impact:** The Linux ARM64 matrix leg cannot link, so `build` fails and blocks package assembly, conformance, and publish for every tagged release.
-
-**Resolution (2026-08-07):** ✅ Fixed. Added `gcc-aarch64-linux-gnu` installation step for linux-arm64-gnu target. Set `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER`, `CC_aarch64_unknown_linux_gnu`, and `AR_aarch64_unknown_linux_gnu` env vars. Added dry-run CI build workflow (`.github/workflows/ci-release.yml`) for every release target.
-
-#### R4. GitHub artifact transfer strips the executable bit required by package validation
+#### R4. GitHub artifact transfer strips the executable bit required by package validation — ✅ RESOLVED
 
 **Location:** `.github/workflows/release.yml:74-78,129-152,167-179`; `crates/xtask/src/main.rs:426-438,620-644`
 
-**Evidence:** `xtask package` writes `bin/batcave` with mode `0755`, then `actions/upload-artifact` uploads the directory. The action documents that zipped artifact uploads restore files as `0644`. `xtask package-set` rejects any downloaded `bin/batcave` without an execute bit. No step restores permissions.
-
-**Impact:** Even after R3 is fixed, every assembled package set fails before publish. Removing the assertion instead would publish non-executable binaries.
-
-**Resolution (2026-08-07):** ✅ Fixed. Removed broken flatten loops from both `package-set` and `publish` jobs in release.yml. Both jobs now use `find ... -name batcave -exec chmod +x {} +` to restore executable bits after download. The `package-set` executable-mode assertion is preserved.
+**Resolution (2026-08-07):** `package-set`/`publish` jobs restore the executable bit with `find ... -exec chmod +x {} +` after artifact download. The executable-mode assertion in `package-set` is preserved.
 
 ### High
 
-#### R5. `humanRequired` approvals can be model-approved without a human
+#### R5. `humanRequired` approvals can be model-approved without a human — ✅ RESOLVED
 
 **Location:** `packages/extension/src/tools/approvals.ts:53-95`; `crates/runtime/src/approval/service.rs:145-216`; `crates/runtime/src/service/query.rs:243-255`
 
-**Evidence:** The extension opens a human dialog only when `extCtx.hasUI` is true. In headless mode it falls through and sends the model-supplied decision. The server stores and returns `humanRequired` but does not enforce it in `ApprovalService::decide`, despite the tool description claiming server-side enforcement.
+**Resolution (2026-08-08):** `DecidedBy` enum (`Human`/`Model`) added to protocol. `ApprovalService::decide` rejects a `Model` decision on a `human_required` approval. Extension fails closed with no UI. See **R34** for a serialization defect this introduced.
 
-**Impact:** In non-interactive OMP modes, a model can approve an operation explicitly marked as requiring a human. This bypasses the safety property at the point where no human is likely to be watching.
-
-**Resolution (2026-08-08):** Added `DecidedBy` enum to protocol for decision provenance. Server enforces: a `human_required` approval rejects any decision not marked `Human`. Extension fails closed when no UI is available. `decided_by` persisted to database and included in `ApprovalDecided` event.
-
-#### R6. A dead cached runtime client breaks all tools until status is called
+#### R6. A dead cached runtime client breaks all tools until status is called — ✅ RESOLVED
 
 **Location:** `packages/extension/src/index.ts:44-56`; `packages/extension/src/client.ts:135-167`; `packages/extension/src/status.ts:63-93`; `packages/extension/src/context.ts:14-19`
 
-**Evidence:** `getClient` returns any defined cached client without checking whether its socket is closed. `BatmanClient` tracks closed state privately and rejects every later send. Only the status tool clears the cache after a failed request. The daemon has a routine 30-minute idle shutdown.
+**Resolution (2026-08-08):** `BatmanClient.isClosed` exposed. `resolveClient()` in `status.ts` reconnects on a closed cache; `getRuntimeStatus`/`getClient` use it as the single construction site. Monitor re-subscribes after its client dies. Defended by `reconnect.test.ts`. See **R39** for a residual defect in the monitor's shutdown path.
 
-**Impact:** After daemon exit or a socket failure, all eleven orchestration tools and the monitor remain broken for the session. Running status happens to repair the cache; other tools cannot recover themselves.
+#### R7. `run/retry` creates a queued run but never starts its adapter — ✅ RESOLVED
 
-**Resolution (2026-08-08):** Exposed `BatmanClient.isClosed` for liveness checks. Added `resolveClient()` in `status.ts` which returns the cached client while open and reconnects on a closed cache. Made `getRuntimeStatus` and `getClient` use `resolveClient`. Monitor now re-subscribes after its client dies. Defended by `reconnect.test.ts` proving cache self-heals after daemon restart.
+**Location:** `crates/runtime/src/service/orchestration.rs:789-891`
 
-#### R7. `run/retry` creates a queued run but never starts its adapter
+**Verified 2026-08-08:** `run_retry` (line 789) now calls the shared `start_queued_run` helper (line 540, 864) — identical driver-start path to `run_submit` (line 722). Test coverage: `orchestration_rpc.rs:1300-1306,1348,1429`.
 
-**Location:** `crates/runtime/src/service/orchestration.rs:634-691,742-798`; `crates/runtime/src/recovery.rs:348-355`; `packages/extension/src/tools/runs.ts:24-30`
+*(This finding's original text and Suggested Fix, which predated the resolution, are removed — the fix landed and is verified above. Former TODO #74 is closed accordingly.)*
 
-**Evidence:** `run_submit` constructs `RunDriverContext` and calls `driver.start`. `run_retry` only writes a fresh queued run and returns; it never calls `run_driver`, and no scheduler consumes queued runs. Recovery later converts queued runs to failed.
-
-**Impact:** The extension reports retry success with a new run ID, but no work executes. The run remains queued until recovery marks it failed.
-
-**Suggested fix:** Persist or require the prompt and route retry through the same authorization, workspace, display, and driver-start path as submit. Until then, do not describe retry as execution.
-
-#### R8. The release conformance gate ignores aggregate failure ~RESOLVED~
+#### R8. The release conformance gate ignores aggregate failure — ✅ RESOLVED
 
 **Location:** `crates/runtime/src/conformance/report.rs:99-117`; `crates/runtime/src/cli.rs:693-717`; `tests/conformance/assert-report.ts:101-148`; `.github/workflows/release.yml:80-123,160-163`
 
-**Resolution:** `de07022` — `batcave conformance --fixture` now compares results against `fixtures/conformance/fixture-mode-baseline.json`. Unexpected failures fail the gate; baseline entries that start passing also fail (prevents silent rot). The seven documented fixture-mode failures (4 codex, 3 copilot) are properties of installed vendor CLIs, not regressions. Gate verified: exits 0 with correct baseline, exits 1 with a bogus baseline entry.
+**Resolution:** `de07022` — `batcave conformance --fixture` gates against `fixtures/conformance/fixture-mode-baseline.json`. Unexpected failures fail the gate; baseline entries that start passing also fail. See **R44** for defects discovered in the capture/scrub machinery that produces these fixtures.
 
-#### R9. Release version checks do not validate the packages npm publishes ~RESOLVED~
+#### R9. Release version checks do not validate the packages npm publishes — ✅ RESOLVED
 
-**Location:** `.github/workflows/release.yml:144-152,195-206`; `crates/xtask/src/main.rs:578-611`; `packages/extension/package.json:3`; `packages/batman-darwin-arm64/package.json:3` and peer leaf packages
+**Location:** `.github/workflows/release.yml:144-152,195-206`; `crates/xtask/src/main.rs:578-611`
 
-**Evidence:** The workflow derives `--version` from `packages/extension/package.json`, and `package-set` compares it to the same file. Leaf manifests also derive from that file, but no check reads each leaf package's own npm `version`, and the tag is not compared to the release version.
+**Resolution:** `bb209eb` — `package-set` verifies each leaf's own `package.json` version. `version-gate` CI job verifies the git tag matches `v<version>` before any build work.
 
-**Impact:** A missed leaf version bump can pass package-set and then fail partway through sequential publishing, or publish an extension whose installed leaf version fails runtime integrity checks.
-
-**Resolution:** `bb209eb` — `package-set` now reads each leaf's `package.json` from the workspace and verifies the version matches. Added `version-gate` CI job that verifies the git tag matches `v<version>` before any build work. Tag check gated on `GITHUB_REF_TYPE=tag` so `workflow_dispatch` skips it.
-
-#### R10. Artifact APIs are project-scoped despite claiming task isolation ~RESOLVED~
+#### R10. Artifact APIs are project-scoped despite claiming task isolation — ✅ RESOLVED, WITH GAPS
 
 **Location:** `packages/extension/src/tools/artifacts.ts:25-42`; `crates/runtime/src/coordination/mcp_protocol.rs:133-156`; `crates/runtime/src/service/orchestration.rs:1136-1177`; `crates/runtime/src/workspace/artifact_store.rs:160-222`
 
-**Resolution:** `44093d4` — `Artifact.run_id` is now populated by `WorkspaceInspector` and `WorkspaceApplier` (previously `None`). `artifact/list` and `artifact/fetch` scope results by the caller's `owner_client_instance_id` through `owned_run_ids_op`. Extension `batman_artifact` passes `taskId` for per-task narrowing. `workspace/inspect` now stores its patch in the artifact store and is behind the quarantine gate. Behavioral test `artifact_isolation_enforces_task_ownership_scoping` verifies two owners cannot see each other's artifacts or fetch cross-owner artifacts.
+**Resolution:** `44093d4` — `Artifact.run_id` populated by `WorkspaceInspector`/`WorkspaceApplier`. `artifact/list`/`artifact/fetch` scope by `owner_client_instance_id` via `owned_run_ids_op`. Behavioral test `artifact_isolation_enforces_task_ownership_scoping` proves cross-owner isolation.
+**Gaps introduced/remaining:** see **R35** (fetch authorizes after reading content — timing oracle) and **R36** (no test asserts producers actually stamp `run_id`, so reverting the fix leaves the suite green).
 
-#### R11. Copilot turn stop reasons are discarded ~RESOLVED~
+#### R11. Copilot turn stop reasons are discarded — ✅ RESOLVED, WITH A COSMETIC DEFECT
 
 **Location:** `crates/runtime/src/adapter/copilot/client.rs:315-344`; `crates/runtime/src/adapter/copilot/mod.rs:422-426,462-489`; `crates/runtime/src/adapter/copilot/normalize.rs:18-89`
 
-**Evidence:** `session_prompt` returns ACP's `stopReason`, but both initial and follow-up callers discard the returned string. The normalizer handles update notifications only and emits no terminal outcome for refusal, cancellation, token exhaustion, or maximum-turn termination.
-
-**Impact:** Refused or limit-terminated turns are indistinguishable from successful completion to the journal, monitor, and retry/alerting automation.
-
-**Resolution:** `bcff4ce` — `copilot_normalize_stop_reason()` maps every stop reason to `ProtocolHealthChanged` events and a failure disposition. `settle_turn()` emits events and fails the turn for refusal, token exhaustion, max turn requests, and unknown reasons. Cancellation emits a health event but does not fail (avoids racing `run/cancel`). Defended by 8 unit tests.
+**Resolution:** `bcff4ce` — `copilot_normalize_stop_reason()` maps every stop reason to `ProtocolHealthChanged` events and a failure disposition; `settle_turn()` fails the turn for non-success reasons. 8 unit tests defend the mapping. See **R42** for a mangled detail string on the unknown-reason path.
 
 ### Medium
 
@@ -134,146 +113,298 @@ The reviewed code had the following verified baseline before this document was w
 
 **Location:** `crates/runtime/src/adapter/claude/protocol.rs:183-194`; `crates/runtime/src/adapter/claude/normalize.rs:254-269`; `crates/runtime/tests/claude_adapter.rs:611-639`
 
-`RawResult` omits `subtype` and `is_error`. The committed `error_max_turns` fixture therefore emits only `UsageReported`, with no diagnostic or unhealthy event. Model the failure discriminators and emit an explicit terminal failure.
+`RawResult` omits `subtype`/`is_error`. The committed `error_max_turns` fixture emits only `UsageReported`. Model the failure discriminators and emit an explicit terminal failure. **Open.**
 
 #### R13. Policy cancellation records success after a process-kill failure
 
 **Location:** `crates/runtime/src/policy/violation.rs:446-478`; `crates/runtime/src/adapter/registry.rs:308-321`
 
-A failed adapter cancellation is logged, then the run is durably transitioned to `cancelled`. For cost-ceiling enforcement, the subprocess may continue spending while state says it stopped. Distinguish no-running-adapter from kill failure and persist/propagate genuine cancellation failure.
+A failed cancellation is logged, then the run is durably transitioned to `cancelled` anyway. Distinguish no-running-adapter from kill failure. **Open.**
 
 #### R14. Per-run redactor construction has a fail-open fallback
 
 **Location:** `crates/runtime/src/lifecycle.rs:194-205`; `crates/runtime/src/adapter/event_sink.rs:152-168`
 
-Startup correctly refuses invalid org regexes, but event-sink construction falls back to built-ins. Current wiring reuses the startup-validated list, so this path is not presently reachable with different patterns. Remove the trap by passing a prevalidated `Arc<Redactor>` or propagating construction failure.
+Event-sink construction falls back to built-in patterns on invalid regex rather than propagating. Not presently reachable with current wiring, but the trap remains. **Open.**
 
 #### R15. `batman_task.description` is silently discarded
 
 **Location:** `packages/extension/src/tools/tasks.ts:20-47`; `crates/runtime/src/service/orchestration.rs:300-315`
 
-The tool advertises task text but does not send it, and the RPC has no field for it. Remove the parameter and state that executable task text belongs in `run/submit.prompt`.
+The tool advertises task text but never sends it; the RPC has no field for it. **Open.**
 
 #### R16. Violation resolution schema accepts prose the runtime rejects
 
 **Location:** `packages/extension/src/tools/violations.ts:14-24`; `crates/runtime/src/policy/violation.rs:487-497`
 
-The tool accepts any string while the runtime accepts only `release` or `cancel`. Use a closed Zod enum.
+Tool accepts any string; runtime accepts only `release`/`cancel`. Use a closed Zod enum. **Open.**
 
 #### R17. Generated TypeScript exports and hand-written enums can drift
 
 **Location:** `packages/protocol-ts/src/index.ts:1-50`; `crates/xtask/src/main.rs:206-247`; `packages/extension/src/tools/workspaces.ts:20-24`; `packages/extension/src/tools/artifacts.ts:16-20`
 
-The barrel claims to export every generated type but omits generated workspace/display enums, while tools hand-copy their literals. Export all generated modules and tie tool constants to generated types with `satisfies` checks.
+Barrel omits generated workspace/display enums; tools hand-copy literals. **Open.**
 
 #### R18. Detached runtime spawn has no `error` listener
 
 **Location:** `packages/extension/src/runtime.ts:101-106`; `packages/extension/src/status.ts:57-72`
 
-An asynchronous `ChildProcess` error such as `EAGAIN` or `EMFILE` has no listener and can escape the status path documented as never throwing. Attach an error listener and let the bounded connection loop return the sanitized failure.
+An async `ChildProcess` error (`EAGAIN`/`EMFILE`) has no listener. **Open.**
 
 #### R19. Role documentation understates the worker-accessible surface
 
 **Location:** `docs/architecture.md:750-758`; `crates/runtime/src/ipc/mod.rs:226-300`
 
-The document says 22 extension methods and 9 worker methods; code allows 30 and 12. It omits peer workspace and artifact list/fetch from the worker row. Generate or update the table from `allowed_methods`.
+Document says 22/9 methods; code allows 30/12, omitting peer workspace and artifact list/fetch from the worker row. **Open.**
+
+#### R33. `serde_json/preserve_order` silently breaks two fingerprint invariants and one secret-shape gate
+
+**Location:** `Cargo.toml:22`; `crates/runtime/src/adapter/profile.rs:325-326,364-369`; `crates/runtime/src/config/merge.rs:517-521`; `crates/runtime/src/security/redaction.rs:262-265,304-310`
+
+**Evidence (verified):** `Cargo.toml:22` enables `serde_json`'s `preserve_order` feature — a workspace-wide flip from `BTreeMap` to `IndexMap` key ordering that no plan item requested. Three doc comments (`profile.rs:325-326`, `redaction.rs:262-265`) still assert the workspace does not enable it and that `sanitize_json`/`fingerprint()` are key-order-independent; that guarantee no longer holds. `WorkerProfile::fingerprint()` and `RuntimePolicy::compute_fingerprint()` now vary with caller/merge key order, so no fingerprint an older binary persisted can be reproduced. A determinism test (`sanitize_json_is_deterministic_regardless_of_input_key_order`) was weakened to a tautology rather than fixed. Additionally, `permission_envelope_contains_secret_shape` (`profile.rs:364-369`) compares `serde_json::to_string(value)` (insertion order) against `sanitize_json(value)` (its own order) — under `preserve_order` these now diverge for any envelope whose keys are not already in `sanitize_json`'s emitted order, causing **false rejection of legitimate worker profiles**.
+
+**Fix:** Canonicalize `redact_json_value`'s Object arm to a key-sorted map (restores `sanitize_json` determinism and `fingerprint()`'s content-addressing property), and change `permission_envelope_contains_secret_shape` to a structural comparison (`redactor.redact_json_value(value) != *value`) rather than a serialized-text comparison. Restore the deleted determinism test.
+
+**Priority:** High — breaks two documented invariants and introduces a false-rejection security regression.
+
+#### R34. `decided_by` persisted as a JSON-quoted string, not a bare token
+
+**Location:** `crates/runtime/src/domain/repository.rs:805`
+
+**Evidence (verified):** `serde_json::params![... , serde_json::to_string(&decided_by).expect(...) , ...]` stores `"human"` (with quotes) instead of bare `human`. Every other scalar enum column in this file writes a bare token. `SELECT * FROM approvals WHERE decided_by = 'human'` returns zero rows permanently.
+
+**Fix:** Add `DecidedBy::as_str()` returning the bare token and use it in the `UPDATE` at line 805.
+
+**Priority:** Medium — breaks any future query or audit tooling against this column; no runtime behavior currently reads it back.
+
+#### R35. `artifact/fetch` authorizes after reading and hashing content
+
+**Location:** `crates/runtime/src/service/orchestration.rs:1288-1346`
+
+**Evidence (verified):** `fetch_chunked` (line 1329) runs and hashes/reads full content before the ownership check (`in_scope`, line 1337-1341). The single shared refusal message (line 1334 vs 1344) prevents an *unknown-vs-out-of-scope* content oracle, but the two paths differ in latency — fetch does real I/O and hashing before an out-of-scope caller is rejected, an unknown ID is rejected immediately. This is a timing side-channel distinguishing "exists but not yours" from "doesn't exist."
+
+**Fix:** Look up artifact metadata only, authorize against `run_id`, then call `fetch_chunked` for content.
+
+**Priority:** Medium — genuine but low-severity side channel (requires an attacker capable of measuring server-side artifact-store latency).
+
+#### R36. No test asserts artifact producers actually stamp `run_id`
+
+**Location:** `crates/runtime/tests/workspace_apply.rs:241,292,357,452,486`; `crates/runtime/src/workspace/apply.rs:105`; `crates/runtime/src/workspace/inspect.rs:77`
+
+**Evidence (verified):** Both isolation tests hand-seed `run_id` via `seed_artifact` rather than exercising the actual producers. Reverting `apply.rs:105` and `inspect.rs:77` to `run_id: None` leaves the whole suite green — R10's fix would silently regress with no failing test, since `run_id: None` artifacts are invisible to every principal (fails closed, but silently).
+
+**Fix:** Add `a_worker_sees_the_conflict_artifact_its_own_run_produced` and `workspace_inspect_stores_a_fetchable_patch_artifact`, asserting `report.run_id` on the artifact actually produced by `WorkspaceApplier`/`WorkspaceInspector`, not a hand-seeded one.
+
+**Priority:** Medium — test-coverage gap on a security-relevant fix, not a live defect.
+
+### Low
 
 #### R20. Installed users cannot run the documented bare `batcave` commands
 
 **Location:** `packages/batman-linux-x64-gnu/package.json:1-17` and peer leaves; `README.md:28-47`; `docs/operations.md:7-75`
 
-Leaf packages export the binary for `import.meta.resolve` but declare no npm `bin` shim. The operations guide uses bare `batcave` throughout. Either publish a bin shim or document a supported binary-location command and use that path consistently.
+Leaf packages declare no npm `bin` shim; docs use bare `batcave` throughout. **Open.**
 
-#### R21. Documentation names CLI flags that do not exist
+#### R21. Documentation names CLI flags that do not exist — ✅ RESOLVED (fixed during this consolidation)
 
-**Location:** `docs/getting-started.md:148,239,355,390`; `docs/code-walkthrough.md:396`; `docs/operations.md:66`; `crates/runtime/src/cli.rs:29-152`
+**Location:** `docs/getting-started.md:148,239,355,390`; `docs/code-walkthrough.md:396-405`; `docs/operations.md:66`; `AGENTS.md:91`; `CLAUDE.md:61`; `crates/runtime/src/cli.rs:29-152`
 
-`status --recover`, `serve --port`, and `monitor --live` are rejected by clap. Remove the flags and the TCP port troubleshooting text.
+**Evidence (re-verified 2026-08-08):** `docs/getting-started.md` and `docs/operations.md` already correctly documented that no `--recover`/`--port`/`--live` flags exist. Two regressions had crept back in since the original fix: `AGENTS.md:91`/`CLAUDE.md:61` (generated after the original review) reintroduced `batcave status [--recover]`, and `docs/code-walkthrough.md:401-403` carried both a false claim ("RecoveryCoordinator is now dead code" — contradicted by `lifecycle.rs:150`, which calls it on every `serve`) and the same nonexistent `--recover` flag.
 
-#### R22. Getting-started command examples omit required `--repo`
+**Fix applied:** `AGENTS.md`/`CLAUDE.md` CLI examples corrected; `code-walkthrough.md`'s recovery paragraph rewritten to match `docs/getting-started.md`'s existing correct explanation (no on-demand recovery trigger; use `doctor`'s `stale_runs` check instead).
 
-**Location:** `docs/getting-started.md:121-162`; `crates/runtime/src/cli.rs:29-165`; `docs/manual-testing.md:157`
+#### R22. Getting-started command examples omit required `--repo` — ✅ RESOLVED (fixed during this consolidation)
 
-Serve, status, stop, and audit examples omit a required argument. Add `--repo` to each example.
+**Location:** `AGENTS.md:90-93`; `CLAUDE.md:60-63`; `crates/runtime/src/cli.rs:29-165`
+
+**Evidence (re-verified 2026-08-08):** `docs/getting-started.md`, `docs/operations.md`, and `docs/manual-testing.md` already include `--repo` in every example. Only `AGENTS.md:90-93`/`CLAUDE.md:60-63` still omitted it, reintroducing the original defect after the docs/ fix.
+
+**Fix applied:** Added `--repo /path/to/repo` to every `serve`/`status`/`stop`/`audit export` example in `AGENTS.md`/`CLAUDE.md`.
 
 #### R23. Tool documentation describes eight tools while eleven are registered
 
-**Location:** `docs/architecture.md:196-207`; `docs/code-walkthrough.md:124-135`; `docs/manual-testing.md:202`; `packages/extension/src/tools/index.ts:38-51`; `packages/extension/src/index.ts:99-103`
+**Location:** `docs/architecture.md:196-207`; `docs/code-walkthrough.md:124-135`; `docs/manual-testing.md:202`; `packages/extension/src/tools/index.ts:38-51`
 
-The docs omit artifact, child, violation, and the registered doctor surface. Update current-state docs; leave ADRs and journal history unchanged.
+Docs omit artifact, child, violation, and registered doctor surface. **Open.**
 
 #### R24. Current docs name two deleted TypeScript modules
 
 **Location:** `docs/code-walkthrough.md:125`; `docs/architecture.md:207`
 
-`packages/extension/src/config.ts` and `packages/extension/src/conformance/index.ts` were removed. Delete or retarget these rows to the current config and `tests/conformance/run.ts` implementations.
+`config.ts` and `conformance/index.ts` were removed; docs still reference them. **Open.**
 
 #### R25. The current release checklist and compatibility guide retain disproven stub claims
 
-**Location:** `release/0.1.0-checklist.json`; `docs/compatibility.md:189`; `crates/runtime/src/service/orchestration.rs:289-291`; `.github/workflows/ci.yml:23-37`
+**Location:** `release/0.1.0-checklist.json`; `docs/compatibility.md:189`
 
-The checklist still says policy decisions and conformance are stubs, formatting is absent, and known tests fail. Mark it historical/superseded or regenerate it; remove the compatibility guide's policy stub label.
+**Open.**
 
 #### R26. Compatibility docs omit three shipped coordination methods
 
 **Location:** `docs/compatibility.md:172-189`; `crates/protocol/src/method.rs:79-84`
 
-Add `coordination/peerWorkspace`, `coordination/artifactList`, and `coordination/artifactFetch`.
+Missing `coordination/peerWorkspace`, `coordination/artifactList`, `coordination/artifactFetch`. **Open.**
 
 #### R27. Uninstall and rollback instructions use nonexistent distribution channels
 
 **Location:** `docs/operations.md:180-231`; `README.md:28-47`
 
-The guide cites Homebrew, apt, `omp uninstall`, and the wrong plugin directory, while the repository ships only the npm/OMP plugin path. Rewrite rollback and uninstall around the supported private-registry package.
+Cites Homebrew/apt/`omp uninstall`; only npm/OMP plugin path is shipped. **Open.**
 
 #### R28. Manual-testing guidance contradicts itself about CLI conformance
 
 **Location:** `docs/manual-testing.md:341-342`; `crates/runtime/src/cli.rs:139-152`
 
-Adjacent sentences say the subcommands are wired and that conformance is not available through a CLI. Delete the stale sentence.
-
-### Low
+**Open.**
 
 #### R29. `workspaceMode` is an open string
 
 **Location:** `packages/extension/src/tools/runs.ts:13-21`; `crates/runtime/src/service/orchestration.rs:649-656`
 
-The runtime rejects unknown values safely, but a closed Zod enum would prevent avoidable round trips and align with the workspace tool.
+Runtime rejects unknown values safely; a closed Zod enum would avoid round trips. **Open.**
 
 #### R30. Local Bun scripts omit top-level conformance and install tests
 
 **Location:** `package.json:10-13`; `.github/workflows/ci.yml:75-83`
 
-`bun run test` and `bun run check` run `bun test packages`, while CI runs all Bun tests. Include `tests/` in local scripts so local success matches CI.
+**Open.**
 
 #### R31. CONTRIBUTING references nonexistent tests, features, and PR template
 
-**Location:** `CONTRIBUTING.md:34,47,140`; `.github/`
+**Location:** `CONTRIBUTING.md:34,47,140`
 
-Correct the colocated approval test path, remove feature-placeholder guidance, and either add a PR template or stop requiring one.
+**Open.**
 
 #### R32. The extension header lists only six of eleven orchestration tools
 
 **Location:** `packages/extension/src/index.ts:1-4,83-99`
 
-Update the current-source comment to match the registry.
+**Open.**
+
+#### R37. `model.test.ts` fails to typecheck against the now-required `decidedBy` field
+
+**Location:** `packages/extension/src/monitor/model.test.ts:240,247`; `packages/protocol-ts/src/generated/RuntimeEvent.ts`
+
+**Evidence (verified):** The generated `RuntimeEvent` union requires `decidedBy: DecidedBy | null` on `approvalEvent` payloads (nullable, but not optional). `model.test.ts:240` and `:247` construct `approvalRequested`/`approvalDecided` payloads without the field. No `tsc` gate runs in CI (`package.json:13`, `packages/extension/package.json:10` — neither invokes `tsc`; see also **R45**), so this currently ships uncaught.
+
+**Fix:** Add `decidedBy: null` at :240 and `decidedBy: "human"` at :247.
+
+#### R38. `install_frame_tap` exported on the crate's public API surface
+
+**Location:** `crates/runtime/src/supervisor/mod.rs:14-16`
+
+**Evidence (verified):** `pub use output::{..., install_frame_tap};` re-exports the raw-content capture bypass beyond the crate boundary. A comment states "production never installs one," but nothing prevents an external caller in the same binary from doing so.
+
+**Fix:** Narrow the re-export to `pub(crate)` unless a cross-crate consumer is intended.
+
+#### R39. `session_shutdown` doesn't clear `subscribedClient`, breaking future monitor reconnects
+
+**Location:** `packages/extension/src/monitor/controller.ts:148-150`
+
+**Evidence (verified):** The repair path (lines 109-112) correctly pairs `controller.stop()` with `subscribedClient = undefined`. The `session_shutdown` handler (lines 148-150) calls only `controller.stop()`. After shutdown the client is unsubscribed but not closed, so `isClosed` stays false and a later `connect()` early-returns at line 106 into a permanently dead monitor.
+
+**Fix:** `pi.on("session_shutdown", async () => { controller.stop(); subscribedClient = undefined; });`
+
+#### R40. `reconnect.test.ts` passes a `revision` param the tool schema doesn't define
+
+**Location:** `packages/extension/src/reconnect.test.ts:129,137`; `packages/extension/src/tools/tasks.ts:23-27`
+
+**Evidence (verified):** `batman_task`'s Zod schema (`tasks.ts:23-27`) has only `op`, `description`, `taskId` — no `revision`. `reconnect.test.ts:129,137` passes `revision: 1`/`revision: 2`, which is silently dropped; the tool always sends `INITIAL_TASK_REVISION` (0) internally regardless. The test still proves what it's named for (cache self-heals after daemon restart) but the `revision` field is dead weight that could mislead a future reader into thinking revision handling is exercised.
+
+**Fix:** Remove `revision` from the test's tool-call arguments.
+
+#### R41. `start_queued_run` can leak a lease and materialized worktree on adapter-start failure
+
+**Location:** `crates/runtime/src/service/orchestration.rs:613-615`
+
+**Evidence:** reported by ReviewerOrchestration (S4); not independently re-verified line-by-line in this pass. If `driver.start` fails after `lease_service.activate`, the lease remains active and the materialized worktree remains on disk. Promoted from Suggestion to a tracked finding because `run/retry` (R7) multiplies how often this path executes.
+
+**Fix:** Release the lease and clean up the worktree on `driver.start` failure, mirroring the existing post-authorize error paths from R2.
+
+#### R42. `ProtocolHealthChanged` detail interpolates the normalized string, not the raw stop reason
+
+**Location:** `crates/runtime/src/adapter/copilot/normalize.rs:190-194`
+
+**Evidence (verified):** The unknown-reason arm does `format!("unknownStopReason: {other}")` where `other` is the already-lowercased/stripped match value (e.g. `copilotquotaexhausted`), not the original vendor `stop_reason` string (e.g. `_copilot_quota_exhausted`). The detail is harder to grep against vendor docs than it needs to be.
+
+**Fix:** Interpolate the original `stop_reason` parameter instead of the normalized match binding.
+
+#### R43. `artifacts.ts` tool description contradicts its actual ownership-based scope
+
+**Location:** `packages/extension/src/tools/artifacts.ts:27`; `docs/plugin-usage.md:121-122`
+
+**Evidence (verified):** Tool description states artifacts are "scoped to the current task," but R10's fix scopes by `owner_client_instance_id` (session ownership), with `taskId` only as optional narrowing. `docs/plugin-usage.md:121-122` repeats the same false claim.
+
+**Fix:** Update both to state session-ownership scoping with optional task narrowing.
+
+#### R44. Conformance fixture-capture pipeline: scrubber over-fit, `unchanged` flag inverted, TS baseline gate never written
+
+**Location:** `crates/runtime/src/conformance/scrub.rs:182-205`; `crates/runtime/src/conformance/capture.rs:156-158,68-69`; `fixtures/conformance/fixture-mode-baseline.json`
+
+**Evidence (verified by ReviewerConformance, quoted directly):**
+1. "The scrubber is calibrated to one fixture. Its placeholder prefixes match `claude/initialize.jsonl` and nothing else, so `batcave capture` would rewrite the other 10 committed fixtures instead of reproducing them, flattening codex's monotonic timestamps to a single constant and turning `claude/result.jsonl`'s `error_max_turns` values ... into the success fixture's."
+2. "The guard against exactly that is a constant. `unchanged` is computed after `fs::write`, so it compares the file to what was just written: `true` on every capture, `false` on every dry run. Inverted and useless." (Doc at `capture.rs:68-69` says "before write," contradicting the actual computation point.)
+3. "`fixture-mode-baseline.json` has one consumer, not two. The CLI gate is sound ... but `run.ts:40` throws on the CLI's exit code before the report is ever validated, so the TS gate that plan step 6.3 required ... was never written."
+
+ReviewerConformance reported **8 errors total**; the three above are the ones quoted verbatim in the collected report. **5 further conformance errors were counted but not itemized with file:line in the collected report and are not restated here to avoid fabricating detail** — re-dispatch ReviewerConformance or re-read its full output before treating the count as closed.
+
+**Fix:** Calibrate the scrubber against all 11 fixtures, not one. Compute `unchanged` before `fs::write`. Write the TS-side baseline validation gate (`tests/conformance/assert-report.ts` or equivalent) so a hand-edited `passed: true` report is caught independent of the CLI's exit code.
+
+**Priority:** High — the capture tool that produces committed fixtures is not proven correct beyond the one fixture it was built against.
+
+#### R45. No TypeScript compiler gate anywhere in CI or local scripts
+
+**Location:** `package.json:13`; `packages/extension/package.json:10`
+
+**Evidence (verified):** Neither script list invokes `tsc`. `tsconfig.json` declares `strict: true`, and `packages/protocol-ts/src/generated/` is the authoritative wire contract for the whole protocol, but nothing proves a single TypeScript consumer still compiles against it. This is why **R37** shipped uncaught.
+
+**Fix:** Add `bunx tsc --noEmit` to `bun run check` and to CI.
+
+#### R46. Documentation drift introduced alongside the R5-R11 fixes
+
+**Location:** `TODO.md:157` (former); `REVIEW.md` R7 (former); `docs/manual-testing.md` §4b exception table row 1
+
+**Evidence (verified):** Former `TODO.md` item #74 was still marked "Open" although R7's fix (`start_queued_run`) landed and is tested — corrected by folding TODO.md into this file with R7 marked resolved above. Former `REVIEW.md` R7 carried a stale "Suggested fix" instructing not to describe retry as execution — removed above. `docs/manual-testing.md` §4b lists `ompRpc/approval` as an expected fixture-mode failure; the committed baseline records `ompRpc: []` (zero expected failures) — correct the exception table.
+
+**Fix:** Correct `docs/manual-testing.md` §4b. The TODO.md/REVIEW.md staleness is resolved by this consolidation.
+
+## Known Environment Limitations (folded in from former TODO.md #55)
+
+**Not a bug — requires a gated live run to confirm the positive case.**
+
+- **Codex** (`follow_up`, `cancellation_scope`, `session_resume`, `runtime_restart`, `result_usage_artifacts`): blocked on account credits (`usageLimitExceeded: Your workspace is out of credits.`), not code. `codex login status` reports authenticated; `initialize`/`thread/start` succeed; the turn is refused server-side after ~3s. Refill credits and these become provable with no code change. Report: `release/live-codex.json`.
+- **Adapter fix already shipped:** the vendor `error` notification was previously dropped by `codex/normalize.rs`; it now normalizes to `ProtocolHealthChanged{healthy:false}` and the live probe fails fast with the vendor's own text (62s → 5s). Defended by `a_vendor_error_notification_normalizes_to_an_unhealthy_protocol_event`.
+- **Copilot** (`session_resume`, `runtime_restart`): a genuine ACP v1 protocol wall — `session/load` answers "Resource not found" for a session that completed a real turn in a prior process. Distinct from the Codex account condition; the check (`copilot/conformance.rs::session_resume_probe`) is written to pass automatically if a future CLI version persists sessions differently.
+
+Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs when a licensed, billed run is acceptable. No code change needed.
+
+**References:** `crates/runtime/src/adapter/codex/conformance.rs`, `crates/runtime/src/adapter/copilot/conformance.rs`, `docs/manual-testing.md` §4c
 
 ## Strengths
 
 - `DomainRepository::append_and_apply` keeps event append and projection updates in one SQLite transaction; migration ordering is sequential and atomic.
 - Recovery completes before the runtime binds its socket, so clients cannot mutate pre-recovery state.
-- Item 49 now exits subscription forwarders on writer closure, with a regression test that fails against the prior behavior.
+- Subscription forwarders exit on writer closure, with a regression test that fails against the prior behavior.
 - Binary selection verifies package version and SHA-256 before spawn.
 - TypeScript and Rust derive repository IDs from the same fixtures, including worktree and broken-symlink cases.
 - Inbound client frames are size-checked and schema-validated before dispatch.
 - OMP-native reconciliation prevents stale coalesce timers from overwriting terminal facts and marks orphaned non-terminal runs as lost.
-- The policy evaluator checks model, adapter, required-capability, nested-discovery, cost, and concurrency dimensions; the slot-release lifecycle is the defect captured in R2.
+- The policy evaluator checks model, adapter, required-capability, nested-discovery, cost, and concurrency dimensions; the slot-release lifecycle defect (R2) is fixed and defended.
 - Release targets and reproducible manifest timestamps have single sources of truth; package-set independently verifies target, checksum, schema fingerprint, and executable mode.
 - Committed live conformance evidence matches the compatibility table: Claude 14/14, Codex 9/14, Copilot 11/14, OMP-RPC 14/14.
+- R5-R11 (approval enforcement, client reconnection, retry execution, conformance gating, release versioning, artifact isolation, Copilot stop reasons) are all functionally fixed and defended by new tests; the R33-R44 findings above are regressions or gaps introduced by those fixes, not evidence the original defects remain open.
 
 ## Areas reviewed
 
 - Rust runtime: IPC, services, domain repository, database migrations, recovery, lifecycle, workspace/artifacts, adapters, policy, security, supervisor, conformance, CLI, xtask.
-- TypeScript: extension runtime/client/status, all orchestration tools, OMP-native persistence/reconciliation, generated protocol package, conformance/install tests.
+- TypeScript: extension runtime/client/status, all orchestration tools, OMP-native persistence/reconciliation, generated protocol package, conformance/install tests, monitor.
 - Delivery: CI/release workflows, target matrix, npm leaf packages, provenance/package-set logic.
-- Current documentation: README, CONTRIBUTING, architecture, operations, getting started, compatibility, manual testing, and code walkthrough. ADRs and journal entries were treated as immutable point-in-time records rather than current-state docs.
+- Current documentation: README, CONTRIBUTING, AGENTS.md, CLAUDE.md, architecture, operations, getting started, compatibility, manual testing, plugin-usage, code walkthrough. ADRs and journal entries were treated as immutable point-in-time records rather than current-state docs.
+
+## Open Item Count
+
+- **Critical:** 0 open (R1-R4 resolved)
+- **High:** 0 fully open; R5-R11 resolved with 4 follow-on findings (R33, R35, R36, R44)
+- **Medium:** R12-R18, R34, R37, R38, R39, R41, R42, R45 — 14 open
+- **Low:** R19, R20, R23-R32 (R21/R22 resolved during this consolidation — see above), R40, R43, R46 — 15 open, mostly documentation
+- **Environment (not actionable in-repo):** former TODO #55, folded in above

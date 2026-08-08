@@ -397,11 +397,12 @@ bun test packages/extension/src/client.test.ts -t "frame"              # TS test
   monitor silently** — no error, no test failure, just a widget that never updates for that one
   mutation. See §3 above before adding one. Full story:
   [`engineering-lessons.md`](engineering-lessons.md#durable-mutations-must-broadcast-the-same-event-they-just-committed).
-- **Recovery runs automatically after each `serve` command.** If you're debugging why a stuck
-  run transitions to `failed` `cancelled`, check `recovery.rs:recovery_test` for the stuck threshold configuration. RecoveryCoordinator is now dead code with `#[expect(dead_code)]`.
-  before the daemon starts serving, based on `stuck_threshold` (default 5 minutes) and the
-  `recover_paused`/`recover_waiting` config flags. Use `batcave status --recover` to trigger
-  it manually for diagnostics.
+- **Recovery runs automatically after each `serve` command**, before the daemon starts serving,
+  based on `stuck_threshold` (default 5 minutes) and the `recover_paused`/`recover_waiting` config
+  flags. If you're debugging why a stuck run transitions to `failed`/`cancelled`, check
+  `recovery.rs:recovery_test` for the stuck threshold configuration. There's no flag to trigger
+  recovery on demand — use `doctor`'s `stale_runs` check to confirm a stuck run exists without
+  waiting for or forcing a restart.
 - **Rollout gates must all be `true` before production use.** The `Doctor::check()` runs on
   every `serve` and `status` command. If any gate is unresolved, the doctor reports it and
   the runtime refuses to serve in production mode. Check your config files (`~/.batman/config.yaml`,

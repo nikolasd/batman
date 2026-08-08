@@ -777,7 +777,7 @@ async fn session_resume_probe_live() -> Result<String, String> {
 /// suite as [`fixture_report`], substituting a real, turn-completed
 /// [`session_resume_probe_live`] for `SESSION_RESUME`/`RUNTIME_RESTART` --
 /// the two scenarios fixture mode cannot prove past the flag/mechanism
-/// level (see `TODO.md`). Set `BATMAN_DISABLE_VENDOR_CLI=1` to
+/// level (see `REVIEW.md`). Set `BATMAN_DISABLE_VENDOR_CLI=1` to
 /// forbid it in CI or on a machine without the CLI installed.
 ///
 /// # Errors

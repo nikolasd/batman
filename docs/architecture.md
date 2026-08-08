@@ -363,7 +363,7 @@ graph TB
 
 #### Configuration and Policy
 - **Config Merge** ([`crates/runtime/src/config/merge.rs`](crates/runtime/src/config/merge.rs)): Layers org/repo/user/per-run YAML with strict unknown-key rejection into an immutable, SHA-256-fingerprinted `RuntimePolicy`
-- **Policy Evaluator** ([`crates/runtime/src/policy/evaluate.rs`](crates/runtime/src/policy/evaluate.rs)): `PolicyEvaluator` implements `AdapterAuthorization` against a `RuntimePolicy` (model allowlist, concurrency ceiling) — wired into production via `lifecycle::serve()`, same as the real `ScopeTokenVerifier` `workerMcp` credential store (see [TODO.md](../TODO.md) for remaining gaps)
+- **Policy Evaluator** ([`crates/runtime/src/policy/evaluate.rs`](crates/runtime/src/policy/evaluate.rs)): `PolicyEvaluator` implements `AdapterAuthorization` against a `RuntimePolicy` (model allowlist, concurrency ceiling) — wired into production via `lifecycle::serve()`, same as the real `ScopeTokenVerifier` `workerMcp` credential store (see [REVIEW.md](../REVIEW.md) for remaining gaps)
 
 ## Level 4: Code (C4-4)
 
@@ -693,9 +693,9 @@ sequenceDiagram
 
 ## Known Deferred Items
 
-Consciously deferred as non-blocking after review (tracked for later milestones). See [`TODO.md`](../TODO.md) for the full, verified catalog with status updates.
+Consciously deferred as non-blocking after review (tracked for later milestones). See [`REVIEW.md`](../REVIEW.md) for the full, verified catalog with status updates.
 
-**Status:** All items tracked in [`TODO.md`](../TODO.md).
+**Status:** All items tracked in [`REVIEW.md`](../REVIEW.md).
 
 ## Appendix A: Quick Reference
 

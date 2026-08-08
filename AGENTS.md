@@ -87,10 +87,10 @@ OMP_BATMAN_BINARY="$PWD/target/debug/batcave" \
   omp --extension ./packages/extension/src/index.ts
 
 # Run batcave directly
-batcave serve [--org-config ... --repo-config ... --user-config ...]
-batcave status [--recover]
-batcave stop
-batcave audit export --state-dir ~/.batman/state --output /tmp/audit.jsonl
+batcave serve --repo /path/to/repo [--org-config ... --repo-config ... --user-config ...]
+batcave status --repo /path/to/repo
+batcave stop --repo /path/to/repo
+batcave audit export --repo /path/to/repo --state-dir ~/.batman/state --output /tmp/audit.jsonl
 ```
 
 ---

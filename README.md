@@ -97,7 +97,7 @@ This project is licensed under the [MIT License](LICENSE). See the LICENSE file 
 ## Known Limitations
 
 This is a pre-1.0 project. What follows is what genuinely remains, verified against the current
-codebase — see [`TODO.md`](TODO.md) for the full prioritized list. Every adapter is installed and
+codebase — see [`REVIEW.md`](REVIEW.md) for the full prioritized list. Every adapter is installed and
 authenticated here, and live conformance is run against all four (reports under `release/`), so
 none of these is a "requires a vendor CLI" caveat.
 
@@ -113,4 +113,4 @@ none of these is a "requires a vendor CLI" caveat.
 - **Operator docs are only partially split.** `docs/installation.md`, `configuration.md`,
   `security.md`, and `recovery.md` do not exist as standalone files yet.
 
-These are tracked in [`TODO.md`](TODO.md) — the single source of truth for implementation gaps, verified against the current codebase and prioritized by severity.
+These are tracked in [`REVIEW.md`](REVIEW.md) — the single source of truth for implementation gaps, verified against the current codebase and prioritized by severity.

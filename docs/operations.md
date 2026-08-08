@@ -164,5 +164,5 @@ installing anything.
 - Confirm the vendor CLI itself is installed and authenticated — a conformance failure here is
   usually the vendor CLI, not BATMAN.
 
-For open implementation gaps (as opposed to operational issues), see [`TODO.md`](../TODO.md) — it's
+For open implementation gaps (as opposed to operational issues), see [`REVIEW.md`](../REVIEW.md) — it's
 the single source of truth for what's genuinely unfinished, verified against the current codebase.

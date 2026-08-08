@@ -3,7 +3,7 @@
 **Audience & purpose:** maintainers deciding what to build next. A design parking lot for
 consciously deferred features — nice-to-have, not blocking any planned milestone. Each entry
 includes the concrete scenarios that would justify implementation. For genuinely open
-implementation gaps (as opposed to deferred nice-to-haves), see [`TODO.md`](../TODO.md) instead —
+implementation gaps (as opposed to deferred nice-to-haves), see [`REVIEW.md`](../REVIEW.md) instead —
 that document, not this one, is the single source of truth for unfinished work.
 
 **Status:** All deferred. Revisit when a scenario becomes real.
