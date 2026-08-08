@@ -84,7 +84,7 @@ The reviewed code had the following verified baseline before this document was w
 
 **Impact:** After daemon exit or a socket failure, all eleven orchestration tools and the monitor remain broken for the session. Running status happens to repair the cache; other tools cannot recover themselves.
 
-**Suggested fix:** Expose client liveness, clear the shared cache on close/error, and make `getClient` reconnect when the cached client is closed. Add an idle-exit/reconnect integration test through a non-status tool.
+**Resolution (2026-08-08):** Exposed `BatmanClient.isClosed` for liveness checks. Added `resolveClient()` in `status.ts` which returns the cached client while open and reconnects on a closed cache. Made `getRuntimeStatus` and `getClient` use `resolveClient`. Monitor now re-subscribes after its client dies. Defended by `reconnect.test.ts` proving cache self-heals after daemon restart.
 
 #### R7. `run/retry` creates a queued run but never starts its adapter
 

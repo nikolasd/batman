@@ -128,18 +128,21 @@ The extension shows a human dialog only when UI is available, then falls through
 
 ### 73. Reconnect orchestration tools after cached client closure
 
-**Status:** Open (discovered 2026-08-06 during codebase review)
+**Status:** ✅ Closed 2026-08-08
 **Priority:** High
 **Labels:** extension, ipc, recovery
 
 **Description:**
 `getClient` returns a cached client without checking its closed state. After idle shutdown or socket failure, every orchestration tool and the monitor keeps using the dead client; only the status tool clears the cache.
 
-**Implementation:**
-- Expose client liveness and clear the shared cache on close/error.
-- Reconnect from `getClient` when cached transport is closed, with a non-status recovery test.
+**Resolution:**
+- Added `BatmanClient.isClosed` getter exposing the private `#closed` flag so a cached instance can be checked for liveness
+- Added `resolveClient()` in `status.ts`: returns the cached client while its socket is open; on a closed cache, tears it down and reconnects via `ensureRuntime`
+- Made `getRuntimeStatus` and `getClient` (in `index.ts`) use `resolveClient` as the single construction site, eliminating the duplicate `buildStatusContext` call and manual `sessionId` splice
+- Let the monitor re-subscribe after its client dies: replaced the one-shot `connected` boolean with a liveness-checked client reference; `/batman` now repairs a dead monitor
+- Added `reconnect.test.ts`: live-daemon test that proves the cache self-heals after a daemon restart
 
-**References:** `REVIEW.md` (R6), `packages/extension/src/index.ts:49`, `packages/extension/src/client.ts:135`
+**References:** `REVIEW.md` (R6), `packages/extension/src/index.ts`, `packages/extension/src/client.ts`, `packages/extension/src/status.ts`, `packages/extension/src/monitor/controller.ts`
 
 ---
 

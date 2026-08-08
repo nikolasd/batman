@@ -3,6 +3,12 @@
 This document explains how the foundation of BATMAN is designed and why. It assumes you have read
 the [README](../README.md) and want the engineering detail behind it.
 
+**Audience & purpose:** contributors and reviewers who want the design rationale — the *why*
+behind the current shape of the system. This is not a build guide (see
+[getting-started.md](getting-started.md), the developer manual) and not a tool-usage guide (see
+[plugin-usage.md](plugin-usage.md), the user manual). It describes the system as it stands today,
+with no history in it — for how it got this way, see [journal.md](journal.md) and [`docs/adr/`](adr/).
+
 **Related ADRs:** [0001](adr/0001-omp-extension-with-separate-rust-daemon.md),
 [0002](adr/0002-rust-canonical-protocol-with-generated-bindings.md),
 [0003](adr/0003-sqlite-as-the-sole-persistence-engine.md),
@@ -149,20 +155,15 @@ graph LR
     subgraph "OMP Extension"
         IE[index.ts]
         ST[status.ts]
+        DO2[doctor.ts]
         CT[context.ts]
         RT[runtime.ts]
         PL[platform.ts]
         CL[client.ts]
-        CF3[config.ts]
         IN[integrity.ts]
         SD[state.ts]
         AU[approval-ui.ts]
-        TL[tasks.ts]
-        WL[workers.ts]
-        RL[runs.ts]
-        ML[messages.ts]
-        AL[approvals.ts]
-        RL2[reconcile.ts]
+        TO[tools/*.ts]
         RC[omp-native reconciler]
         ON[omp-native/events.ts]
         ON2[omp-native/reconcile.ts]
@@ -171,17 +172,12 @@ graph LR
         MR[monitor/render.ts]
         MC[monitor/controller.ts]
         CC[monitor/compat.ts]
-        CN[conformance/index.ts]
     end
 
     IE --> ST
+    IE --> DO2
     IE --> RT
-    IE --> TL
-    IE --> WL
-    IE --> RL
-    IE --> ML
-    IE --> AL
-    IE --> RL2
+    IE --> TO
     RT --> CL
     CL --> MC
     MC --> MO
@@ -193,18 +189,23 @@ graph LR
 
 **Key components:**
 - **Extension entry point** ([`packages/extension/src/index.ts`](packages/extension/src/index.ts)): Registers tools and commands with OMP
-- **Status tool** ([`packages/extension/src/status.ts`](packages/extension/src/status.ts)): `batman_status` tool and `/batman-status` command
-- **Runtime client** ([`packages/extension/src/client.ts`](packages/extension/src/client.ts)): JSON-RPC client with correlation table
+- **Status tool** ([`packages/extension/src/status.ts`](packages/extension/src/status.ts)): `batman_status` tool, `/batman-status` command, and the shared `resolveClient()` resolver — liveness-checks the cached connection and reconnects on demand
+- **Doctor tool** ([`packages/extension/src/doctor.ts`](packages/extension/src/doctor.ts)): `batman_doctor` tool and `/batman-doctor` command — runs `batcave doctor` without needing a live connection
+- **Runtime client** ([`packages/extension/src/client.ts`](packages/extension/src/client.ts)): JSON-RPC client with correlation table and `isClosed` liveness flag
 - **Runtime launcher** ([`packages/extension/src/runtime.ts`](packages/extension/src/runtime.ts)): `ensureRuntime()` with binary selection and connection retry
 - **Platform resolver** ([`packages/extension/src/platform.ts`](packages/extension/src/platform.ts)): `resolveBatcave()` for platform-specific binaries
 - **Integrity** ([`packages/extension/src/integrity.ts`](packages/extension/src/integrity.ts)): `sha256File` — verifies packaged binaries against their manifest checksum
 - **State root resolver** ([`packages/extension/src/state.ts`](packages/extension/src/state.ts)): `resolveStateRoot(env, home)` — must stay semantically identical to Rust's `StateRoot::resolve`
-- **Config** ([`packages/extension/src/config.ts`](packages/extension/src/config.ts)): Configuration layer management
 - **Approval UI** ([`packages/extension/src/approval-ui.ts`](packages/extension/src/approval-ui.ts)): Approval UI components
-- **Orchestration tools** ([`packages/extension/src/tools/`](packages/extension/src/tools/)): `batman_task`, `batman_worker`, `batman_profile`, `batman_run`, `batman_workspace`, `batman_message`, `batman_approval`, `batman_reconcile`
+- **Orchestration tools** ([`packages/extension/src/tools/`](packages/extension/src/tools/)): 11 tools sharing one `callOrchestration` execute body (`shared.ts`) — `batman_profile`, `batman_worker`, `batman_task`, `batman_run`, `batman_workspace`, `batman_artifact`, `batman_child`, `batman_violation`, `batman_message`, `batman_approval`, `batman_reconcile`. See [plugin-usage.md](plugin-usage.md) for what each does.
 - **OMP-native reconciler** ([`packages/extension/src/omp-native/`](packages/extension/src/omp-native/)): Mirrors OMP bus events into Batman facts
 - **Embedded monitor** ([`packages/extension/src/monitor/`](packages/extension/src/monitor/)): `model.ts`, `render.ts`, `controller.ts`, `compat.ts`
-- **Conformance runner** ([`packages/extension/src/conformance/index.ts`](packages/extension/src/conformance/index.ts)): `runConformance`, `formatConformanceSummary` — external conformance test runner
+
+Configuration has no TypeScript-side counterpart — the layered org/repo/user config lives entirely
+in `crates/runtime/src/config/`; the extension only ever reads the daemon's already-merged
+`RuntimePolicy` through `runtime/status`. Adapter conformance similarly has no extension-side
+runner — it's driven by [`tests/conformance/run.ts`](../tests/conformance/run.ts) and
+`assert-report.ts`, invoked by CI, not by the extension at runtime.
 
 ### 3.2. BATMAN Runtime Components
 
@@ -391,7 +392,7 @@ macro_rules! uuid_id {
     ($(#[$meta:meta])* $name:ident) => {
         // Generates: a constructor (`new`), a fallible parser (`parse`), and
         // `Display`, `FromStr`, `Serialize`, `Deserialize`, `JsonSchema`, and `TS`
-        // implementations. Kept as a macro so the eight identifier types below do
+        // implementations. Kept as a macro so the nine identifier types below do
         // not repeat this boilerplate.
         ...
     };
@@ -405,6 +406,7 @@ uuid_id!(OperationId);
 uuid_id!(MessageId);
 uuid_id!(ApprovalId);
 uuid_id!(ArtifactId);
+uuid_id!(PolicyViolationId);
 ```
 
 **JSON-RPC envelopes** ([`crates/protocol/src/rpc.rs`](crates/protocol/src/rpc.rs)):
@@ -749,11 +751,13 @@ State lives under `<state root>/repos/<repository-id>/`, where the state root re
 
 ### Role Table Summary
 
+Generated from [`crates/runtime/src/ipc/mod.rs`](crates/runtime/src/ipc/mod.rs)'s `allowed_methods()` — if this table and the code ever disagree, trust the code and file a bug against this table.
+
 | Role | Allowed Methods |
 |---|---|
-| `ompExtension` | All 22 mutation/read methods, including `policy/violation/decide`, `reconcile/omp`, and `profile/register` |
+| `ompExtension` | All 29 mutation/read methods, including `policy/violation/decide`, `reconcile/omp`, `profile/register`, and the full `workspace/*`/`artifact/*` surface |
 | `display` | 11 read-only methods: `runtime/status`, `events/subscribe`, `events/replay`, `task/get`, `worker/list`, `worker/get`, `run/list`, `run/get`, `message/list`, `approval/list`, `coordination/child/list` |
-| `workerMcp` | 9 methods: `runtime/status` plus the 8 `coordination/*` tool-backing methods (`coordination/task`, `coordination/peers`, `coordination/send`, `coordination/requestChild`, `coordination/publishArtifact`, `coordination/reportBlocked`, `coordination/askPolicy`, `coordination/child/list`) |
+| `workerMcp` | 12 methods: `runtime/status` plus 11 `coordination/*` tool-backing methods (`coordination/task`, `coordination/peers`, `coordination/send`, `coordination/requestChild`, `coordination/publishArtifact`, `coordination/reportBlocked`, `coordination/askPolicy`, `coordination/child/list`, `coordination/peerWorkspace`, `coordination/artifactList`, `coordination/artifactFetch`) |
 
 **Note:** A cached connection shared across callers must authenticate as the *union* of all roles (see [Engineering Lessons](engineering-lessons.md#cached-client-must-authenticate-with-the-union-of-all-roles)).
 

@@ -3,6 +3,11 @@
 A guided tour for navigating, tracing, debugging, and testing the codebase. Read
 [architecture.md](architecture.md) first for the *why*; this document is the *where and how*.
 
+**Audience & purpose:** contributors navigating, debugging, or testing the codebase — a companion
+to [getting-started.md](getting-started.md), the developer manual. If you're looking for what the
+extension's tools *do* rather than how they're implemented, see [plugin-usage.md](plugin-usage.md)
+instead.
+
 New to Rust? Read the [Rust primer](rust-primer.md) alongside this — it teaches Rust using this
 repository's own code.
 
@@ -15,7 +20,7 @@ Small, dependency-light, and the vocabulary for everything else.
 | File | What lives there |
 |---|---|
 | `src/lib.rs` | Re-exports everything; the crate's public API is this one page |
-| `src/ids.rs` | `uuid_id!` macro generating the 8 id newtypes (`ProjectId`, `RunId`, …) |
+| `src/ids.rs` | `uuid_id!` macro generating the 9 id newtypes (`ProjectId`, `RunId`, `PolicyViolationId`, …) |
 | `src/version.rs` | `ProtocolVersion`, `VersionRange` |
 | `src/rpc.rs` | JSON-RPC envelopes, `InitializeParams/Result`, `ClientAuth` roles, `RuntimeStatus`, `error_code` constants (`BatmanMethod` itself now lives in `method.rs`, re-exported here) |
 | `src/method.rs` | `BatmanMethod` — every JSON-RPC method name, foundation and orchestration alike |
@@ -121,18 +126,18 @@ binary into a leaf package with a deterministic manifest).
 
 | File | What lives there |
 |---|---|
-| `src/index.ts` | Default-export extension factory; registers `batman_status`, `/batman-status`, the eight orchestration tools (via `tools/index.ts`), OMP-native lifecycle listeners (`omp-native/`), and the embedded monitor (`monitor/controller.ts`) |
-| `src/config.ts` | Configuration layer management |
-| `src/status.ts` | `getRuntimeStatus(ctx)` — the one shared status path; sanitized failure results |
-| `src/client.ts` | `BatmanClient` — NDJSON framing, byte-exact caps, request correlation, Ajv validation of every inbound frame |
+| `src/index.ts` | Default-export extension factory; registers `batman_status`, `batman_doctor`, `/batman-status`, `/batman-doctor`, the 11 orchestration tools (via `tools/index.ts`), OMP-native lifecycle listeners (`omp-native/`), and the embedded monitor (`monitor/controller.ts`) |
+| `src/status.ts` | `getRuntimeStatus(ctx)` and `resolveClient(ctx)` — the shared status path and liveness-aware client resolver; reuses the cached connection while open, reconnects on demand
+| `src/doctor.ts` | `batman_doctor` tool / `/batman-doctor` command — shells out to `batcave doctor --json`, no live connection required
+| `src/client.ts` | `BatmanClient` — NDJSON framing, byte-exact caps, request correlation, Ajv validation, and `isClosed` liveness flag for cache invalidation
 | `src/runtime.ts` | `ensureRuntime` (connect-or-spawn, authenticates as `ompExtension`), `buildServeArgs`, `resolveOverride` (`OMP_BATMAN_BINARY` validation), `repositoryIdFromRoot` |
 | `src/state.ts` | `resolveStateRoot(env, home)` — must stay semantically identical to Rust's `StateRoot::resolve` |
 | `src/platform.ts` | `resolveBatcave` tuple mapping, integrity/version checks, typed errors, `detectLibc` |
 | `src/integrity.ts` | `sha256File` |
 | `src/approval-ui.ts` | Approval UI components |
-| `src/conformance/index.ts` | `runConformance`, `formatConformanceSummary` — external conformance test runner |
+| `src/tools/index.ts` | Registers all 11 tools with OMP |
 | `src/tools/shared.ts` | `callOrchestration` — the one execute body every orchestration tool uses; maps `JsonRpcRemoteError` to a stable tool error |
-| `src/tools/{tasks,workers,runs,messages,approvals,reconcile}.ts` | `batman_task`, `batman_worker`, `batman_run`, `batman_message`, `batman_approval`, `batman_reconcile` |
+| `src/tools/{profiles,workers,tasks,runs,workspaces,artifacts,children,violations,messages,approvals,reconcile}.ts` | `batman_profile`, `batman_worker`, `batman_task`, `batman_run`, `batman_workspace`, `batman_artifact`, `batman_child`, `batman_violation`, `batman_message`, `batman_approval`, `batman_reconcile` — see [plugin-usage.md](plugin-usage.md) for what each does |
 | `src/omp-native/events.ts` | Normalizes `task:subagent:lifecycle\|progress\|event` bus payloads into `OmpNativeAgentFact` |
 | `src/omp-native/reconcile.ts` | `OmpNativeReconciler` (150 ms progress coalescing, terminal-immediate), `reconcileAcrossRestart` (undetected parent-scoped runs become `lost`), `createOmpProcessEpoch`, `reconcileWithRuntime` |
 | `src/monitor/model.ts` | `reduceEvent` — the pure event-reducer building `MonitorState` |
@@ -163,8 +168,10 @@ Follow this once with the files open and you will have seen every layer.
 1. **Registration** — OMP loads the extension and calls the default export
    (`index.ts:batmanExtension`), which registers the tool and command; both handlers call
    `getRuntimeStatus(ctx)` with the context from `context.ts:buildStatusContext`.
-2. **Client acquisition** — `status.ts:getRuntimeStatus` reuses a cached `BatmanClient` or calls
-   `runtime.ts:ensureRuntime`.
+2. **Client acquisition** — `status.ts:resolveClient` checks the cached `BatmanClient`'s `isClosed` flag.
+   If the socket is still open, it returns the cached instance immediately. If the client is closed
+   (daemon idle-exited or socket errored), it tears down the stale reference and calls
+   `runtime.ts:ensureRuntime` to reconnect.
 3. **Connect-or-spawn** — `ensureRuntime` computes the socket path
    (`resolveStateRoot` + `repositoryId`) and tries to connect. If nothing answers: `selectBinary`
    validates `OMP_BATMAN_BINARY` (or asks `platform.ts:resolveBatcave` for a packaged binary),
