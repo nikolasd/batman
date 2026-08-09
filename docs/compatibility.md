@@ -41,22 +41,21 @@ Windows equivalent is implemented), and the packaged binaries are built against 
 
 The table below is **generated from real `--live` conformance runs**, not from prose. Each row
 records the version the adapter's own probe observed and how many canonical scenarios that run
-proved. The reports themselves are committed under `release/live-<adapter>.json`, so every claim
-here is checkable.
+proved.
 
 Reproduce with (`BATMAN_DISABLE_VENDOR_CLI` must be **unset** — it suppresses vendor invocation):
 
 ```bash
 ./target/debug/batcave conformance --adapter <claude|codex|copilot|ompRpc> --live \
-  --output release/live-<adapter>.json
+  --output /tmp/live-<adapter>.json
 ```
 
-| Adapter | Observed version | Scenarios passing | Report |
-|---------|------------------|-------------------|--------|
-| Claude  | `2.1.222`           | 14 / 14 | `release/live-claude.json` |
-| Codex   | `codex-cli 0.146.0` | 9 / 14  | `release/live-codex.json` |
-| Copilot | `1.0.78`            | 11 / 14 | `release/live-copilot.json` |
-| OMP-RPC | `omp/17.2.7`        | 14 / 14 | `release/live-omp-rpc.json` |
+| Adapter | Observed version | Scenarios passing |
+|---------|------------------|-------------------|
+| Claude  | `2.1.222`           | 14 / 14 |
+| Codex   | `codex-cli 0.146.0` | 9 / 14  |
+| Copilot | `1.0.78`            | 11 / 14 |
+| OMP-RPC | `omp/17.2.7`        | 14 / 14 |
 
 A scenario short of 14 is recorded below with its cause. None of them is an unproven assertion:
 each carries the vendor's or the environment's own explanation.
@@ -117,7 +116,7 @@ v1 field names.
 - **Protocol**: BATMAN-driven `omp --mode rpc` NDJSON frames over stdio
 - **Status**: Stable — **14 / 14, fully green**
 - **Live result**: 14 / 14 against `omp/17.2.7`, `passed: true`, reproduced on three consecutive
-  runs with zero local providers in `omp`'s catalog. Report: `release/live-omp-rpc.json`.
+  runs with zero local providers in `omp`'s catalog.
 
 ## If a version isn't in either table
 
@@ -125,8 +124,7 @@ Neither table is exhaustive by design — an untested CLI version isn't assumed 
 because it's newer. If you hit a version gap:
 
 1. Run the reproduce command for that adapter (above) and check whether it passes.
-2. If it does, that's evidence worth adding here — open a PR updating the table and committing
-   the new `release/live-<adapter>.json`.
+2. If it does, that's evidence worth adding here — open a PR updating the table.
 3. If it doesn't, see [`docs/manual-testing.md`](manual-testing.md#4-worker-adapters) for how to
    isolate which scenario regressed.
 

@@ -377,7 +377,7 @@ ReviewerConformance reported **8 errors total**; the three above are the ones qu
 
 **Not a bug — requires a gated live run to confirm the positive case.**
 
-- **Codex** (`follow_up`, `cancellation_scope`, `session_resume`, `runtime_restart`, `result_usage_artifacts`): blocked on account credits (`usageLimitExceeded: Your workspace is out of credits.`), not code. `codex login status` reports authenticated; `initialize`/`thread/start` succeed; the turn is refused server-side after ~3s. Refill credits and these become provable with no code change. Report: `release/live-codex.json`.
+- **Codex** (`follow_up`, `cancellation_scope`, `session_resume`, `runtime_restart`, `result_usage_artifacts`): blocked on account credits (`usageLimitExceeded: Your workspace is out of credits.`), not code. `codex login status` reports authenticated; `initialize`/`thread/start` succeed; the turn is refused server-side after ~3s. Refill credits and these become provable with no code change.
 - **Adapter fix already shipped:** the vendor `error` notification was previously dropped by `codex/normalize.rs`; it now normalizes to `ProtocolHealthChanged{healthy:false}` and the live probe fails fast with the vendor's own text (62s → 5s). Defended by `a_vendor_error_notification_normalizes_to_an_unhealthy_protocol_event`.
 - **Copilot** (`session_resume`, `runtime_restart`): a genuine ACP v1 protocol wall — `session/load` answers "Resource not found" for a session that completed a real turn in a prior process. Distinct from the Codex account condition; the check (`copilot/conformance.rs::session_resume_probe`) is written to pass automatically if a future CLI version persists sessions differently.
 

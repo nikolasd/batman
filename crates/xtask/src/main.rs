@@ -3,8 +3,8 @@
 //! `cargo run -p batman-xtask -- generate` regenerates the canonical JSON
 //! Schema document and TypeScript bindings from `batman-protocol`, the sole
 //! source of truth for every BATMAN wire type. `--check` verifies the
-//! committed outputs are up to date without modifying them.
-
+//! committed outputs are up to date and that Rust crate versions match the
+//! npm source of truth, without modifying anything.
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -347,7 +347,16 @@ fn run_generate(check: bool) -> Result<()> {
         compare_files(&temp_schema_path, &schema_path, "schema")?;
         compare_dirs(&temp_generated_dir, &generated_dir)?;
 
-        println!("generate --check: schema and TypeScript bindings are up to date");
+        // Verify Rust crate versions match the npm source of truth.
+        // If they drift, `batcave --version` (which reports CARGO_PKG_VERSION
+        // from the runtime crate) would disagree with the npm package version,
+        // and the leaf manifest version (read from the extension package.json)
+        // would lie about what the binary actually reports.
+        check_version_coherence(&root)?;
+
+        println!(
+            "generate --check: schema, TypeScript bindings, and version coherence are up to date"
+        );
         return Ok(());
     }
 
@@ -402,6 +411,76 @@ fn read_extension_version(root: &Path) -> Result<String> {
                 package_json_path.display()
             )
         })
+}
+
+/// Reads the `version` field out of a `Cargo.toml` file.
+///
+/// Minimal parser: scans for `version = "..."` in the file. No `toml` crate
+/// dependency — Cargo.toml version lines are simple and stable.
+fn read_cargo_version(path: &Path) -> Result<String> {
+    let raw = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("version =") {
+            let value = trimmed
+                .strip_prefix("version =")
+                .and_then(|v| v.trim().strip_prefix('"'))
+                .and_then(|v| v.strip_suffix('"'))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "{}: malformed version line: {trimmed:?}; expected `version = \"x.y.z\"`",
+                        path.display()
+                    )
+                })?;
+            return Ok(value.to_string());
+        }
+    }
+    bail!("{} has no `version` field", path.display())
+}
+
+/// Verifies every Rust crate's version matches the npm source of truth
+/// (`packages/extension/package.json`).
+///
+/// If a Rust crate drifts, `batcave --version` (which reports `CARGO_PKG_VERSION`
+/// from the runtime crate) would disagree with the npm package version, and the
+/// leaf manifest version (read from the extension package.json, not the binary)
+/// would lie about what the shipped binary actually reports.
+fn check_version_coherence(root: &Path) -> Result<()> {
+    let expected = read_extension_version(root)?;
+
+    // The runtime crate is critical: `batcave --version` reports its
+    // `CARGO_PKG_VERSION`, so a drift here means the binary lies about
+    // its version relative to the npm package that ships it.
+    let runtime_path = root.join("crates/runtime/Cargo.toml");
+    let runtime_version = read_cargo_version(&runtime_path)?;
+    if runtime_version != expected {
+        bail!(
+            "version drift: crates/runtime/Cargo.toml declares version {:?} but \
+             packages/extension/package.json declares {:?}; \
+             `batcave --version` would report {:?} while the npm package ships as {:?}; \
+             update crates/runtime/Cargo.toml to match",
+            runtime_version,
+            expected,
+            runtime_version,
+            expected,
+        );
+    }
+
+    // The protocol crate's version surfaces in `clientInfo.version` when
+    // the Codex adapter reports back to the vendor CLI.
+    let protocol_path = root.join("crates/protocol/Cargo.toml");
+    let protocol_version = read_cargo_version(&protocol_path)?;
+    if protocol_version != expected {
+        bail!(
+            "version drift: crates/protocol/Cargo.toml declares version {:?} but \
+             packages/extension/package.json declares {:?}; \
+             update crates/protocol/Cargo.toml to match",
+            protocol_version,
+            expected,
+        );
+    }
+
+    Ok(())
 }
 
 /// Copies `binary` into the leaf package directory matching `target` as

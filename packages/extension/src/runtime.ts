@@ -16,6 +16,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { BatmanClient } from "./client";
 import type { InitializeParams } from "@nikolasd/batman-protocol";
 
+import pkg from "../package.json" with { type: "json" };
 /** The bootstrap frame size the launcher's own connections negotiate. */
 const CONNECT_MAX_FRAME_BYTES = 1024 * 1024;
 
@@ -255,7 +256,7 @@ function selectBinary(env: Readonly<Record<string, string | undefined>>, package
 function initParams(repository: string, sessionId?: string): InitializeParams {
   const canonical = realpathSync(repository);
   return {
-    client: { name: "@nikolasd/batman", version: "0.1.0" },
+    client: { name: "@nikolasd/batman", version: pkg.version },
     supported: { min: { major: 1, minor: 0 }, max: { major: 1, minor: 0 } },
     repository: { canonicalPath: canonical, vcsRoot: canonical },
     auth: { role: "ompExtension", instanceId: sessionId ?? "batman-extension", agentDirectory: canonical },
