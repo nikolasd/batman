@@ -157,7 +157,7 @@ Maintainers cut a release by pushing a version tag, not by publishing manually:
 
 ```bash
 # Bump the version in packages/extension/package.json first, and keep
-# .omp-plugin/marketplace.json's metadata.version and its plugin entry's
+# .claude-plugin/marketplace.json's metadata.version and its plugin entry's
 # version in lockstep with it (see the release checklist below).
 git tag v<version>
 git push origin v<version>
@@ -173,7 +173,7 @@ Pushing a `v*` tag triggers [`.github/workflows/release.yml`](.github/workflows/
 
 **Release checklist, before tagging:**
 - `packages/extension/dist/index.js` is rebuilt (`bun run build`) and the diff is committed — it's the exact file a marketplace-installed plugin loads, and CI's `bundle-check` job rejects a stale one.
-- `.omp-plugin/marketplace.json`'s `metadata.version` and its `batman` plugin entry's `version` match `packages/extension/package.json`'s version.
+- `.claude-plugin/marketplace.json`'s `metadata.version` and its `batman` plugin entry's `version` match `packages/extension/package.json`'s version.
 
 ## Documentation
 
