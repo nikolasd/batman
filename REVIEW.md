@@ -1,6 +1,6 @@
 # BATMAN Codebase Review
 
-**Reviewed:** 2026-08-06 (baseline) · **Updated:** 2026-08-08 (R5-R11 fix verification + PR review of those fixes)
+**Reviewed:** 2026-08-06 (baseline) · **Updated:** 2026-08-08 (R5-R11 fix verification + PR review of those fixes) · **Re-verified:** 2026-08-10 (full open-item audit — every Medium/Low/follow-on finding still open as of R33-R46 re-read against current source; no new fix commits landed in this pass)
 **Baseline commit:** `3907e8fb8d31f5d275293a9e9302600d436cee44` · **Fix commits:** `8331a34` `9720c63` `8457de5` `6bd6a00` `f9e95c4` `797d5e6` `e8204da` `44093d4` `e4befb8` `bcff4ce` `143e1b3` `de07022` `60fd4de` `bb209eb` `e8e5f4b` `5c9444f`
 
 This file consolidates the original codebase review, the implementation-gap tracker
@@ -18,6 +18,16 @@ during that re-verification, all corrected in place). The R5-R11 fix commits wer
 independently re-reviewed by 16 reviewer agents grouped by locality; their findings appear as
 R33+ below, each re-verified against the current tree in this pass.
 
+**2026-08-10 pass:** every item still marked Open (R12-R18, R20, R25, R29-R46) was
+independently re-verified against current source by six parallel read-only reviewers, one of
+whom ran a real `tsc` compile rather than inspecting types by eye (see R37). Twenty-five of
+twenty-seven held up exactly as written. Two did not survive re-verification and are corrected
+in place below: **R25** (the file this item hinged on was deleted outright, not just left
+stale) and **R44**'s third sub-claim (a TS-side baseline validator was added to
+`release.yml` after this finding was filed; `tests/conformance/run.ts` alone still skips it,
+but the release pipeline as a whole does not). No item flipped from open to newly-broken, and
+no previously-resolved (✅) item was found to have regressed.
+
 ## Baseline
 
 Verified before this document was last written:
@@ -31,8 +41,10 @@ Verified before this document was last written:
 - `bun test packages` — 123 passed, 0 failed
 - `bun test tests/conformance` — 10 passed, 0 failed
 
-**Not re-run for this update** — the findings below (R33+) were verified by direct code
-reading (`grep`/`read`), not by re-executing the suite. Run the commands above plus
+**Not re-run in full for this update** — the findings below (R33+) were verified by direct
+code reading (`grep`/`read`), not by re-executing the whole suite. Exception: the 2026-08-10
+pass ran a real scoped `tsc --noEmit` compile to confirm R37 (see that entry for the exact
+command and compiler output) rather than relying on inspection. Run the commands above plus
 `bunx tsc --noEmit` before merge to confirm they still hold.
 
 ## Findings
@@ -126,9 +138,9 @@ A failed cancellation is logged, then the run is durably transitioned to `cancel
 
 #### R14. Per-run redactor construction has a fail-open fallback
 
-**Location:** `crates/runtime/src/lifecycle.rs:194-205`; `crates/runtime/src/adapter/event_sink.rs:152-168`
+**Location:** `crates/runtime/src/lifecycle.rs:194-205`; `crates/runtime/src/adapter/event_sink.rs:164-167`
 
-Event-sink construction falls back to built-in patterns on invalid regex rather than propagating. Not presently reachable with current wiring, but the trap remains. **Open.**
+Event-sink construction falls back to built-in patterns on invalid regex rather than propagating. **Open** — re-verified 2026-08-10: `DomainAdapterEventSink::new` still does `Redactor::with_org_rules(&org_security_patterns).unwrap_or_else(|e| { tracing::warn!(...); Redactor::new() })`. Traced the full call chain: `lifecycle.rs` validates `policy.org_security_patterns` once at startup and fails closed on error; that same already-validated, immutable `RuntimePolicy` is cloned through `registry.rs:161-167,203,232,484` into every `DomainAdapterEventSink::new` call, and no reload path exists. So the fallback is confirmed unreachable dead code in the sole current call chain — but the trap itself is still in source and would silently activate the moment any future path (config reload, an alternate constructor) feeds it patterns that were not pre-validated.
 
 #### R15. `batman_task.description` is silently discarded
 
@@ -146,7 +158,7 @@ Tool accepts any string; runtime accepts only `release`/`cancel`. Use a closed Z
 
 **Location:** `packages/protocol-ts/src/index.ts:1-50`; `crates/xtask/src/main.rs:206-247`; `packages/extension/src/tools/workspaces.ts:20-24`; `packages/extension/src/tools/artifacts.ts:16-20`
 
-**Evidence (re-verified 2026-08-08):** The barrel (`index.ts:1-39`) exports 35 types through `WorkerId` alphabetically but omits at least `ApplyStrategy`, `DecidedBy`, `DisplayBackend`, `DisplayConfig`, `DisplayPlacement`, `IsolationKind`, and `LeaseMode` — all present under `generated/` (48+ files total). `workspaces.ts:20,21,23` hand-writes `pi.zod.enum(["readOnly", "write"])`, `pi.zod.enum(["shared", "gitWorktree", "copy"])`, and `pi.zod.enum(["applyPatch", "cherryPick"])` — literal-for-literal copies of generated `LeaseMode`, `IsolationKind`, and `ApplyStrategy` respectively, with no import tying them together. A future variant added to any of the three Rust enums silently desyncs the tool schema from the wire type. **Open.**
+**Evidence (re-verified 2026-08-08, drift confirmed wider 2026-08-10):** The barrel (`index.ts:1-39`) exports 35 types through `WorkerId` alphabetically but omits at least `ApplyStrategy`, `DecidedBy`, `DisplayBackend`, `DisplayConfig`, `DisplayPlacement`, `IsolationKind`, and `LeaseMode` — all present under `generated/` (48+ files total). `workspaces.ts:18,20-21,23` and `artifacts.ts:15` hand-write `pi.zod.enum([...])` literals (`["readOnly", "write"]`, `["shared", "gitWorktree", "copy"]`, `["applyPatch", "cherryPick"]`, `["patch","commitList","conflictReport","workspaceManifest"]`) — literal-for-literal copies of generated `LeaseMode`, `IsolationKind`, `ApplyStrategy`, and `ArtifactKind` respectively, with no import tying them together. A future variant added to any of these Rust enums silently desyncs the tool schema from the wire type. As of 2026-08-10 the barrel's omission list has grown, not shrunk — `DisplayStatus`, `PolicyViolationId`, `RunFlags`, `RuntimeEventKind`, and `WorkspaceEvent` are now also present under `generated/` but absent from the barrel. **Open.**
 
 #### R18. Detached runtime spawn has no `error` listener
 
@@ -169,6 +181,8 @@ Document currently says 22/9 methods, code allows 30/12 when this claim was writ
 **Fix:** Canonicalize `redact_json_value`'s Object arm to a key-sorted map (restores `sanitize_json` determinism and `fingerprint()`'s content-addressing property), and change `permission_envelope_contains_secret_shape` to a structural comparison (`redactor.redact_json_value(value) != *value`) rather than a serialized-text comparison. Restore the deleted determinism test.
 
 **Priority:** High — breaks two documented invariants and introduces a false-rejection security regression.
+
+**Re-verified 2026-08-10:** the `preserve_order` feature flag, the false doc comments (`profile.rs:327-329`, `redaction.rs:262-265`), the order-dependent fingerprint (`merge.rs:517-522`, hashes `merged.to_string()` where `merged` is built by inserting each config layer's keys in that layer's document order), and the weakened test (now `sanitize_json_is_deterministic_for_same_input` at `redaction.rs:471-481`, asserting only `sanitize_json(&v) == sanitize_json(&v)` on an identical value) all still stand exactly as described. One nuance: tracing `permission_envelope_contains_secret_shape`'s two comparison sides shows both `serde_json::to_string(value)` and `sanitize_json(value)`'s internal `redact_json_value` iterate the *same* source map in the *same* order — neither independently sorts — so the specific "false rejection via order divergence" mechanism did not clearly reproduce from reading this one code path. The rest of the finding (doc inaccuracy, fingerprint non-reproducibility across binary versions, weakened test) is unaffected and remains a real, open defect.
 
 #### R34. `decided_by` persisted as a JSON-quoted string, not a bare token
 
@@ -236,11 +250,13 @@ Leaf packages declare no npm `bin` shim (`packages/batman-linux-x64-gnu/package.
 
 **Evidence (re-verified 2026-08-08):** Neither `config.ts` nor `conformance/index.ts` is referenced at the cited lines or anywhere in the current `code-walkthrough.md`/`architecture.md` extension-component tables; both files are confirmed absent from `packages/extension/src/`. Stale when filed; already corrected elsewhere.
 
-#### R25. The release checklist and compatibility guide retain disproven stub claims — narrowed (partially stale)
+#### R25. The release checklist and compatibility guide retain disproven stub claims — ✅ RESOLVED (2026-08-10 — file deleted, not just stale)
 
-**Location:** `release/0.1.0-checklist.json`; `docs/compatibility.md:189`
+**Location:** `release/0.1.0-checklist.json` (removed); `docs/compatibility.md:189`
 
-**Evidence (re-verified 2026-08-08):** `docs/compatibility.md` is now only 136 lines — line 189 does not exist. The file was narrowed to exactly two tables (supported platforms, adapter conformance versions) and explicitly defers everything else to other docs (`compatibility.md:3-8`); it makes none of the stub claims this item originally cited. That half is moot. `release/0.1.0-checklist.json` is a dated, timestamped snapshot (`"generated": "2026-08-01"`) of a specific hardening pass, structurally like `docs/journal.md` — a point-in-time record, not a current-state doc; its stale entries (e.g. `task_3_recovery_tests` calling `recovery.rs` "still a stub") describe what was true on 2026-08-01, not a live claim about today's `RecoveryCoordinator` (confirmed non-stub, wired into `lifecycle.rs:150`). **Open** only if this file is meant to be a living doc rather than a dated snapshot — recommend explicitly labeling it historical (matching `journal.md`'s convention) to close this permanently, or deleting it if the 0.1.0 release already shipped.
+**Evidence (re-verified 2026-08-08):** `docs/compatibility.md` is now only 136 lines — line 189 does not exist. The file was narrowed to exactly two tables (supported platforms, adapter conformance versions) and explicitly defers everything else to other docs (`compatibility.md:3-8`); it makes none of the stub claims this item originally cited. That half was already moot.
+
+**Re-verified 2026-08-10:** `release/0.1.0-checklist.json` no longer exists — `git log` shows it was removed outright in commit `7ab1447` ("docs: remove stale 0.1.0 release checklist"), not merely left un-labeled. `release/` now contains only `targets.json`. The 2026-08-08 recommendation (label it historical, or delete it if 0.1.0 shipped) was independently acted on via the stronger option. Nothing left to fix here.
 
 #### R26. Compatibility docs omit three shipped coordination methods — ✅ RESOLVED (moot — already fixed by other work, not this pass)
 
@@ -294,6 +310,13 @@ Runtime rejects unknown values safely; a closed Zod enum would avoid round trips
 
 **Fix:** Add `decidedBy: null` at :240 and `decidedBy: "human"` at :247.
 
+**Re-verified 2026-08-10 with a real compile, not inspection:** ran `tsc --noEmit` scoped against `packages/extension`'s own resolved `node_modules` (the root `tsconfig.json` isn't directly usable against the installed compiler for an isolated single-file check). Confirmed real errors at the cited lines:
+```
+src/monitor/model.test.ts(240,7): error TS2741: Property 'decidedBy' is missing in type '{ kind: "approvalRequested"; ... }' but required in type '{ ...; decidedBy: DecidedBy | null; }'.
+src/monitor/model.test.ts(247,7): error TS2741: Property 'decidedBy' is missing in type '{ kind: "approvalDecided"; ... }' but required in type '{ ...; decidedBy: DecidedBy | null; }'.
+```
+The same run also surfaced an unrelated, previously untracked type error at `model.test.ts:77` — `pendingApprovalCount` referenced on `MonitorState` does not exist on that type. Not part of this finding's original claim; flagged here so it isn't lost, since **R45** (no `tsc` gate) means it currently ships uncaught too. Whoever fixes R37 should fix this in the same pass since it's the same root cause (no compiler gate) surfacing in the same file.
+
 #### R38. `install_frame_tap` exported on the crate's public API surface
 
 **Location:** `crates/runtime/src/supervisor/mod.rs:14-16`
@@ -342,20 +365,20 @@ Runtime rejects unknown values safely; a closed Zod enum would avoid round trips
 
 **Fix:** Update both to state session-ownership scoping with optional task narrowing.
 
-#### R44. Conformance fixture-capture pipeline: scrubber over-fit, `unchanged` flag inverted, TS baseline gate never written
+#### R44. Conformance fixture-capture pipeline: scrubber over-fit, `unchanged` flag inverted — ⚠️ PARTIALLY RESOLVED / ONE SUB-CLAIM STALE
 
-**Location:** `crates/runtime/src/conformance/scrub.rs:182-205`; `crates/runtime/src/conformance/capture.rs:156-158,68-69`; `fixtures/conformance/fixture-mode-baseline.json`
+**Location:** `crates/runtime/src/conformance/scrub.rs:182-205`; `crates/runtime/src/conformance/capture.rs:145-158,67-69`; `fixtures/conformance/fixture-mode-baseline.json`
 
 **Evidence (verified by ReviewerConformance, quoted directly):**
-1. "The scrubber is calibrated to one fixture. Its placeholder prefixes match `claude/initialize.jsonl` and nothing else, so `batcave capture` would rewrite the other 10 committed fixtures instead of reproducing them, flattening codex's monotonic timestamps to a single constant and turning `claude/result.jsonl`'s `error_max_turns` values ... into the success fixture's."
-2. "The guard against exactly that is a constant. `unchanged` is computed after `fs::write`, so it compares the file to what was just written: `true` on every capture, `false` on every dry run. Inverted and useless." (Doc at `capture.rs:68-69` says "before write," contradicting the actual computation point.)
-3. "`fixture-mode-baseline.json` has one consumer, not two. The CLI gate is sound ... but `run.ts:40` throws on the CLI's exit code before the report is ever validated, so the TS gate that plan step 6.3 required ... was never written."
+1. "The scrubber is calibrated to one fixture. Its placeholder prefixes match `claude/initialize.jsonl` and nothing else, so `batcave capture` would rewrite the other 10 committed fixtures instead of reproducing them, flattening codex's monotonic timestamps to a single constant and turning `claude/result.jsonl`'s `error_max_turns` values ... into the success fixture's." **Open — re-verified 2026-08-10.** `stable_session_id`/`stable_uuid` (`scrub.rs:182-205`) only recognize `claude/initialize.jsonl`'s `11111111-…`/`a0000000-…` placeholder family as already-canonical; the other committed fixtures use distinct families (`claude/subagent.jsonl`: `22222222-…`/`b0000000-…`; `claude/approval.jsonl`: `33333333-…`/`c0000000-…`; `claude/result.jsonl`: `44444444-…`/`d0000000-…`; codex/copilot/omp-rpc fixtures use raw, unscrubbed-looking IDs). The one round-trip test, `scrubbing_scrubbed_fixture_is_identity` (`scrub.rs:227-245`), is hardcoded to `claude/initialize.jsonl` only — no test exercises idempotence against any of the other ~10 fixtures.
+2. "The guard against exactly that is a constant. `unchanged` is computed after `fs::write`, so it compares the file to what was just written: `true` on every capture, `false` on every dry run. Inverted and useless." (Doc at `capture.rs:67-69` says "before write," contradicting the actual computation point.) **Open — re-verified 2026-08-10**, verbatim: the non-dry-run write happens at `capture.rs:145-152`, and only afterward, at `capture.rs:155-158`, `unchanged` is computed as `!dry_run && fixture_path.exists() && std::fs::read_to_string(&fixture_path).is_ok_and(|existing| existing == content)` — reading back the file it just wrote and comparing it to the very bytes it wrote. It never compares against the pre-write committed content, so it cannot detect "capture reproduced what's committed" as the doc comment on the field claims.
+3. "`fixture-mode-baseline.json` has one consumer, not two. The CLI gate is sound ... but `run.ts:40` throws on the CLI's exit code before the report is ever validated, so the TS gate that plan step 6.3 required ... was never written." **STALE-INCORRECT — corrected 2026-08-10.** `tests/conformance/run.ts`'s own `runAllFixtures` is accurately described (it does throw on the CLI's exit code before inspecting the report, and its own JSON validation is purely structural). But the conclusion that no TS-side gate independently validates `passed: true` no longer holds: `.github/workflows/release.yml`'s `conformance` job runs `runAllFixtures` and then, as a **separate step** ("Validate conformance report"), calls `loadAndValidateReport` from `tests/conformance/assert-report.ts` against the generated report. That function (`assertReportComplete`/`assertAdapterReportValid`/`assertEffectiveIsProven`, `assert-report.ts:94-193`) does real content validation — requires every adapter present, rejects a zero-scenario report as "the stub signature this gate exists to catch," requires at least one passing scenario per adapter, and cross-checks every claimed `effectiveCapability` against a passing scenario backing it. Its header comment and the `release.yml` step above it both reference a past incident this step was added to close. A hand-edited `passed: true` report *would* be caught by the release pipeline as a whole — the gap is narrower than originally filed: `run.ts` alone (e.g. a local/dev invocation) skips this validation, but CI does not.
 
-ReviewerConformance reported **8 errors total**; the three above are the ones quoted verbatim in the collected report. **5 further conformance errors were counted but not itemized with file:line in the collected report and are not restated here to avoid fabricating detail** — re-dispatch ReviewerConformance or re-read its full output before treating the count as closed.
+ReviewerConformance reported **8 errors total**; the three above are the ones quoted verbatim in the collected report (sub-claim 3 since corrected). **5 further conformance errors were counted but not itemized with file:line in the collected report and are not restated here to avoid fabricating detail** — re-dispatch ReviewerConformance or re-read its full output before treating the count as closed.
 
-**Fix:** Calibrate the scrubber against all 11 fixtures, not one. Compute `unchanged` before `fs::write`. Write the TS-side baseline validation gate (`tests/conformance/assert-report.ts` or equivalent) so a hand-edited `passed: true` report is caught independent of the CLI's exit code.
+**Fix:** Calibrate the scrubber against all 11 fixtures, not one (open). Compute `unchanged` before `fs::write` (open). For sub-claim 3, the remaining gap is narrow: either make `tests/conformance/run.ts` call `assert-report.ts`'s validators itself (so local/dev runs get the same protection as CI), or explicitly document that report validation is a CI-pipeline property, not a `run.ts` property.
 
-**Priority:** High — the capture tool that produces committed fixtures is not proven correct beyond the one fixture it was built against.
+**Priority:** High for sub-claims 1-2 — the capture tool that produces committed fixtures is not proven correct beyond the one fixture it was built against. Sub-claim 3 downgrades to Low now that CI's actual behavior is confirmed safe.
 
 #### R45. No TypeScript compiler gate anywhere in CI or local scripts
 
@@ -408,8 +431,10 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 
 ## Open Item Count
 
+*(2026-08-10: every line below independently re-verified against current source; see the 2026-08-10 pass note under Scope and method for what changed.)*
+
 - **Critical:** 0 open (R1-R4 resolved)
-- **High:** 0 fully open; R5-R11 resolved with 4 follow-on findings (R33, R35, R36, R44)
-- **Medium:** R12-R18, R34, R37, R38, R39, R41, R42, R45 — 14 open
-- **Low:** R20, R25 (narrowed), R29, R30, R31 (narrowed), R32, R40, R43, R46 — 9 open, mostly documentation (R19, R23, R24, R26, R27, R28 resolved 2026-08-08 — already fixed by other work, not this pass; see entries above for evidence)
+- **High:** 0 fully open; R5-R11 resolved with 4 follow-on findings — R33, R35, R36 still fully open; **R44 narrowed** (sub-claims 1-2 open at High priority, sub-claim 3 resolved/stale — a TS-side conformance-report validator exists in `release.yml`, contrary to the original claim)
+- **Medium:** R12-R18, R34, R37, R38, R39, R41, R42, R45 — 14 open, all reconfirmed unchanged (R37 additionally confirmed by an actual `tsc` compile, not just inspection; R14 confirmed unreachable in the current call chain but the trap itself remains)
+- **Low:** R20, R29, R30, R31 (narrowed), R32, R40, R43, R46 — 8 open, mostly documentation. **R25 now resolved** (the file it hinged on, `release/0.1.0-checklist.json`, was deleted outright in `7ab1447`, not merely left stale). R19, R23, R24, R26, R27, R28 resolved 2026-08-08 — already fixed by other work, not this pass; see entries above for evidence.
 - **Environment (not actionable in-repo):** former TODO #55, folded in above
