@@ -494,13 +494,8 @@ fn package_leaf(root: &Path, target: &str, binary: &Path) -> Result<()> {
     let entry = find_target(&targets, target)?;
 
     let leaf_dir = leaf_package_dir(root, target);
-    if !leaf_dir.is_dir() {
-        bail!(
-            "leaf package directory does not exist: {} (expected one package.json per supported \
-             target under packages/)",
-            leaf_dir.display()
-        );
-    }
+    fs::create_dir_all(&leaf_dir)
+        .with_context(|| format!("creating {}", leaf_dir.display()))?;
 
     let bin_dir = leaf_dir.join("bin");
     fs::create_dir_all(&bin_dir).with_context(|| format!("creating {}", bin_dir.display()))?;
@@ -688,27 +683,6 @@ fn package_set(root: &Path, version: &str, input: &Path, output: &Path) -> Resul
                 manifest.version
             );
         }
-        // Validate the leaf's own package.json version matches the release.
-        // This is what bun publish actually publishes, so a stale version
-        // would publish the leaf under the wrong version and the extension
-        // would pin a version that may not exist.
-        let leaf_pkg_path = leaf_package_dir(root, &entry.leaf).join("package.json");
-        let leaf_pkg_text = fs::read_to_string(&leaf_pkg_path)
-            .with_context(|| format!("reading {}", leaf_pkg_path.display()))?;
-        let leaf_pkg: serde_json::Value = serde_json::from_str(&leaf_pkg_text)
-            .with_context(|| format!("parsing {}", leaf_pkg_path.display()))?;
-        let leaf_pkg_version = leaf_pkg
-            .get("version")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("{} has no version field", leaf_pkg_path.display()))?;
-        if leaf_pkg_version != version {
-            bail!(
-                "leaf package {} declares package.json version {:?} but the release is {version:?}; \
-                 every leaf package.json must be bumped with packages/extension/package.json",
-                leaf_package_name(&entry.leaf),
-                leaf_pkg_version
-            );
-        }
         if manifest.target != entry.leaf {
             bail!(
                 "leaf directory batman-{} contains a manifest for target {:?}",
@@ -870,6 +844,25 @@ mod package_tests {
 
         let err = package_leaf(root.path(), "windows-x64", &binary).unwrap_err();
         assert!(err.to_string().contains("unsupported target"));
+    }
+
+    #[test]
+    fn package_leaf_creates_missing_leaf_directory() {
+        let target = "darwin-arm64";
+        let root = fixture_root("0.1.0", target);
+        let leaf_dir = leaf_package_dir(root.path(), target);
+        fs::remove_dir_all(&leaf_dir).expect("removing fixture leaf dir to simulate a fresh clone");
+        assert!(!leaf_dir.is_dir());
+
+        let binary = root.path().join("batcave-built");
+        fs::write(&binary, b"binary-bytes-for-missing-leaf-dir-test").unwrap();
+
+        package_leaf(root.path(), target, &binary)
+            .expect("package_leaf should create the missing leaf directory rather than bail");
+
+        assert!(leaf_dir.is_dir());
+        let bin_path = leaf_dir.join("bin").join("batcave");
+        assert!(bin_path.is_file());
     }
 
     #[test]

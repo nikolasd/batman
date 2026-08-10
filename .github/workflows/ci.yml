@@ -96,6 +96,24 @@ jobs:
       - name: Check generated code is up to date
         run: bun run generate --check
 
+  bundle-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install JS workspace dependencies
+        run: bun install
+
+      - name: Rebuild the extension bundle
+        run: bun run build
+
+      - name: Fail if the committed bundle is stale
+        run: git diff --exit-code -- packages/extension/dist/index.js
+
   security:
     runs-on: ubuntu-latest
     steps:

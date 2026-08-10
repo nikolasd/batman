@@ -27,27 +27,35 @@ If you're building multiagent systems that need to be auditable, recoverable, an
 
 ## Installation
 
-BATMAN consists of two components, both installed in one step:
-- **Plugin**: TypeScript extension loaded by OMP
-- **Binary**: `batcave` runtime daemon
+BATMAN consists of two components, installed in two steps:
+- **Plugin**: the OMP extension + skills, pulled from this repository via the OMP marketplace
+- **Binary**: the `batcave` runtime daemon, downloaded as a verified GitHub Release asset
 
-```bash
-omp install @nikolasd/batman
+```
+/marketplace add nikolasd/batman
+/marketplace install batman@batman
+/batman-runtime-install
+/batman-status
 ```
 
-This installs:
-- Plugin: `~/.omp/plugins/node_modules/@nikolasd/batman` (TypeScript extension)
-- Runtime: `batcave` binary from the installed leaf package (discovered by the extension via `import.meta.resolve`)
+**This repository is private.** The marketplace step git-clones it, so you need your own GitHub
+read access to `nikolasd/batman` — an SSH key registered with GitHub, or a `gh auth login` session
+backed by a git credential helper. `/batman-runtime-install` additionally needs a `GITHUB_TOKEN` or
+`GH_TOKEN` environment variable set, or that same `gh auth login` session, to download and verify
+the release asset.
+
+This installs the extension (`packages/extension`) and its bundled skills into OMP's plugin cache,
+then caches a SHA-256-verified `batcave` binary under your BATMAN state root. **Restart your OMP
+session afterward** — `/reload-plugins` only refreshes skills and slash commands, not extension
+modules or tools.
 
 Once installed, [`docs/plugin-usage.md`](docs/plugin-usage.md) is the user manual: every tool and
 command the extension registers, and the recommended flow for running a task through it.
 
 **To uninstall:**
 ```bash
-omp plugin uninstall @nikolasd/batman
+/marketplace uninstall batman@batman
 ```
-
-Requires access to the private npm registry `@nikolasd/*` packages are published to. Configure the `@nikolasd` scope once — see [`.npmrc`](.npmrc) for the registry template (replace the placeholder URL and set `NPM_TOKEN`), or use your organization's standard registry auth setup.
 
 ## Development
 
@@ -62,7 +70,7 @@ bun run setup               # installs JS deps + builds the batcave runtime
 bun run check               # schema drift check + build + all tests
 ```
 
-To exercise the extension against your local changes before publishing, load it from its source path directly:
+To exercise the extension against your local changes before opening a PR, load it from its source path directly:
 
 ```bash
 OMP_BATMAN_BINARY="$PWD/target/debug/batcave" \
@@ -70,6 +78,8 @@ OMP_BATMAN_BINARY="$PWD/target/debug/batcave" \
 ```
 
 Ask the model to use `batman_task`, `batman_worker`, and `batman_run`, then open `/batman` to watch runs live. See [docs/plugin-usage.md](docs/plugin-usage.md) for the full tool reference and [docs/manual-testing.md](docs/manual-testing.md) for the full walkthrough. For running `batcave` directly instead of through OMP, see [docs/cli-reference.md](docs/cli-reference.md).
+
+`packages/extension/dist/index.js` is committed to git and verified in CI (a `bundle-check` job rebuilds and diffs it), since it's the entry point the marketplace-installed plugin loads. Any change under `packages/extension/src/` must be followed by `bun run build` and committing the rebuilt bundle.
 
 ## Contributing
 

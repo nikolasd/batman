@@ -153,20 +153,27 @@ docs/                     Engineering documentation (start here: docs/getting-st
 
 ## Releasing
 
-Maintainers publish new versions to the private npm registry via CI, not manually:
+Maintainers cut a release by pushing a version tag, not by publishing manually:
 
 ```bash
-# Bump the version in packages/extension/package.json and every packages/batman-*/package.json first
+# Bump the version in packages/extension/package.json first, and keep
+# .omp-plugin/marketplace.json's metadata.version and its plugin entry's
+# version in lockstep with it (see the release checklist below).
 git tag v<version>
 git push origin v<version>
 ```
 
 Pushing a `v*` tag triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which:
 1. Builds `batcave` for macOS ARM/Intel and Linux x64/ARM
-2. Assembles each platform leaf package (`cargo run -p batman-xtask -- package`)
-3. Builds the extension bundle (`bun run build`) and publishes all 4 leaf packages plus `@nikolasd/batman` to the private registry
+2. Assembles each target's release manifest (`cargo run -p batman-xtask -- package`), then validates the four together and emits one aggregate `release-manifest.json` (`package-set`)
+3. Runs the fixture-mode conformance gate
+4. Uploads the four `batcave-<target>` binaries, their four `.manifest.json` files, and `release-manifest.json` as GitHub Release assets on the tag — no package is published anywhere
 
-**Requires:** a `NPM_TOKEN` repository secret with publish access to the private registry.
+**Requires:** only the default `GITHUB_TOKEN` (already available to the workflow) — no separate secret to configure.
+
+**Release checklist, before tagging:**
+- `packages/extension/dist/index.js` is rebuilt (`bun run build`) and the diff is committed — it's the exact file a marketplace-installed plugin loads, and CI's `bundle-check` job rejects a stale one.
+- `.omp-plugin/marketplace.json`'s `metadata.version` and its `batman` plugin entry's `version` match `packages/extension/package.json`'s version.
 
 ## Documentation
 

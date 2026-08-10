@@ -17,7 +17,7 @@ agreed. Read [../journal.md](../journal.md) for the story each of these was extr
 | [0007](0007-repository-scoped-singleton-via-kernel-flock.md) | Repository-scoped daemon singleton via kernel flock | Accepted |
 | [0008](0008-connect-or-spawn-with-idle-self-shutdown.md) | Connect-or-spawn daemon lifecycle with idle self-shutdown | Accepted |
 | [0009](0009-role-based-authorization-from-the-connection-not-per-call.md) | Role-based authorization from the connection, not per call | Accepted |
-| [0010](0010-platform-binaries-as-npm-optional-leaf-packages.md) | Platform binaries as npm optional leaf packages | Accepted |
+| [0010](0010-platform-binaries-as-npm-optional-leaf-packages.md) | Platform binaries as npm optional leaf packages | Superseded by [0022](0022-github-release-download-cache-replaces-npm-leaf-packages.md) |
 | [0011](0011-omp-retains-task-graph-authority.md) | OMP retains task-graph authority; Rust only enforces run lifecycle | Accepted |
 | [0012](0012-explicit-run-lifecycle-relation-runtime-evidence-only.md) | Explicit run-lifecycle relation, applied only on runtime evidence | Accepted |
 | [0013](0013-injectable-run-driver-seam-fake-by-default.md) | Injectable `RunDriver` seam, fake by default | Accepted |
@@ -29,6 +29,7 @@ agreed. Read [../journal.md](../journal.md) for the story each of these was extr
 | [0019](0019-monitor-is-one-reducer-over-replay-and-live-no-separate-modes.md) | The monitor is one reducer over replay and live — no separate modes | Accepted |
 | [0020](0020-per-mutation-event-broadcast-is-not-optional.md) | Per-mutation event broadcast is not optional | Accepted |
 | [0021](0021-shared-client-authenticates-with-the-union-of-required-roles.md) | A shared client authenticates with the union of every caller's role | Accepted |
+| [0022](0022-github-release-download-cache-replaces-npm-leaf-packages.md) | GitHub Release download-cache replaces npm optional leaf packages | Accepted |
 
 ## When to add one
 

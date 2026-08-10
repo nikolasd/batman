@@ -2,20 +2,12 @@
   "name": "@nikolasd/batman",
   "version": "0.1.0",
   "type": "module",
-  "files": ["dist"],
-  "publishConfig": { "access": "restricted", "registry": "https://npm.private-registry.internal/" },
   "exports": { ".": "./dist/index.js" },
   "omp": { "extensions": ["./dist/index.js"] },
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target bun --external @oh-my-pi/pi-coding-agent"
   },
   "peerDependencies": { "@oh-my-pi/pi-coding-agent": ">=17.0.7 <18" },
-  "optionalDependencies": {
-    "@nikolasd/batman-darwin-arm64": "workspace:*",
-    "@nikolasd/batman-darwin-x64": "workspace:*",
-    "@nikolasd/batman-linux-arm64-gnu": "workspace:*",
-    "@nikolasd/batman-linux-x64-gnu": "workspace:*"
-  },
   "devDependencies": {
     "@oh-my-pi/pi-coding-agent": ">=17.0.7 <18",
     "@nikolasd/batman-protocol": "workspace:*",

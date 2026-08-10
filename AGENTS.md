@@ -6,7 +6,7 @@ BATMAN (B**orderline** **A**wesome **T**ool for **M**ultiagent **A**utomation by
 
 **Architecture split:** OMP decides what to do (task graph, scheduling, approvals, merge decisions). BATMAN ensures it happens and can be replayed.
 
-Delivered as `@nikolasd/batman` (npm package) + `batcave` (Rust binary). No OMP fork, no private APIs.
+Delivered via the OMP marketplace (git clone of this repo, extension + skills) plus a `batcave` (Rust) binary downloaded on demand as a GitHub Release asset. No OMP fork, no private APIs, no npm publication.
 
 ---
 
@@ -43,9 +43,9 @@ OMP Extension (TypeScript)  ──JSON-RPC 2.0 over NDJSON──>  batcave daemo
 | `crates/xtask/` | Codegen (schema + TS bindings) and platform package assembly |
 | `packages/extension/` | OMP extension: client, tools, monitor, reconciliation |
 | `packages/protocol-ts/` | Generated TS bindings + JSON Schema + Ajv validators |
-| `packages/batman-*/` | Per-platform binary leaf packages (npm optionalDependencies) |
+| `packages/batman-*/` | Per-target release build staging (created on demand by `batman-xtask package`; gitignored, not committed) |
 | `fixtures/` | Cross-language golden fixtures (protocol frames, state roots, configs) |
-| `tests/` | Conformance test runner + install tests |
+| `tests/` | Conformance test runner |
 | `release/` | Release build inputs and evidence: `targets.json` (platform build matrix, read by xtask and CI) plus per-version release checklists and live adapter conformance results |
 | `docs/` | Engineering documentation (start with `getting-started.md`, `architecture.md`; `cli-reference.md` and `plugin-usage.md` cover the two user-facing surfaces) |
 | `scripts/` | Setup and build scripts |
@@ -161,7 +161,7 @@ batcave audit export --repo /path/to/repo --state-dir ~/.batman/state --output /
 | `tsconfig.json` | Root TS config (strict, ESNext, Bun types) |
 | `rust-toolchain.toml` | Rust 1.97.1 with clippy + rustfmt |
 | `Cargo.toml` | Workspace definition and shared dependencies |
-| `.npmrc` | Private registry routing for `@nikolasd` scope |
+| `.omp-plugin/marketplace.json` | OMP marketplace catalog for the `batman` plugin |
 | `git-town.toml` | Git Town config (main branch, GitHub forge) |
 
 ---
@@ -173,7 +173,7 @@ batcave audit export --repo /path/to/repo --state-dir ~/.batman/state --output /
 - **Exact install mode:** `bunfig.toml` sets `exact = true` — lockfile is strict.
 - **Rust toolchain:** 1.97.1 via `rust-toolchain.toml`. Use `rustup` for automatic version pinning.
 - **Formatter:** Biome for TS/JS (`bun run format`), `cargo fmt` for Rust. Linting disabled in Biome; use `cargo clippy` for Rust.
-- **Private registry:** `@nikolasd/*` packages published to private npm registry. Configure `.npmrc` and set `NPM_TOKEN`.
+- **Distribution:** Extension + skills install via the OMP marketplace (`.omp-plugin/marketplace.json`, git clone of this repo — private, so needs GitHub read access via SSH key or `gh auth login`). The `batcave` binary downloads on demand as a GitHub Release asset via `/batman-runtime-install`, verified by SHA-256; that download needs `GITHUB_TOKEN`/`GH_TOKEN` set, or a local `gh auth login` session.
 - **Test environment:** Set `BATMAN_DISABLE_VENDOR_CLI=1` to skip live vendor CLI calls (required in CI to avoid billed model calls).
 - **Cross-platform:** macOS (arm64/x64) and glibc Linux (arm64/x64). Everything else rejected with typed error.
 
@@ -186,7 +186,6 @@ batcave audit export --repo /path/to/repo --state-dir ~/.batman/state --output /
 - **Rust tests:** Integration tests in `crates/runtime/tests/` (adapter_contract, approval, audit, conformance, etc.) and unit tests inline with `#[cfg(test)]` modules
 - **TypeScript tests:** Co-located `.test.ts` files alongside source in `packages/extension/src/`
 - **Conformance tests:** `tests/conformance/` — golden-frame protocol conformance runner (`run.ts`, `assert-report.ts`)
-- **Install tests:** `tests/install/` — private registry install verification
 - **Fixtures:** `fixtures/` — golden JSON/YAML for protocol frames, configs, state roots, repo IDs
 
 ### Running Tests
@@ -225,7 +224,7 @@ Five jobs run on every push/PR:
 
 ### Release (`.github/workflows/release.yml`)
 
-Triggered by pushing a `v*` tag. Builds `batcave` for all 4 platforms, assembles npm leaf packages, builds extension bundle, publishes to private registry. Requires `NPM_TOKEN` secret.
+Triggered by pushing a `v*` tag. Builds `batcave` for all 4 platforms, assembles per-target release manifests, builds the extension bundle, and uploads binaries + manifests as GitHub Release assets. Requires only the default `GITHUB_TOKEN` — no npm publish, no `NPM_TOKEN`.
 
 ---
 

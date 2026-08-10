@@ -1,6 +1,6 @@
 # Platform binaries as npm optional leaf packages
 
-* Status: Accepted
+* Status: Superseded by [ADR-0022](0022-github-release-download-cache-replaces-npm-leaf-packages.md)
 * Date: 2026-07-24
 
 ## Context and Problem Statement

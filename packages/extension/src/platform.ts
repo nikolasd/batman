@@ -1,35 +1,30 @@
 // Selects the `batcave` binary this extension runs: a validated
 // `OMP_BATMAN_BINARY` development override (see `runtime.ts`), or the
-// platform-specific leaf package `batman-xtask package` assembled, verified
-// by SHA-256 checksum and extension-version match before it is ever spawned.
+// platform-specific binary downloaded from a GitHub Release and cached
+// locally, verified by SHA-256 checksum and extension-version match before
+// it is ever spawned.
 //
-// `resolveBatcave` takes `platform`/`arch`/`libc`/`env` explicitly (rather
-// than reading `process.platform`/`process.arch`/`process.env` itself) so it
-// stays pure and hermetically testable; production wiring lives in
-// `context.ts`.
+// `resolveBatcave` takes `platform`/`arch`/`libc`/`env`/`stateRoot` explicitly
+// (rather than reading `process.platform`/`process.arch`/`process.env`
+// itself) so it stays pure and hermetically testable; production wiring
+// lives in `context.ts` and `doctor.ts`.
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
-import { resolveOverride, type SelectedBinary } from "./runtime";
+import { BinarySelectionError, resolveOverride, type SelectedBinary } from "./runtime";
 import { sha256File } from "./integrity";
 
 import pkg from "../package.json" with { type: "json" };
 
-/** This extension's own version; leaf package versions must match it exactly. */
+/** This extension's own version; a cached binary's manifest must match it exactly. */
 const EXTENSION_VERSION: string = pkg.version;
 
-/** The four target triples the foundation ships prebuilt `batcave` leaves for. */
-type SupportedTarget = "darwin-arm64" | "darwin-x64" | "linux-arm64-gnu" | "linux-x64-gnu";
+/** The four target triples the foundation ships prebuilt `batcave` binaries for. */
+export type SupportedTarget = "darwin-arm64" | "darwin-x64" | "linux-arm64-gnu" | "linux-x64-gnu";
 
-/** Maps each supported target triple to its leaf package name. */
-const TARGET_PACKAGES: Record<SupportedTarget, string> = {
-  "darwin-arm64": "@nikolasd/batman-darwin-arm64",
-  "darwin-x64": "@nikolasd/batman-darwin-x64",
-  "linux-arm64-gnu": "@nikolasd/batman-linux-arm64-gnu",
-  "linux-x64-gnu": "@nikolasd/batman-linux-x64-gnu",
-};
+/** Every {@link SupportedTarget}, in a stable order, for error messages and iteration. */
+const SUPPORTED_TARGETS: readonly SupportedTarget[] = ["darwin-arm64", "darwin-x64", "linux-arm64-gnu", "linux-x64-gnu"];
 
 /**
  * Thrown when `platform`/`arch`/`libc` do not map to a supported target
@@ -43,7 +38,7 @@ export class UnsupportedPlatformError extends Error {
   readonly libc: string | undefined;
 
   constructor(platform: string, arch: string, libc: string | undefined) {
-    super(`unsupported platform: platform=${platform} arch=${arch} libc=${libc ?? "unknown"} ` + `(supported: ${Object.keys(TARGET_PACKAGES).join(", ")})`);
+    super(`unsupported platform: platform=${platform} arch=${arch} libc=${libc ?? "unknown"} ` + `(supported: ${SUPPORTED_TARGETS.join(", ")})`);
     this.name = "UnsupportedPlatformError";
     this.platform = platform;
     this.arch = arch;
@@ -51,14 +46,15 @@ export class UnsupportedPlatformError extends Error {
   }
 }
 
-/** Machine-readable reason a package binary failed integrity validation. */
+/** Machine-readable reason a cached binary failed integrity validation. */
 export type BinaryIntegrityErrorCode = "manifest-invalid" | "checksum-mismatch" | "version-mismatch";
 
 /**
- * Thrown before any spawn when a packaged `batcave` binary's manifest is
- * missing/malformed, its SHA-256 does not match the manifest, or its leaf
- * package version does not match this extension's version. Never thrown for
- * an `OMP_BATMAN_BINARY` override -- override binaries are not checksummed.
+ * Thrown before any spawn when a cached `batcave` binary's manifest is
+ * missing/malformed, its SHA-256 does not match the manifest, its manifest's
+ * `target` does not match this platform, or its manifest's `version` does
+ * not match this extension's version. Never thrown for an
+ * `OMP_BATMAN_BINARY` override -- override binaries are not checksummed.
  */
 export class BinaryIntegrityError extends Error {
   readonly code: BinaryIntegrityErrorCode;
@@ -70,8 +66,13 @@ export class BinaryIntegrityError extends Error {
   }
 }
 
-/** The deterministic checksum/provenance payload `batman-xtask package` writes. */
-interface LeafManifest {
+/**
+ * The deterministic checksum/provenance payload written alongside every
+ * cached `batcave` binary -- both the one `/batman-runtime-install` downloads
+ * (`download.ts`) and the one a manual `cp` into the cache directory
+ * provides for local testing.
+ */
+export interface LeafManifest {
   readonly name: string;
   readonly version: string;
   readonly target: string;
@@ -79,13 +80,24 @@ interface LeafManifest {
   readonly sizeBytes: number;
 }
 
-/** Injectable seams for {@link resolveBatcave}, used to keep tests hermetic. */
-export interface ResolveBatcaveDeps {
-  /**
-   * Resolves a leaf package name (e.g. `@nikolasd/batman-darwin-arm64`) to its
-   * installed package directory. Defaults to `import.meta.resolve`.
-   */
-  readonly resolveLeafDir?: (packageName: string) => string;
+/**
+ * Maps a platform/arch/libc tuple to its release target triple, or throws
+ * {@link UnsupportedPlatformError}.
+ */
+export function resolveTarget(platform: string, arch: string, libc: string | undefined): SupportedTarget {
+  const target = mapTarget(platform, arch, libc);
+  if (target === undefined) {
+    throw new UnsupportedPlatformError(platform, arch, libc);
+  }
+  return target;
+}
+
+/**
+ * The version-scoped directory a downloaded `batcave` and its manifest live
+ * in. Shared with `download.ts` so the two can never disagree on the path.
+ */
+export function runtimeCacheDir(stateRoot: string, version: string): string {
+  return join(stateRoot, "bin", version);
 }
 
 /**
@@ -94,26 +106,34 @@ export interface ResolveBatcaveDeps {
  * Order:
  * 1. A valid absolute executable `OMP_BATMAN_BINARY` in `env` wins outright
  *    -- source `"override"`. No checksum or version validation is performed
- *    for an override; validation applies only to the package path.
+ *    for an override; validation applies only to the cached binary.
  * 2. Otherwise, `platform`/`arch`/`libc` are mapped to one of the four
- *    supported leaf packages (or a typed {@link UnsupportedPlatformError}).
- *    The leaf's `bin/batcave` is SHA-256-verified against its
- *    `manifest.json`, and the manifest's `version` must equal this
- *    extension's version, before returning -- source `"package"`.
+ *    supported target triples (or a typed {@link UnsupportedPlatformError}).
+ *    The cached binary at `<stateRoot>/bin/<version>/batcave` is
+ *    SHA-256-verified against its sibling `manifest.json`, and the
+ *    manifest's `target` and `version` must match, before returning --
+ *    source `"package"`.
  */
-export function resolveBatcave(platform: string, arch: string, libc: string | undefined, env: Readonly<Record<string, string | undefined>>, deps: ResolveBatcaveDeps = {}): SelectedBinary {
+export function resolveBatcave(platform: string, arch: string, libc: string | undefined, env: Readonly<Record<string, string | undefined>>, stateRoot: string): SelectedBinary {
   const override = resolveOverride(env);
   if (override !== undefined) {
     return override;
   }
 
-  const packageName = resolveLeafPackageName(platform, arch, libc);
-  const resolveLeafDir = deps.resolveLeafDir ?? defaultResolveLeafDir;
-  const leafDir = resolveLeafDir(packageName);
+  const target = resolveTarget(platform, arch, libc);
+  const dir = runtimeCacheDir(stateRoot, EXTENSION_VERSION);
+  const binPath = join(dir, "batcave");
+  const manifestPath = join(dir, "manifest.json");
 
-  const manifestPath = join(leafDir, "manifest.json");
-  const binPath = join(leafDir, "bin", "batcave");
+  if (!existsSync(binPath) || !existsSync(manifestPath)) {
+    throw new BinarySelectionError("runtime-not-installed", `no batcave binary installed for version ${EXTENSION_VERSION}; run /batman-runtime-install to download it, or set OMP_BATMAN_BINARY to a local build`);
+  }
+
   const manifest = readManifest(manifestPath);
+
+  if (manifest.target !== target) {
+    throw new BinaryIntegrityError("manifest-invalid", `manifest at ${manifestPath} declares target ${manifest.target}, but this platform requires ${target}`);
+  }
 
   const actualSha256 = sha256File(binPath);
   if (actualSha256 !== manifest.sha256) {
@@ -121,21 +141,45 @@ export function resolveBatcave(platform: string, arch: string, libc: string | un
   }
 
   if (manifest.version !== EXTENSION_VERSION) {
-    throw new BinaryIntegrityError("version-mismatch", `leaf package ${packageName} is version ${manifest.version}, but this extension is ` + `version ${EXTENSION_VERSION}`);
+    throw new BinaryIntegrityError("version-mismatch", `cached binary is version ${manifest.version}, but this extension is version ${EXTENSION_VERSION}`);
   }
 
   return { path: binPath, source: "package" };
 }
 
-/** Maps a platform/arch/libc tuple to its leaf package name, or throws. */
-function resolveLeafPackageName(platform: string, arch: string, libc: string | undefined): string {
-  const target = mapTarget(platform, arch, libc);
-  if (target === undefined) {
-    throw new UnsupportedPlatformError(platform, arch, libc);
+/**
+ * Parses and validates a manifest JSON payload, whether read from disk
+ * ({@link readManifest}) or fetched over the network (`download.ts`).
+ * `sourceLabel` is embedded in error messages -- a file path for the former,
+ * the asset URL for the latter.
+ */
+export function parseManifest(raw: string, sourceLabel: string): LeafManifest {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new BinaryIntegrityError("manifest-invalid", `manifest at ${sourceLabel} is not valid JSON: ${(err as Error).message}`);
   }
-  return TARGET_PACKAGES[target];
+
+  if (typeof parsed !== "object" || parsed === null || typeof (parsed as Partial<LeafManifest>).sha256 !== "string" || typeof (parsed as Partial<LeafManifest>).version !== "string" || typeof (parsed as Partial<LeafManifest>).target !== "string" || typeof (parsed as Partial<LeafManifest>).sizeBytes !== "number") {
+    throw new BinaryIntegrityError("manifest-invalid", `manifest at ${sourceLabel} is missing required fields "sha256"/"version"/"target"/"sizeBytes"`);
+  }
+
+  return parsed as LeafManifest;
 }
 
+/** Reads and parses a cached binary's `manifest.json`. */
+function readManifest(manifestPath: string): LeafManifest {
+  let raw: string;
+  try {
+    raw = readFileSync(manifestPath, "utf8");
+  } catch (err) {
+    throw new BinaryIntegrityError("manifest-invalid", `unable to read manifest at ${manifestPath}: ${(err as Error).message}`);
+  }
+  return parseManifest(raw, manifestPath);
+}
+
+/** Internal platform→target mapping, returns undefined for unsupported platforms. */
 function mapTarget(platform: string, arch: string, libc: string | undefined): SupportedTarget | undefined {
   if (platform === "darwin" && arch === "arm64") {
     return "darwin-arm64";
@@ -150,40 +194,6 @@ function mapTarget(platform: string, arch: string, libc: string | undefined): Su
     return "linux-x64-gnu";
   }
   return undefined;
-}
-
-/** Reads and parses a leaf package's `manifest.json`. */
-function readManifest(manifestPath: string): LeafManifest {
-  let raw: string;
-  try {
-    raw = readFileSync(manifestPath, "utf8");
-  } catch (err) {
-    throw new BinaryIntegrityError("manifest-invalid", `unable to read manifest at ${manifestPath}: ${(err as Error).message}`);
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new BinaryIntegrityError("manifest-invalid", `manifest at ${manifestPath} is not valid JSON: ${(err as Error).message}`);
-  }
-
-  if (typeof parsed !== "object" || parsed === null || typeof (parsed as Partial<LeafManifest>).sha256 !== "string" || typeof (parsed as Partial<LeafManifest>).version !== "string") {
-    throw new BinaryIntegrityError("manifest-invalid", `manifest at ${manifestPath} is missing required string fields "sha256"/"version"`);
-  }
-
-  return parsed as LeafManifest;
-}
-
-/**
- * Resolves an installed leaf package's directory via `import.meta.resolve`,
- * which -- per the leaf packages' `exports` map -- resolves `<name>/package.json`
- * to the leaf's own `package.json`, whose directory contains `bin/batcave`
- * and `manifest.json`.
- */
-function defaultResolveLeafDir(packageName: string): string {
-  const resolved = import.meta.resolve(`${packageName}/package.json`);
-  return dirname(fileURLToPath(resolved));
 }
 
 /**

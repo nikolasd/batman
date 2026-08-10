@@ -29,7 +29,8 @@ with no history in it — for how it got this way, see [journal.md](journal.md) 
 [0018](adr/0018-approval-decided-before-callback-never-re-ask-on-failure.md),
 [0019](adr/0019-monitor-is-one-reducer-over-replay-and-live-no-separate-modes.md),
 [0020](adr/0020-per-mutation-event-broadcast-is-not-optional.md),
-[0021](adr/0021-shared-client-authenticates-with-the-union-of-required-roles.md)
+[0021](adr/0021-shared-client-authenticates-with-the-union-of-required-roles.md),
+[0022](adr/0022-github-release-download-cache-replaces-npm-leaf-packages.md)
 
 ## Level 1: System Context (C4-1)
 

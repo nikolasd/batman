@@ -16,12 +16,14 @@ import { OMP_NATIVE_FACT_ENTRY_TYPE, persistedCorrelations, persistedFacts, type
 import { OmpNativeReconciler, createOmpProcessEpoch, reconcileAcrossRestart, reconcileWithRuntime } from "./omp-native/reconcile";
 import { resolveClient, getRuntimeStatus, type GetRuntimeStatusContext } from "./status";
 import { runDoctorCommand, buildDoctorContext, type DoctorContext } from "./doctor";
+import { installRuntimeForEnv } from "./install";
 import { registerOrchestrationTools } from "./tools";
 import { registerMonitor } from "./monitor/controller";
 
 const TOOL_NAME = "batman_status";
 const COMMAND_NAME = "batman-status";
 const STATUS_DESCRIPTION = "Use to verify the BATMAN runtime is reachable and healthy before orchestration operations. Returns connection status, runtime identity, and binary source. Call this if you're unsure the daemon is running, or after a connection failure.";
+const RUNTIME_INSTALL_TOOL_NAME = "batman_runtime_install";
 
 export default function batmanExtension(pi: ExtensionAPI): void {
   // Cached per extension instance (one per OMP session), closed on shutdown.
@@ -102,6 +104,31 @@ export default function batmanExtension(pi: ExtensionAPI): void {
     description: "Run diagnostic checks on the BATMAN runtime state and configuration.",
     handler: async (_args, ctx) => {
       const result = await runDoctorCommand(doctorContextFor(ctx.cwd));
+      const text = result.content.map((block) => block.text).join("\n");
+      if (!ctx.hasUI) {
+        console.log(text);
+      } else {
+        ctx.ui.notify(text, result.isError ? "error" : "info");
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: RUNTIME_INSTALL_TOOL_NAME,
+    label: "BATMAN Runtime Install",
+    description:
+      "Use to download and verify the batcave runtime binary for this platform. Call this when batman_status or any orchestration tool fails with code 'runtime-not-installed'. Downloads the GitHub release asset matching this extension's version, verifies its SHA-256 against the published manifest, and caches it under the BATMAN state root. nikolasd/batman is a private repository, so this needs read access to it: set GITHUB_TOKEN or GH_TOKEN, or run `gh auth login` locally.",
+    parameters: pi.zod.object({}),
+    approval: "exec",
+    async execute(_toolCallId, _params, _signal, _onUpdate) {
+      return installRuntimeForEnv(process.env);
+    },
+  });
+
+  pi.registerCommand("batman-runtime-install", {
+    description: "Download and verify the batcave runtime binary for this platform.",
+    handler: async (_args, ctx) => {
+      const result = await installRuntimeForEnv(process.env);
       const text = result.content.map((block) => block.text).join("\n");
       if (!ctx.hasUI) {
         console.log(text);

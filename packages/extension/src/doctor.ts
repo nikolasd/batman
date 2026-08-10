@@ -88,9 +88,10 @@ export interface DoctorContext {
  * ever used.
  */
 export function buildDoctorContext(cwd: string, env: NodeJS.ProcessEnv = process.env): DoctorContext {
-  const binary = resolveBatcave(process.platform, process.arch, detectLibc(), env);
+  const stateDir = resolveStateRoot(env, homedir());
+  const binary = resolveBatcave(process.platform, process.arch, detectLibc(), env, stateDir);
   return {
-    stateDir: resolveStateRoot(env, homedir()),
+    stateDir,
     repository: cwd,
     batcavePath: binary.path,
   };

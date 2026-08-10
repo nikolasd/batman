@@ -1,43 +1,84 @@
-# Using the `@nikolasd/batman` OMP Extension
+# Using the BATMAN OMP Extension
 
-**This is the BATMAN user manual.** Audience: anyone using BATMAN through OMP — you never need to
-touch the source or build anything. This is the user-facing guide to the OMP extension itself:
-what it registers, what each tool is for, and the recommended flow for running a task through an
-external harness. For installing the extension see the [README](../README.md#installation); for
-running/troubleshooting the daemon directly, see [`operations.md`](operations.md) and
-[`cli-reference.md`](cli-reference.md); for whether your platform/adapter is supported, see
-[`compatibility.md`](compatibility.md); for the wire protocol and internal architecture (a
+**This is the BATMAN user manual.** Audience: anyone using BATMAN through OMP — you drive it with
+plain language, and the model calls the tools on your behalf. You never need to touch the source,
+build anything, or write raw tool-call JSON yourself — that detail lives in Appendix A below, for
+advanced users and for the model's own reference.
+
+For installing the extension, see the [README](../README.md#installation). For running/
+troubleshooting the daemon directly, see [`operations.md`](operations.md) and
+[`cli-reference.md`](cli-reference.md). For whether your platform/adapter is supported, see
+[`compatibility.md`](compatibility.md). For the wire protocol and internal architecture (a
 contributor concern, not a usage one), see [`architecture.md`](architecture.md).
 
-Once installed, the extension registers **11 tools** an LLM (or you, via slash commands) can call,
-plus **3 slash commands**. Every tool shares one runtime connection per OMP session — the first
-call connects to (or spawns) the repository's `batcave` daemon; every later call in the same session
-reuses that connection.
+## 1. Install
 
-## Health checks — start here if something seems wrong
+```
+/marketplace add nikolasd/batman
+/marketplace install batman@batman
+/batman-runtime-install
+/batman-status
+```
 
-### `batman_status` / `/batman-status`
+**This repository is private** — the marketplace step git-clones it, so it needs your own GitHub
+read access to `nikolasd/batman` (an SSH key registered with GitHub, or a `gh auth login` session
+backed by a git credential helper). `/batman-runtime-install` additionally needs a `GITHUB_TOKEN` or
+`GH_TOKEN` environment variable, or that same `gh auth login` session, to download and verify the
+release asset.
 
-Connects to the daemon (spawning it if needed) and reports whether it's reachable: protocol
-version, project id, active run count, schema version, uptime, and which binary was used (a
-development override via `OMP_BATMAN_BINARY`, or the installed platform package). Call this first
-whenever you're unsure the daemon is up, or right after a connection failure.
+After installing, **restart your OMP session** — `/reload-plugins` only refreshes skills and slash
+commands, not extension modules or tools, so the `batman_*` tools won't appear until a fresh
+session picks up the newly installed extension module.
 
-### `batman_doctor` / `/batman-doctor`
+## 2. Confirm it works
 
-Unlike `batman_status`, this does **not** try to connect to a live daemon — it invokes
-`batcave doctor --json` directly against the repository's state, so it works even when nothing is
-serving the repo yet. Use it when `batman_status` fails or the runtime won't start: it checks the
-database, state directory permissions, platform support, schema compatibility, adapter
-availability, disk space, and unresolved rollout gates. See
-[`cli-reference.md`](cli-reference.md#batcave-doctor) for the full check catalog.
+Run `/batman-status`. A healthy runtime answers with exactly this shape (`formatStatus` in
+`status.ts`):
 
-## The embedded monitor — `/batman`
+```
+BATMAN runtime: running
+Protocol: 1.0 (healthy: true)
+Project: 0f4c1d9a8b7e6f50
+Active runs: 0
+Schema version: 7
+Uptime: 3s
+Binary source: package
+```
+
+`Binary source: package` means the verified, downloaded-and-cached binary is running. `override`
+means `OMP_BATMAN_BINARY` was set and is running instead — the local-development path, described in
+Appendix B.
+
+If this fails instead, skip to [When something breaks](#6-when-something-breaks).
+
+## 3. Just ask
+
+Once installed, you drive BATMAN with plain language — the model calls the tools. The three
+installed skills (`batman-orchestration`, `batman-approvals`, `batman-troubleshooting`, under
+`packages/extension/skills/`) already carry these workflows, so the model doesn't need a tool-call
+hint from you. Some examples of what to say, and what happens:
+
+| You say | What BATMAN does |
+|---|---|
+| "run the auth refactor on Claude" | Looks up (or creates) a worker for that adapter, upserts a task, submits a run |
+| "...in its own worktree" / "don't touch my files" | Same, plus `workspaceMode: "isolated"` — the run gets its own git worktree |
+| "...on a copy instead" | Same, plus `workspaceMode: "copy"` — a per-run copy of the repository |
+| "run these three on separate workers" | Creates (or reuses) three workers, then submits three runs — each with its own `workspaceMode: "isolated"` so they don't collide on the same files |
+| "how's that run doing?" | Polls `run/get`, or points you at `/batman` to watch it live |
+| "that failed, try again" | Retries with the original prompt restated (BATMAN doesn't remember it for you) |
+| "stop it" | Cancels the run |
+
+## 4. Watching runs
 
 `/batman` opens (or refreshes) a live widget above the editor showing every active run: state icon,
 adapter/model, workspace mode, pending approvals, and latest activity — up to 7 rows. It subscribes
 to the daemon's live event stream, so it updates itself with zero further input as runs progress,
-and it replays from the daemon's journal across OMP restarts, so nothing is lost or duplicated.
+and it replays from the daemon's journal across OMP restarts, so nothing is lost or duplicated. When
+there's nothing running yet, it prints:
+
+```
+No BATMAN runs yet.
+```
 
 `/batman status <runId>` prints the full detail block for one run: task, worker, state, harness/
 model, flags, pending approvals, workspace mode, latest activity, first-seen and last-event
@@ -46,10 +87,58 @@ timestamps.
 If the daemon is unreachable, the monitor degrades to inactive rather than blocking session
 startup — running `/batman` again retries the connection.
 
-## Orchestration tools
+## 5. When BATMAN needs you
 
-All 11 tools take an `op` parameter that selects the action; most support several. Approval tiers
-(`read` / `write` / `exec`) gate whether OMP prompts before running the operation.
+Some actions require an explicit human decision, and BATMAN never fabricates one on your behalf:
+
+- **Approvals.** A worker's escalated action may require `humanRequired: true`. The runtime
+  enforces this server-side and rejects a model-supplied decision for it. With an interactive UI
+  present, you'll see a dialog (secrets redacted); without one, the approval simply stays pending
+  until you decide — this is a fail-closed rule, not a bug.
+- **Policy violations.** If policy quarantines a run (for example, a worker tries to spawn a nested
+  child when policy forbids it), the run makes no further progress until the violation is resolved.
+  These surface through the event stream and the `/batman` monitor, not a query you poll.
+- **Nested-child requests.** A worker that wants to spawn a child records only an intent — nothing
+  happens until it's accepted or denied.
+
+## 6. When something breaks
+
+Work through this ladder:
+
+1. **`/batman-status`** — connects to (or spawns) the daemon and reports whether it's healthy.
+2. **`/batman-runtime-install`** — downloads and verifies the `batcave` binary, if it's missing.
+3. **`/batman-doctor`** — works even with no live daemon; runs the full check catalog (database,
+   state directory permissions, platform support, schema compatibility, adapter availability, disk
+   space, unresolved rollout gates, and more — see
+   [`cli-reference.md`](cli-reference.md#batcave-doctor) for the complete list).
+
+Every BATMAN tool failure has the same shape: text `"<method> failed: <message>"`,
+`details: { code, message, data }`, `isError: true`. The `details.code` field maps to a fix:
+
+| `details.code` | Fix |
+|---|---|
+| `runtime-not-installed` | Run `/batman-runtime-install` to download the binary. |
+| `checksum-mismatch` | Re-run `/batman-runtime-install`. The cached binary doesn't match its manifest. |
+| `version-mismatch` | Re-run `/batman-runtime-install`. The cached binary is for a different extension version. |
+| `manifest-invalid` | Re-run `/batman-runtime-install`. The cached manifest is corrupt or for another platform. |
+| `unsupported-platform` | BATMAN only supports macOS and glibc Linux, arm64/x64. |
+| `connection-failed` | Run `/batman-doctor` for a detailed check without needing a live daemon. |
+| `http-error` (from `/batman-runtime-install`) | **This repository is private.** Set `GITHUB_TOKEN`/`GH_TOKEN`, or run `gh auth login`, then retry the install. |
+
+## Appendix A — tool reference
+
+For advanced users, and for the model's own use: the extension registers **11 orchestration
+tools**, plus `batman_status`/`/batman-status`, `batman_doctor`/`/batman-doctor`, and
+`batman_runtime_install`/`/batman-runtime-install`. Every tool shares one runtime connection per OMP
+session — the first call connects to (or spawns) the repository's `batcave` daemon; every later call
+in the same session reuses that connection.
+
+**Shared contract** (`packages/extension/src/tools/shared.ts`, `callOrchestration`): a successful
+call's text content is `"<method>: <JSON.stringify(result)>"`, and `details` is the daemon's JSON
+result **verbatim** — no wrapping, no renaming. A failed call's text is `"<method> failed: <message>"`,
+with `details: { code, message, data }` and `isError: true`.
+
+Approval tiers (`read` / `write` / `exec`) gate whether OMP prompts before running the operation.
 
 | Tool | Ops | Tier | Purpose |
 |---|---|---|---|
@@ -59,138 +148,340 @@ All 11 tools take an `op` parameter that selects the action; most support severa
 | `batman_run` | submit, list, get, retry, cancel | `exec`/`read` | Execute, monitor, retry, or cancel a task on a worker |
 | `batman_workspace` | acquire, get, inspect, apply, release | `exec`/`read` | Manage the git worktree/copy a run executes in |
 | `batman_artifact` | list, fetch | `read` | Read patches, commit lists, conflict reports a run published |
-| `batman_child` | list, decide | `exec`/`read` | Approve or deny a worker's request to spawn a nested child |
+| `batman_child` | list, decide | `read`/`exec` | Approve or deny a worker's request to spawn a nested child |
 | `batman_violation` | decide | `exec` | Resolve a policy violation that quarantined a run |
 | `batman_message` | send, list | `write` | Send/read coordination messages between workers in a run |
 | `batman_approval` | list, decide | `exec` (always) | List and decide a worker's escalated approval request |
 | `batman_reconcile` | (single-purpose) | `write` | Rebind task ownership after a dropped/reconnected session |
 
-### Registering a profile — `batman_profile`
+### `task/upsert`
 
-Register once per (adapter, model) combination before provisioning workers against it:
-`adapter`, `model`, `startupOptions` (adapter-tagged, e.g. `{claude: {...}}`),
-`environmentAllowlist?`, `permissionEnvelope?`. Registration is permanent for the runtime
-database's lifetime — there's no update or delete; register a new profile instead of mutating one.
-Then pass the returned `profileId` to `batman_worker { op: "create", profileId }` instead of
-repeating the same fingerprint/adapter/model/permissionEnvelope on every worker.
-
-### Finding or creating a worker — `batman_worker`
-
-`op: "list"` before submitting a run, to see what's already provisioned for the repository.
-`op: "create"` provisions a new worker identity (`fingerprint`, `adapter`, `model`, optionally
-`profileId`, `permissionEnvelope`, `parentWorkerId`). `op: "get"` fetches one worker's details by
-`workerId`. You need a `workerId` from `list` (or the one you just created) to submit a run.
-
-### Creating a task — `batman_task`
-
-`op: "upsert"` creates or updates the persistent, cross-session unit of work an external harness
-will execute — distinct from OMP's own in-process subagent tasks. It persists to the SQLite
-journal, survives session disconnects, and can be retried/cancelled/reconciled after failure.
-`op: "get"` reads one back by `taskId`. After creating a task, select a worker with
-`batman_worker { op: "list" }` and submit execution with `batman_run { op: "submit" }`.
-
-### Running it — `batman_run`
-
-`op: "submit"` requires `taskId`, `workerId`, and `prompt` (the instruction text the worker
-executes — BATMAN stores no task text on its own). Optionally `workspaceMode`
-(`shared`/`isolated`/`copy`) and `priority`. `op: "get"` checks a run's progress; `op: "list"` lists
-runs for a task. `op: "retry"` re-executes a terminal run by starting a fresh worker process;
-it always creates a **new** `runId` (never mutates the prior one), requires `priorRunId` and
-`prompt` again, and accepts `workspaceMode` to match the original submission. Like `submit` and
-`cancel`, `retry` is `exec` tier. `op: "cancel"` stops a running run.
-
-Because `run/submit`'s error response carries no `runId`, if you need the id right after
-submitting, follow up with `batman_run { op: "list", taskId }` rather than assuming submit
-returned one.
-
-### Managing the workspace — `batman_workspace`
-
-`op: "acquire"` before a run that needs its own git worktree or copy — `requestedIsolation:
-"gitWorktree"` lets concurrent workers on the same task run in true isolation without conflicting.
-`op: "get"` fetches a lease's current path/state; `op: "inspect"` reads dirty/untracked file counts
-and diverged commits; `op: "apply"` lands a patch or cherry-pick (`strategy`, `artifactId`,
-`expectedTargetRevision`) into the workspace; `op: "release"` tears the lease down once the run is
-done with it. A shared-mode write lease is exclusive project-wide; isolated leases (`gitWorktree` or
-`copy`) never conflict with each other or with a shared lease.
-
-### Reading the evidence — `batman_artifact`
-
-`op: "list"` (optionally filtered by `kind`: `patch`/`commitList`/`conflictReport`/
-`workspaceManifest`) shows what a run published; `op: "fetch"` with an `artifactId` reads its bytes.
-Fetches are chunked — the response carries `nextOffset`; pass it back as `offset` to continue
-reading a large artifact. Artifacts are scoped to the current task — a run on another task is never
-visible.
-
-### Nested-worker requests — `batman_child`
-
-A worker that wants to spawn a child records only an *intent*; nothing happens until you decide.
-`op: "list"` (optionally filtered by `runId`) shows pending requests; `op: "decide"` with
-`parentRunId` and `decision: "accept"|"deny"` resolves one. Accepting requires `childTaskId`,
-`childWorkerId`, `childRunId`; denying requires `reason`.
-
-### Policy violations — `batman_violation`
-
-When policy quarantines a run (for example, a worker spawning a nested child when policy forbids
-it), pass the `violationId` from the violation event plus a `resolution` string. There is no `list`
-op by design — violations surface through the event stream / `/batman` monitor, not a separate
-query. The quarantined run makes no further progress until decided.
-
-### Worker-to-worker messaging — `batman_message`
-
-`op: "send"` (requires `runId`, `senderWorkerId`, `kind`, `payload`) sends a coordination message
-during an active multi-worker run; `op: "list"` reviews a run's message history. `kind` is one of
-`assign`, `steer`, `followUp`, `question`, `answer`, `peerMessage`, `approvalDecision`, `cancel`,
-`shutdown`.
-
-### Approvals — `batman_approval`
-
-`op: "list"` (optionally filtered by `runId`) shows pending approvals, including whether each is
-`humanRequired`; `op: "decide"` applies an `approve`/`deny` decision with an optional `reason`. The
-runtime enforces `humanRequired` server-side — a model-supplied decision is rejected for a
-human-required approval. When a UI is present, an interactive dialog appears (redacting secrets)
-and the human's answer is sent with `decidedBy: "human"`. Without a UI, the tool returns an error
-and the approval stays pending (fail-closed). A dialog timeout also leaves the approval pending.
-
-### Reclaiming a session's tasks — `batman_reconcile`
-
-Call this after a session drop or reconnect, if you had active tasks from a prior session. Rebinds
-task ownership to the current session; requires the matching `taskId` and a monotonic `revision` —
-the runtime rejects a rebind on revision mismatch to prevent races.
-
-## A minimal end-to-end flow
-
-The simplest path from nothing to a running task:
-
-```
-batman_worker { op: "create", fingerprint: "sha256:...", adapter: "claude", model: "..." }
-batman_task   { op: "upsert", description: "..." }
-batman_run    { op: "submit", taskId, workerId, prompt: "..." }
-/batman                                        — watch it live
-batman_run    { op: "get", runId }             — or poll explicitly
+```json
+{ "taskId": "5f0b6b3e-6b1a-4b8e-9c2d-1a2b3c4d5e6f", "sequence": 42 }
 ```
 
-Register a `batman_profile` first if you're going to create more than one worker against the same
-adapter/model — it saves repeating the startup options and permission envelope on every
-`batman_worker { op: "create" }` call. For concurrent workers on the same task, acquire an isolated
-workspace (`batman_workspace { op: "acquire", requestedIsolation: "gitWorktree" }`) per worker
-before submitting their runs.
+### `task/get`
 
-See [`docs/manual-testing.md`](manual-testing.md) for full worked sessions, including cross-worker
-messaging while watching `/batman` update live, and a two-workspace concurrent-agent example.
+```json
+{
+  "taskId": "5f0b6b3e-6b1a-4b8e-9c2d-1a2b3c4d5e6f",
+  "projectId": "0f4c1d9a8b7e6f50",
+  "ownerClientInstanceId": "client-a1b2c3d4",
+  "revision": 3,
+  "createdAt": "2026-08-10T14:02:11Z",
+  "updatedAt": "2026-08-10T14:05:47Z"
+}
+```
 
-## How the extension finds and starts `batcave`
+### `profile/register`
 
-You don't need to know this to use the tools above, but it explains what `batman_status` reports
-and what `OMP_BATMAN_BINARY` is for:
+```json
+{ "profileId": "3c9e2f1a-7d4b-4e8a-9c1d-2b3a4c5d6e7f", "fingerprint": "sha256:a1b2c3d4e5f6" }
+```
+
+### `worker/create`
+
+```json
+{ "workerId": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d", "sequence": 43 }
+```
+
+### `worker/list`
+
+```json
+{
+  "workers": [
+    {
+      "workerId": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+      "parentWorkerId": null,
+      "createdAt": "2026-08-10T14:00:00Z",
+      "profileRef": { "id": "3c9e2f1a-7d4b-4e8a-9c1d-2b3a4c5d6e7f", "fingerprint": "sha256:a1b2c3d4e5f6", "adapter": "claude", "model": "claude-opus-4" }
+    }
+  ]
+}
+```
+
+### `worker/get`
+
+Same as one `worker/list` entry, plus `projectId` and `profileRef.permissionEnvelope`:
+
+```json
+{
+  "workerId": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+  "projectId": "0f4c1d9a8b7e6f50",
+  "parentWorkerId": null,
+  "createdAt": "2026-08-10T14:00:00Z",
+  "profileRef": {
+    "id": "3c9e2f1a-7d4b-4e8a-9c1d-2b3a4c5d6e7f",
+    "fingerprint": "sha256:a1b2c3d4e5f6",
+    "adapter": "claude",
+    "model": "claude-opus-4",
+    "permissionEnvelope": { "allow": ["read", "write"] }
+  }
+}
+```
+
+### `run/submit`
+
+```json
+{ "runId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e", "taskId": "5f0b6b3e-6b1a-4b8e-9c2d-1a2b3c4d5e6f", "sequence": 44 }
+```
+
+Plus `workspacePath` and `workspaceMode: "isolated"` when a workspace was materialized, plus
+`display` when a monitor pane was selected:
+
+```json
+{
+  "runId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+  "taskId": "5f0b6b3e-6b1a-4b8e-9c2d-1a2b3c4d5e6f",
+  "sequence": 44,
+  "workspacePath": "/Users/you/.omp/orchestrator/repos/<repository-id>/worktrees/b2c3d4e5",
+  "workspaceMode": "isolated"
+}
+```
+
+### `run/retry`
+
+Same as `run/submit`, plus `priorRunId`:
+
+```json
+{ "runId": "c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f", "taskId": "5f0b6b3e-6b1a-4b8e-9c2d-1a2b3c4d5e6f", "sequence": 45, "priorRunId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e" }
+```
+
+### `run/get` (and each entry of `run/list`)
+
+```json
+{
+  "runId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+  "taskId": "5f0b6b3e-6b1a-4b8e-9c2d-1a2b3c4d5e6f",
+  "workerId": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+  "state": "working",
+  "flags": {
+    "degradedControl": false,
+    "needsReconciliation": false,
+    "protocolUnhealthy": false,
+    "policyQuarantined": false,
+    "workspaceDirty": true,
+    "childrenActive": false
+  },
+  "vendorSessionId": "vendor-session-9f8e7d6c",
+  "createdAt": "2026-08-10T14:02:20Z",
+  "startedAt": "2026-08-10T14:02:21Z",
+  "completedAt": null,
+  "policyFingerprint": "sha256:f1e2d3c4b5a6"
+}
+```
+
+### `run/list`
+
+```json
+{ "runs": [ /* … one object shaped like run/get above, per run … */ ] }
+```
+
+### `run/cancel`
+
+```json
+{ "sequence": 46 }
+```
+
+### `workspace/acquire`
+
+```json
+{
+  "leaseId": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f8a",
+  "runId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+  "mode": "write",
+  "isolationKind": "gitWorktree",
+  "path": "/Users/you/.omp/orchestrator/repos/<repository-id>/worktrees/b2c3d4e5",
+  "state": "active",
+  "baseRevision": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+  "acquisitionSequence": 47
+}
+```
+
+### `workspace/get`
+
+```json
+{
+  "leaseId": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f8a",
+  "runId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+  "mode": "write",
+  "isolationKind": "gitWorktree",
+  "path": "/Users/you/.omp/orchestrator/repos/<repository-id>/worktrees/b2c3d4e5",
+  "state": "active",
+  "baseRevision": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+}
+```
+
+### `workspace/inspect`
+
+```json
+{
+  "leaseId": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f8a",
+  "patchArtifactId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8a9b",
+  "commitCount": 3,
+  "commitIds": ["a1b2c3d", "b2c3d4e", "c3d4e5f"],
+  "dirtyFileCount": 2,
+  "untrackedFileCount": 1,
+  "baseRevision": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+  "currentRevision": "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1"
+}
+```
+
+### `workspace/apply`
+
+```json
+{ "leaseId": "d4e5f6a7-b8c9-4d0e-1f2a-3b4c5d6e7f8a", "success": true, "conflictArtifactId": null, "targetRevisionAfter": "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2", "errorCode": null }
+```
+
+### `workspace/release`
+
+```json
+{ "released": true, "cleanupFailed": false }
+```
+
+### `artifact/list`
+
+```json
+{ "artifacts": [ /* … artifact entries, filterable by kind on the request … */ ] }
+```
+
+### `artifact/fetch`
+
+```json
+{ "artifact": { "artifactId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8a9b", "kind": "patch" }, "contentBase64": "ZGlmZiAtLWdpdCBhL2ZvbyBiL2Zvbwo=", "nextOffset": 4096, "complete": false }
+```
+
+### `message/send`
+
+```json
+{ "messageId": "f6a7b8c9-d0e1-4f2a-3b4c-5d6e7f8a9b0c", "sequence": 48 }
+```
+
+### `message/list`
+
+```json
+{
+  "messages": [
+    {
+      "messageId": "f6a7b8c9-d0e1-4f2a-3b4c-5d6e7f8a9b0c",
+      "runId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+      "senderWorkerId": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+      "recipientWorkerId": null,
+      "taskId": "5f0b6b3e-6b1a-4b8e-9c2d-1a2b3c4d5e6f",
+      "kind": "steer",
+      "payload": "focus on the error path first",
+      "deliveryState": "acknowledged",
+      "createdAt": "2026-08-10T14:03:00Z",
+      "sentAt": "2026-08-10T14:03:00Z",
+      "acknowledgedAt": "2026-08-10T14:03:02Z",
+      "replyTo": null
+    }
+  ]
+}
+```
+
+### `approval/list`
+
+```json
+{
+  "approvals": [
+    {
+      "approvalId": "a7b8c9d0-e1f2-4a3b-4c5d-6e7f8a9b0c1d",
+      "runId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+      "taskId": "5f0b6b3e-6b1a-4b8e-9c2d-1a2b3c4d5e6f",
+      "action": "runShellCommand",
+      "arguments": { "command": "rm -rf /tmp/scratch" },
+      "humanRequired": true,
+      "policyReason": "destructive command outside allowlist",
+      "createdAt": "2026-08-10T14:04:00Z",
+      "decidedAt": null,
+      "decision": null
+    }
+  ]
+}
+```
+
+### `approval/decide`
+
+Request takes `decision: "approve" | "deny"`; the response's `outcome` reports what happened to
+that decision, not the decision itself:
+
+```json
+{ "approvalId": "a7b8c9d0-e1f2-4a3b-4c5d-6e7f8a9b0c1d", "outcome": "decided" }
+```
+
+`outcome` is `"decided"`, `"decidedCallbackFailed"` (decided, but notifying the waiting worker
+failed — the decision still stands), or `"alreadyDecided"` (a no-op repeat of an identical prior
+decision).
+
+### `violation/decide`
+
+Request takes `resolution: "release" | "cancel"` (releases the run from quarantine, or cancels it
+outright); the response's `outcome` is `"decided"` or `"alreadyDecided"`:
+
+```json
+{ "violationId": "b8c9d0e1-f2a3-4b4c-5d6e-7f8a9b0c1d2e", "outcome": "decided" }
+```
+
+### `child/list`
+
+```json
+{ "requests": [ /* … pending child-spawn requests, one JSON object per request … */ ] }
+```
+
+### `child/decide`
+
+```json
+{ "sequence": 49 }
+```
+
+### `reconcile/omp`
+
+```json
+{ "taskId": "5f0b6b3e-6b1a-4b8e-9c2d-1a2b3c4d5e6f", "newOwnerClientInstanceId": "client-b2c3d4e5", "sequence": 50 }
+```
+
+### `batman_runtime_install`
+
+Success (text, then `details`):
+
+```
+BATMAN runtime installed: batcave 0.1.0 (darwin-arm64)
+Path: /Users/you/.omp/orchestrator/bin/0.1.0/batcave
+```
+
+```json
+{ "version": "0.1.0", "target": "darwin-arm64", "path": "/Users/you/.omp/orchestrator/bin/0.1.0/batcave", "sizeBytes": 41211752 }
+```
+
+Failure (private-repo case):
+
+```
+Runtime install failed: failed to fetch release https://api.github.com/repos/nikolasd/batman/releases/tags/v0.1.0: HTTP 404
+```
+
+```json
+{ "code": "http-error", "message": "failed to fetch release https://api.github.com/repos/nikolasd/batman/releases/tags/v0.1.0: HTTP 404" }
+```
+
+That `404` on a private repo almost always means no `GITHUB_TOKEN`/`GH_TOKEN` was set and no
+`gh auth login` session exists — see the [code table above](#6-when-something-breaks).
+
+## Appendix B — how the runtime binary is resolved
+
+You don't need to know this to use the tools above, but it explains what `batman_status` reports and
+what `OMP_BATMAN_BINARY` is for:
 
 1. On first use in a session, the extension tries to connect to the repository's existing runtime
    socket. If one answers, it's reused — no process is spawned.
-2. If nothing answers, it picks a binary: `OMP_BATMAN_BINARY` (an absolute, executable path) wins
-   outright if set — this is the local-development override, and it skips checksum/version
-   validation entirely. Otherwise it resolves the platform-appropriate leaf package
-   (`@nikolasd/batman-darwin-arm64`, `-darwin-x64`, `-linux-arm64-gnu`, or `-linux-x64-gnu`,
-   selected by `process.platform`/`arch` and, on Linux, detected glibc vs. musl) and verifies the
-   packaged binary's SHA-256 and version against its manifest before trusting it.
+2. If nothing answers, it picks a binary in two tiers: `OMP_BATMAN_BINARY` (an absolute, executable
+   path) wins outright if set — this is the local-development override, and it skips checksum/
+   version validation entirely. Otherwise it looks for `<state root>/bin/<version>/batcave`, verifies
+   its SHA-256 and version against a sibling `manifest.json` (and rejects a manifest whose `target`
+   doesn't match this platform), and only trusts it once that check passes. That cache is populated
+   by `/batman-runtime-install`, which downloads both files from this extension version's GitHub
+   Release. The state root itself resolves as `BATMAN_STATE_DIR` (env var) →
+   `$XDG_STATE_HOME/omp/batman` → `$HOME/${PI_CONFIG_DIR:-.omp}/orchestrator`.
 3. It spawns `batcave serve` detached, with `BATMAN_BINARY_SOURCE` set to `override` or `package`
    accordingly (this is the "Binary source" field `batman_status` reports), then retries connecting
    with bounded exponential backoff. If a different concurrent caller won the daemon's single-

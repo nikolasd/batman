@@ -118,10 +118,11 @@ export async function getRuntimeStatus(ctx: GetRuntimeStatusContext): Promise<Ru
 function failureResult(options: EnsureRuntimeOptions, err: unknown): RuntimeStatusError {
   const code = errorCode(err);
   const doctorCommand = `batcave status --repo ${options.repository}`;
+  const message = code === "runtime-not-installed" ? "The BATMAN runtime binary is not installed yet. Run /batman-runtime-install to download and verify it." : GENERIC_FAILURE_MESSAGE;
   return {
     isError: true,
-    content: [{ type: "text", text: GENERIC_FAILURE_MESSAGE }],
-    details: { code, message: GENERIC_FAILURE_MESSAGE, doctorCommand },
+    content: [{ type: "text", text: message }],
+    details: { code, message, doctorCommand },
   };
 }
 

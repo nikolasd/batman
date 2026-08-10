@@ -91,25 +91,29 @@ If you suspect a run is wedged and want to confirm before the next restart natur
 
 ## Install, Upgrade, and Uninstall
 
-BATMAN ships as an npm package (`@nikolasd/batman`) installed through OMP's plugin mechanism, plus
-one of four platform-specific binary leaf packages resolved automatically. **There is no Homebrew
-formula, apt/deb/rpm package, or any other system package** — don't reach for a package manager
-here.
+BATMAN ships as an OMP marketplace plugin (extension + skills, cloned from this repository) plus a
+`batcave` binary downloaded on demand as a GitHub Release asset. **There is no Homebrew formula,
+apt/deb/rpm package, or any other system package** — don't reach for a package manager here.
 
 ### Installing / uninstalling
 
 ```bash
-omp install @nikolasd/batman           # installs the extension + resolves the platform binary
-omp plugin uninstall @nikolasd/batman  # removes it
+/marketplace add nikolasd/batman           # registers this repo as a marketplace source
+/marketplace install batman@batman         # installs the extension + skills
+/batman-runtime-install                    # downloads and verifies the batcave binary
+/marketplace uninstall batman@batman       # removes the extension + skills
 ```
 
-This requires access to the private npm registry `@nikolasd/*` is published to — see
-[`.npmrc`](../.npmrc) and the README's [Installation](../README.md#installation) section for
-registry setup. It installs the extension to
-`~/.omp/plugins/node_modules/@nikolasd/batman`; the `batcave` binary comes from whichever
-`@nikolasd/batman-<platform>` leaf package matched your OS/arch/libc (see
-[`plugin-usage.md`](plugin-usage.md#how-the-extension-finds-and-starts-batcave)) — there's no
-separate binary install step.
+**This repository is private.** `/marketplace add` git-clones it, so it needs your own GitHub read
+access to `nikolasd/batman` (an SSH key registered with GitHub, or a `gh auth login` session backed
+by a git credential helper). `/batman-runtime-install` additionally needs a `GITHUB_TOKEN` or
+`GH_TOKEN` environment variable, or that same `gh auth login` session, to download the asset — see
+the README's [Installation](../README.md#installation) section. The `batcave` binary itself resolves
+in two tiers (see
+[`plugin-usage.md`](plugin-usage.md#how-the-extension-finds-and-starts-batcave)): `OMP_BATMAN_BINARY`
+(a local-development override) if set, otherwise the SHA-256-verified binary
+`/batman-runtime-install` cached under the BATMAN state root — there's no separate binary install
+step beyond that command.
 
 After uninstalling, confirm no `batcave` process is still running: `ps aux | grep batcave`, and
 `kill <pid>` anything that's left (this shouldn't happen in normal operation — the extension doesn't
@@ -124,10 +128,11 @@ if you want to keep other repositories' history.
 
 ### Upgrading
 
-The extension and the runtime it spawns are two halves of one npm install — there is no separate
-runtime-vs-extension version to reconcile by hand; `bun update @nikolasd/batman` (or re-running
-`omp install @nikolasd/batman` at a new version) updates both together. If you're testing an
-unreleased build, use the `OMP_BATMAN_BINARY` override described in
+The extension and the `batcave` binary are no longer one atomic install — upgrading each is a
+separate step. `/marketplace upgrade batman@batman` refreshes the extension + skills from this
+repository; if that bumps the extension's version, re-run `/batman-runtime-install` to download the
+matching binary (a version-mismatched cached binary is rejected rather than silently reused). If
+you're testing an unreleased build instead, use the `OMP_BATMAN_BINARY` override described in
 [`plugin-usage.md`](plugin-usage.md#how-the-extension-finds-and-starts-batcave) instead of
 installing anything.
 
@@ -135,8 +140,9 @@ installing anything.
    (or just let the next `ensureRuntime()` call reconnect after the update — a stale old binary
    still running won't be replaced automatically, so stop it first if you want the new version
    active immediately).
-2. **Update the package**, then confirm: `batcave version` should report the new version, and
-   `batcave doctor --json` should report `healthy: true` (or only expected, pre-existing failures).
+2. **Update**: `/marketplace upgrade batman@batman`, then `/batman-runtime-install` if the version
+   changed. Confirm with `batcave version` (should report the new version) and `batcave doctor --json`
+   (should report `healthy: true`, or only expected, pre-existing failures).
 
 ## Troubleshooting
 

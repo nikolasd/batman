@@ -1,4 +1,4 @@
-name: Build and Publish npm Packages
+name: Build and Publish Release Assets
 
 on:
   push:
@@ -194,10 +194,15 @@ jobs:
           name: release-manifest
           path: release/release-manifest.json
 
-  publish:
+  release:
     needs: [build, conformance, package-set, version-gate]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      # Uploading release assets needs a write-scoped token; the workflow
+      # default is `contents: read`, same pattern `build` uses above for
+      # attestations.
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -205,38 +210,38 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: batman-*
-          path: packages
-          merge-multiple: false
+          path: assembled
 
       - name: Restore executable bits
         run: |
           # actions/upload-artifact zips files and download-artifact restores
-          # them as 0644. npm publish needs bin/batcave to be executable.
-          find packages -name batcave -exec chmod +x {} +
+          # them as 0644; the uploaded asset must stay executable.
+          find assembled -name batcave -exec chmod +x {} +
 
-      - uses: oven-sh/setup-bun@v2
+      - name: Download release manifest
+        uses: actions/download-artifact@v4
         with:
-          bun-version: 1.3.14
+          name: release-manifest
+          path: release
 
-      - name: Install JS workspace dependencies
-        run: bun install
-
-      - name: Build the extension bundle
-        # dist/ is gitignored and not produced by the build job (which only
-        # compiles batcave); publishing packages/extension without this step
-        # would ship a package missing dist/index.js, the file its own
-        # "exports"/"omp.extensions" fields point at.
-        run: bun run build
-
-      - name: Publish leaf packages and extension to the private registry
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Stage release assets
+        # `download.ts` fetches exactly these names -- `batcave-${target}`
+        # and `batcave-${target}.manifest.json` -- so this pairing is the
+        # contract between the two files.
         run: |
-          # Each package's own publishConfig.access (public for the 4 leaf
-          # packages, restricted for the extension) governs visibility --
-          # no --access flag here to avoid silently overriding it.
-          for pkg in packages/batman-darwin-arm64 packages/batman-darwin-x64 \
-                     packages/batman-linux-arm64-gnu packages/batman-linux-x64-gnu \
-                     packages/extension; do
-            (cd "$pkg" && bun publish)
+          mkdir -p release-assets
+          for leaf in $(jq -r '.targets[].leaf' release/targets.json); do
+            cp "assembled/batman-$leaf/bin/batcave" "release-assets/batcave-$leaf"
+            cp "assembled/batman-$leaf/manifest.json" "release-assets/batcave-$leaf.manifest.json"
           done
+          cp release/release-manifest.json release-assets/release-manifest.json
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The tag push that triggers this workflow does not itself create a
+          # GitHub Release, so ensure one exists before uploading assets to it.
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" ||
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber release-assets/*

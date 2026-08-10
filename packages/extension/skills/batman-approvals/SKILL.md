@@ -1,0 +1,40 @@
+---
+name: batman-approvals
+description: >-
+  Use when a run is pending approval, quarantined by a policy violation,
+  or blocked by a nested-child spawn request.
+  Fires on "approve that", "deny it", "why is this run blocked",
+  "a run needs approval", "a child wants to spawn".
+---
+
+## How BATMAN tools work
+
+Two facts are invisible from the tool schemas but essential for correct use:
+
+- **BATMAN stores no task text of its own.** The `prompt` argument must be supplied on every `run/submit` **and every `run/retry`**. Retry does not remember the prior prompt — you must pass it again.
+- **Every BATMAN tool returns the daemon's JSON result verbatim under `details`.** Read ids (`taskId`, `workerId`, `runId`, `leaseId`, `approvalId`, `violationId`) from there. Never invent or guess them.
+
+## Approvals
+
+Call `batman_approval { op: "list" }` to see pending approvals. Each approval has a `humanRequired` flag:
+
+- When `humanRequired` is `true`, the runtime enforces this server-side and **rejects any model-supplied decision**. With no interactive UI present, the honest action is to leave the approval pending and tell the user it needs their attention. Do not fabricate a decision.
+- When `humanRequired` is `false`, a model-supplied decision is allowed and you may resolve it.
+
+## Violations
+
+A policy violation quarantines a run — it makes no further progress until decided.
+
+- Call `batman_violation { op: "decide", violationId, resolution }` to unblock a quarantined run. The `resolution` describes the decision (e.g. "release the quarantined run" or "cancel it").
+- There is **deliberately no `list` op** for violations. They surface via the event stream and the `/batman` monitor, not a query. If you need to find a violation, check `/batman` or look for violation events in the stream.
+
+## Child spawn requests
+
+When a worker wants to spawn a nested child, it records the intent — nothing happens until you decide.
+
+- `batman_child { op: "list" }` shows pending child requests (optionally filtered by `runId`).
+- `batman_child { op: "decide", parentRunId, decision }` resolves a request:
+  - **Accept** requires `childTaskId`, `childWorkerId`, and `childRunId` — these provision the child run.
+  - **Deny** requires a `reason` explaining the refusal.
+
+A request is only an intent — accepting is what actually creates the child run.

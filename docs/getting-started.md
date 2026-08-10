@@ -7,7 +7,7 @@ doctor, and testing. Its companions are [`code-walkthrough.md`](code-walkthrough
 and debugging playbook), [`rust-primer.md`](rust-primer.md) (Rust via this codebase), and
 [`manual-testing.md`](manual-testing.md) (QA verification steps).
 
-> **Just want to use BATMAN, not build it?** See [README.md's Installation section](../README.md#installation) — `omp install @nikolasd/batman` installs both the extension and the runtime with no build step. Then see [`plugin-usage.md`](plugin-usage.md), the user manual. This guide is for developing BATMAN itself.
+> **Just want to use BATMAN, not build it?** See [README.md's Installation section](../README.md#installation) — `/marketplace add nikolasd/batman` then `/marketplace install batman@batman` installs the extension, and `/batman-runtime-install` downloads the runtime binary; no build step. Note this is a private repository, so both need your own GitHub read access. Then see [`plugin-usage.md`](plugin-usage.md), the user manual. This guide is for developing BATMAN itself.
 
 ## Prerequisites
 
@@ -37,6 +37,12 @@ bun run setup
 # Bundle the OMP extension (required before manual testing loads dist/index.js)
 bun run build
 ```
+
+`packages/extension/dist/index.js` is committed to git and verified in CI (a `bundle-check` job
+rebuilds it and fails on any diff) — it's the exact file a marketplace-installed plugin loads, since
+a git clone never runs `bun install`/`bun run build` itself. Any change under
+`packages/extension/src/` must be followed by re-running `bun run build` and committing the
+rebuilt `dist/index.js`.
 
 ## Configuration
 

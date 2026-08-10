@@ -63,7 +63,7 @@ export function buildStatusContext(options: BuildStatusContextOptions = {}): Sta
       repository,
       idleSeconds: DEFAULT_IDLE_SECONDS,
       env,
-      packagedBinaryResolver: options.packagedBinaryResolver ?? (() => resolveBatcave(process.platform, process.arch, detectLibc(), env).path),
+      packagedBinaryResolver: options.packagedBinaryResolver ?? (() => resolveBatcave(process.platform, process.arch, detectLibc(), env, stateDir).path),
       sessionId: options.sessionId,
     },
   };

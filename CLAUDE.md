@@ -14,9 +14,10 @@ worker selection, approvals, merge/synthesis decisions). **BATMAN ensures it hap
 replayed** — it supervises worker processes (Claude, Codex, Copilot, OMP-RPC), persists a durable
 SQLite event journal, recovers after crashes, and feeds display backends (herdr, tmux, terminal).
 
-Two deliverables, one repo: `@nikolasd/batman` (npm package, TypeScript OMP extension) and `batcave`
-(Rust daemon binary), communicating over JSON-RPC 2.0 on bounded NDJSON over a per-repository Unix
-domain socket.
+Two deliverables, one repo: the OMP extension + skills (`@nikolasd/batman`, installed via the OMP
+marketplace — git-cloned, not npm-published) and `batcave` (Rust daemon binary, downloaded on demand
+as a GitHub Release asset), communicating over JSON-RPC 2.0 on bounded NDJSON over a per-repository
+Unix domain socket.
 
 ## Commands
 
@@ -105,9 +106,9 @@ structural choice is accidental.
 | `crates/xtask/` | Codegen (TS bindings + JSON Schema) and platform package assembly |
 | `packages/extension/` | The OMP extension: JSON-RPC client, runtime launcher, tool implementations (`batman_task`, `batman_worker`, `batman_run`, ...), OMP-native reconciler, embedded `/batman` monitor |
 | `packages/protocol-ts/` | Generated TS bindings + JSON Schema + Ajv validators — **never hand-edit `src/generated/`**, run `bun run generate` |
-| `packages/batman-*/` | Per-platform `batcave` binary leaf packages (npm `optionalDependencies`) |
+| `packages/batman-*/` | Per-platform `batcave` binary leaf directories — release build staging, created on demand by `batman-xtask package`, uploaded as GitHub Release assets, never committed |
 | `fixtures/` | Cross-language golden fixtures (protocol frames, state roots, repo ids, configs) that Rust and TS tests both read |
-| `tests/conformance/` | Golden-frame adapter conformance runner; `tests/install/` is private-registry install verification |
+| `tests/conformance/` | Golden-frame adapter conformance runner |
 | `release/` | Release build inputs and evidence — `targets.json` (platform build matrix, read by xtask and CI) plus per-version release checklists and live adapter conformance results |
 | `docs/` | Start with `getting-started.md` and `architecture.md`; `engineering-lessons.md` documents past bugs and the invariant that closed each one |
 

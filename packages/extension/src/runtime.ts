@@ -56,7 +56,7 @@ export interface EnsureRuntimeResult {
 }
 
 /** Machine-readable reason a binary could not be selected. */
-export type BinarySelectionCode = "not-absolute" | "not-found" | "not-regular" | "not-executable" | "no-binary";
+export type BinarySelectionCode = "not-absolute" | "not-found" | "not-regular" | "not-executable" | "no-binary" | "runtime-not-installed";
 
 /** Thrown before any spawn when a `batcave` binary cannot be selected. */
 export class BinarySelectionError extends Error {

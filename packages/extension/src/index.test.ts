@@ -84,11 +84,11 @@ function fakeCommandContext(cwd: string, hasUI: boolean): { ctx: ExtensionComman
   };
 }
 
-test("registers batman_status plus every orchestration tool, and both slash commands", () => {
+test("registers batman_status plus every orchestration tool, and every slash command", () => {
   const { api, tools, commands } = createFakeApi();
   extension(api);
-  expect([...tools.keys()]).toEqual(["batman_status", "batman_task", "batman_worker", "batman_profile", "batman_run", "batman_workspace", "batman_artifact", "batman_child", "batman_violation", "batman_message", "batman_approval", "batman_reconcile", "batman_doctor"]);
-  expect([...commands.keys()]).toEqual(["batman-status", "batman", "batman-doctor"]);
+  expect([...tools.keys()]).toEqual(["batman_status", "batman_task", "batman_worker", "batman_profile", "batman_run", "batman_workspace", "batman_artifact", "batman_child", "batman_violation", "batman_message", "batman_approval", "batman_reconcile", "batman_doctor", "batman_runtime_install"]);
+  expect([...commands.keys()]).toEqual(["batman-status", "batman", "batman-doctor", "batman-runtime-install"]);
 });
 
 // ---- Live-daemon path: a real foreground `batcave` the tool must reach. ----
