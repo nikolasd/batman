@@ -66,8 +66,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_target }}
       - name: Install Linux ARM64 cross-compiler
         if: matrix.leaf_target == 'linux-arm64-gnu'
         run: |
