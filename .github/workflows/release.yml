@@ -52,13 +52,6 @@ jobs:
   build:
     needs: [version-gate, targets]
     runs-on: ${{ matrix.os }}
-    permissions:
-      # `attest-build-provenance` mints a signed attestation, which needs an
-      # OIDC token and attestation write. Scoped to this job rather than
-      # widening the workflow-level `contents: read` default.
-      id-token: write
-      attestations: write
-      contents: read
     strategy:
       matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
     steps:
@@ -95,10 +88,6 @@ jobs:
           file: packages/batman-${{ matrix.leaf_target }}/bin/batcave
           artifact-name: sbom-${{ matrix.leaf_target }}.spdx.json
 
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: packages/batman-${{ matrix.leaf_target }}/bin/batcave
 
       - name: Upload leaf package
         uses: actions/upload-artifact@v4
