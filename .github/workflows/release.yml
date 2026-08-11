@@ -92,7 +92,7 @@ jobs:
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
         with:
-          path: packages/batman-${{ matrix.leaf_target }}/bin/batcave
+          file: packages/batman-${{ matrix.leaf_target }}/bin/batcave
           artifact-name: sbom-${{ matrix.leaf_target }}.spdx.json
 
       - name: Attest build provenance
