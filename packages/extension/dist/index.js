@@ -9708,7 +9708,7 @@ function isObject(value) {
 // package.json
 var package_default = {
   name: "@nikolasd/batman",
-  version: "0.1.0",
+  version: "0.1.1",
   type: "module",
   exports: { ".": "./dist/index.js" },
   omp: { extensions: ["./dist/index.js"] },
