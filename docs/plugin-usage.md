@@ -446,22 +446,22 @@ outright); the response's `outcome` is `"decided"` or `"alreadyDecided"`:
 Success (text, then `details`):
 
 ```
-BATMAN runtime installed: batcave 0.1.0 (darwin-arm64)
-Path: /Users/you/.omp/batman/bin/0.1.0/batcave
+BATMAN runtime installed: batcave 0.3.0 (darwin-arm64)
+Path: /Users/you/.omp/batman/bin/0.3.0/batcave
 ```
 
 ```json
-{ "version": "0.1.0", "target": "darwin-arm64", "path": "/Users/you/.omp/batman/bin/0.1.0/batcave", "sizeBytes": 41211752 }
+{ "version": "0.3.0", "target": "darwin-arm64", "path": "/Users/you/.omp/batman/bin/0.3.0/batcave", "sizeBytes": 41211752 }
 ```
 
 Failure (private-repo case):
 
 ```
-Runtime install failed: failed to fetch release https://api.github.com/repos/nikolasd/batman/releases/tags/v0.1.0: HTTP 404
+Runtime install failed: failed to fetch release https://api.github.com/repos/nikolasd/batman/releases/tags/v0.3.0: HTTP 404
 ```
 
 ```json
-{ "code": "http-error", "message": "failed to fetch release https://api.github.com/repos/nikolasd/batman/releases/tags/v0.1.0: HTTP 404" }
+{ "code": "http-error", "message": "failed to fetch release https://api.github.com/repos/nikolasd/batman/releases/tags/v0.3.0: HTTP 404" }
 ```
 
 That `404` on a private repo almost always means no `GITHUB_TOKEN`/`GH_TOKEN` was set and no
