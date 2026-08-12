@@ -457,8 +457,12 @@ impl Doctor {
         };
         let stat = nix::sys::statvfs::statvfs(state_dir.as_path())
             .map_err(|e| DoctorError::StateDirError(format!("statvfs failed: {e}")))?;
-        // `blocks_available()` is platform-dependent in width; `fragment_size()`
-        // is already `u64`, so only the former needs widening.
+        // `blocks_available()` returns `fsblkcnt_t`, which is `u32` on macOS/Darwin
+        // (x86_64 and aarch64) but already `u64` on glibc Linux (x86_64 and aarch64) —
+        // the only platforms this workspace targets. `fragment_size()` returns
+        // `c_ulong`, which is `u64` on all four. The widening below is required on
+        // macOS and a no-op on Linux; the allow covers that Linux no-op.
+        #[allow(clippy::useless_conversion)]
         let free = u64::from(stat.blocks_available()) * stat.fragment_size();
         if free < MIN_FREE_BYTES {
             return Err(DoctorError::StateDirError(format!(
