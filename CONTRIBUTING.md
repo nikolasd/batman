@@ -105,7 +105,6 @@ crates/xtask/             Codegen (schema + TS bindings) and platform package as
 packages/extension/       The OMP extension: client, launcher, platform loader, orchestration
                           tools, OMP-native reconciliation, embedded /batman monitor
 packages/protocol-ts/     Generated TypeScript bindings + JSON Schema + Ajv validators
-packages/batman-*/        Per-platform binary leaf packages (npm optionalDependencies)
 fixtures/                 Cross-language golden fixtures (protocol frames, state roots, repo ids)
 docs/                     Engineering documentation (start here: docs/getting-started.md)
 ```
