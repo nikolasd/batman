@@ -9708,7 +9708,7 @@ function isObject(value) {
 // package.json
 var package_default = {
   name: "@nikolasd/batman",
-  version: "0.2.0",
+  version: "0.3.0",
   type: "module",
   exports: { ".": "./dist/index.js" },
   omp: { extensions: ["./dist/index.js"] },
@@ -10015,7 +10015,7 @@ function resolveStateRoot(env, home) {
     return join3(xdgStateHome, "omp", "batman");
   }
   const piConfigDir = env.PI_CONFIG_DIR ?? ".omp";
-  return join3(home, piConfigDir, "orchestrator");
+  return join3(home, piConfigDir, "batman");
 }
 
 // src/context.ts
