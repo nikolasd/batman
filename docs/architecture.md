@@ -748,7 +748,7 @@ State lives under `<state root>/repos/<repository-id>/`, where the state root re
 
 1. `BATMAN_STATE_DIR` (must be absolute)
 2. `$XDG_STATE_HOME/omp/batman` when `XDG_STATE_HOME` is set (must be absolute)
-3. `$HOME/${PI_CONFIG_DIR:-.omp}/orchestrator`
+3. `$HOME/${PI_CONFIG_DIR:-.omp}/batman`
 
 ### Role Table Summary
 

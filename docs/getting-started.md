@@ -135,13 +135,13 @@ resolve for you (see [`cli-reference.md`](cli-reference.md#before-you-start-stat
 omitting it falls back to a bare `.batman` in the current directory, which is *not* that location):
 
 ```bash
-batcave serve --repo "$PWD" --state-dir "$HOME/.omp/orchestrator"
+batcave serve --repo "$PWD" --state-dir "$HOME/.omp/batman"
 ```
 
 With explicit configuration files:
 
 ```bash
-batcave serve --repo "$PWD" --state-dir "$HOME/.omp/orchestrator" \
+batcave serve --repo "$PWD" --state-dir "$HOME/.omp/batman" \
   --org-config /etc/batman/org.yaml \
   --repo-config .batman/config.yaml \
   --user-config ~/.batman/config.yaml
@@ -152,7 +152,7 @@ batcave serve --repo "$PWD" --state-dir "$HOME/.omp/orchestrator" \
 `batcave status` requires a live runtime — it queries `runtime/status` over the socket:
 
 ```bash
-batcave status --repo "$PWD" --state-dir "$HOME/.omp/orchestrator"
+batcave status --repo "$PWD" --state-dir "$HOME/.omp/batman"
 ```
 
 For diagnostics that don't require a live runtime, use `doctor` instead — it runs the full check
@@ -161,7 +161,7 @@ compatibility, adapter availability, disk space, stale runs/workspaces, rollout 
 see [`cli-reference.md`](cli-reference.md#batcave-doctor) for the complete list):
 
 ```bash
-batcave doctor --repo "$PWD" --state-dir "$HOME/.omp/orchestrator" --json
+batcave doctor --repo "$PWD" --state-dir "$HOME/.omp/batman" --json
 ```
 
 **Note:** there is no `--recover` flag on `status` or `doctor`. Crash recovery is not something you
@@ -173,7 +173,7 @@ the next restart sweeps it.
 ### Stop the Server
 
 ```bash
-batcave stop --repo "$PWD" --state-dir "$HOME/.omp/orchestrator"
+batcave stop --repo "$PWD" --state-dir "$HOME/.omp/batman"
 ```
 
 ### Audit Export
@@ -184,7 +184,7 @@ runtime directory (what `serve`/`status`/`doctor` would derive internally from a
 does not derive it from `--repo` itself (see [`cli-reference.md`](cli-reference.md#batcave-audit-export)):
 
 ```bash
-batcave audit export --repo "$PWD" --state-dir "$HOME/.omp/orchestrator/repos/<repository-id>" --output /tmp/audit.jsonl
+batcave audit export --repo "$PWD" --state-dir "$HOME/.omp/batman/repos/<repository-id>" --output /tmp/audit.jsonl
 ```
 
 ## Security Features
@@ -246,7 +246,7 @@ Export audit events to JSONL format for offline analysis — see the note above 
 meaning the repository's runtime directory here, not a state root:
 
 ```bash
-batcave audit export --repo "$PWD" --state-dir "$HOME/.omp/orchestrator/repos/<repository-id>" --output /tmp/audit.jsonl
+batcave audit export --repo "$PWD" --state-dir "$HOME/.omp/batman/repos/<repository-id>" --output /tmp/audit.jsonl
 ```
 
 ## Crash Recovery
@@ -265,7 +265,7 @@ stuck without waiting for (or forcing) a restart, check `doctor`'s `stale_runs` 
 the same condition read-only:
 
 ```bash
-batcave doctor --repo "$PWD" --state-dir "$HOME/.omp/orchestrator" --json
+batcave doctor --repo "$PWD" --state-dir "$HOME/.omp/batman" --json
 ```
 
 ### Recovery Configuration

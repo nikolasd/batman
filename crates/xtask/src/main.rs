@@ -494,8 +494,7 @@ fn package_leaf(root: &Path, target: &str, binary: &Path) -> Result<()> {
     let entry = find_target(&targets, target)?;
 
     let leaf_dir = leaf_package_dir(root, target);
-    fs::create_dir_all(&leaf_dir)
-        .with_context(|| format!("creating {}", leaf_dir.display()))?;
+    fs::create_dir_all(&leaf_dir).with_context(|| format!("creating {}", leaf_dir.display()))?;
 
     let bin_dir = leaf_dir.join("bin");
     fs::create_dir_all(&bin_dir).with_context(|| format!("creating {}", bin_dir.display()))?;

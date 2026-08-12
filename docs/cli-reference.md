@@ -25,7 +25,7 @@ differently depending on how you invoke it:**
   `StateRoot::resolve` precedence exactly:
   1. `BATMAN_STATE_DIR` (must be absolute)
   2. `$XDG_STATE_HOME/omp/batman` when `XDG_STATE_HOME` is set (must be absolute)
-  3. `$HOME/${PI_CONFIG_DIR:-.omp}/orchestrator`
+  3. `$HOME/${PI_CONFIG_DIR:-.omp}/batman`
 - **When you run `batcave` by hand and omit `--state-dir`**, the CLI does *not* apply that
   precedence at all — `serve`/`status`/`stop`/`monitor`/`doctor` each fall back to the bare
   relative path `.batman` in your current directory, erroring out immediately if it doesn't exist.
@@ -39,7 +39,7 @@ just read it off `batman_status`'s output, which reports the runtime's identity)
 explicitly:
 
 ```bash
-batcave status --state-dir "$HOME/.omp/orchestrator" --repo "$PWD"
+batcave status --state-dir "$HOME/.omp/batman" --repo "$PWD"
 ```
 
 For `serve`/`status`/`stop`/`monitor`/`doctor`, `--state-dir` is a **state root**: `batcave` hashes

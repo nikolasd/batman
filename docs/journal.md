@@ -85,7 +85,7 @@ prove it against the same bytes.
 
 Now the daemon crate gets its first real logic, and it's not about sockets or events — it's about
 *where anything lives at all*. `security/mod.rs`'s `StateRoot::resolve(env, home)` implements a
-three-tier precedence (`BATMAN_STATE_DIR` > `XDG_STATE_HOME/omp/batman` > `$HOME/.omp/orchestrator`),
+three-tier precedence (`BATMAN_STATE_DIR` > `XDG_STATE_HOME/omp/batman` > `$HOME/.omp/batman`),
 and `paths.rs`'s `RuntimePaths::resolve` turns a repository path into a stable, private,
 per-repository directory: canonicalize it, walk parents for a `.git` marker (directory or file —
 worktrees have a file), hash the canonical root to get a `repository-id`, derive a `ProjectId`

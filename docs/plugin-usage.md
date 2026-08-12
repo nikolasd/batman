@@ -234,7 +234,7 @@ Plus `workspacePath` and `workspaceMode: "isolated"` when a workspace was materi
   "runId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
   "taskId": "5f0b6b3e-6b1a-4b8e-9c2d-1a2b3c4d5e6f",
   "sequence": 44,
-  "workspacePath": "/Users/you/.omp/orchestrator/repos/<repository-id>/worktrees/b2c3d4e5",
+  "workspacePath": "/Users/you/.omp/batman/repos/<repository-id>/worktrees/b2c3d4e5",
   "workspaceMode": "isolated"
 }
 ```
@@ -291,7 +291,7 @@ Same as `run/submit`, plus `priorRunId`:
   "runId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
   "mode": "write",
   "isolationKind": "gitWorktree",
-  "path": "/Users/you/.omp/orchestrator/repos/<repository-id>/worktrees/b2c3d4e5",
+  "path": "/Users/you/.omp/batman/repos/<repository-id>/worktrees/b2c3d4e5",
   "state": "active",
   "baseRevision": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
   "acquisitionSequence": 47
@@ -306,7 +306,7 @@ Same as `run/submit`, plus `priorRunId`:
   "runId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
   "mode": "write",
   "isolationKind": "gitWorktree",
-  "path": "/Users/you/.omp/orchestrator/repos/<repository-id>/worktrees/b2c3d4e5",
+  "path": "/Users/you/.omp/batman/repos/<repository-id>/worktrees/b2c3d4e5",
   "state": "active",
   "baseRevision": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
 }
@@ -447,11 +447,11 @@ Success (text, then `details`):
 
 ```
 BATMAN runtime installed: batcave 0.1.0 (darwin-arm64)
-Path: /Users/you/.omp/orchestrator/bin/0.1.0/batcave
+Path: /Users/you/.omp/batman/bin/0.1.0/batcave
 ```
 
 ```json
-{ "version": "0.1.0", "target": "darwin-arm64", "path": "/Users/you/.omp/orchestrator/bin/0.1.0/batcave", "sizeBytes": 41211752 }
+{ "version": "0.1.0", "target": "darwin-arm64", "path": "/Users/you/.omp/batman/bin/0.1.0/batcave", "sizeBytes": 41211752 }
 ```
 
 Failure (private-repo case):
@@ -481,7 +481,7 @@ what `OMP_BATMAN_BINARY` is for:
    doesn't match this platform), and only trusts it once that check passes. That cache is populated
    by `/batman-runtime-install`, which downloads both files from this extension version's GitHub
    Release. The state root itself resolves as `BATMAN_STATE_DIR` (env var) →
-   `$XDG_STATE_HOME/omp/batman` → `$HOME/${PI_CONFIG_DIR:-.omp}/orchestrator`.
+   `$XDG_STATE_HOME/omp/batman` → `$HOME/${PI_CONFIG_DIR:-.omp}/batman`.
 3. It spawns `batcave serve` detached, with `BATMAN_BINARY_SOURCE` set to `override` or `package`
    accordingly (this is the "Binary source" field `batman_status` reports), then retries connecting
    with bounded exponential backoff. If a different concurrent caller won the daemon's single-

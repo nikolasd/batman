@@ -47,7 +47,7 @@ export OMP_BATMAN_BINARY="$PWD/target/debug/batcave"
 **State directory resolution** (in precedence order):
 1. `BATMAN_STATE_DIR` (must be absolute)
 2. `$XDG_STATE_HOME/omp/batman` when `XDG_STATE_HOME` is set (must be absolute)
-3. `$HOME/${PI_CONFIG_DIR:-.omp}/orchestrator`
+3. `$HOME/${PI_CONFIG_DIR:-.omp}/batman`
 
 **Configuration file locations** (in precedence order, lowest to highest). There is no
 auto-discovery and no `BATMAN_ORG_CONFIG`-style environment variable for any layer — each is

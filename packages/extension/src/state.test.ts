@@ -46,19 +46,19 @@ test("BATMAN_STATE_DIR wins over XDG_STATE_HOME and the default", () => {
   expect(root).toBe("/var/lib/batman");
 });
 
-test("falls back to $HOME/.omp/orchestrator when nothing is set", () => {
-  expect(resolveStateRoot({}, "/home/alice")).toBe("/home/alice/.omp/orchestrator");
+test("falls back to $HOME/.omp/batman when nothing is set", () => {
+  expect(resolveStateRoot({}, "/home/alice")).toBe("/home/alice/.omp/batman");
 });
 
 test("PI_CONFIG_DIR overrides the default .omp directory name", () => {
-  expect(resolveStateRoot({ PI_CONFIG_DIR: ".config-omp" }, "/home/alice")).toBe("/home/alice/.config-omp/orchestrator");
+  expect(resolveStateRoot({ PI_CONFIG_DIR: ".config-omp" }, "/home/alice")).toBe("/home/alice/.config-omp/batman");
 });
 
 test("does not read process-global env or home", () => {
   const originalStateDir = process.env.BATMAN_STATE_DIR;
   process.env.BATMAN_STATE_DIR = "/should/not/be/read";
   try {
-    expect(resolveStateRoot({}, "/home/alice")).toBe("/home/alice/.omp/orchestrator");
+    expect(resolveStateRoot({}, "/home/alice")).toBe("/home/alice/.omp/batman");
   } finally {
     if (originalStateDir === undefined) {
       delete process.env.BATMAN_STATE_DIR;

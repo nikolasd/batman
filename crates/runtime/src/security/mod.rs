@@ -66,7 +66,7 @@ pub struct StateRoot(PathBuf);
 impl StateRoot {
     /// Resolves the BATMAN state root from `env`/`home` using the
     /// precedence: `BATMAN_STATE_DIR` -> `$XDG_STATE_HOME/omp/batman` ->
-    /// `$HOME/${PI_CONFIG_DIR:-.omp}/orchestrator`.
+    /// `$HOME/${PI_CONFIG_DIR:-.omp}/batman`.
     ///
     /// # Errors
     /// Returns [`SecurityError::RelativeOverride`] if `BATMAN_STATE_DIR` or
@@ -95,7 +95,7 @@ impl StateRoot {
         }
 
         let pi_config_dir = env.get("PI_CONFIG_DIR").map_or(".omp", String::as_str);
-        Ok(Self(home.join(pi_config_dir).join("orchestrator")))
+        Ok(Self(home.join(pi_config_dir).join("batman")))
     }
 
     /// The resolved absolute path. No filesystem access has happened yet.
@@ -289,9 +289,9 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_home_omp_orchestrator() {
+    fn falls_back_to_home_omp_batman() {
         let root = StateRoot::resolve(&HashMap::new(), Path::new("/home/alice")).unwrap();
-        assert_eq!(root.path(), Path::new("/home/alice/.omp/orchestrator"));
+        assert_eq!(root.path(), Path::new("/home/alice/.omp/batman"));
     }
 
     #[test]
@@ -301,10 +301,7 @@ mod tests {
             Path::new("/home/alice"),
         )
         .unwrap();
-        assert_eq!(
-            root.path(),
-            Path::new("/home/alice/.config-omp/orchestrator")
-        );
+        assert_eq!(root.path(), Path::new("/home/alice/.config-omp/batman"));
     }
 
     #[test]

@@ -24,13 +24,13 @@
     "name": "default_fallback_uses_home_and_default_pi_config_dir",
     "env": {},
     "home": "/home/alice",
-    "expected": "/home/alice/.omp/orchestrator"
+    "expected": "/home/alice/.omp/batman"
   },
   {
     "name": "default_fallback_honors_pi_config_dir_override",
     "env": { "PI_CONFIG_DIR": ".config/omp" },
     "home": "/home/alice",
-    "expected": "/home/alice/.config/omp/orchestrator"
+    "expected": "/home/alice/.config/omp/batman"
   },
   {
     "name": "rejects_relative_batman_state_dir",

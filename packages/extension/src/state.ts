@@ -25,7 +25,7 @@ export class StateRootError extends Error {
  * Precedence, identical to Rust's `StateRoot::resolve`:
  * 1. `BATMAN_STATE_DIR`, if set (must be absolute).
  * 2. `$XDG_STATE_HOME/omp/batman`, if `XDG_STATE_HOME` is set (must be absolute).
- * 3. `$HOME/${PI_CONFIG_DIR:-.omp}/orchestrator`.
+ * 3. `$HOME/${PI_CONFIG_DIR:-.omp}/batman`.
  *
  * Pure and side-effect free: `env` and `home` are taken explicitly (never
  * `process.env`/`os.homedir()` internally) so tests can drive fixtures, and
@@ -55,5 +55,5 @@ export function resolveStateRoot(env: Readonly<Record<string, string | undefined
   }
 
   const piConfigDir = env.PI_CONFIG_DIR ?? ".omp";
-  return join(home, piConfigDir, "orchestrator");
+  return join(home, piConfigDir, "batman");
 }

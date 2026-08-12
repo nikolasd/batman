@@ -13,7 +13,7 @@ only the procedures around them.
 ### Starting the runtime
 
 ```bash
-batcave serve --repo <path> --state-dir "$HOME/.omp/orchestrator" [--idle-seconds <n>]
+batcave serve --repo <path> --state-dir "$HOME/.omp/batman" [--idle-seconds <n>]
 ```
 
 In normal use you don't run this yourself — the OMP extension spawns it on first use per
@@ -34,7 +34,7 @@ released because its owning process died. If a runtime is already running, the n
 ### Graceful shutdown
 
 ```bash
-batcave stop --repo <path> --state-dir "$HOME/.omp/orchestrator"
+batcave stop --repo <path> --state-dir "$HOME/.omp/batman"
 ```
 
 The runtime journals a stop record, closes the database actor, removes the socket, then releases
@@ -46,10 +46,10 @@ no runtime is found holding the lock, it exits **1** immediately rather than sig
 
 ```bash
 # Every run in the project, live-tailed after an initial catch-up replay
-batcave monitor --repo <path> --state-dir "$HOME/.omp/orchestrator"
+batcave monitor --repo <path> --state-dir "$HOME/.omp/batman"
 
 # Filtered to one run
-batcave monitor --repo <path> --state-dir "$HOME/.omp/orchestrator" --run-id <run-id>
+batcave monitor --repo <path> --state-dir "$HOME/.omp/batman" --run-id <run-id>
 ```
 
 There's no separate "replay" vs. "live" mode — `monitor` always replays what's already journaled
@@ -61,7 +61,7 @@ inside OMP, prefer `/batman` (see [`plugin-usage.md`](plugin-usage.md#the-embedd
 ### Diagnosing a runtime
 
 ```bash
-batcave doctor --repo <path> --state-dir "$HOME/.omp/orchestrator" [--json]
+batcave doctor --repo <path> --state-dir "$HOME/.omp/batman" [--json]
 ```
 
 Runs the full check catalog documented in [`cli-reference.md`](cli-reference.md#batcave-doctor)
@@ -85,7 +85,7 @@ If you suspect a run is wedged and want to confirm before the next restart natur
 
 1. **Check the log** (only present without `--foreground`): `cat <runtime-dir>/runtime.log`
 2. **Check for orphaned processes:** `ps aux | grep batcave`
-3. **Restart:** `batcave serve --repo <path> --state-dir "$HOME/.omp/orchestrator"` — there's nothing to clean up
+3. **Restart:** `batcave serve --repo <path> --state-dir "$HOME/.omp/batman"` — there's nothing to clean up
    by hand first. The lock file doesn't need removing (a crashed process's `flock` is already
    released by the kernel), and the next `serve` runs recovery automatically on startup.
 
@@ -147,7 +147,7 @@ installing anything.
 ## Troubleshooting
 
 **Runtime won't start:**
-- Check whether one's already running: `batcave status --repo <path> --state-dir "$HOME/.omp/orchestrator"` (exit 73 from `serve`
+- Check whether one's already running: `batcave status --repo <path> --state-dir "$HOME/.omp/batman"` (exit 73 from `serve`
   means another instance holds the lock — that's not a bug, connect to it instead of restarting).
 - Check the log: `cat <runtime-dir>/runtime.log`.
 - Run `batcave doctor --json` — it doesn't need a live connection and will usually name the exact
