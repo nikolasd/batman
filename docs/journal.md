@@ -1794,6 +1794,94 @@ kind of small, unglamorous accuracy fix it opened Part V with, which is a fittin
 the discipline this document has narrated since commit 10 is still the same discipline in commit
 217, wherever the next one after this journal's own writing turns out to be.
 
+## Part X — REVIEW.md's second pass: seven more fixes, eleven doc corrections, and the residue that outlived them
+
+Part IX closed on four Critical fixes landed the same day they were found. The seven High findings
+from that same first review round (R5-R11) got the identical same-day discipline, across the fix
+commits `8331a34 9720c63 8457de5 6bd6a00 f9e95c4 797d5e6 e8204da 44093d4 e4befb8 bcff4ce 143e1b3`.
+Unlike R1-R4, every one of these seven left a smaller, real gap behind — not a regression, but a
+residual defect the fix itself introduced or exposed. This journal records both halves, because a
+"resolved" that quietly grew a new open item is not the same story as a clean close.
+
+**R5** — a `humanRequired` approval could be decided by the model itself, with no human in the
+loop. Fixed by adding a `DecidedBy` enum (`Human`/`Model`) to the protocol and rejecting a `Model`
+decision against a `human_required` approval in `ApprovalService::decide`; the extension fails
+closed with no UI path around it. Left behind: **R34** — the fix persists `decided_by` via
+`serde_json::to_string`, storing the JSON-quoted `"human"` instead of the bare token every other
+scalar-enum column in the same file uses, so `WHERE decided_by = 'human'` returns nothing, forever.
+
+**R6** — a cached runtime client that had died silently broke every tool call until `batman_status`
+happened to be invoked. Fixed by exposing `BatmanClient.isClosed` and routing every construction
+site through a `resolveClient()` that reconnects on a closed cache; defended by `reconnect.test.ts`.
+Left behind: **R39** — the fix's own repair path correctly pairs `controller.stop()` with clearing
+`subscribedClient`, but the `session_shutdown` handler calls only `controller.stop()`, so a monitor
+that lives through a session shutdown without that pairing can end up permanently unable to
+reconnect.
+
+**R7** — `run/retry` created a queued run and then never started its adapter. Fixed by routing
+`run_retry` through the same `start_queued_run` helper `run_submit` already used. Verified, not just
+fixed: `orchestration_rpc.rs` proves a retried run actually starts. No gap left behind — the shared
+helper closes the class of bug outright.
+
+**R8** — the release conformance gate ignored aggregate failure; a stub could pass green. Fixed
+(`de07022`) by gating `batcave conformance --fixture` against a committed
+`fixtures/conformance/fixture-mode-baseline.json`. Left behind: **R44** — the capture tool that
+produces that baseline is calibrated against exactly one of the eleven committed fixtures (its
+scrubber only recognizes `claude/initialize.jsonl`'s placeholder ID family as already-canonical),
+and its `unchanged` flag is computed by reading back the file it just wrote, not by comparing
+against what was committed before the write — so the safety net the gate depends on is itself
+unproven beyond the one fixture it was built against.
+
+**R9** — release version checks validated the git tag but not the packages actually assembled for
+distribution. Fixed (`bb209eb`) by having `package-set` verify each leaf's own version and adding a
+`version-gate` CI job that checks the tag against `v<version>` before any build work starts. No gap
+left behind.
+
+**R10** — artifact APIs claimed task-level isolation but were scoped project-wide, so one task could
+read another's patches. Fixed (`44093d4`) by stamping `Artifact.run_id` at the point of production
+and scoping `artifact/list`/`artifact/fetch` by `owner_client_instance_id`, proven by a dedicated
+cross-owner isolation test. Left behind two gaps, both still open: **R35** — `artifact/fetch` reads
+and hashes the full content *before* the ownership check runs, a timing side-channel distinguishing
+"exists but not yours" from "doesn't exist" by latency alone; and **R36** — the isolation tests
+hand-seed `run_id` on their fixtures rather than exercising the real producers
+(`WorkspaceApplier`/`WorkspaceInspector`), so reverting the producers' own stamping code back to
+`run_id: None` would leave the entire test suite green.
+
+**R11** — Copilot's vendor turn-stop reasons were discarded outright instead of being normalized
+into protocol health/failure signals. Fixed (`bcff4ce`) via `copilot_normalize_stop_reason()`,
+mapping every stop reason to a `ProtocolHealthChanged` event and a failure disposition, defended by
+eight unit tests. Left behind: **R42** — the unknown-reason arm's detail string interpolates the
+already-lowercased, `_`/`-`-stripped match binding instead of the original vendor `stop_reason`
+text, so the one piece of diagnostic detail meant to help someone grep vendor docs for an
+unrecognized reason has already been mangled past matching them.
+
+### The documentation half: eleven doc-accuracy findings, most already stale on arrival
+
+The same first review round filed eleven Low-severity documentation findings (R19, R21-R28) —
+CLI flags that didn't exist, tool counts that were wrong, deleted modules still named, an installer
+Homebrew never had. By the time each was re-verified on 2026-08-08, six (R19, R23, R24, R26, R27,
+R28) had already been corrected by unrelated doc work and needed nothing further — recorded as
+resolved on the strength of re-reading the current text, not a fix commit filed against this
+review. Two (R21, R22) had regressed independently into `AGENTS.md`/`CLAUDE.md` after those files
+were generated later than the original doc fixes — corrected in place during the same
+consolidation that produced this journal entry's predecessor commits. **R25** went further than
+"resolved": `release/0.1.0-checklist.json`, the file the finding was filed against, was deleted
+outright in `7ab1447` rather than merely relabeled — re-verification on 2026-08-10 confirmed there
+was nothing left to fix.
+
+### Where this history lives now
+
+`REVIEW.md` itself was restructured on 2026-08-12 from a full audit trail (every finding, resolved
+or not, with its evidence) into an open-items-only backlog — R1-R11, R19, and R21-R28 no longer
+appear there at all. This journal entry is now the only place their resolution evidence is
+recorded; if you're looking for *why* R34, R35, R36, R39, R42, or R44 exist, the answer in every
+case is "as a byproduct of the fix directly above it in this entry." That same 2026-08-12 pass also
+ran a full fresh re-verification of every item that *was* still open, adding twenty new findings
+(R47-R66) surfaced by reading the runtime core, the adapters, the conformance harness, the TS
+extension, and the release/docs surface with fresh eyes — the most severe of them (R47-R49) sitting
+at Critical, a reminder that a review closing its filed findings is not the same claim as a system
+having no more bugs.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
