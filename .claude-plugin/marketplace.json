@@ -3,14 +3,14 @@
   "owner": { "name": "Nikolas Demiridis" },
   "metadata": {
     "description": "Durable multiagent orchestration for OMP",
-    "version": "0.3.0"
+    "version": "0.4.0"
   },
   "plugins": [
     {
       "name": "batman",
       "description": "Supervise Claude, Codex, Copilot, and OMP-RPC workers with an append-only event journal, crash recovery, and live run monitoring.",
       "source": "./packages/extension",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "author": { "name": "Nikolas Demiridis" },
       "homepage": "https://github.com/nikolasd/batman",
       "repository": "https://github.com/nikolasd/batman",
