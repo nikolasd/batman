@@ -14,7 +14,7 @@ each other — they are fixed and verified one at a time, not batched.
 |----|-----|--------|-----------------|
 | CI-1 | `clippy` | Fixed | `useless_conversion` lint: `u64::from()` widening is a no-op on Linux (where clippy runs) but required on macOS; suppressed with `#[allow]` instead of removed |
 | CI-2 | `security` (gitleaks) | Fixed | Shallow clone made gitleaks re-scan the whole repo as "new" on every push; no allowlist configured either |
-| CI-3 | `bundle-check` | Open | Committed `dist/index.js` wasn't rebuilt after `fast-uri` dependency bump |
+| CI-3 | `bundle-check` | Fixed | Committed `dist/index.js` wasn't rebuilt after `fast-uri` dependency bump |
 | CI-4 | `test (macos-latest)` | Open | `duplicate_start_is_rejected` test is host-dependent; broke when slot-release-on-failure was fixed |
 | CI-5 | `test (ubuntu-latest)` | Open | Cancelled as a side effect of CI-4 (matrix `fail-fast: true`); not independent |
 
@@ -169,12 +169,17 @@ that lockfile change afterward. The most recent commit that touched
 only 4 lines — the embedded version string — not a full rebuild, so the bundle still reflects the
 older `fast-uri@3.1.4` output while `bun.lock` already points at `3.1.5`.
 
-**Proposed fix:** run `bun run build` for real on a clean checkout and commit the regenerated
-`packages/extension/dist/index.js` in full (not a hand-patched version bump). Confirm with
-`git diff --exit-code -- packages/extension/dist/index.js` after rebuilding, matching what the CI
-step does.
+**Fix applied:** ran `bun install && bun run build` for real and committed the regenerated
+`packages/extension/dist/index.js` in full (not a hand-patched version bump). The resulting diff is
+localized entirely to the vendored `fast-uri`/`ajv` region: three `require_...` source-comment path
+updates (`fast-uri@3.1.4` → `fast-uri@3.1.5`) plus the new `AUTHORITY_INTRODUCER_REGION` URI-authority
+validation block and its call site in `resolve()`, exactly as anticipated above.
 
-**Status:** Open
+**Status:** Fixed — verified locally by confirming `git diff --exit-code -- packages/extension/dist/index.js`
+exited non-zero (a diff existed to commit) before committing, and exits `0` after — the literal
+`bundle-check` CI step. `bun test packages/extension` run as a regression sanity check against the
+rebuilt bundle. Final confirmation is the `bundle-check` job going green on push — same caveat
+pattern as CI-1/CI-2.
 
 ---
 

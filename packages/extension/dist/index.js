@@ -3033,7 +3033,7 @@ var require_data = __commonJS((exports, module) => {
   };
 });
 
-// ../../node_modules/.bun/fast-uri@3.1.4/node_modules/fast-uri/lib/utils.js
+// ../../node_modules/.bun/fast-uri@3.1.5/node_modules/fast-uri/lib/utils.js
 var require_utils = __commonJS((exports, module) => {
   var isUUID = RegExp.prototype.test.bind(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu);
   var isIPv4 = RegExp.prototype.test.bind(/^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)$/u);
@@ -3344,7 +3344,7 @@ var require_utils = __commonJS((exports, module) => {
   };
 });
 
-// ../../node_modules/.bun/fast-uri@3.1.4/node_modules/fast-uri/lib/schemes.js
+// ../../node_modules/.bun/fast-uri@3.1.5/node_modules/fast-uri/lib/schemes.js
 var require_schemes = __commonJS((exports, module) => {
   var { isUUID } = require_utils();
   var URN_REG = /([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-.:;=@]|%[\da-f]{2})+)/iu;
@@ -3518,7 +3518,7 @@ var require_schemes = __commonJS((exports, module) => {
   };
 });
 
-// ../../node_modules/.bun/fast-uri@3.1.4/node_modules/fast-uri/index.js
+// ../../node_modules/.bun/fast-uri@3.1.5/node_modules/fast-uri/index.js
 var require_fast_uri = __commonJS((exports, module) => {
   var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
   var { SCHEMES, getSchemeHandler } = require_schemes();
@@ -3532,7 +3532,12 @@ var require_fast_uri = __commonJS((exports, module) => {
   }
   function resolve(baseURI, relativeURI, options) {
     const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
-    const resolved = resolveComponent(parse(baseURI, schemelessOptions), parse(relativeURI, schemelessOptions), schemelessOptions, true);
+    const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed } = parseWithStatus(baseURI, schemelessOptions);
+    const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed } = parseWithStatus(relativeURI, schemelessOptions);
+    if (baseMalformed || relativeMalformed) {
+      throw new Error(baseParsed.error || relativeParsed.error || "URI is malformed.");
+    }
+    const resolved = resolveComponent(baseParsed, relativeParsed, schemelessOptions, true);
     schemelessOptions.skipEscape = true;
     return serialize(resolved, schemelessOptions);
   }
@@ -3659,6 +3664,7 @@ var require_fast_uri = __commonJS((exports, module) => {
   }
   var URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
   var AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
+  var AUTHORITY_INTRODUCER_REGION = /^(?:[^#/:?]+:)?([/\\\t\n\r]*)/;
   function getParseError(parsed, matches) {
     if (matches[2] !== undefined && parsed.path && parsed.path[0] !== "/") {
       return 'URI path must start with "/" when authority is present.';
@@ -3692,6 +3698,20 @@ var require_fast_uri = __commonJS((exports, module) => {
     if (authorityMatch !== null && authorityMatch[1].indexOf("\\") !== -1) {
       parsed.error = "URI authority must not contain a literal backslash.";
       malformedAuthorityOrPort = true;
+    }
+    const introducerMatch = uri.match(AUTHORITY_INTRODUCER_REGION);
+    if (introducerMatch !== null) {
+      const region = introducerMatch[1];
+      const normalizedRegion = region.replace(/[\t\n\r]/g, "");
+      if (normalizedRegion.length >= 2) {
+        if (normalizedRegion.slice(0, 2) !== "//") {
+          parsed.error = parsed.error || "URI authority must not contain a literal backslash.";
+          malformedAuthorityOrPort = true;
+        } else if (region.length !== normalizedRegion.length) {
+          parsed.error = parsed.error || "URI authority introducer must not contain whitespace.";
+          malformedAuthorityOrPort = true;
+        }
+      }
     }
     const matches = uri.match(URI_PARSE);
     if (matches) {
