@@ -1,12 +1,15 @@
-# CI Failures — main CI run 31595771218
+# CI Failures — main CI, ongoing
 
-**Source run:** https://github.com/nikolasd/batman/actions/runs/31595771218
-**Triggered by:** push to `main`, commit `e65a5a5` ("docs: restructure REVIEW.md as open-items-only backlog...")
-**Investigated:** 2026-08-12
+**Origin run:** https://github.com/nikolasd/batman/actions/runs/31595771218 (push to `main`, commit
+`e65a5a5`, investigated 2026-08-12) — items CI-1 through CI-5.
 
-**Purpose:** track each independent CI failure from this run through to resolution. Each item below
-was traced to a root cause (not just a symptom) before a fix was proposed. Items are unrelated to
-each other — they are fixed and verified one at a time, not batched.
+**CI-6/CI-7 discovered:** https://github.com/nikolasd/batman/actions/runs/31705841465 (push to
+`main`, commit `497fd7f`, 2026-08-13) — the first live CI run to actually exercise CI-4's fix and
+CI-2's commit; each surfaced a distinct, previously-masked failure the earlier ones had been hiding.
+
+**Purpose:** track each independent CI failure through to resolution. Each item below was traced to
+a root cause (not just a symptom) before a fix was proposed. Items are unrelated to each other —
+they are fixed and verified one at a time, not batched.
 
 ## Summary
 
@@ -17,6 +20,8 @@ each other — they are fixed and verified one at a time, not batched.
 | CI-3 | `bundle-check` | Fixed | Committed `dist/index.js` wasn't rebuilt after `fast-uri` dependency bump |
 | CI-4 | `test (macos-latest)` | Fixed | `duplicate_start_is_rejected` test is host-dependent; broke when slot-release-on-failure was fixed |
 | CI-5 | `test (ubuntu-latest)` | Open | Cancelled as a side effect of CI-4 (matrix `fail-fast: true`); not independent |
+| CI-6 | `test (macos-latest)` | Open | `claude_adapter.rs` real-CLI tests unconditionally require an installed `claude` binary, absent on CI runners; previously masked by CI-4 failing first alphabetically |
+| CI-7 | `security` (gitleaks) | Open | CI-2's own allowlist is scoped to the original fixture files only; `CI-FAILS.md` quotes the same literal fixture secret in prose and isn't covered, so gitleaks (correctly) flags this doc |
 
 ---
 
@@ -269,10 +274,117 @@ macos-latest]`) has no `fail-fast: false`, so it defaults to `fail-fast: true`. 
 `test (macos-latest)` failed (CI-4), GitHub Actions cancelled the sibling `test (ubuntu-latest)` job
 outright. There is no ubuntu-specific defect here.
 
-**Proposed fix:** no code fix needed — this resolves automatically once CI-4 is fixed and the
-matrix run completes normally. Separately worth considering: add `fail-fast: false` to this matrix so
-a failure on one platform doesn't hide whether the other platform would have passed or failed on its
-own merits (useful signal when debugging exactly this kind of situation).
+**Proposed fix:** no code fix needed — this resolves automatically once `test (macos-latest)`
+completes normally. Separately worth considering: add `fail-fast: false` to this matrix so a failure
+on one platform doesn't hide whether the other platform would have passed or failed on its own
+merits (useful signal when debugging exactly this kind of situation — it's the reason CI-6 stayed
+invisible until CI-4 was fixed).
 
-**Status:** Open (tracked for visibility; no independent action beyond CI-4, and the optional
-`fail-fast: false` follow-up)
+**Status:** Open (tracked for visibility; no independent action beyond `test (macos-latest)` going
+green, which as of CI-4's fix now depends on CI-6 too, and the optional `fail-fast: false` follow-up).
+CI-4 itself is confirmed fixed — `duplicate_start_is_rejected` passed on the `test (macos-latest)`
+re-run (commit `497fd7f`, run `31705841465`) — but that job still failed overall on the unrelated
+CI-6 defect below, so this one hasn't resolved yet.
+
+---
+
+## CI-6. `test (macos-latest)` — `claude_adapter.rs` real-CLI tests require an installed `claude` binary
+
+**Job:** `test (macos-latest)` · step "Run Rust tests" · exit code 101
+
+**Discovered:** while verifying the CI-4 fix (push `497fd7f`, run `31705841465`,
+https://github.com/nikolasd/batman/actions/runs/31705841465) — not present in the original run
+(`31595771218`) this document otherwise tracks, because CI-4 was failing first and `cargo test`
+(no `--no-fail-fast`) stops at the first failing test binary. `adapter_registry` sorts alphabetically
+before `claude_adapter`, so this defect was always latent but never reached until CI-4 stopped
+masking it.
+
+**Location:** `crates/runtime/tests/claude_adapter.rs`
+
+**Evidence:**
+```
+thread 'probe_reports_the_real_installed_version_and_auth_readiness_with_no_model_call' panicked at crates/runtime/tests/claude_adapter.rs:704:10:
+probe must succeed against the real installed claude CLI: AdapterError { code: Process, adapter: "claude", operation: "probe", detail: "failed to spawn \"claude\": No such file or directory (os error 2)" }
+
+thread 'resume_from_a_fresh_instance_uses_constructor_bound_ids_and_reaches_the_real_spawn_path' panicked at crates/runtime/tests/claude_adapter.rs:855:10:
+resume must reach the real spawn path from a fresh instance that never called start(): AdapterError { code: Process, adapter: "claude", operation: "start", detail: "failed to spawn \"claude\": No such file or directory (os error 2)" }
+
+thread 'resume_with_worker_mcp_configured_activates_a_token_and_cleans_up_on_exit' panicked at crates/runtime/tests/claude_adapter.rs:907:10:
+resume must reach the real spawn path with worker MCP tools configured: AdapterError { code: Process, adapter: "claude", operation: "start", detail: "failed to spawn \"claude\": No such file or directory (os error 2)" }
+
+thread 'conformance_fixture_report_covers_every_canonical_scenario_and_all_pass' panicked at crates/runtime/tests/claude_adapter.rs:977:9:
+scenario probe failed: probe failed: adapter claude operation probe failed (process): failed to spawn "claude": No such file or directory (os error 2)
+
+test result: FAILED. 23 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+```
+
+**Root cause:** these four tests call `adapter.probe()` / `adapter.start()` unconditionally,
+asserting against a genuinely installed `claude` CLI (e.g. `probe must succeed against the real
+installed claude CLI`, and asserting the reported version starts with `"2."`). None of them are
+gated behind `BATMAN_DISABLE_VENDOR_CLI` (their own names — `..._with_no_model_call`, `..._reaches_
+the_real_spawn_path` — indicate they were written to probe/spawn the real binary specifically,
+*not* to make a billed model call, so the existing kill switch doesn't apply to them by design) and
+none skip or `#[ignore]` when the binary is absent. The `test` job's `env: BATMAN_DISABLE_VENDOR_CLI:
+"1"` (`.github/workflows/ci.yml:63-64`) covers exactly the billed-call risk its own comment
+describes — it was never meant to, and doesn't, address a CLI that isn't installed at all. Neither
+GitHub-hosted runner (`ubuntu-latest`, `macos-latest`) has `claude` installed, and the workflow
+installs no vendor CLIs. This is the same host-dependence shape as CI-4 (a test hard-requiring a real
+vendor binary that CI's runners don't have) but in a different adapter's test file, and pre-dates
+this investigation — it did not regress from the CI-4 fix.
+
+**Proposed fix (not yet applied — tracked here, per this doc's own one-at-a-time policy):** these
+four tests need either (a) a real, honest skip when `claude` isn't resolvable on `PATH` (mirroring
+how `crates/runtime/tests/vendor_cli_availability.rs`'s
+`an_uninstalled_vendor_cli_is_denied_at_authorization_and_the_kill_switch_stays_permissive` already
+treats CLI-absence as an expected, assertable condition rather than a panic), or (b) CI installing a
+pinned `claude` CLI version for this job specifically, if the intent is for these to be genuine
+install-verification tests rather than adapter-logic tests. Needs a decision on which before
+implementing — this doc doesn't have that answer.
+
+**Status:** Open
+
+---
+
+## CI-7. `security` (gitleaks) — `CI-FAILS.md` itself quotes an unallowlisted copy of the CI-2 fixture secret
+
+**Job:** `security` · step "Scan for secrets" · exit code 2 ("🛑 Leaks detected")
+
+**Discovered:** same push as CI-6 (`497fd7f`, run `31705841465`,
+https://github.com/nikolasd/batman/actions/runs/31705841465). This is the first time the `security`
+job has ever actually run against commit `c052fce`'s real diff on GitHub: that commit (CI-2's own
+fix) sat locally, unpushed, until this session's `git town sync` pushed it, `36c0d70`, and `497fd7f`
+together in one push — so CI-2's own closing note ("final confirmation ... is the `security` job
+going green on the push") had not yet happened. It has now, and it isn't green.
+
+**Evidence:**
+```
+Finding:     (`REDACTED`, containing `0/1/8...
+Secret:      REDACTED
+RuleID:      aws-access-token
+File:        CI-FAILS.md
+Line:        133
+Commit:      c052fcefe2a1e4b14486fc640083e4d437c6fc19
+```
+
+**Root cause:** CI-2's own fix documented its three findings by quoting each fixture's literal
+secret-shaped string directly in `CI-FAILS.md`'s prose — including, verbatim, the `rules.rs:162`
+fixture (see this doc's own CI-2 section, "One more thing verified locally...", line 138 at time of
+writing — deliberately not re-quoted here, to avoid adding yet another unallowlisted copy while
+documenting the problem). The `.gitleaks.toml` allowlist entry CI-2 added for that string is scoped
+by `paths` to `crates/runtime/src/security/rules\.rs` only — and CI-2's own verification explicitly
+confirmed this narrow scoping on purpose ("a planted decoy with the identical secret text in a
+*different* file still gets flagged — the scoping doesn't over-match"). `CI-FAILS.md` quoting that
+same literal in its own explanatory prose is exactly that "different file" case, just not one CI-2's
+author noticed was already sitting in the repo at the time — a self-inflicted, foreseeable-in-
+hindsight gap, not a new leak and not a regression from any change in this session.
+
+**Proposed fix (not yet applied — tracked here, per this doc's own one-at-a-time policy):** needs a
+decision, not just a mechanical patch, because either direction has a real cost: (a) add a second
+allowlist entry scoped to `CI-FAILS.md` for this exact literal — cheapest, but sets a precedent that
+this doc's own prose is exempt from the scan, which could paper over a genuinely new leak quoted here
+in the future; or (b) stop quoting the literal fixture secret verbatim in `CI-FAILS.md` and reference
+it descriptively instead (e.g. "the fake AWS-shaped key fixture in `rules.rs:162`") — keeps the
+scoping meaningful everywhere but loses this document's evidentiary precision for CI-1/2/3's own
+resolved findings.
+
+**Status:** Open
