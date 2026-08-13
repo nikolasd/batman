@@ -83,18 +83,26 @@ fragments) is the primary boundary and was unaffected — but the denylist exist
 case where a vendor narrates a key back inside `Visible` text, which is exactly what it could not
 catch.
 
-**The fix:** `\bsk-[A-Za-z0-9_-]{16,}`, with tests written from the vendors' documented key shapes
-rather than from the pattern. The leading `\b` is load-bearing in the other direction: without it
-the widened character class swallows ordinary hyphenated prose such as `disk-space-check-failed`.
+**The fix:** `(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}`, with tests written from the vendors'
+documented key shapes rather than from the pattern. Constraining what may *precede* the token is
+load-bearing in the other direction: the widened character class accepts `-`, so an unconstrained
+version swallows ordinary hyphenated prose — `disk-space-check-failed` contains a legal
+`sk-space-check-failed`. The first attempt used a leading `\b`, which is **not** sufficient: `-` is
+a non-word character, so `\b` still admits `pre-sk-space-check-failed`. The preceding character has
+to be matched and constrained to something outside the token alphabet, then re-emitted through the
+rule's `${1}` replacement so the surrounding text is not eaten with the secret.
 
 **The lesson:** when a redaction/denylist pattern is added or widened, the test input must come from
 the real producer's format, never from the pattern's own shape — and every widening needs a
 paired negative test proving normal text is still untouched, because over-redaction of diagnostics
-is a silent failure too.
+is a silent failure too. `\b` in particular is a trap when the token alphabet contains `-` or `_`:
+it asserts a *word* boundary, which those characters do not create.
 
 **Regression tests:** `anthropic_shaped_api_key_is_redacted`,
 `openai_project_shaped_api_key_is_redacted`,
 `hyphenated_prose_is_not_mistaken_for_an_api_key`,
+`hyphen_delimited_prose_is_not_mistaken_for_an_api_key`,
+`two_adjacent_api_keys_are_both_redacted`,
 `sanitize_json_redacts_an_anthropic_shaped_key_at_any_depth` (all in `security/redaction.rs`), plus
 `crates/runtime/tests/redaction_boundary.rs`, which carries an Anthropic-shaped key through the real
 append path and byte-scans the database, WAL, log, and replay output for it.

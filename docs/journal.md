@@ -1972,11 +1972,28 @@ instead, and `redaction_boundary.rs` — the test that byte-scans `runtime.db`, 
 and the replay output rather than trusting the redactor's return value — now carries an
 Anthropic-shaped key through the real append path.
 
-The widening is `\bsk-[A-Za-z0-9_-]{16,}`, and the leading word boundary is not decoration. Without
-it the widened class happily consumes ordinary hyphenated prose: `disk-space-check-failed` contains
-`sk-space-check-failed`, nineteen characters of a perfectly legal match. Over-redacting diagnostics
-is a quieter failure than leaking a key, but it is still a failure, so
-`hyphenated_prose_is_not_mistaken_for_an_api_key` guards that direction explicitly.
+The widening needs a guard on the other side, and getting that guard right took two attempts worth
+recording, because the first one was wrong in a way that reads as correct. Once the class accepts
+`-`, ordinary hyphenated prose becomes matchable: `disk-space-check-failed` contains
+`sk-space-check-failed`, nineteen characters of a perfectly legal match. The obvious fix is a
+leading `\b`, and it does reject that string — the `sk` there follows `i`, a word character. It was
+shipped that way. But `\b` asserts a *word* boundary, and `-` is not a word character, so
+`pre-sk-space-check-failed` sails straight through it. The guard only looked airtight because the
+one example it was tested against happened to be the one shape it handles.
+
+The pattern is now `(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}`: the preceding character is matched
+outright and constrained to something outside the token alphabet, then re-emitted through the rule's
+`${1}` replacement so the surrounding text is not eaten along with the secret. That capture created
+a second thing to prove. `replace_all` scans non-overlapping and resumes at the end of each match,
+so if a match ate the separator *following* its key, the next key would begin with no delimiter left
+to capture and would survive raw. It cannot: the trailing `[A-Za-z0-9_-]{16,}` stops at the first
+character outside the token alphabet, so key 1's following separator is never consumed and is still
+sitting there to serve as key 2's captured prefix. `two_adjacent_api_keys_are_both_redacted` pins
+that down across a space, a comma, and mid-sentence separation.
+`hyphenated_prose_is_not_mistaken_for_an_api_key` and
+`hyphen_delimited_prose_is_not_mistaken_for_an_api_key` guard the two prose shapes; the second one
+fails against the `\b` version, which is how the gap was caught. Over-redacting diagnostics is a
+quieter failure than leaking a key, but it is still a failure.
 
 With R49 closed the Critical tier is empty for the first time since the 2026-08-12 review pass. The
 High tier is not, and `REVIEW.md` still lists eight.

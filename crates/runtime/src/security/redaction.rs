@@ -118,14 +118,35 @@ impl std::fmt::Display for SanitizedJson {
 
 /// One built-in, bounded regex rule applied to `Visible` text.
 struct RedactionRule {
-    id: &'static str,
     pattern: Regex,
+    /// The text each match is replaced with, precomputed at construction
+    /// from the rule's id. Always carries the `[REDACTED:<id>]` marker.
+    replacement: String,
 }
 
 impl RedactionRule {
+    /// A rule whose entire match is the secret, replaced wholesale.
+    fn new(id: &'static str, pattern: Regex) -> Self {
+        Self {
+            pattern,
+            replacement: format!("[REDACTED:{id}]"),
+        }
+    }
+
+    /// A rule whose pattern must also match the character *preceding* the
+    /// secret in order to constrain what may precede it (capture group 1).
+    /// That character is re-emitted, so only the secret itself is removed
+    /// and the surrounding text survives the substitution.
+    fn keeping_prefix(id: &'static str, pattern: Regex) -> Self {
+        Self {
+            pattern,
+            replacement: format!("${{1}}[REDACTED:{id}]"),
+        }
+    }
+
     fn apply(&self, text: &str) -> String {
         self.pattern
-            .replace_all(text, &format!("[REDACTED:{}]", self.id))
+            .replace_all(text, self.replacement.as_str())
             .to_string()
     }
 }
@@ -153,45 +174,50 @@ impl Redactor {
     pub fn new() -> Self {
         Self {
             rules: vec![
-                RedactionRule {
-                    id: "api_key",
-                    // `sk-`-prefixed vendor API keys. The character class
-                    // must include `-` and `_`: Anthropic's real shape is
-                    // `sk-ant-api03-<base64url>` and OpenAI's is
-                    // `sk-proj-<base64url>`, both of which carry hyphens and
-                    // underscores inside the token itself. The leading `\b`
-                    // keeps ordinary hyphenated prose (`disk-space-check-failed`)
-                    // out of the match, which an unanchored `sk-[A-Za-z0-9_-]{16,}`
-                    // would otherwise swallow.
-                    pattern: Regex::new(r"\bsk-[A-Za-z0-9_-]{16,}")
+                // `sk-`-prefixed vendor API keys. The character class must
+                // include `-` and `_`: Anthropic's real shape is
+                // `sk-ant-api03-<base64url>` and OpenAI's is
+                // `sk-proj-<base64url>`, both of which carry hyphens and
+                // underscores inside the token itself.
+                //
+                // Because that class accepts `-`, what may precede the token
+                // has to be constrained or ordinary hyphenated prose gets
+                // eaten: `disk-space-check-failed` contains
+                // `sk-space-check-failed`. A leading `\b` is not enough -- `-`
+                // is a non-word character, so `\b` still admits
+                // `pre-sk-space-check-failed`. The preceding character is
+                // therefore matched, constrained to something outside the
+                // token alphabet (or start-of-text), and re-emitted by
+                // `keeping_prefix`.
+                RedactionRule::keeping_prefix(
+                    "api_key",
+                    Regex::new(r"(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}")
                         .expect("built-in api_key pattern is a valid, bounded regex"),
-                },
-                RedactionRule {
-                    id: "bearer_token",
-                    // Long bearer-ish tokens surfaced in free text.
-                    pattern: Regex::new(r"Bearer\s+[A-Za-z0-9._-]{20,}")
+                ),
+                // Long bearer-ish tokens surfaced in free text.
+                RedactionRule::new(
+                    "bearer_token",
+                    Regex::new(r"Bearer\s+[A-Za-z0-9._-]{20,}")
                         .expect("built-in bearer_token pattern is a valid, bounded regex"),
-                },
-                RedactionRule {
-                    id: "github_pat",
-                    // GitHub personal access tokens (ghp_ prefix).
-                    pattern: Regex::new(r"ghp_[A-Za-z0-9]{16,}")
+                ),
+                // GitHub personal access tokens (ghp_ prefix).
+                RedactionRule::new(
+                    "github_pat",
+                    Regex::new(r"ghp_[A-Za-z0-9]{16,}")
                         .expect("built-in github_pat pattern is a valid, bounded regex"),
-                },
-                RedactionRule {
-                    id: "aws_access_key",
-                    // AWS access key IDs (AKIA prefix).
-                    pattern: Regex::new(r"AKIA[0-9A-Z]{16}")
+                ),
+                // AWS access key IDs (AKIA prefix).
+                RedactionRule::new(
+                    "aws_access_key",
+                    Regex::new(r"AKIA[0-9A-Z]{16}")
                         .expect("built-in aws_access_key pattern is a valid, bounded regex"),
-                },
-                RedactionRule {
-                    id: "jwt",
-                    // JSON Web Tokens (three base64url-encoded segments).
-                    pattern: Regex::new(
-                        r"[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}",
-                    )
-                    .expect("built-in jwt pattern is a valid, bounded regex"),
-                },
+                ),
+                // JSON Web Tokens (three base64url-encoded segments).
+                RedactionRule::new(
+                    "jwt",
+                    Regex::new(r"[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}")
+                        .expect("built-in jwt pattern is a valid, bounded regex"),
+                ),
             ],
             org_rules: Vec::new(),
         }
@@ -478,11 +504,11 @@ mod tests {
         }
     }
 
-    /// The widened `api_key` character class accepts `-`, so without the
-    /// pattern's leading `\b` an ordinary hyphenated diagnostic like
-    /// `disk-space-check-failed` contains a perfectly legal nineteen-character
-    /// match (`sk-space-check-failed`). Over-redacting diagnostics is a quieter
-    /// failure than leaking a key, but it is still a failure.
+    /// The widened `api_key` character class accepts `-`, so an ordinary
+    /// hyphenated diagnostic like `disk-space-check-failed` contains a
+    /// perfectly legal nineteen-character match (`sk-space-check-failed`).
+    /// Over-redacting diagnostics is a quieter failure than leaking a key,
+    /// but it is still a failure.
     #[test]
     fn hyphenated_prose_is_not_mistaken_for_an_api_key() {
         let redactor = Redactor::new();
@@ -494,6 +520,59 @@ mod tests {
                 assert_eq!(message, prose);
             }
             other => panic!("expected Diagnostic, got {:?}", other),
+        }
+    }
+
+    /// The stricter half of the guard above: a leading `\b` is *not*
+    /// sufficient, because `-` is a non-word character, so `\b` happily
+    /// admits `pre-sk-space-check-failed`. Only constraining the preceding
+    /// character to something outside the token alphabet rejects it.
+    #[test]
+    fn hyphen_delimited_prose_is_not_mistaken_for_an_api_key() {
+        let redactor = Redactor::new();
+        let prose = "pre-sk-space-check-failed and retry-sk-space-check-failed-again";
+        let persisted = redactor.sanitize(event(vec![visible(prose)]));
+
+        match serde_json::from_str::<RuntimeEvent>(persisted.event_json()) {
+            Ok(RuntimeEvent::Diagnostic { message, .. }) => {
+                assert_eq!(message, prose);
+            }
+            other => panic!("expected Diagnostic, got {:?}", other),
+        }
+    }
+
+    /// The `api_key` pattern matches the delimiter preceding a key so it can
+    /// constrain it, and re-emits it via `${1}`. That must not consume the
+    /// delimiter separating two adjacent keys, which would leave the second
+    /// one unredacted: `replace_all` resumes scanning at the end of each
+    /// match, so a swallowed separator means a missed secret.
+    #[test]
+    fn two_adjacent_api_keys_are_both_redacted() {
+        let redactor = Redactor::new();
+        let first = "sk-ant-api03-AAAAKEY-for-tests_0123456789-aaaaaa";
+        let second = "sk-proj-BBBBKEY-for-tests_0123456789-bbbbbb";
+
+        for text in [
+            format!("{first} {second}"),
+            format!("{first},{second}"),
+            format!("env dump: {first} and {second} end"),
+        ] {
+            let persisted = redactor.sanitize(event(vec![visible(&text)]));
+            match serde_json::from_str::<RuntimeEvent>(persisted.event_json()) {
+                Ok(RuntimeEvent::Diagnostic { message, .. }) => {
+                    assert!(!message.contains(first), "first key survived in {message}");
+                    assert!(
+                        !message.contains(second),
+                        "second key survived in {message}"
+                    );
+                    assert_eq!(
+                        message.matches("[REDACTED:api_key]").count(),
+                        2,
+                        "both keys must be redacted separately in {message}"
+                    );
+                }
+                other => panic!("expected Diagnostic, got {:?}", other),
+            }
         }
     }
 
