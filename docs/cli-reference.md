@@ -150,7 +150,7 @@ Check catalog, in run order:
 | `adapter_claude_available`, `adapter_codex_available`, `adapter_copilot_available`, `adapter_omp_rpc_available` | Each vendor CLI is reachable |
 | `display_available` | At least one of Herdr/tmux/terminal display backends reports available |
 | `disk_space` | State dir's filesystem has ≥ 512 MiB free |
-| `stale_workspaces` | Counts workspace leases whose worktree vanished or failed cleanup |
+| `stale_workspaces` | Counts workspace leases whose worktree vanished, failed cleanup, or have sat `allocating` past a 10-minute grace period (abandoned before materialization completed) |
 | `stale_runs` | Counts runs stuck in a non-terminal state with no live adapter |
 | `rollout_gates_resolved` / `rollout_gate_<gate>` | Unresolved rollout gates; `native_discovery_reviewed` unresolved blocks authorization outright, the rest are advisory |
 

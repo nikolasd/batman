@@ -64,6 +64,54 @@ A durable mutation must broadcast the same event it just committed, in the same 
 
 ---
 
+## Workspace Leases and Resource Cleanup
+
+### A resource acquired before a fallible step must be released on every path out of it
+
+**Location:** `crates/runtime/src/service/orchestration.rs::start_queued_run`, `::workspace_acquire`; `crates/runtime/src/workspace/lease.rs::stale`
+
+Two-phase acquisition (claim first, then do the fallible work that finishes the claim) makes the
+in-between state invisible to any check written only against the *finished* state's shape.
+
+**The bugs (two distinct triggers of one defect, closed together):** `start_queued_run` and
+`workspace_acquire` each acquire a workspace lease (an `allocating`-state row), then materialize a
+worktree or copy, then activate the lease with the real path, and — for `start_queued_run` only —
+start the adapter. Nothing released the lease on a failure in any of the fallible steps after
+`acquire`. `materialize()` failing left an `allocating` row nothing would ever touch again; a
+`driver.start` failure left an `active` lease and a real worktree with no owner. `run/retry`
+re-runs the whole sequence for a new `RunId`, so a driver that reliably failed to start leaked one
+row per retry. The `materialize()`-failure case was worse than the `driver.start` case: the only
+check meant to catch it, `LeaseService::stale()`, filtered on "a non-empty path that no longer
+exists" — a signal an `allocating` row can never produce, since its path is empty by construction
+until `activate()` runs. The doctor check written for exactly this residue was structurally blind to
+it, not merely untested against it.
+
+**The fix:** `abandon_lease`/`abandon_and_announce` helpers now run on every fallible step past
+`acquire()` in both functions, mirroring `workspace_release`'s existing release-then-teardown-then-
+`cleanupFailed` ordering rather than inventing a second convention. Teardown is deliberately
+best-effort: propagating a `git worktree remove` failure (expected when the worktree was never
+created) would replace the caller's real error with an unrelated cleanup artifact. `stale()` was
+widened to also flag any row still `allocating` past `ALLOCATING_LEASE_GRACE` (ten minutes)
+regardless of path emptiness, so a lease abandoned before materialization even started is no longer
+invisible to the doctor.
+
+**The lesson:** A doctor-style health check keyed only on the *finished* shape of a resource (here,
+"a real path that vanished") cannot see a failure that happens before that shape ever exists. When a
+resource is claimed in more than one commit, write the check against the intermediate state
+directly — an age threshold on the claim itself, here — not only against the terminal one.
+
+**Regression tests:** `crates/runtime/tests/orchestration_rpc.rs`'s
+`start_queued_run_releases_the_lease_when_materialize_fails`,
+`workspace_acquire_releases_the_lease_when_materialize_fails`, and
+`start_queued_run_releases_the_lease_and_worktree_when_driver_start_fails`;
+`crates/runtime/tests/workspace_lease.rs`'s
+`stale_never_flags_an_allocating_lease_within_the_grace_period` and
+`stale_flags_an_allocating_lease_that_outlived_the_grace_period`;
+`crates/runtime/tests/doctor.rs`'s
+`stale_workspaces_fails_when_an_allocating_lease_outlives_the_grace_period`.
+
+---
+
 ## Security and Redaction
 
 ### A redaction denylist is only as good as the shapes it was actually tested against

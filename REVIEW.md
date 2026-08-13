@@ -11,13 +11,14 @@ TypeScript/workspace, and build/docs/release, split across four parallel reviewe
 findings were corrected in place (R17, R20, R43, R46) where the mechanism had changed since last
 verified.
 
-**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R47, R48, R49) plus the
+**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R41, R47, R48, R49, R50) plus the
 eleven documentation findings that were resolved or already-stale (R19, R21-R28) has been pruned from
 this document. That history — what broke, the fix commit, the test that proved it, and which
 still-open items below exist *because* of that fix — now lives in
 [`docs/journal.md` Part X](journal.md#part-x--reviewmds-second-pass-seven-more-fixes-eleven-doc-corrections-and-the-residue-that-outlived-them)
 (R1-R11, R47), [Part XI](journal.md#part-xi--halving-the-critical-pair-a-ceiling-that-could-not-be-enforced) (R48),
-and [Part XII](journal.md#part-xii--closing-the-last-critical-a-denylist-blind-to-its-own-vendor) (R49).
+[Part XII](journal.md#part-xii--closing-the-last-critical-a-denylist-blind-to-its-own-vendor) (R49),
+and [Part XIII](journal.md#part-xiii--two-leaks-one-lease-releasing-what-a-failed-start-acquired) (R41, R50).
 This document only tracks what's still broken.
 
 **Baseline, last run 2026-08-12** (during an unrelated state-root rename; results apply to this
@@ -39,26 +40,6 @@ operate the system correctly.
 ## Findings
 
 ### High
-
-#### R41. `start_queued_run` can leak a lease and materialized worktree on adapter-start failure
-
-**Location:** `crates/runtime/src/service/orchestration.rs:605-619,~636`
-
-**Evidence:** the lease is acquired and activated, and the worktree materialized, before `driver.start(ctx).await.map_err(ServiceError::internal)?` runs. No `lease_service.release`/cleanup call exists on this specific error path — grepping the function for `lease_service` shows no release call at all here, unlike the post-authorize error paths R2 added elsewhere. `run/retry` (see journal Part X, R7) multiplies how often this path executes.
-
-**Fix:** release the lease and clean up the worktree on `driver.start` failure, mirroring R2's existing post-authorize error-path pattern.
-
-**Priority:** High — a real resource leak on a reachable error path, compounded by retry.
-
-#### R50. Lease leak on workspace `materialize()` failure — invisible to the stale-lease doctor check
-
-**Location:** `crates/runtime/src/service/orchestration.rs:604-616,962-1001`; `crates/runtime/src/workspace/lease.rs:277-282` (`LeaseService::stale`)
-
-**Evidence:** both `start_queued_run` and `workspace_acquire` call `lease_service.acquire()` (committing an `allocating`-state row) before `materializer.materialize()` — which shells out to `git worktree add` and can fail on a locked index, full disk, or dirty ref — and before `lease_service.activate()`. On a `materialize` failure, the lease is never activated or released, and it is permanently invisible to the one mechanism meant to surface exactly this: `LeaseService::stale()` filters with `!path.is_empty() && !Path::new(path).exists()`, which evaluates false for an empty-path `allocating` row. For `Shared` isolation, this permanently blocks all future `Shared`+`Write` lease acquisitions for the project — there is no operator-visible signal that this has happened.
-
-**Fix:** release the lease on `materialize()` failure in both call sites; widen `LeaseService::stale()`'s filter to also catch `allocating` rows past some age threshold regardless of path emptiness.
-
-**Priority:** High — distinct trigger from R41 (materialize vs. adapter-start), same class of leak, worse because it's undetectable by the existing doctor check.
 
 #### R51. Crash recovery's one-shot sweep misses the realistic "crash then immediate restart" case
 
@@ -382,7 +363,7 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII)
-- **High:** 8 (R41, R33, R44 — carried forward from earlier rounds; R50, R51, R52, R53, R54 — new)
+- **High:** 6 (R33, R44 — carried forward from earlier rounds; R51, R52, R53, R54 — new) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
 - **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged

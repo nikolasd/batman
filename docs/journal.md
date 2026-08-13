@@ -1996,7 +1996,74 @@ fails against the `\b` version, which is how the gap was caught. Over-redacting 
 quieter failure than leaking a key, but it is still a failure.
 
 With R49 closed the Critical tier is empty for the first time since the 2026-08-12 review pass. The
-High tier is not, and `REVIEW.md` still lists eight.
+High tier is not; Part XIII closes two of the eight it listed.
+
+## Part XIII — Two leaks, one lease: releasing what a failed start acquired
+
+R41 and R50 were the same defect reached from two different steps. `start_queued_run` and
+`workspace_acquire` each run the same four-step sequence for an isolated or copy workspace:
+`LeaseService::acquire` (commits an `allocating` row), `WorkspaceMaterializer::materialize`
+(`git worktree add` or a bounded copy), `LeaseService::activate` (records the real path), then, for
+`start_queued_run` only, `RunDriver::start`. Every step after `acquire` could fail, and until now
+none of them released what `acquire` had already committed. R41 named the last of those four steps;
+R50 named the second. `run/retry` (Part X, R7) re-runs this whole sequence for a new `RunId` on every
+attempt, so a driver that reliably fails to start turned one leak into one leaked row per retry.
+
+The fix is two new helpers on `OrchestrationService`, `abandon_lease` and `abandon_and_announce`,
+called from every fallible step past `acquire()` in both functions. They copy `workspace_release`'s
+existing release-then-teardown-then-`cleanupFailed` ordering rather than inventing a second
+convention: release the lease first (so the next acquisition is never blocked by a row nothing will
+ever activate), then best-effort tear down whatever materialization reached disk. Teardown is
+deliberately best-effort — `git worktree remove --force` fails outright on a worktree that was never
+created, so propagating that error would replace the caller's real failure (the one the caller
+actually needs to see and retry against) with an unrelated cleanup artifact.
+
+Making that release honest surfaced a third bug, not named in either original finding: the first
+draft of `abandon_and_announce` announced `LeaseReleased` unconditionally, including when
+`release()` itself failed. A live monitor watching for that event would believe the workspace was
+free while the row was still sitting in `allocating`/`active` with no owner ever coming back for it —
+exactly the state the announcement claims doesn't exist. `abandon_lease` now returns a three-way
+`AbandonOutcome` (`Released`, `ReleasedWithCleanupFailure`, `ReleaseFailed`), and only the first two
+announce `LeaseReleased`; a genuine `ReleaseFailed` announces `CleanupFailed` instead, matching the
+state `mark_cleanup_failed` actually wrote. That, in turn, meant the conflict and count queries in
+`LeaseService::acquire` and `active_for_repository` needed a matching discriminator: a
+`cleanupFailed` row is not automatically free just because it left the `active`/`allocating` states.
+`released_at IS NULL` distinguishes the two cases directly from the column `release()` itself sets —
+a `cleanupFailed` row whose `release()` call never succeeded still blocks a new `Shared`+`Write`
+lease, exactly as an active one would; a `cleanupFailed` row whose `release()` succeeded and only the
+disk teardown failed afterward does not.
+
+R50 outranked R41 for a reason worth restating precisely: `LeaseService::stale()`'s only signal was
+"a non-empty path that no longer exists on disk." An `allocating` row is empty-path by construction
+until `activate()` runs, so a row abandoned between `acquire` and `materialize` — R50's own
+trigger — could never produce a non-empty, missing path. The doctor check written for exactly this
+residue was structurally blind to it, not merely untested against it. `stale()` now also flags any
+row still `allocating` past `ALLOCATING_LEASE_GRACE` (ten minutes — well past a realistic
+`git worktree add` or a copy bounded by `DEFAULT_COPY_MAX_BYTES`/`DEFAULT_COPY_MAX_FILES`, and longer
+than `RecoveryConfig`'s five-minute stuck-run threshold, because a lease is abandoned by a *process*
+death while a run is abandoned by an *event* gap) regardless of path emptiness.
+
+Eight tests defend this. None is vacuous: each pins an assertion that only the specific branch this
+fix added — a release call, a teardown call, a `CleanupFailed` announcement, or the widened
+`stale()`/`active_for_repository()` predicates — can satisfy; reverting any one of those branches
+while leaving the test in place fails it.
+`start_queued_run_releases_the_lease_when_materialize_fails`
+and `workspace_acquire_releases_the_lease_when_materialize_fails` (`tests/orchestration_rpc.rs`) drive
+`run/submit`/`workspace/acquire` against a repository with no commits — `gitWorktree` isolation's
+`git rev-parse HEAD` fails deterministically — and assert the journaled event pair is exactly
+`leaseRequested`/`leaseReleased`, never `leaseAcquired`, and that the lease row itself reads
+`released`/empty-path/`released_at` set, not leaked. `start_queued_run_releases_the_lease_and_worktree_when_driver_start_fails`
+uses a real committed repository so materialization and activation genuinely succeed, then a driver
+whose `start` always fails, and asserts the full `leaseRequested`/`leaseAcquired`/`leaseReleased`
+triple plus that the worktree materialized before the failure was actually removed from disk.
+`stale_never_flags_an_allocating_lease_within_the_grace_period` and
+`stale_flags_an_allocating_lease_that_outlived_the_grace_period` (`tests/workspace_lease.rs`) pin the
+grace boundary directly against a back-dated `acquired_at`. `an_unreleased_cleanup_failed_lease_still_blocks_a_new_shared_writer`
+and `a_released_lease_with_a_failed_teardown_does_not_block_a_new_shared_writer` (same file) pin the
+`released_at` discriminator in both directions. `stale_workspaces_fails_when_an_allocating_lease_outlives_the_grace_period`
+(`tests/doctor.rs`) proves the doctor-level check — the one R50 said could never see this — now can.
+
+With R41 and R50 both closed, the High tier drops to six: R33, R44, and R51-R54 remain.
 
 ## Reading order, if you're new here
 
