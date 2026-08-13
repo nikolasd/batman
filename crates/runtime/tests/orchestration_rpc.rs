@@ -94,6 +94,72 @@ impl RunDriver for RecordingRunDriver {
         Box::pin(async { Ok(()) })
     }
 }
+
+/// A [`RunDriver`] whose `start` always fails, so tests can exercise the
+/// lease-and-workspace cleanup path that runs when a run never actually
+/// starts (the row was already fully allocated -- and, for isolated modes,
+/// materialized -- before this call).
+#[derive(Default)]
+struct FailingRunDriver;
+
+impl RunDriver for FailingRunDriver {
+    fn start(&self, _ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
+        Box::pin(async { Err("boom: adapter never came up".to_string()) })
+    }
+
+    fn send_follow_up(
+        &self,
+        _run_id: RunId,
+        _task_id: TaskId,
+        _worker_id: WorkerId,
+        _prompt: String,
+    ) -> AdapterFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn running_adapter(&self, _run_id: RunId) -> Option<Arc<dyn Adapter>> {
+        None
+    }
+
+    fn cancel_run(
+        &self,
+        _run_id: RunId,
+        _scope: CancelScope,
+    ) -> AdapterFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// Turns `dir` into a real git repository with one commit, so `gitWorktree`
+/// isolation can actually materialize (`git worktree add` needs a base
+/// commit to check out). `Harness::start` only creates an empty `.git`
+/// directory, which is enough to make `git rev-parse HEAD` fail --
+/// sufficient for materialize-failure tests, but not for a test that needs
+/// materialization to *succeed* so a later failure (e.g. `driver.start`)
+/// can be isolated on its own.
+fn init_real_git_repo(dir: &Path) {
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "test@test.com"],
+        vec!["config", "user.name", "Test User"],
+    ] {
+        let status = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(&args)
+            .status()
+            .expect("git command runs");
+        assert!(status.success(), "git {args:?} failed");
+    }
+    std::fs::write(dir.join("README.md"), "# test\n").unwrap();
+    for args in [vec!["add", "."], vec!["commit", "-q", "-m", "init"]] {
+        let status = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(&args)
+            .status()
+            .expect("git command runs");
+        assert!(status.success(), "git {args:?} failed");
+    }
+}
 /// Tracks whether cancel_run was called and with what scope.
 /// Used to verify item 33's wiring: OrchestrationService calls cancel_run on the live adapter.
 #[derive(Default)]
@@ -869,6 +935,20 @@ fn pane_events<'a>(replay: &'a Value, kind: &str) -> Vec<&'a Value> {
         .collect()
 }
 
+/// The ordered `WorkspaceEvent` tag values (`"leaseRequested"`,
+/// `"leaseAcquired"`, `"leaseReleased"`, `"cleanupFailed"`, ...) journaled
+/// for `run_id` in a replay response, in emission order.
+fn workspace_event_kinds_for_run(replay: &Value, run_id: &str) -> Vec<String> {
+    replay["result"]
+        .as_array()
+        .expect("events/replay returns an array")
+        .iter()
+        .map(|e| &e["event"])
+        .filter(|e| e["type"] == "workspaceEvent" && e["payload"]["runId"] == run_id)
+        .map(|e| e["payload"]["kind"]["type"].as_str().unwrap().to_string())
+        .collect()
+}
+
 /// An attach is journaled if and only if a backend was actually
 /// selected. Whether `herdr` happens to be installed decides which branch
 /// runs, so the test asserts the correspondence rather than the outcome.
@@ -1013,6 +1093,7 @@ impl Harness {
 
         let mut config = ServerConfig {
             credential_reader: matching_reader(),
+            repository: repo.path().to_path_buf(),
             ..Default::default()
         };
         config_fn(&mut config);
@@ -2174,6 +2255,275 @@ async fn run_submit_rejects_an_unrecognized_workspace_mode() {
     assert!(
         shared.get("error").is_none(),
         "shared must remain accepted: {shared:?}"
+    );
+}
+
+// -------------------------------------------- lease leak on failed run start (R41 / R50)
+
+/// R50: `materialize()` failing after `LeaseService::acquire` succeeded must
+/// release the lease, not leak it. The harness repository has an empty
+/// `.git` directory with no commits, so `gitWorktree` isolation's
+/// `git rev-parse HEAD` fails inside `materialize()` -- exactly the failure
+/// shape this test exercises.
+#[tokio::test]
+async fn start_queued_run_releases_the_lease_when_materialize_fails() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let task = client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+    let worker = client
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+
+    let submit = client
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id, "workspaceMode": "isolated" }),
+        )
+        .await;
+    assert!(
+        submit.get("error").is_some(),
+        "materialize must fail against a repository with no commits: {submit:?}"
+    );
+
+    let list = client
+        .call(5, "run/list", json!({ "taskId": task_id }))
+        .await;
+    let runs = list["result"]["runs"].as_array().unwrap();
+    assert_eq!(
+        runs.len(),
+        1,
+        "the queued run row must be preserved, not rolled back: {runs:?}"
+    );
+    assert_eq!(runs[0]["state"], "queued");
+    let run_id = runs[0]["runId"].as_str().unwrap().to_string();
+
+    let replay = client
+        .call(6, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    let kinds = workspace_event_kinds_for_run(&replay, &run_id);
+    assert_eq!(
+        kinds,
+        vec!["leaseRequested", "leaseReleased"],
+        "a materialize failure must release the lease it just requested, \
+         not leak it, and must never claim leaseAcquired: {kinds:?}"
+    );
+
+    let lease_db = harness.socket.parent().unwrap().join("workspace-leases.db");
+    let conn = rusqlite::Connection::open(&lease_db).unwrap();
+    let (state, path, released_at): (String, String, Option<String>) = conn
+        .query_row(
+            "SELECT state, path, released_at FROM workspace_leases WHERE run_id = ?1",
+            rusqlite::params![run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        state, "released",
+        "the row must not be left allocating/active -- that is the leak"
+    );
+    assert_eq!(
+        path, "",
+        "materialize() never produced a real path to record"
+    );
+    assert!(
+        released_at.is_some(),
+        "a genuinely released lease must record released_at"
+    );
+}
+
+/// R50, second call site: `workspace/acquire`'s own `materialize()` failure
+/// must release the lease exactly like `start_queued_run`'s.
+#[tokio::test]
+async fn workspace_acquire_releases_the_lease_when_materialize_fails() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let task = client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+    let worker = client
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+
+    // No `workspaceMode`: `run/submit` never touches the lease service, so
+    // the run's own workspace/acquire call below starts from a clean slate.
+    let submit = client
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id }),
+        )
+        .await;
+    assert!(
+        submit.get("error").is_none(),
+        "run/submit failed: {submit:?}"
+    );
+    let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
+
+    let acquire = client
+        .call(
+            5,
+            "workspace/acquire",
+            json!({ "runId": run_id, "mode": "write", "requestedIsolation": "gitWorktree" }),
+        )
+        .await;
+    assert!(
+        acquire.get("error").is_some(),
+        "materialize must fail against a repository with no commits: {acquire:?}"
+    );
+
+    let replay = client
+        .call(6, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    let kinds = workspace_event_kinds_for_run(&replay, &run_id);
+    assert_eq!(
+        kinds,
+        vec!["leaseRequested", "leaseReleased"],
+        "workspace/acquire's materialize failure must release the lease, not leak it: {kinds:?}"
+    );
+
+    let lease_db = harness.socket.parent().unwrap().join("workspace-leases.db");
+    let conn = rusqlite::Connection::open(&lease_db).unwrap();
+    let (state, path, released_at): (String, String, Option<String>) = conn
+        .query_row(
+            "SELECT state, path, released_at FROM workspace_leases WHERE run_id = ?1",
+            rusqlite::params![run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        state, "released",
+        "the row must not be left allocating/active"
+    );
+    assert_eq!(
+        path, "",
+        "materialize() never produced a real path to record"
+    );
+    assert!(
+        released_at.is_some(),
+        "a genuinely released lease must record released_at"
+    );
+}
+
+/// R41: a driver that fails `start` after the workspace was already
+/// materialized and the lease activated must still release the lease and
+/// tear down the worktree it just created, not leak both.
+#[tokio::test]
+async fn start_queued_run_releases_the_lease_and_worktree_when_driver_start_fails() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FailingRunDriver));
+    })
+    .await;
+    init_real_git_repo(&harness.owned_dir);
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let task = client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+    let worker = client
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+
+    let submit = client
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id, "workspaceMode": "isolated" }),
+        )
+        .await;
+    let message = submit["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("boom: adapter never came up"),
+        "the failure must come from FailingRunDriver::start, not an earlier \
+         materialize/activate failure, so this test actually exercises the \
+         post-activation cleanup path: {submit:?}"
+    );
+
+    let list = client
+        .call(5, "run/list", json!({ "taskId": task_id }))
+        .await;
+    let runs = list["result"]["runs"].as_array().unwrap();
+    assert_eq!(
+        runs.len(),
+        1,
+        "the queued run row must be preserved: {runs:?}"
+    );
+    assert_eq!(runs[0]["state"], "queued");
+    let run_id = runs[0]["runId"].as_str().unwrap().to_string();
+
+    let replay = client
+        .call(6, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    let kinds = workspace_event_kinds_for_run(&replay, &run_id);
+    assert_eq!(
+        kinds,
+        vec!["leaseRequested", "leaseAcquired", "leaseReleased"],
+        "materialize/activate succeeded before driver.start failed, so the \
+         cleanup must answer with the same leaseReleased every other \
+         abandonment past that point emits: {kinds:?}"
+    );
+
+    let lease_db = harness.socket.parent().unwrap().join("workspace-leases.db");
+    let conn = rusqlite::Connection::open(&lease_db).unwrap();
+    let (state, path, released_at): (String, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT state, path, released_at FROM workspace_leases WHERE run_id = ?1",
+            rusqlite::params![run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        state, "released",
+        "the lease must be released, not left active with no owner"
+    );
+    assert!(
+        released_at.is_some(),
+        "a genuinely released lease must record released_at"
+    );
+    let worktree_path = path.expect("an activated lease has a real path");
+    assert!(
+        !std::path::Path::new(&worktree_path).exists(),
+        "the worktree materialized before driver.start failed must be torn down: {worktree_path}"
     );
 }
 // ---------------------------------------------------------------- item 33: real adapter cancel

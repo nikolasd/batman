@@ -166,6 +166,21 @@ pub struct OrchestrationService {
     display: Arc<crate::display::DisplayRegistry>,
 }
 
+/// The outcome of [`OrchestrationService::abandon_lease`]: what
+/// [`OrchestrationService::abandon_and_announce`] must tell live monitors
+/// once cleanup finishes, chosen so it can never announce `LeaseReleased`
+/// for a row that never actually left `allocating`/`active`.
+enum AbandonOutcome {
+    /// The lease row is `released` and, if isolated, its workspace was
+    /// torn down cleanly.
+    Released,
+    /// The lease row is `released`, but its materialized workspace could
+    /// not be torn down and needs the doctor's attention.
+    ReleasedWithCleanupFailure { message: String },
+    /// `release()` itself failed: the row is still `allocating`/`active`.
+    ReleaseFailed { message: String },
+}
+
 impl OrchestrationService {
     #[allow(clippy::too_many_arguments)]
     #[must_use]
@@ -601,21 +616,84 @@ impl OrchestrationService {
                 )));
             }
         };
-        let workspace_path = if let Some(isolation) = isolation {
-            let lease = self
-                .lease_service
-                .acquire(run_id, LeaseMode::Write, Some(isolation))
-                .map_err(|e| ServiceError::internal(e.to_string()))?;
-            let materializer = self.materializer()?;
-            let real_path = materializer
-                .materialize(run_id, lease.isolation_kind)
-                .map_err(|e| ServiceError::internal(e.to_string()))?;
-            self.lease_service
-                .activate(lease.lease_id, real_path.to_string_lossy().to_string())
-                .map_err(|e| ServiceError::internal(e.to_string()))?;
-            Some(real_path)
-        } else {
-            None
+        let (lease, workspace_path) = match isolation {
+            Some(isolation) => {
+                // The lease row (not the event below) is the operative
+                // claim: every future acquire and conflict check queries
+                // `workspace_leases`, so it commits first, matching the
+                // commit-then-broadcast order used everywhere else. A crash
+                // between this write and the event below leaves an
+                // `allocating` row with no matching event -- exactly the
+                // gap `LeaseService::stale()`'s grace-period check exists to
+                // surface. Reversing the order would instead leave a
+                // journaled event for a lease row that was never created,
+                // with no doctor check able to find it.
+                let lease = self
+                    .lease_service
+                    .acquire(run_id, LeaseMode::Write, Some(isolation))
+                    .map_err(|e| ServiceError::internal(e.to_string()))?;
+                // No monitor can have observed this lease until this event
+                // commits, so a failure here releases silently: there is
+                // no `LeaseRequested` for a compensating `LeaseReleased` to
+                // answer.
+                if let Err(err) = self
+                    .emit_workspace_event(
+                        batman_protocol::WorkspaceEvent::LeaseRequested {
+                            lease_id: lease.lease_id.clone(),
+                            run_id,
+                            mode: LeaseMode::Write,
+                        },
+                        run_id,
+                        lease.lease_id.clone(),
+                    )
+                    .await
+                {
+                    self.abandon_lease(&lease, None);
+                    return Err(err);
+                }
+                let materializer = match self.materializer() {
+                    Ok(materializer) => materializer,
+                    Err(err) => {
+                        self.abandon_and_announce(&lease, run_id, None).await?;
+                        return Err(err);
+                    }
+                };
+                let real_path = match materializer.materialize(run_id, lease.isolation_kind) {
+                    Ok(real_path) => real_path,
+                    Err(err) => {
+                        self.abandon_and_announce(&lease, run_id, None).await?;
+                        return Err(ServiceError::internal(err.to_string()));
+                    }
+                };
+                if let Err(err) = self.lease_service.activate(
+                    lease.lease_id.clone(),
+                    real_path.to_string_lossy().to_string(),
+                ) {
+                    self.abandon_and_announce(&lease, run_id, Some(&real_path))
+                        .await?;
+                    return Err(ServiceError::internal(err.to_string()));
+                }
+                if let Err(err) = self
+                    .emit_workspace_event(
+                        batman_protocol::WorkspaceEvent::LeaseAcquired {
+                            lease_id: lease.lease_id.clone(),
+                            run_id,
+                            path: real_path.to_string_lossy().to_string(),
+                            isolation_kind: lease.isolation_kind,
+                            base_revision: lease.base_revision.clone(),
+                        },
+                        run_id,
+                        lease.lease_id.clone(),
+                    )
+                    .await
+                {
+                    self.abandon_and_announce(&lease, run_id, Some(&real_path))
+                        .await?;
+                    return Err(err);
+                }
+                (Some(lease), Some(real_path))
+            }
+            None => (None, None),
         };
 
         let project_id = self.project_id;
@@ -634,7 +712,19 @@ impl OrchestrationService {
         };
         // Orchestration-test-scope: awaited synchronously so the caller
         // observes the final committed state deterministically.
-        driver.start(ctx).await.map_err(ServiceError::internal)?;
+        if let Err(err) = driver.start(ctx).await.map_err(ServiceError::internal) {
+            // The run never started, so nothing else will ever release this
+            // lease or remove its worktree -- `run/retry` would simply
+            // allocate a second one on top. `LeaseRequested`/`LeaseAcquired`
+            // were already journaled above, so this must answer with the
+            // same `LeaseReleased`/`CleanupFailed` pair every other
+            // abandonment past that point emits.
+            if let Some(lease) = &lease {
+                self.abandon_and_announce(lease, run_id, workspace_path.as_deref())
+                    .await?;
+            }
+            return Err(err);
+        }
 
         Ok(workspace_path)
     }
@@ -935,6 +1025,164 @@ impl OrchestrationService {
         })
     }
 
+    /// Undoes a lease whose run never started. Releases the lease so the
+    /// next acquisition is not blocked by a row nothing will ever activate,
+    /// then removes whatever materialization managed to put on disk.
+    ///
+    /// Best-effort by construction: the caller is already returning the
+    /// original fault, so a failure here is logged rather than replacing
+    /// the error the caller is reporting. `materialized` is `None` when
+    /// materialization itself failed -- `teardown` no-ops on an empty
+    /// path, but `git worktree remove` fails outright on a worktree that
+    /// was never created, so a never-materialized lease must not attempt
+    /// one.
+    ///
+    /// The three [`AbandonOutcome`] variants distinguish releases that
+    /// genuinely reached `released` -- with or without a disk-cleanup
+    /// problem worth flagging -- from a `release()` call that itself
+    /// failed, whose row is still `allocating`/`active`. A caller must
+    /// never announce `LeaseReleased` for the latter.
+    fn abandon_lease(
+        &self,
+        lease: &crate::workspace::CreatedLease,
+        materialized: Option<&std::path::Path>,
+    ) -> AbandonOutcome {
+        let released = match self.lease_service.release(lease.lease_id.clone()) {
+            Ok(()) => true,
+            // Already `released` -- most likely a racing `workspace/release`
+            // call -- so the row's state already matches what
+            // `LeaseReleased` announces; nothing failed here.
+            Err(crate::workspace::LeaseError::AlreadyReleased { .. }) => true,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    lease_id = %lease.lease_id,
+                    run_id = %lease.run_id,
+                    "failed to release the lease of a run that never started"
+                );
+                false
+            }
+        };
+
+        let teardown_error = materialized.and_then(|path| {
+            match self
+                .materializer()
+                .map_err(|e| e.message.clone())
+                .and_then(|m| {
+                    m.teardown(path, lease.isolation_kind)
+                        .map_err(|e| e.to_string())
+                }) {
+                Ok(()) => None,
+                Err(message) => {
+                    tracing::warn!(
+                        error = %message,
+                        lease_id = %lease.lease_id,
+                        path = %path.display(),
+                        "failed to tear down the workspace of a run that never started"
+                    );
+                    Some(message)
+                }
+            }
+        });
+
+        match (released, teardown_error) {
+            (true, None) => AbandonOutcome::Released,
+            (true, Some(message)) => {
+                // The release is genuine -- `released_at` is set -- but the
+                // leaked directory still needs the doctor's attention, so
+                // `state` moves to `cleanupFailed` even though the lease
+                // itself is gone.
+                let _ = self
+                    .lease_service
+                    .mark_cleanup_failed(lease.lease_id.clone());
+                AbandonOutcome::ReleasedWithCleanupFailure { message }
+            }
+            (false, teardown_error) => {
+                let _ = self
+                    .lease_service
+                    .mark_cleanup_failed(lease.lease_id.clone());
+                let message = match teardown_error {
+                    Some(msg) => {
+                        format!("release failed and workspace teardown failed: {msg}")
+                    }
+                    None => "failed to release lease".to_string(),
+                };
+                AbandonOutcome::ReleaseFailed { message }
+            }
+        }
+    }
+
+    /// Runs [`Self::abandon_lease`] and announces the outcome to live
+    /// monitors. Both `start_queued_run` and `workspace_acquire` journal
+    /// `LeaseRequested` before any fallible step past `acquire` runs, so an
+    /// abandonment past that point must resolve every connected monitor's
+    /// view of the lease, exactly as `workspace_release` already
+    /// guarantees for a caller-initiated release:
+    /// - [`AbandonOutcome::Released`]: announce `LeaseReleased`.
+    /// - [`AbandonOutcome::ReleasedWithCleanupFailure`]: the lease really
+    ///   is released, so announce `CleanupFailed` (naming the leaked
+    ///   directory) *and* `LeaseReleased`.
+    /// - [`AbandonOutcome::ReleaseFailed`]: the row never left
+    ///   `allocating`/`active`, so announce only `CleanupFailed` -- a
+    ///   `LeaseReleased` here would be false.
+    ///
+    /// # Errors
+    /// Returns a [`ServiceError`] if journaling an event fails. That
+    /// failure -- not the fault that triggered the abandonment -- is what
+    /// the caller should report: a dead journal is the more serious fault,
+    /// and the lease row has already been updated either way.
+    async fn abandon_and_announce(
+        &self,
+        lease: &crate::workspace::CreatedLease,
+        run_id: RunId,
+        materialized: Option<&std::path::Path>,
+    ) -> Result<(), ServiceError> {
+        match self.abandon_lease(lease, materialized) {
+            AbandonOutcome::Released => {
+                self.emit_workspace_event(
+                    batman_protocol::WorkspaceEvent::LeaseReleased {
+                        lease_id: lease.lease_id.clone(),
+                        run_id,
+                    },
+                    run_id,
+                    lease.lease_id.clone(),
+                )
+                .await
+            }
+            AbandonOutcome::ReleasedWithCleanupFailure { message } => {
+                self.emit_workspace_event(
+                    batman_protocol::WorkspaceEvent::CleanupFailed {
+                        lease_id: lease.lease_id.clone(),
+                        error: message,
+                    },
+                    run_id,
+                    lease.lease_id.clone(),
+                )
+                .await?;
+                self.emit_workspace_event(
+                    batman_protocol::WorkspaceEvent::LeaseReleased {
+                        lease_id: lease.lease_id.clone(),
+                        run_id,
+                    },
+                    run_id,
+                    lease.lease_id.clone(),
+                )
+                .await
+            }
+            AbandonOutcome::ReleaseFailed { message } => {
+                self.emit_workspace_event(
+                    batman_protocol::WorkspaceEvent::CleanupFailed {
+                        lease_id: lease.lease_id.clone(),
+                        error: message,
+                    },
+                    run_id,
+                    lease.lease_id.clone(),
+                )
+                .await
+            }
+        }
+    }
+
     /// Journals a [`batman_protocol::WorkspaceEvent`] and broadcasts it to
     /// live subscribers, exactly as every domain mutation does. Workspace
     /// state itself lives in the lease database, so this is the only way a
@@ -975,42 +1223,71 @@ impl OrchestrationService {
             .lease_service
             .acquire(run_id, mode, isolation)
             .map_err(lease_error_to_service_error)?;
-        self.emit_workspace_event(
-            batman_protocol::WorkspaceEvent::LeaseRequested {
-                lease_id: lease.lease_id.clone(),
+        // No monitor can have observed this lease until this event
+        // commits, so a failure here releases silently: there is no
+        // `LeaseRequested` for a compensating `LeaseReleased` to answer.
+        if let Err(err) = self
+            .emit_workspace_event(
+                batman_protocol::WorkspaceEvent::LeaseRequested {
+                    lease_id: lease.lease_id.clone(),
+                    run_id,
+                    mode,
+                },
                 run_id,
-                mode,
-            },
-            run_id,
-            lease.lease_id.clone(),
-        )
-        .await?;
+                lease.lease_id.clone(),
+            )
+            .await
+        {
+            self.abandon_lease(&lease, None);
+            return Err(err);
+        }
 
-        // Phase 2: materialize the workspace
-        let materializer = self.materializer()?;
-        let real_path = materializer
-            .materialize(run_id, lease.isolation_kind)
-            .map_err(|e| ServiceError::internal(e.to_string()))?;
+        // Phase 2: materialize the workspace. Every step from here on can
+        // fail with the lease already committed as `allocating` (or, past
+        // `activate`, `active`); each arm releases it and tears down
+        // whatever materialization left on disk rather than leaking both.
+        let materializer = match self.materializer() {
+            Ok(materializer) => materializer,
+            Err(err) => {
+                self.abandon_and_announce(&lease, run_id, None).await?;
+                return Err(err);
+            }
+        };
+        let real_path = match materializer.materialize(run_id, lease.isolation_kind) {
+            Ok(real_path) => real_path,
+            Err(err) => {
+                self.abandon_and_announce(&lease, run_id, None).await?;
+                return Err(ServiceError::internal(err.to_string()));
+            }
+        };
 
         // Phase 3: activate the lease with the real path
-        self.lease_service
-            .activate(
-                lease.lease_id.clone(),
-                real_path.to_string_lossy().to_string(),
-            )
-            .map_err(|e| ServiceError::internal(e.to_string()))?;
-        self.emit_workspace_event(
-            batman_protocol::WorkspaceEvent::LeaseAcquired {
-                lease_id: lease.lease_id.clone(),
-                run_id,
-                path: real_path.to_string_lossy().to_string(),
-                isolation_kind: lease.isolation_kind,
-                base_revision: lease.base_revision.clone(),
-            },
-            run_id,
+        if let Err(err) = self.lease_service.activate(
             lease.lease_id.clone(),
-        )
-        .await?;
+            real_path.to_string_lossy().to_string(),
+        ) {
+            self.abandon_and_announce(&lease, run_id, Some(&real_path))
+                .await?;
+            return Err(ServiceError::internal(err.to_string()));
+        }
+        if let Err(err) = self
+            .emit_workspace_event(
+                batman_protocol::WorkspaceEvent::LeaseAcquired {
+                    lease_id: lease.lease_id.clone(),
+                    run_id,
+                    path: real_path.to_string_lossy().to_string(),
+                    isolation_kind: lease.isolation_kind,
+                    base_revision: lease.base_revision.clone(),
+                },
+                run_id,
+                lease.lease_id.clone(),
+            )
+            .await
+        {
+            self.abandon_and_announce(&lease, run_id, Some(&real_path))
+                .await?;
+            return Err(err);
+        }
 
         Ok(json!({
             "leaseId": lease.lease_id,
