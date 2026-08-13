@@ -2,8 +2,18 @@
 
 use batman_protocol::{IsolationKind, LeaseMode, ProjectId, RunId, WorkspaceInfo, WorkspaceState};
 use rusqlite::params;
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
+
+/// How long a lease may legitimately sit in `allocating` before it is
+/// treated as abandoned. Materialization is a `git worktree add` or a
+/// bounded tree copy, so a row still `allocating` long after this belongs
+/// to a call that died between [`LeaseService::acquire`] and
+/// [`LeaseService::activate`] (crash, `SIGKILL`) rather than one still
+/// working -- [`LeaseService::stale`] surfaces it to `batcave doctor` even
+/// though its `path` is still empty and therefore invisible to the
+/// missing-path check below it.
+pub const ALLOCATING_LEASE_GRACE: Duration = Duration::minutes(10);
 
 #[derive(Debug, thiserror::Error)]
 pub enum LeaseError {
@@ -91,13 +101,25 @@ impl LeaseService {
 
         // Conflict rules: only Shared isolation is exclusive within a project.
         // GitWorktree and Copy create independent workspaces that never conflict.
+        //
+        // A row that reached `cleanupFailed` because `release()` itself
+        // failed never had `released_at` set (`release()` only reaches its
+        // `UPDATE ... released_at` statement on success, and a row that was
+        // already `released` before failing gets there via the
+        // `AlreadyReleased` guard, which does set it) -- the underlying
+        // claim was never actually relinquished, so `released_at IS NULL`
+        // must still count as blocking here. A `cleanupFailed` row whose
+        // release succeeded (only its disk teardown failed) has
+        // `released_at` set and is correctly excluded.
         if isolation_kind == IsolationKind::Shared {
             // Write mode is exclusive within shared: blocks any other shared lease
             if mode == LeaseMode::Write {
                 let shared_active: i64 = conn
                     .query_row(
                         "SELECT COUNT(*) FROM workspace_leases
-                         WHERE isolation_kind = 'shared' AND state IN ('allocating', 'active')",
+                         WHERE isolation_kind = 'shared'
+                           AND (state IN ('allocating', 'active')
+                                OR (state = 'cleanupFailed' AND released_at IS NULL))",
                         params![],
                         |row| row.get(0),
                     )
@@ -113,7 +135,9 @@ impl LeaseService {
                 let shared_write: i64 = conn
                     .query_row(
                         "SELECT COUNT(*) FROM workspace_leases
-                         WHERE isolation_kind = 'shared' AND mode = 'write' AND state IN ('allocating', 'active')",
+                         WHERE isolation_kind = 'shared' AND mode = 'write'
+                           AND (state IN ('allocating', 'active')
+                                OR (state = 'cleanupFailed' AND released_at IS NULL))",
                         params![],
                         |row| row.get(0),
                     )
@@ -243,21 +267,35 @@ impl LeaseService {
 
     /// Returns `(lease_id, state)` for every lease that a healthy runtime
     /// should not have: `allocating`/`active` leases whose materialized
-    /// path no longer exists on disk, plus every `cleanupFailed` lease.
+    /// path no longer exists on disk, every `cleanupFailed` lease, and
+    /// every `allocating` lease that has sat past [`ALLOCATING_LEASE_GRACE`]
+    /// without being activated or released.
     ///
     /// `allocating` leases legitimately have an empty path until
-    /// [`Self::activate`] runs, so an empty path is never counted as
-    /// missing -- only a non-empty path pointing at nothing is.
+    /// [`Self::activate`] runs, so an empty path alone is never counted as
+    /// missing -- only a non-empty path pointing at nothing is. Without the
+    /// grace-period check, a row stuck in `allocating` by a caller that
+    /// crashed between [`Self::acquire`] and [`Self::activate`] would have
+    /// an empty path forever and never surface here.
     ///
     /// # Errors
-    /// Returns [`LeaseError::Db`] if the lease database cannot be read.
+    /// Returns [`LeaseError::Db`] if the lease database cannot be read or
+    /// the grace-period cutoff cannot be computed.
     pub fn stale(&self) -> Result<Vec<(String, String)>, LeaseError> {
         let conn =
             rusqlite::Connection::open(&self.db_path).map_err(|e| LeaseError::Db(e.to_string()))?;
 
+        let cutoff = OffsetDateTime::now_utc()
+            .checked_sub(ALLOCATING_LEASE_GRACE)
+            .ok_or_else(|| {
+                LeaseError::Db("allocating-lease grace exceeds representable time".to_string())
+            })?
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|e| LeaseError::Db(format!("time format: {}", e)))?;
+
         let mut stmt = conn
             .prepare(
-                "SELECT lease_id, state, path FROM workspace_leases
+                "SELECT lease_id, state, path, acquired_at FROM workspace_leases
                  WHERE state IN ('allocating', 'active', 'cleanupFailed')",
             )
             .map_err(|e| LeaseError::Db(e.to_string()))?;
@@ -268,6 +306,7 @@ impl LeaseService {
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             })
             .map_err(|e| LeaseError::Db(e.to_string()))?
@@ -276,11 +315,12 @@ impl LeaseService {
 
         Ok(rows
             .into_iter()
-            .filter(|(_, state, path)| {
+            .filter(|(_, state, path, acquired_at)| {
                 state == "cleanupFailed"
                     || (!path.is_empty() && !std::path::Path::new(path).exists())
+                    || (state == "allocating" && *acquired_at < cutoff)
             })
-            .map(|(lease_id, state, _)| (lease_id, state))
+            .map(|(lease_id, state, _, _)| (lease_id, state))
             .collect())
     }
 
@@ -391,13 +431,19 @@ impl LeaseService {
         Ok(())
     }
 
+    /// Counts leases that still hold a claim on the repository: `allocating`
+    /// or `active` rows, plus a `cleanupFailed` row whose `release()` call
+    /// itself never succeeded (`released_at IS NULL`) -- see the comment in
+    /// [`Self::acquire`] for why that case must still count as held.
     pub fn active_for_repository(&self) -> Result<u64, LeaseError> {
         let conn =
             rusqlite::Connection::open(&self.db_path).map_err(|e| LeaseError::Db(e.to_string()))?;
 
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM workspace_leases WHERE state IN ('allocating', 'active')",
+                "SELECT COUNT(*) FROM workspace_leases
+                 WHERE state IN ('allocating', 'active')
+                    OR (state = 'cleanupFailed' AND released_at IS NULL)",
                 [],
                 |row| row.get(0),
             )

@@ -258,6 +258,49 @@ async fn stale_workspaces_fails_when_an_active_lease_path_is_gone() {
 }
 
 #[tokio::test]
+async fn stale_workspaces_fails_when_an_allocating_lease_outlives_the_grace_period() {
+    use batman_protocol::{IsolationKind, LeaseMode, RunId};
+    use batman_runtime::workspace::{ALLOCATING_LEASE_GRACE, LeaseService};
+
+    let state = tempfile::tempdir().unwrap();
+    let db_path = state.path().join("workspace-leases.db");
+    let leases = LeaseService::open(ProjectId::new(), &db_path).expect("lease database opens");
+    let created = leases
+        .acquire(
+            RunId::new(),
+            LeaseMode::Write,
+            Some(IsolationKind::GitWorktree),
+        )
+        .expect("lease is allocated");
+
+    // Exactly the shape a crash between `acquire` and `materialize` leaves
+    // behind: the row never reached `activate`, so its path is still empty
+    // and the missing-path check above can never see it. Back-date
+    // `acquired_at` directly -- `LeaseService` has no API for it on purpose.
+    let old =
+        (time::OffsetDateTime::now_utc() - ALLOCATING_LEASE_GRACE - time::Duration::minutes(1))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap();
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute(
+        "UPDATE workspace_leases SET acquired_at = ?1 WHERE lease_id = ?2",
+        rusqlite::params![old, created.lease_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let (doctor, _db) = doctor_over(state.path(), default_policy()).await;
+    let result = doctor.check().await.expect("catalog runs");
+
+    assert!(
+        error_for(&result, "stale_workspaces").is_some_and(|e| e.contains(&created.lease_id)),
+        "an allocating lease abandoned before materialization has no path to check, \
+         so only the grace-period rule can surface it: {:?}",
+        result.failed_checks
+    );
+}
+
+#[tokio::test]
 async fn configuration_valid_fails_on_an_unparseable_retention_period() {
     let state = tempfile::tempdir().unwrap();
     let mut policy = default_policy();
