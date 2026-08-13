@@ -1213,7 +1213,9 @@ fn message_kind_str(kind: &batman_protocol::MessageKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use batman_protocol::{ProjectId, RunId, TaskId, WorkerId, WorkerProfileRef};
+    use batman_protocol::{
+        PolicyViolationId, ProjectId, RunId, TaskId, WorkerId, WorkerProfileRef,
+    };
     use rusqlite::Connection;
 
     /// Opens an in-memory database migrated by the *production* migration
@@ -1352,5 +1354,73 @@ mod tests {
             )
             .unwrap();
         assert_eq!(state, "queued", "projection must be unchanged");
+    }
+
+    /// A cost-ceiling violation passes `None` for both vendor refs; the
+    /// repository must persist them as SQL NULL, not empty strings.
+    #[test]
+    fn record_policy_violation_persists_absent_vendor_refs_as_null() {
+        let mut conn = open_test_db();
+        let project_id = ProjectId::new();
+        let (task_id, worker_id) = seed_worker(&mut conn, project_id);
+
+        let run_id = RunId::new();
+        let run = Run {
+            run_id,
+            task_id,
+            worker_id,
+            state: RunState::try_from("queued").unwrap(),
+            flags: RunFlags::default(),
+            vendor_session_id: None,
+            started_at: None,
+            completed_at: None,
+        };
+        let mut repo = DomainRepository::new(&mut conn, project_id);
+        repo.submit_run(&run, None).expect("submit_run commits");
+
+        let violation_id = PolicyViolationId::new();
+        let committed = repo.record_policy_violation(
+            violation_id,
+            run_id,
+            task_id,
+            worker_id,
+            "cost_ceiling_exceeded",
+            7,
+            "sha256:fp",
+            None,
+            None,
+            "quarantine",
+        );
+        assert!(
+            committed.is_ok(),
+            "a cost-ceiling violation has no vendor child and must still persist: {:?}",
+            committed.err()
+        );
+
+        // The vendor refs are real SQL NULLs, not empty strings.
+        let (vc, vp): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT vendor_child_id, vendor_parent_ref
+                 FROM policy_violations WHERE violation_id = ?1",
+                [violation_id.to_string()],
+                |r| Ok((r.get(0).unwrap(), r.get(1).unwrap())),
+            )
+            .expect("violation row exists");
+        assert!(vc.is_none(), "vendor_child_id must be NULL, not empty");
+        assert!(vp.is_none(), "vendor_parent_ref must be NULL, not empty");
+
+        // The event journal has the policyViolationRecorded event, proving
+        // the append+projection pair committed together.
+        let event_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE event_json LIKE '%policyViolationRecorded%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            event_count, 1,
+            "exactly one policyViolationRecorded event must be journaled"
+        );
     }
 }

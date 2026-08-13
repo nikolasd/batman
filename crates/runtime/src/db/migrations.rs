@@ -175,6 +175,37 @@ const MIGRATION_7: &str = "
 ALTER TABLE approvals ADD COLUMN decided_by TEXT;
 ";
 
+/// Migration 8: `policy_violations.vendor_child_id`/`vendor_parent_ref` were
+/// declared `NOT NULL` by migration 4, when the only violation kind was a
+/// nested worker. A cost-ceiling violation has no vendor child at all and
+/// journals both as `None` (see
+/// `DomainRepository::record_policy_violation`), so every
+/// `cost_ceiling_exceeded` insert failed the constraint and no ceiling could
+/// ever be enforced. SQLite cannot drop a column constraint in place, so the
+/// table is rebuilt with both columns nullable; every other column, and every
+/// existing row, is preserved unchanged.
+const MIGRATION_8: &str = "
+CREATE TABLE policy_violations_new (
+  violation_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES runs(run_id),
+  task_id TEXT NOT NULL,
+  worker_id TEXT NOT NULL,
+  vendor_child_id TEXT,
+  vendor_parent_ref TEXT,
+  action TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  resolution TEXT,
+  resolved_by TEXT
+);
+INSERT INTO policy_violations_new
+  SELECT violation_id, run_id, task_id, worker_id, vendor_child_id, vendor_parent_ref,
+         action, created_at, resolved_at, resolution, resolved_by
+  FROM policy_violations;
+DROP TABLE policy_violations;
+ALTER TABLE policy_violations_new RENAME TO policy_violations;
+";
+
 /// Opens `path` as a private (mode `0600`) SQLite database, configures its
 /// PRAGMAs (`journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`,
 /// `synchronous=FULL`), and migrates it to the latest schema. Migrations
@@ -198,15 +229,10 @@ pub(super) fn open_and_migrate(path: &Path) -> Result<Connection, DbError> {
     Ok(conn)
 }
 
-/// Applies every migration to an already-open connection, atomically.
-/// The one place the migration list lives: tests open an in-memory
-/// connection and call this rather than hand-copying a schema, so a
-/// projection table can never drift from what production runs against.
-///
-/// # Errors
-/// Returns [`DbError`] if migration fails.
-pub fn migrate(conn: &mut Connection) -> Result<(), DbError> {
-    let migrations = Migrations::new(vec![
+/// The one migration list, shared by `migrate` and the migration tests so a
+/// test can never assert against a hand-copied schema.
+fn migration_list() -> Migrations<'static> {
+    Migrations::new(vec![
         M::up(MIGRATION_1),
         M::up(MIGRATION_2),
         M::up(MIGRATION_3),
@@ -214,7 +240,215 @@ pub fn migrate(conn: &mut Connection) -> Result<(), DbError> {
         M::up(MIGRATION_5),
         M::up(MIGRATION_6),
         M::up(MIGRATION_7),
-    ]);
-    migrations.to_latest(conn)?;
+        M::up(MIGRATION_8),
+    ])
+}
+
+/// Applies every migration to an already-open connection, atomically.
+/// Tests open an in-memory connection and call this rather than
+/// hand-copying a schema, so a projection table can never drift from what
+/// production runs against.
+///
+/// # Errors
+/// Returns [`DbError`] if migration fails.
+pub fn migrate(conn: &mut Connection) -> Result<(), DbError> {
+    migration_list().to_latest(conn)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    use super::*;
+
+    /// Exercises migration 8's table rebuild: proves the old schema rejects
+    /// NULL vendor refs, the rebuild preserves existing rows, and the new
+    /// schema accepts them.
+    #[test]
+    fn migration_8_makes_vendor_refs_nullable_and_preserves_existing_rows() {
+        // FK on — this test exercises both column constraints and referential
+        // integrity, so we seed parent tables in FK order before inserting
+        // violations. This matches production behavior where FKs are enforced.
+        let mut conn = Connection::open_in_memory().expect("in-memory db");
+        conn.pragma_update(None, "foreign_keys", true)
+            .expect("foreign_keys on");
+
+        // Migrate to version 7 (before the rebuild).
+        migration_list()
+            .to_version(&mut conn, 7)
+            .expect("migrate to v7");
+
+        // Seed parent tables in FK order: worker_profiles → tasks/workers → runs
+        // Note: project_id is just TEXT (no projects table), worker_profiles has no created_at
+        conn.execute(
+            "INSERT INTO worker_profiles (id, fingerprint, adapter, model, permission_envelope)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["wp-1", "sha256:fake", "fake", "test", "{}"],
+        )
+        .expect("seed worker_profiles");
+        conn.execute(
+            "INSERT INTO tasks (task_id, project_id, owner_client_instance_id, revision, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params!["t-1", "p-1", "omp-1", 1i32, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"],
+        )
+        .expect("seed tasks");
+        conn.execute(
+            "INSERT INTO workers (worker_id, project_id, profile_id, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["w-1", "p-1", "wp-1", "2026-01-01T00:00:00Z"],
+        )
+        .expect("seed workers");
+        conn.execute(
+            "INSERT INTO runs (run_id, task_id, worker_id, state, flags_degraded_control, flags_needs_reconciliation,
+               flags_protocol_unhealthy, flags_policy_quarantined, flags_workspace_dirty, flags_children_active,
+               vendor_session_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                "r-1", "t-1", "w-1", "queued", 0i32, 0i32, 0i32, 0i32, 0i32, 0i32,
+                Option::<String>::None, "2026-01-01T00:00:00Z"
+            ],
+        )
+        .expect("seed runs");
+
+        // A nested-worker-shaped row (both vendor refs non-null) succeeds.
+        conn.execute(
+            "INSERT INTO policy_violations (violation_id, run_id, task_id, worker_id,
+               vendor_child_id, vendor_parent_ref, action, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                "v-nested",
+                "r-1",
+                "t-1",
+                "w-1",
+                "child-1",
+                "parent-1",
+                "quarantine",
+                "2026-01-01T00:00:00Z"
+            ],
+        )
+        .expect("nested-worker row succeeds at v7");
+
+        // A cost-ceiling-shaped row (NULL vendor refs) must fail.
+        let err = conn.execute(
+            "INSERT INTO policy_violations (violation_id, run_id, task_id, worker_id,
+               vendor_child_id, vendor_parent_ref, action, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                "v-cost",
+                "r-1",
+                "t-1",
+                "w-1",
+                Option::<String>::None,
+                Option::<String>::None,
+                "quarantine",
+                "2026-01-01T00:00:00Z"
+            ],
+        );
+        assert!(err.is_err(), "NULL vendor refs must fail at v7");
+        assert!(
+            err.unwrap_err().to_string().contains("NOT NULL"),
+            "the failure must be the NOT NULL constraint"
+        );
+
+        // Apply migration 8 (the table rebuild).
+        migration_list()
+            .to_version(&mut conn, 8)
+            .expect("migrate to v8");
+
+        // The pre-existing row survived with its values intact.
+        let (vc, vp, act, created): (String, String, String, String) = conn
+            .query_row(
+                "SELECT vendor_child_id, vendor_parent_ref, action, created_at
+                 FROM policy_violations WHERE violation_id = ?1",
+                ["v-nested"],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("v-nested row survived the rebuild");
+        assert_eq!(vc, "child-1");
+        assert_eq!(vp, "parent-1");
+        assert_eq!(act, "quarantine");
+        assert_eq!(created, "2026-01-01T00:00:00Z");
+
+        // A cost-ceiling-shaped row (NULL vendor refs) now succeeds.
+        conn.execute(
+            "INSERT INTO policy_violations (violation_id, run_id, task_id, worker_id,
+               vendor_child_id, vendor_parent_ref, action, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                "v-cost",
+                "r-1",
+                "t-1",
+                "w-1",
+                Option::<String>::None,
+                Option::<String>::None,
+                "quarantine",
+                "2026-01-01T00:00:00Z"
+            ],
+        )
+        .expect("cost-ceiling row must succeed at v8");
+
+        // The NULLs are real SQL NULLs, not empty strings.
+        let (vc, vp): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT vendor_child_id, vendor_parent_ref
+                 FROM policy_violations WHERE violation_id = ?1",
+                ["v-cost"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("v-cost row exists");
+        assert!(vc.is_none(), "vendor_child_id must be NULL");
+        assert!(vp.is_none(), "vendor_parent_ref must be NULL");
+
+        // The action constraint is still enforced (the rebuild did not drop it).
+        let err = conn.execute(
+            "INSERT INTO policy_violations (violation_id, run_id, task_id, worker_id,
+               vendor_child_id, vendor_parent_ref, action, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                "v-bad",
+                "r-1",
+                "t-1",
+                "w-1",
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
+                "2026-01-01T00:00:00Z"
+            ],
+        );
+        assert!(err.is_err(), "NULL action must still fail");
+
+        // The resolution columns survived the rebuild.
+        conn.execute(
+            "UPDATE policy_violations SET resolution = 'release', resolved_by = 'omp-1',
+               resolved_at = '2026-01-02T00:00:00Z' WHERE violation_id = 'v-cost'",
+            [],
+        )
+        .expect("resolution columns must work after rebuild");
+
+        let (res, resolved_by, resolved_at): (Option<String>, Option<String>, Option<String>) =
+            conn.query_row(
+                "SELECT resolution, resolved_by, resolved_at
+                 FROM policy_violations WHERE violation_id = ?1",
+                ["v-cost"],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("v-cost resolution row");
+        assert_eq!(res.as_deref(), Some("release"));
+        assert_eq!(resolved_by.as_deref(), Some("omp-1"));
+        assert_eq!(resolved_at.as_deref(), Some("2026-01-02T00:00:00Z"));
+
+        // Verify referential integrity is intact after the rebuild.
+        let fk_violations: Vec<String> = conn
+            .prepare("PRAGMA foreign_key_check")
+            .expect("prepare")
+            .query_map([], |r| r.get(0))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert!(
+            fk_violations.is_empty(),
+            "foreign_key_check must report no violations after migration 8: {fk_violations:?}"
+        );
+    }
 }
