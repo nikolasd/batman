@@ -5,8 +5,15 @@
 //! every other test either exercises pure command-argv/normalization logic
 //! against static fixtures, or calls an adapter method before any vendor
 //! process has been started.
+//!
+//! The handful of tests that do shell out to the real installed `claude`
+//! binary (`probe()`/`resume()`/`conformance::fixture_report()`) skip
+//! gracefully -- printing a message and returning early -- when `claude`
+//! isn't resolvable on `PATH`, e.g. on CI runners that don't have it
+//! installed. See `real_claude_binary()` below.
 
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -54,6 +61,19 @@ fn mcp_config() -> AdapterMcpConfig {
 /// existence/absence without a way to read the adapter's private state.
 fn expected_mcp_config_path(run_id: RunId) -> PathBuf {
     std::env::temp_dir().join(format!("batman-mcp-{run_id}.json"))
+}
+
+fn real_claude_binary() -> Option<PathBuf> {
+    let output = Command::new("which").arg("claude").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path))
+    }
 }
 
 fn fixture(name: &str) -> Vec<Vec<u8>> {
@@ -697,6 +717,10 @@ fn capabilities_round_trip_and_declare_only_what_is_proven() {
 
 #[tokio::test]
 async fn probe_reports_the_real_installed_version_and_auth_readiness_with_no_model_call() {
+    if real_claude_binary().is_none() {
+        eprintln!("skipping: `claude` is not on PATH");
+        return;
+    }
     let adapter = new_adapter();
     let result = adapter
         .probe()
@@ -832,6 +856,10 @@ impl batman_runtime::adapter::AdapterEventSink for CollectingSink {
 /// reading anything from stdin, so this makes no model call.
 #[tokio::test]
 async fn resume_from_a_fresh_instance_uses_constructor_bound_ids_and_reaches_the_real_spawn_path() {
+    if real_claude_binary().is_none() {
+        eprintln!("skipping: `claude` is not on PATH");
+        return;
+    }
     let run_id = RunId::new();
     let task_id = TaskId::new();
     let worker_id = WorkerId::new();
@@ -881,6 +909,10 @@ async fn resume_from_a_fresh_instance_uses_constructor_bound_ids_and_reaches_the
 /// there first.
 #[tokio::test]
 async fn resume_with_worker_mcp_configured_activates_a_token_and_cleans_up_on_exit() {
+    if real_claude_binary().is_none() {
+        eprintln!("skipping: `claude` is not on PATH");
+        return;
+    }
     let mcp = mcp_config();
     let scope_tokens = mcp.scope_tokens.clone();
     let run_id = RunId::new();
@@ -941,6 +973,10 @@ async fn resume_with_worker_mcp_configured_activates_a_token_and_cleans_up_on_ex
 
 #[tokio::test]
 async fn conformance_fixture_report_covers_every_canonical_scenario_and_all_pass() {
+    if real_claude_binary().is_none() {
+        eprintln!("skipping: `claude` is not on PATH");
+        return;
+    }
     use batman_runtime::conformance::scenario;
 
     let report = batman_runtime::adapter::claude::conformance::fixture_report().await;

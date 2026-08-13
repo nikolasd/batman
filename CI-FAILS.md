@@ -20,7 +20,7 @@ they are fixed and verified one at a time, not batched.
 | CI-3 | `bundle-check` | Fixed | Committed `dist/index.js` wasn't rebuilt after `fast-uri` dependency bump |
 | CI-4 | `test (macos-latest)` | Fixed | `duplicate_start_is_rejected` test is host-dependent; broke when slot-release-on-failure was fixed |
 | CI-5 | `test (ubuntu-latest)` | Fixed | Cancelled as a side effect of CI-4 (matrix `fail-fast: true`); not independent |
-| CI-6 | `test (macos-latest)` | Open | `claude_adapter.rs` real-CLI tests unconditionally require an installed `claude` binary, absent on CI runners; previously masked by CI-4 failing first alphabetically |
+| CI-6 | `test (macos-latest)` | Fixed | `claude_adapter.rs` real-CLI tests unconditionally require an installed `claude` binary, absent on CI runners; previously masked by CI-4 failing first alphabetically |
 | CI-7 | `security` (gitleaks) | Open | CI-2's own allowlist is scoped to the original fixture files only; `CI-FAILS.md` quotes the same literal fixture secret in prose and isn't covered, so gitleaks (correctly) flags this doc |
 
 ---
@@ -333,16 +333,47 @@ installs no vendor CLIs. This is the same host-dependence shape as CI-4 (a test 
 vendor binary that CI's runners don't have) but in a different adapter's test file, and pre-dates
 this investigation — it did not regress from the CI-4 fix.
 
-**Proposed fix (not yet applied — tracked here, per this doc's own one-at-a-time policy):** these
-four tests need either (a) a real, honest skip when `claude` isn't resolvable on `PATH` (mirroring
-how `crates/runtime/tests/vendor_cli_availability.rs`'s
-`an_uninstalled_vendor_cli_is_denied_at_authorization_and_the_kill_switch_stays_permissive` already
-treats CLI-absence as an expected, assertable condition rather than a panic), or (b) CI installing a
-pinned `claude` CLI version for this job specifically, if the intent is for these to be genuine
-install-verification tests rather than adapter-logic tests. Needs a decision on which before
-implementing — this doc doesn't have that answer.
+**Decision:** confirmed with the repo owner to fix via (a) — skip gracefully when `claude` isn't on
+`PATH` — not (b) installing a pinned `claude` CLI in CI. Installing the CLI only mechanically solves
+the plain probe/version half of this; `auth_ready` and both `resume()` tests need a real
+authenticated session and a genuine model round-trip to pass, which would mean provisioning live
+Claude credentials as CI secrets and making billed calls on every push — directly contradicting the
+`BATMAN_DISABLE_VENDOR_CLI` invariant ("CI must never make a billed vendor call") this repo already
+enforces elsewhere.
 
-**Status:** Open
+**Fix applied:** replicated the pattern `crates/runtime/tests/copilot_adapter.rs` already uses for
+`copilot` (`real_copilot_binary()` + an early-return guard at each real-CLI call site). Added a local
+`real_claude_binary() -> Option<PathBuf>` helper to `claude_adapter.rs` (shells out to `which claude`,
+returns `None` on any failure or empty output) and inserted
+```rust
+if real_claude_binary().is_none() {
+    eprintln!("skipping: `claude` is not on PATH");
+    return;
+}
+```
+as the first statement of all four real-CLI tests (`probe_reports_the_real_installed_version_and_
+auth_readiness_with_no_model_call`, `resume_from_a_fresh_instance_uses_constructor_bound_ids_and_
+reaches_the_real_spawn_path`, `resume_with_worker_mcp_configured_activates_a_token_and_cleans_up_on_
+exit`, `conformance_fixture_report_covers_every_canonical_scenario_and_all_pass`). Also updated the
+file's module doc comment, which previously read as an unqualified guarantee, to note that these four
+tests skip when `claude` isn't resolvable. Test-only change — zero changes to
+`crates/runtime/src/adapter/claude/` or `.github/workflows/ci.yml`.
+
+**Status:** Fixed — verified locally in both directions, mirroring CI-4's dual-verification
+approach: `cargo test --test claude_adapter` with the real `claude` on `PATH` passes 27/27 (9.20s),
+the four real-CLI tests running for real exactly as before (confirms the guard doesn't accidentally
+skip when the binary *is* available); re-run with `claude`'s directory stripped from `PATH` also
+passes 27/27 but in 0.01s, and running just those four tests with `--nocapture` shows all four
+print `skipping: \`claude\` is not on PATH` and pass instantly instead of panicking — reproducing the
+CI condition on this machine. `cargo clippy --all-targets --all-features -- -D warnings` and
+`cargo fmt --all --check` are clean for this file (the only fmt diff present in the tree belongs to
+an unrelated, concurrently in-progress change to `orchestration.rs`/`lease.rs`, confirmed by
+temporarily isolating it). A `BATMAN_DISABLE_VENDOR_CLI=1 cargo test --workspace` full sweep, taken
+before that concurrent edit reached a transient non-compiling state, reproduced only the one
+pre-existing, unrelated `copilot_adapter.rs` failure CI-4's own status note already documents (an
+installed Copilot CLI version not yet in that test's hardcoded known-versions list) — no other
+regressions. Final confirmation is the `test (macos-latest)` job going green on push — same caveat
+pattern as CI-1 through CI-5.
 
 ---
 
