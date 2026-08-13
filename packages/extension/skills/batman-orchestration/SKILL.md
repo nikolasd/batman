@@ -1,10 +1,13 @@
 ---
 name: batman-orchestration
 description: >-
-  Use when the user wants to run code with an AI worker, hand work off to an agent,
-  run tasks in parallel, check on a run, retry or cancel a task.
-  Fires on "run this with Claude", "hand this off", "run these in parallel",
-  "retry it".
+  Use when the user wants to run code with an external AI worker on its own adapter/model
+  (Claude, Codex, Copilot, or an OMP-RPC worker) — this is the mechanism for a specific
+  vendor or model, not the in-process `task` subagent tool. Also covers hand work off to
+  an agent, run tasks in parallel, check on a run, retry or cancel a task.
+  Fires on "run this with Claude", "spawn a Claude", "spawn a Codex", "spawn a Copilot",
+  "spawn a worker", "run with Sonnet/Opus/Haiku/GPT", "use model X", "delegate this to Claude/Codex/Copilot",
+  "hand this off", "run these in parallel", "retry it", "check on that run".
 ---
 
 ## How BATMAN tools work
