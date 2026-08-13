@@ -117,7 +117,14 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
+      # gitleaks (below) diffs only the tip commit (`--log-opts=-1`) against its
+      # parent. A shallow (depth-1) checkout has no accessible parent, so gitleaks
+      # falls back to treating the entire repo tree as newly added on every push.
+      # `fetch-depth: 0` gives it full history so it actually diff-scopes to what
+      # the push touched. See CI-FAILS.md (CI-2).
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -136,5 +143,3 @@ jobs:
 
       - name: Scan for secrets
         uses: gitleaks/gitleaks-action@v2
-        with:
-          args: --verbose

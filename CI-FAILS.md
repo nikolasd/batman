@@ -13,7 +13,7 @@ each other — they are fixed and verified one at a time, not batched.
 | ID | Job | Status | One-line cause |
 |----|-----|--------|-----------------|
 | CI-1 | `clippy` | Fixed | `useless_conversion` lint: `u64::from()` widening is a no-op on Linux (where clippy runs) but required on macOS; suppressed with `#[allow]` instead of removed |
-| CI-2 | `security` (gitleaks) | Open | 3 false-positive secret matches on test fixtures; no allowlist configured |
+| CI-2 | `security` (gitleaks) | Fixed | Shallow clone made gitleaks re-scan the whole repo as "new" on every push; no allowlist configured either |
 | CI-3 | `bundle-check` | Open | Committed `dist/index.js` wasn't rebuilt after `fast-uri` dependency bump |
 | CI-4 | `test (macos-latest)` | Open | `duplicate_start_is_rejected` test is host-dependent; broke when slot-release-on-failure was fixed |
 | CI-5 | `test (ubuntu-latest)` | Open | Cancelled as a side effect of CI-4 (matrix `fail-fast: true`); not independent |
@@ -96,26 +96,60 @@ itself, not leaked credentials):**
 | `generic-api-key` | `crates/runtime/tests/adapter_contract.rs` | 503 | `fixture_profile_rejects_secret_shaped_permission_envelope` — fake `sk-...` key used to prove secret-shaped fields are rejected |
 | `generic-api-key` | `crates/runtime/tests/redaction.rs` | 8 | `redactor_removes_api_keys` — fake `sk-...` key used to prove the redactor strips it |
 
-**Root cause:** there is no `.gitleaks.toml` anywhere in the repo, so gitleaks has no allowlist and
-flags every string that matches its built-in rules, including deliberately secret-shaped test
-fixtures for the redaction feature. This job has no history of passing — the gitleaks step has been
-in `.github/workflows/ci.yml` since the workflow was first added (`f20abd3`), with no accompanying
-allowlist ever added.
+**Root cause:** there is no `.gitleaks.toml` anywhere in the repo (true, but incomplete — see below),
+*and* the missing allowlist isn't even the reason this job has never once passed.
 
-Separately (non-blocking, but dead configuration worth cleaning up in the same pass): the step
-passes `with: args: --verbose`, which `gitleaks/gitleaks-action@v2` does not accept as an input —
-the action logs `Unexpected input(s) 'args', valid inputs is ['']` and silently ignores it.
+Reading `gitleaks/gitleaks-action`'s actual source (`src/gitleaks.js`), not just its docs: for a
+same-ref push it runs
 
-**Proposed fix:**
-1. Add `.gitleaks.toml` at the repo root with a targeted allowlist (by file path + rule ID, or by
-   regex matching the specific fixture strings) covering the three locations above. Prefer scoping
-   to exact paths/lines over a blanket rule-ID disable, so a real secret using the same shape
-   elsewhere still gets caught.
-2. Remove the unsupported `args: --verbose` input from the `gitleaks/gitleaks-action@v2` step in
-   `.github/workflows/ci.yml` (verbosity, if wanted, is controlled via the action's supported
-   `GITLEAKS_CONFIG`/env inputs, not `args`).
+```
+gitleaks detect --redact -v --exit-code=2 --report-format=sarif --report-path=results.sarif \
+  --log-level=debug --log-opts=-1
+```
 
-**Status:** Open
+`--log-opts=-1` scans only the tip commit's diff (`git log -1 -p`). `.github/workflows/ci.yml`'s
+`security` job checked out with plain `actions/checkout@v4` — no `fetch-depth` override, so it was a
+**shallow clone at depth 1**. In a depth-1 clone the tip commit has no accessible parent, so `git log
+-1 -p` can't diff against a real parent — git treats the entire tree as if every line were newly
+added *in that one commit*. That made gitleaks re-scan the whole repository as "brand new" on
+**every single push**, regardless of what the push actually touched — which is exactly why this job
+has no history of ever passing, and why 3 old, unrelated, long-since-committed test fixtures showed
+up as "leaks" on a push (`e65a5a5`) that only touched `REVIEW.md`.
+
+`gitleaks-action`'s own README recommends `fetch-depth: 0` in the checkout step preceding it, for
+exactly this reason. Fixing only the allowlist would make a given push go green but leave the job
+re-scanning the entire repo as "new" forever, breaking again the moment any latent secret-shaped
+string exists anywhere in the codebase; fixing only `fetch-depth` would make routine pushes
+correctly diff-scoped but leaves no defense if these exact fixture lines are ever touched again by
+an unrelated change, with no allowlist to match against. Both were needed.
+
+Separately (non-blocking, but dead configuration cleaned up in the same pass): the step passed
+`with: args: --verbose`. Confirmed via `gh api repos/gitleaks/gitleaks-action/contents/action.yml`
+that the action declares **zero inputs** (it's a Node action, `runs: main: dist/index.js`) — `args`
+was never read, and the action already hardcodes `-v` itself.
+
+One more thing verified locally (`gitleaks` 8.30.1 installed on this machine): the current default
+`aws-access-token` rule's regex charset is base32 (`[A-Z2-7]`), which the `rules.rs:162` fixture
+(`AKIA1234567890ABCDEF`, containing `0/1/8/9`) no longer matches at all — that specific finding may
+already be moot under whatever "latest" gitleaks the action resolves at CI run time (the workflow
+pins no `GITLEAKS_VERSION`). Allowlisted anyway as cheap, harmless insurance against the ruleset
+reverting or the pinned version differing.
+
+**Fix applied:**
+1. `.github/workflows/ci.yml`: gave the `security` job's checkout `fetch-depth: 0` (only that job's
+   checkout — the other 5 jobs don't run gitleaks and have no reason to pay for a deeper clone).
+2. Added `.gitleaks.toml` at the repo root: extends (not replaces) the default ruleset, with a
+   path + exact-literal (`condition = "AND"`) allowlist entry per finding, covering the three
+   locations above. Validated locally with `gitleaks detect --no-git --config .gitleaks.toml -v`
+   that the findings disappear, and that a planted decoy with the identical secret text in a
+   *different* file still gets flagged — the scoping doesn't over-match.
+3. Removed the dead `args: --verbose` input from the `gitleaks/gitleaks-action@v2` step.
+
+**Status:** Fixed — verified locally with `gitleaks detect --no-git --source . --config
+.gitleaks.toml -v` ("no leaks found") and the over-match sanity check above. Final confirmation
+(shallow-clone diff semantics and the action's resolved "latest" gitleaks version can only be
+proven on GitHub's runner) is the `security` job going green on the push — same caveat pattern as
+CI-1.
 
 ---
 

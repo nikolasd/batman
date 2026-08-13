@@ -1,0 +1,30 @@
+title = "batman gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "aws-access-token"
+
+    # test_org_rule_applies_correctly: fake AWS-shaped key used to prove the
+    # org-defined redaction rule matches and redacts it. See CI-FAILS.md (CI-2).
+    [[rules.allowlists]]
+    condition = "AND"
+    paths = ['''crates/runtime/src/security/rules\.rs''']
+    regexes = ['''AKIA1234567890ABCDEF''']
+
+[[rules]]
+id = "generic-api-key"
+
+    # fixture_profile_rejects_secret_shaped_permission_envelope: fake sk-...
+    # key proving secret-shaped permissionEnvelope fields are rejected.
+    [[rules.allowlists]]
+    condition = "AND"
+    paths = ['''crates/runtime/tests/adapter_contract\.rs''']
+    regexes = ['''sk-abcdefghijklmnopqrst0123456789''']
+
+    # redactor_removes_api_keys: fake sk-... key proving the redactor strips it.
+    [[rules.allowlists]]
+    condition = "AND"
+    paths = ['''crates/runtime/tests/redaction\.rs''']
+    regexes = ['''sk-1234567890abcdef''']
