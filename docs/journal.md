@@ -1904,10 +1904,50 @@ answer in every case is "as a byproduct of a fix directly above it in this entry
 2026-08-12 pass also ran a full fresh re-verification of every item that *was* still open, adding
 twenty new findings (R47-R66) surfaced by reading the runtime core, the adapters, the conformance
 harness, the TS extension, and the release/docs surface with fresh eyes — the most severe of them
-(R47-R49) initially sitting at Critical, though R47 was resolved the same day it was found, leaving
-(R48-R49) as the remaining Critical pair, with R67 retaining the integration-coverage residue — a
-reminder that a review closing its filed findings is not the same claim as a system having no more
-bugs.
+the most severe of them (R47-R49) initially sitting at Critical, though R47 was resolved the same
+day it was found, and R48 itself resolved the next day (Part XI), leaving R49 alone at Critical.
+R67 retains the integration-coverage residue — a reminder that a review closing its filed findings
+is not the same claim as a system having no more bugs.
+
+## Part XI — Halving the Critical pair: a ceiling that could not be enforced
+
+Part X closed with R48 and R49 as the remaining Critical pair. R48 is now closed, and its shape is
+worth recording because nothing about it was visible from the code that appeared to implement the
+feature. Every piece of per-run cost enforcement existed and was wired: `config/merge.rs` read
+`cost.ceiling_per_run_usd`, `policy/evaluate.rs` refused to authorize a run whose adapter could not
+report usage (so the ceiling could never be silently unmeasurable), `AdapterRegistry` threaded the
+ceiling into each run's `DomainAdapterEventSink`, and the sink accumulated `UsageReported.cost_usd`
+and fired exactly once on the crossing event. The one thing that could not happen was the write.
+
+`MIGRATION_4` had declared `policy_violations.vendor_child_id` and `vendor_parent_ref` `NOT NULL`,
+back when a nested worker was the only kind of violation. A cost ceiling has no vendor child, and
+`record_cost_ceiling` correctly journals both as `None` — which bound as SQL `NULL` and failed the
+constraint on every single crossing. Because the insert is the first thing `record_cost_ceiling` does
+and its error propagates with `?`, `apply_action` — the code that quarantines or cancels the run —
+never ran at all, and the sole caller in `event_sink.rs` only logged a warning. A run could spend
+without limit while the runtime reported nothing but one warn line.
+
+Fixed by `MIGRATION_8`, a table rebuild (SQLite cannot drop a column constraint in place) that makes
+both vendor columns nullable and preserves every existing row: an absent vendor child is now recorded
+as an absence, matching what the code and the event payload already said. The sentinel-empty-string
+alternative was rejected for the reason `record_policy_violation`'s own doc comment gives — an empty
+id would be a lie rather than an absence.
+
+The gap was as much a testing gap as a schema one: before this fix, nothing anywhere in the tree
+touched the `policy_violations` table other than the migration that created it. Three tests now
+defend it. `migration_8_makes_vendor_refs_nullable_and_preserves_existing_rows` (`db/migrations.rs`)
+migrates to version 7, proves the old schema rejects the NULL insert, migrates to 8, and proves the
+pre-existing row survived, that the `action`/`created_at` constraints did not get dropped along the
+way, and that the resolution columns still work. `record_policy_violation_persists_absent_vendor_refs_as_null`
+(`domain/repository.rs`) proves the repository writes real SQL NULLs against the production migration
+list with foreign keys on. And `crossing_the_per_run_cost_ceiling_records_an_actionable_violation`
+(`tests/orchestration_rpc.rs`) drives a full run whose adapter reports $2.50 against a $1.00 ceiling
+and asserts the run comes back quarantined, the journaled event carries `cost_ceiling_exceeded` with
+null vendor refs, and `policy/violation/decide` can release it — that last step being the one that
+proves the projection row exists, since `decide` reads it rather than the journal.
+
+R49 remains open: the built-in `api_key` redaction pattern still does not match Anthropic's own
+`sk-ant-api03-…` key shape.
 
 ## Reading order, if you're new here
 

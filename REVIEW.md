@@ -11,11 +11,12 @@ TypeScript/workspace, and build/docs/release, split across four parallel reviewe
 findings were corrected in place (R17, R20, R43, R46) where the mechanism had changed since last
 verified.
 
-**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R47) plus the
+**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R47, R48) plus the
 eleven documentation findings that were resolved or already-stale (R19, R21-R28) has been pruned from
 this document. That history — what broke, the fix commit, the test that proved it, and which
 still-open items below exist *because* of that fix — now lives in
-[`docs/journal.md` Part X](journal.md#part-x--reviewmds-second-pass-seven-more-fixes-eleven-doc-corrections-and-the-residue-that-outlived-them).
+[`docs/journal.md` Part X](journal.md#part-x--reviewmds-second-pass-seven-more-fixes-eleven-doc-corrections-and-the-residue-that-outlived-them)
+(R1-R11, R47) and [Part XI](journal.md#part-xi--halving-the-critical-pair-a-ceiling-that-could-not-be-enforced) (R48).
 This document only tracks what's still broken.
 
 **Baseline, last run 2026-08-12** (during an unrelated state-root rename; results apply to this
@@ -38,15 +39,7 @@ operate the system correctly.
 
 ### Critical
 
-#### R48. Cost-ceiling policy violations can never be recorded — a schema/code `NOT NULL` mismatch makes cost enforcement a silent no-op
-
-**Location:** `crates/runtime/src/db/migrations.rs:140-141`; `crates/runtime/src/policy/violation.rs:304-315` (`record_cost_ceiling`); `crates/runtime/src/domain/repository.rs:866-876`
-
-**Evidence:** the `policy_violations` table declares `vendor_child_id TEXT NOT NULL, vendor_parent_ref TEXT NOT NULL`, with no later migration relaxing either column. `record_cost_ceiling` calls `repo.record_policy_violation(..., None, None, &action_str)` — both required columns bound as SQL `NULL`. The `INSERT` fails with `NOT NULL constraint failed: policy_violations.vendor_child_id` every time; the error is only `tracing::warn!`'d by the sole caller in `event_sink.rs`, and `apply_action` — the code that actually quarantines or cancels the run — never executes, since it runs after the now-failed insert.
-
-**Fix:** either make the two columns nullable (they're genuinely absent for a cost-ceiling violation, unlike a nested-child violation) or have `record_cost_ceiling` supply sentinel values consistent with the schema. Add a test that a cost-ceiling breach actually produces a persisted, actionable violation.
-
-**Priority:** Critical — cost ceilings are a documented policy dimension (`RuntimePolicy`'s evaluator explicitly checks it) that currently cannot be enforced at all, with only a warn-level log as evidence anything went wrong.
+#### R49. Built-in `api_key` redaction pattern does not match Anthropic's own real API key format
 
 #### R49. Built-in `api_key` redaction pattern does not match Anthropic's own real API key format
 
@@ -403,7 +396,7 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
-- **Critical:** 2 (R48, R49) — both newly discovered this pass
+- **Critical:** 1 (R49) — R48 resolved 2026-08-13 (see docs/journal.md Part XI)
 - **High:** 8 (R41, R33, R44 — carried forward from earlier rounds; R50, R51, R52, R53, R54 — new)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
 - **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
