@@ -155,8 +155,15 @@ impl Redactor {
             rules: vec![
                 RedactionRule {
                     id: "api_key",
-                    // API-key-shaped tokens, e.g. `sk-...` style secrets.
-                    pattern: Regex::new(r"sk-[A-Za-z0-9]{16,}")
+                    // `sk-`-prefixed vendor API keys. The character class
+                    // must include `-` and `_`: Anthropic's real shape is
+                    // `sk-ant-api03-<base64url>` and OpenAI's is
+                    // `sk-proj-<base64url>`, both of which carry hyphens and
+                    // underscores inside the token itself. The leading `\b`
+                    // keeps ordinary hyphenated prose (`disk-space-check-failed`)
+                    // out of the match, which an unanchored `sk-[A-Za-z0-9_-]{16,}`
+                    // would otherwise swallow.
+                    pattern: Regex::new(r"\bsk-[A-Za-z0-9_-]{16,}")
                         .expect("built-in api_key pattern is a valid, bounded regex"),
                 },
                 RedactionRule {
@@ -440,6 +447,57 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_shaped_api_key_is_redacted() {
+        let redactor = Redactor::new();
+        let persisted = redactor.sanitize(event(vec![visible(
+            "key is sk-ant-api03-FAKEKEY-for-tests_0123456789-abcdefghij here",
+        )]));
+
+        match serde_json::from_str::<RuntimeEvent>(persisted.event_json()) {
+            Ok(RuntimeEvent::Diagnostic { message, .. }) => {
+                assert!(message.contains("[REDACTED:api_key]"));
+                assert!(!message.contains("sk-ant-api03-FAKEKEY-for-tests_0123456789-abcdefghij"));
+            }
+            other => panic!("expected Diagnostic, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn openai_project_shaped_api_key_is_redacted() {
+        let redactor = Redactor::new();
+        let persisted = redactor.sanitize(event(vec![visible(
+            "key is sk-proj-FAKEKEY-for-tests_0123456789-abcdefghij here",
+        )]));
+
+        match serde_json::from_str::<RuntimeEvent>(persisted.event_json()) {
+            Ok(RuntimeEvent::Diagnostic { message, .. }) => {
+                assert!(message.contains("[REDACTED:api_key]"));
+                assert!(!message.contains("sk-proj-FAKEKEY-for-tests_0123456789-abcdefghij"));
+            }
+            other => panic!("expected Diagnostic, got {:?}", other),
+        }
+    }
+
+    /// The widened `api_key` character class accepts `-`, so without the
+    /// pattern's leading `\b` an ordinary hyphenated diagnostic like
+    /// `disk-space-check-failed` contains a perfectly legal nineteen-character
+    /// match (`sk-space-check-failed`). Over-redacting diagnostics is a quieter
+    /// failure than leaking a key, but it is still a failure.
+    #[test]
+    fn hyphenated_prose_is_not_mistaken_for_an_api_key() {
+        let redactor = Redactor::new();
+        let prose = "disk-space-check-failed while the disk-space-monitor-thread stalled";
+        let persisted = redactor.sanitize(event(vec![visible(prose)]));
+
+        match serde_json::from_str::<RuntimeEvent>(persisted.event_json()) {
+            Ok(RuntimeEvent::Diagnostic { message, .. }) => {
+                assert_eq!(message, prose);
+            }
+            other => panic!("expected Diagnostic, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn sanitize_json_redacts_secret_shaped_values_at_any_depth() {
         let redactor = Redactor::new();
         let value = serde_json::json!({
@@ -453,6 +511,25 @@ mod tests {
         let text = sanitized.as_str();
         assert!(text.contains("[REDACTED:api_key]"));
         assert!(!text.contains("sk-ABCDEFGHIJKLMNOPQRSTUVWX"));
+    }
+
+    /// The same widened rule must hold on the `SanitizedJson` path, which is
+    /// how operation intent/acknowledgement payloads reach the durable
+    /// `operations` table -- not just on the event path.
+    #[test]
+    fn sanitize_json_redacts_an_anthropic_shaped_key_at_any_depth() {
+        let redactor = Redactor::new();
+        let value = serde_json::json!({
+            "action": "spawn_worker",
+            "nested": {
+                "key": "sk-ant-api03-FAKEKEY-for-tests_0123456789-abcdefghij"
+            }
+        });
+
+        let sanitized = redactor.sanitize_json(&value);
+        let text = sanitized.as_str();
+        assert!(text.contains("[REDACTED:api_key]"));
+        assert!(!text.contains("sk-ant-api03-FAKEKEY-for-tests_0123456789-abcdefghij"));
     }
 
     #[test]

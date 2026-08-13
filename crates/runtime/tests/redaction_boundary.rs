@@ -1,11 +1,13 @@
 //! Security-critical redaction boundary test.
 //!
 //! Pushes a raw fixture containing visible text, a secret-classified token,
-//! a thinking block, and an API-key-shaped string (embedded in otherwise
-//! visible text) through the append path, then scans the raw bytes of the
-//! database file, the WAL file (whichever exist -- checkpointed or not),
-//! the runtime log, and the replay output. Visible text must survive; every
-//! raw secret and thinking byte sequence must be entirely absent.
+//! a thinking block, a generic API-key-shaped string, and an
+//! Anthropic-shaped (`sk-ant-api03-...`) key -- the last two embedded in
+//! otherwise visible text -- through the append path, then scans the raw
+//! bytes of the database file, the WAL file (whichever exist --
+//! checkpointed or not), the runtime log, and the replay output. Visible
+//! text must survive; every raw secret and thinking byte sequence must be
+//! entirely absent.
 //!
 //! The runtime log is made genuinely load-bearing here: a real
 //! `tracing_subscriber` is installed, writing to the exact
@@ -35,6 +37,9 @@ const SECRET_TOKEN: &str = "SECRET_TOKEN_ABC123XYZ";
 const THINKING_TEXT: &str = "chain-of-thought: consider bypassing the approval gate quietly";
 const API_KEY: &str = "sk-ABCDEFGHIJKLMNOPQRSTUVWX";
 const INTENT_API_KEY: &str = "sk-INTENTKEYABCDEFGHIJKLMNOP";
+/// A real vendor key shape: hyphens and base64url underscores inside the
+/// token, which the pre-R49 `sk-[A-Za-z0-9]{16,}` pattern could not match.
+const ANTHROPIC_API_KEY: &str = "sk-ant-api03-BOUNDARYFAKE-for-tests_0123456789-abcdef";
 
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() || haystack.len() < needle.len() {
@@ -132,6 +137,10 @@ async fn redaction_boundary_holds_across_database_wal_log_and_replay() {
                     class: ContentClass::Visible,
                     value: format!("found a leaked key {API_KEY} in the config dump"),
                 },
+                Classified {
+                    class: ContentClass::Visible,
+                    value: format!("vendor echoed {ANTHROPIC_API_KEY} in an error"),
+                },
             ],
         },
     };
@@ -144,6 +153,7 @@ async fn redaction_boundary_holds_across_database_wal_log_and_replay() {
     assert!(!sanitized_json.contains(SECRET_TOKEN));
     assert!(!sanitized_json.contains(THINKING_TEXT));
     assert!(!sanitized_json.contains(API_KEY));
+    assert!(!sanitized_json.contains(ANTHROPIC_API_KEY));
     assert!(sanitized_json.contains(VISIBLE_PLAIN));
 
     handle.append_event(sanitized).await.unwrap();
@@ -240,6 +250,10 @@ async fn redaction_boundary_holds_across_database_wal_log_and_replay() {
         assert!(
             !contains_bytes(haystack, INTENT_API_KEY.as_bytes()),
             "{label} leaked the raw operation-intent API key"
+        );
+        assert!(
+            !contains_bytes(haystack, ANTHROPIC_API_KEY.as_bytes()),
+            "{label} leaked the raw Anthropic-shaped API key"
         );
     }
 
