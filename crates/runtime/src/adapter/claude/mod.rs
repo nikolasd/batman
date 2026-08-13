@@ -384,7 +384,7 @@ async fn run_session(
     scope_tokens: Option<Arc<ScopeTokenStore>>,
 ) {
     let (run_id, task_id, worker_id) = ids;
-    loop {
+    let outcome = loop {
         tokio::select! {
             frame = process.next_stdout_frame() => {
                 match frame {
@@ -417,7 +417,7 @@ async fn run_session(
                         // A single malformed line never kills the whole
                         // session's stream -- it is simply skipped.
                     }
-                    None => break,
+                    None => break process.settle().await,
                 }
             }
             cmd = commands.recv() => {
@@ -426,15 +426,15 @@ async fn run_session(
                         let _ = process.write_stdin(&bytes).await;
                     }
                     Some(SessionCommand::Terminate(reply)) => {
-                        process.terminate().await;
+                        let outcome = process.terminate().await;
                         let _ = reply.send(());
-                        break;
+                        break outcome;
                     }
-                    None => break,
+                    None => break process.settle().await,
                 }
             }
         }
-    }
+    };
 
     // Vendor-exit hook: the loop above only ever breaks once the
     // supervised process has exited (stdout closed, cancelled, or the
@@ -454,6 +454,19 @@ async fn run_session(
     if let Some(path) = path_to_delete {
         let _ = std::fs::remove_file(path);
     }
+
+    // Emit the process exit event so the registry's completion watcher
+    // can dispose the adapter and release the concurrency slot. This is
+    // the only normal-path trigger for `authorization.release()`.
+    let (exit_code, signal) = outcome.exit_signals();
+    let _ = sink
+        .emit(AdapterEvent {
+            run_id,
+            task_id,
+            worker_id,
+            payload: AdapterEventPayload::ProcessExited { exit_code, signal },
+        })
+        .await;
 }
 
 impl Adapter for ClaudeAdapter {
@@ -691,5 +704,147 @@ impl Adapter for ClaudeAdapter {
             }
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod session_exit_tests {
+    use std::sync::Mutex;
+
+    use batman_protocol::{RunId, TaskId, WorkerId};
+    use batman_runtime::adapter::{
+        AdapterEvent, AdapterEventPayload, AdapterEventSink, AdapterFuture,
+    };
+    use batman_runtime::supervisor::{EscalationTimings, SpawnSpec, Supervisor};
+    use tokio::sync::mpsc;
+
+    use super::*;
+
+    /// A sink that records payloads for test assertions.
+    struct RecordingSink(Mutex<Vec<AdapterEventPayload>>);
+
+    impl RecordingSink {
+        fn new() -> Arc<RecordingSink> {
+            Arc::new(Self(Mutex::new(Vec::new())))
+        }
+
+        fn payloads(&self) -> Vec<AdapterEventPayload> {
+            self.0.lock().expect("mutex is never poisoned").clone()
+        }
+    }
+
+    impl AdapterEventSink for RecordingSink {
+        fn emit(&self, event: AdapterEvent) -> AdapterFuture<'_, u64> {
+            let mut payloads = self.0.lock().expect("mutex is never poisoned");
+            payloads.push(event.payload);
+            Box::pin(async { Ok(0) })
+        }
+    }
+
+    fn fast_escalation() -> EscalationTimings {
+        EscalationTimings {
+            sigint_to_sigterm: std::time::Duration::from_millis(50),
+            sigterm_to_sigkill: std::time::Duration::from_millis(50),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_vendor_process_exit_emits_process_exited_with_its_code() {
+        let supervisor = Supervisor::with_escalation(fast_escalation());
+        let spec = SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "printf \"not-json\\n\"; exit 7".into()],
+            cwd: PathBuf::from("/tmp"),
+            env: std::collections::HashMap::new(),
+            max_stdout_frame_bytes: 8192,
+            max_stderr_capture_bytes: 4096,
+        };
+        let process = supervisor.spawn(spec).await.expect("spawn /bin/sh");
+        let (commands_tx, commands_rx) = mpsc::channel(4);
+        // Keep `commands_tx` bound so the channel-closed arm is not the
+        // one taken — we want the stdout-closed path.
+        let _commands_tx = commands_tx;
+
+        let sink = RecordingSink::new();
+        run_session(
+            process,
+            commands_rx,
+            ClaudeNormalizer::new(),
+            sink.clone(),
+            (RunId::new(), TaskId::new(), WorkerId::new()),
+            Arc::new(StdMutex::new(SharedSessionInfo::default())),
+            "claude".to_string(),
+            None,
+        )
+        .await;
+
+        let payloads = sink.payloads();
+        let exited: Vec<_> = payloads
+            .iter()
+            .filter(|p| matches!(p, AdapterEventPayload::ProcessExited { .. }))
+            .collect();
+        assert_eq!(
+            exited.len(),
+            1,
+            "expected exactly one ProcessExited, got {exited:?}"
+        );
+        assert!(
+            matches!(
+                &exited[0],
+                AdapterEventPayload::ProcessExited {
+                    exit_code: Some(7),
+                    signal: None
+                }
+            ),
+            "expected ProcessExited {{ exit_code: Some(7), signal: None }}, got {:?}",
+            exited[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_terminate_command_still_emits_process_exited() {
+        let supervisor = Supervisor::with_escalation(fast_escalation());
+        let spec = SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            cwd: PathBuf::from("/tmp"),
+            env: std::collections::HashMap::new(),
+            max_stdout_frame_bytes: 8192,
+            max_stderr_capture_bytes: 4096,
+        };
+        let process = supervisor.spawn(spec).await.expect("spawn /bin/sh");
+        let (commands_tx, commands_rx) = mpsc::channel(4);
+
+        let sink = RecordingSink::new();
+        let handle = tokio::spawn(run_session(
+            process,
+            commands_rx,
+            ClaudeNormalizer::new(),
+            sink.clone(),
+            (RunId::new(), TaskId::new(), WorkerId::new()),
+            Arc::new(StdMutex::new(SharedSessionInfo::default())),
+            "claude".to_string(),
+            None,
+        ));
+
+        // Send the terminate command
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        commands_tx
+            .send(SessionCommand::Terminate(reply_tx))
+            .await
+            .expect("send terminate");
+        reply_rx.await.expect("terminate reply");
+        handle.await.expect("run_session completed");
+
+        let payloads = sink.payloads();
+        let exited: Vec<_> = payloads
+            .iter()
+            .filter(|p| matches!(p, AdapterEventPayload::ProcessExited { .. }))
+            .collect();
+        assert_eq!(
+            exited.len(),
+            1,
+            "expected exactly one ProcessExited, got {exited:?}"
+        );
     }
 }

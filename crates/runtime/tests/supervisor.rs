@@ -9,6 +9,7 @@
 //! child processes -- no mocks below the supervisor boundary.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use batman_runtime::supervisor::{
@@ -349,4 +350,54 @@ async fn any_logged_environment_snapshot_redacts_every_value() {
     assert_eq!(redacted.len(), env.len());
     let rendered = format!("{redacted:?}");
     assert!(!rendered.contains("sk-should-not-leak"));
+}
+
+// ------------------------------------------------------------- settle
+
+#[tokio::test]
+async fn settle_reports_a_self_exit_code_without_escalating() {
+    let supervisor = Supervisor::with_escalation(fast_escalation());
+    let spec = SpawnSpec {
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), "exit 7".into()],
+        cwd: PathBuf::from("/tmp"),
+        env: HashMap::new(),
+        max_stdout_frame_bytes: 8192,
+        max_stderr_capture_bytes: 4096,
+    };
+    let mut process = supervisor.spawn(spec).await.expect("spawn /bin/sh");
+
+    // Drain stdout until the process closes it
+    while process.next_stdout_frame().await.is_some() {}
+
+    let outcome = process.settle().await;
+    // A process that exited with code 7 on its own should be reported
+    // as Exited with that code, not escalated to Killed.
+    assert!(
+        matches!(&outcome, TerminationOutcome::Exited { code: Some(7) }),
+        "expected Exited {{ code: Some(7) }}, got {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn settle_escalates_a_process_that_will_not_exit_on_its_own() {
+    let supervisor = Supervisor::with_escalation(fast_escalation());
+    let spec = SpawnSpec {
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), "exec 1>/dev/null; sleep 30".into()],
+        cwd: PathBuf::from("/tmp"),
+        env: HashMap::new(),
+        max_stdout_frame_bytes: 8192,
+        max_stderr_capture_bytes: 4096,
+    };
+    let mut process = supervisor.spawn(spec).await.expect("spawn /bin/sh");
+    // `exec 1>/dev/null` already closed stdout, so `next_stdout_frame`
+    // returned `None` and the process is still alive — settle must escalate.
+
+    // settle() has a 1 s grace window plus the fast_escalation windows
+    // (100 ms each), so it must return well under 3 seconds.
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3), process.settle()).await;
+    assert!(result.is_ok(),);
+    // The outcome variant depends on whether sh dies from SIGINT or
+    // SIGTERM, so don't assert the variant — just confirm it returned.
 }

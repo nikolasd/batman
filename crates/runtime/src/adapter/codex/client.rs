@@ -17,8 +17,9 @@ use tokio::task::JoinHandle;
 
 use crate::supervisor::{ManagedProcess, TerminationOutcome};
 
-/// An unsolicited message from the Codex app-server: a notification, or a
-/// server -> client request (e.g. an approval) that expects a response.
+/// A message from the Codex app-server transport: an unsolicited
+/// notification, a server -> client request (e.g. an approval), or the
+/// driver loop's own lifecycle report when the supervised process exits.
 #[derive(Debug, Clone)]
 pub enum InboundMessage {
     Notification {
@@ -29,6 +30,13 @@ pub enum InboundMessage {
         id: Value,
         method: String,
         params: Value,
+    },
+    /// The supervised `codex app-server` process has exited and the driver
+    /// loop is finished. Not a vendor frame: this is the transport's own
+    /// lifecycle report, emitted exactly once, always last.
+    ProcessExited {
+        exit_code: Option<i32>,
+        signal: Option<String>,
     },
 }
 
@@ -101,33 +109,35 @@ impl CodexRpcClient {
         inbound_tx: mpsc::UnboundedSender<InboundMessage>,
         pending: PendingMap,
     ) {
-        loop {
+        let outcome = loop {
             tokio::select! {
                 frame = process.next_stdout_frame() => {
                     match frame {
                         Some(bytes) => Self::dispatch_frame(&bytes, &inbound_tx, &pending),
-                        None => break,
+                        None => break process.settle().await,
                     }
                 }
                 outbound = outbound_rx.recv() => {
                     match outbound {
                         Some(DriverCommand::Write(bytes)) => {
                             if process.write_stdin(&bytes).await.is_err() {
-                                break;
+                                break process.settle().await;
                             }
                         }
                         Some(DriverCommand::Terminate(reply)) => {
                             let outcome = process.terminate().await;
                             let _ = reply.send(outcome);
-                            break;
+                            break outcome;
                         }
                         // Every `CodexRpcClient` (the only outbound_tx
                         // owner) was dropped; nothing more to write.
-                        None => break,
+                        None => break process.settle().await,
                     }
                 }
             }
-        }
+        };
+        let (exit_code, signal) = outcome.exit_signals();
+        let _ = inbound_tx.send(InboundMessage::ProcessExited { exit_code, signal });
         // The process (and its stdio) is dropped here, closing the pipes;
         // any request still awaiting a response never resolves, matching
         // `ClientError::ResponseDropped`'s Sender-dropped semantics.

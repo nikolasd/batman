@@ -777,7 +777,15 @@ async fn run_pump(
                         let _ = client.send_command("abort", abort_command()).await;
                     }
                     Some(Outbound::Terminate) | None => {
-                        client.process_mut().terminate().await;
+                        let (exit_code, signal) = client.process_mut().terminate().await.exit_signals();
+                        let _ = sink
+                            .emit(AdapterEvent {
+                                run_id,
+                                task_id,
+                                worker_id,
+                                payload: AdapterEventPayload::ProcessExited { exit_code, signal },
+                            })
+                            .await;
                         return;
                     }
                 }
@@ -806,14 +814,13 @@ async fn run_pump(
                         }
                     }
                     None => {
-                        let status = client.process_mut().wait().await;
-                        let exit_code = status.ok().and_then(|s| s.code());
+                        let (exit_code, signal) = client.process_mut().settle().await.exit_signals();
                         let _ = sink
                             .emit(AdapterEvent {
                                 run_id,
                                 task_id,
                                 worker_id,
-                                payload: AdapterEventPayload::ProcessExited { exit_code, signal: None },
+                                payload: AdapterEventPayload::ProcessExited { exit_code, signal },
                             })
                             .await;
                         return;

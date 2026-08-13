@@ -11,7 +11,7 @@ TypeScript/workspace, and build/docs/release, split across four parallel reviewe
 findings were corrected in place (R17, R20, R43, R46) where the mechanism had changed since last
 verified.
 
-**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11) plus the
+**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R47) plus the
 eleven documentation findings that were resolved or already-stale (R19, R21-R28) has been pruned from
 this document. That history — what broke, the fix commit, the test that proved it, and which
 still-open items below exist *because* of that fix — now lives in
@@ -37,18 +37,6 @@ operate the system correctly.
 ## Findings
 
 ### Critical
-
-#### R47. Claude and Codex adapters never emit `ProcessExited` — concurrency slots leak on every completed run
-
-**Location:** `crates/runtime/src/adapter/registry.rs:259-268` (slot-release trigger); `crates/runtime/src/adapter/claude/mod.rs`; `crates/runtime/src/adapter/codex/mod.rs`
-
-**Evidence:** the only normal-path trigger for `authorization.release()` after a run starts is the completion watcher matching `AdapterEventPayload::ProcessExited` against the run's event stream. Only `copilot/client.rs`+`copilot/mod.rs` and `omp_rpc/mod.rs` ever construct that payload — confirmed by grepping `crates/runtime/src/adapter/` for `ProcessExited`: zero hits in `claude/mod.rs` or `codex/mod.rs`. Every other `release()` call site in `registry.rs` is a pre-start error path, not a completion path.
-
-Run any Claude or Codex task to completion — success, failure, or cancellation — and the concurrency slot booked at authorize-time is never returned. After `concurrency_ceiling` cumulative completed runs of either adapter kind, every subsequent `run/submit` for that adapter is permanently denied until daemon restart. This is the exact defect R2 fixed for the mechanism as a whole, now open again for two of the four adapters specifically. No test in `crates/runtime/tests/*.rs` exercises this — `ProcessExited`/`AdapterProcessExited` appears in zero test files.
-
-**Fix:** emit `AdapterEventPayload::ProcessExited` from Claude's and Codex's adapter drivers on process exit, matching the Copilot/OMP-RPC pattern, and add an integration test proving the concurrency slot for a completed Claude/Codex run is released.
-
-**Priority:** Critical — silently disables the runtime's core function for its two most-used adapters under ordinary sustained use, exactly the failure mode R2 was filed to close.
 
 #### R48. Cost-ceiling policy violations can never be recorded — a schema/code `NOT NULL` mismatch makes cost enforcement a silent no-op
 
@@ -390,6 +378,16 @@ Stale timestamps are pruned, but the `HashMap` key itself (the sender) is never 
 
 `rx.await.map_err(|_| DbError::ActorUnavailable)?` short-circuits via `?` when the actor's reply channel is dropped without a value (the actor panicked mid-command), skipping the `worker.join()` step below it — unlike the adjacent `sent.is_err()` branch, which still falls through to the join. Leaks the `JoinHandle` and loses the chance to observe the panic; only reachable after a prior actor crash.
 
+#### R67. No end-to-end integration test proves a Claude or Codex run releases its concurrency slot
+
+**Location:** `crates/runtime/tests/claude_adapter.rs`, `crates/runtime/tests/codex_adapter.rs`, `crates/runtime/tests/adapter_registry.rs`
+
+**Evidence:** R47's fix added component-level tests proving `ProcessExited` emission from the adapter drivers and a mocked `SettlementSink` release, but no integration test drives a full Claude or Codex run through the real adapter registry's completion watcher and asserts the concurrency slot is returned. `adapter_registry.rs`'s existing slot test (`releasing_a_policy_evaluator_slot_frees_the_registry_ceiling`) calls `authorization.release()` directly, bypassing the event stream entirely.
+
+**Fix:** extend the existing `settlement_tests` in `adapter/registry.rs` to assert that a synthetic `ProcessExited` event flows through `SettlementSink` → `watch_settlement` → `PolicyEvaluator::release()` and actually frees the concurrency ceiling, closing the gap between component emission tests and the real registry path.
+
+**Priority:** Low — the implementation fix for R47 is complete and defended by component tests; this is a coverage gap in the integration layer, not a functional defect.
+
 ## Known Environment Limitations
 
 **Not a bug — requires a gated live run to confirm the positive case. Reconfirmed 2026-08-12; code-side citations still match current source.**
@@ -405,8 +403,8 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
-- **Critical:** 3 (R47, R48, R49) — all newly discovered this pass
+- **Critical:** 2 (R48, R49) — both newly discovered this pass
 - **High:** 8 (R41, R33, R44 — carried forward from earlier rounds; R50, R51, R52, R53, R54 — new)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
-- **Low:** 18 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R66 — new)
+- **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged

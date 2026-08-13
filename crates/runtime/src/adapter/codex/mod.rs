@@ -28,11 +28,11 @@ use crate::adapter::mcp_config::{
     AdapterMcpConfig, McpLaunchContext, codex_mcp_overrides, coordination_mcp_env,
 };
 use crate::adapter::{
-    Adapter, AdapterCapabilities, AdapterError, AdapterEvent, AdapterEventSink, AdapterFuture,
-    AdapterMessage, AdapterSnapshot, ApprovalsCapability, CancelScope, CodexStartupOptions,
-    DurabilityCapability, NativeViewCapability, NestedCapability, ProbeResult, ProtocolKind,
-    ResumeCapability, StartSpec, SteeringCapability, UsageCapability, VendorSessionRef,
-    WorkspaceControlCapability,
+    Adapter, AdapterCapabilities, AdapterError, AdapterEvent, AdapterEventPayload,
+    AdapterEventSink, AdapterFuture, AdapterMessage, AdapterSnapshot, ApprovalsCapability,
+    CancelScope, CodexStartupOptions, DurabilityCapability, NativeViewCapability, NestedCapability,
+    ProbeResult, ProtocolKind, ResumeCapability, StartSpec, SteeringCapability, UsageCapability,
+    VendorSessionRef, WorkspaceControlCapability,
 };
 use crate::coordination::ScopeTokenStore;
 use crate::supervisor::{EnvironmentPolicy, SpawnSpec, Supervisor};
@@ -200,12 +200,12 @@ impl CodexAdapter {
     /// Drains `inbound_rx` for the life of the run: normalizes server
     /// notifications into `sink` events and files server-request
     /// approvals into `pending_approvals` (never emitted through `sink`
-    /// -- see `normalize::PendingApproval`'s own doc comment). Once
-    /// `inbound_rx` closes (the vendor process exited, for any reason --
-    /// normal completion, cancellation, or crash), revokes
-    /// `scope_tokens`'s binding for `run_id` if a coordination MCP token
-    /// was bound for this run -- this is this adapter's one vendor-exit
-    /// hook.
+    /// -- see `normalize::PendingApproval`'s own doc comment). The driver
+    /// loop sends a final [`InboundMessage::ProcessExited`] before closing
+    /// the channel, which this pump emits through `sink` so the registry's
+    /// completion watcher can dispose the adapter and release the slot.
+    /// After that, revokes `scope_tokens`'s binding for `run_id` if a
+    /// coordination MCP token was bound for this run.
     fn spawn_pump(
         mut inbound_rx: mpsc::UnboundedReceiver<InboundMessage>,
         run_id: batman_protocol::RunId,
@@ -239,6 +239,17 @@ impl CodexAdapter {
                                 .expect("pending approvals mutex never poisoned")
                                 .insert(approval.call_id.clone(), approval);
                         }
+                    }
+                    InboundMessage::ProcessExited { exit_code, signal } => {
+                        let _ = sink
+                            .emit(AdapterEvent {
+                                run_id,
+                                task_id,
+                                worker_id,
+                                payload: AdapterEventPayload::ProcessExited { exit_code, signal },
+                            })
+                            .await;
+                        break;
                     }
                 }
             }
@@ -611,7 +622,12 @@ impl Adapter for CodexAdapter {
                         .terminate()
                         .await
                         .map_err(|e| client_error(e, "cancel"))?;
-                    run.pump.abort();
+                    // The pump must not be aborted here: it is what reports
+                    // the process exit through `InboundMessage::ProcessExited`.
+                    // Dropping `run_guard` (set to `None` below) detaches the
+                    // `JoinHandle` without cancelling the task, so the pump
+                    // finishes on its own and the watcher's `dispose()` can
+                    // proceed after the async mutex yields.
                     let run_id = run.run_id;
                     *run_guard = None;
                     if let Some(mcp) = &self.mcp {
@@ -650,15 +666,117 @@ impl Adapter for CodexAdapter {
 
     fn dispose(&self) -> AdapterFuture<'_, ()> {
         Box::pin(async move {
-            let mut run_guard = self.run.lock().await;
-            if let Some(run) = run_guard.take() {
-                let _ = run.client.terminate().await;
-                run.pump.abort();
-                if let Some(mcp) = &self.mcp {
-                    mcp.scope_tokens.revoke_for_run(run.run_id);
-                }
+            let run = {
+                let mut run_guard = self.run.lock().await;
+                run_guard.take()
+            };
+            // Lock is dropped here. A concurrent `dispose()` would see `None`
+            // and return immediately, so no double-dispose.
+            let Some(run) = run else {
+                return Ok(());
+            };
+            let _ = run.client.terminate().await;
+            // Await the pump (not abort): it is what reports the process exit
+            // through `InboundMessage::ProcessExited`. By this point the lock
+            // is already dropped, so the watcher's `dispose()` can proceed.
+            let _ = run.pump.await;
+            if let Some(mcp) = &self.mcp {
+                mcp.scope_tokens.revoke_for_run(run.run_id);
             }
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod pump_exit_tests {
+    use std::sync::Mutex;
+
+    use batman_protocol::{RunId, TaskId, WorkerId};
+    use batman_runtime::adapter::{
+        AdapterEvent, AdapterEventPayload, AdapterEventSink, AdapterFuture,
+    };
+    use batman_runtime::supervisor::{EscalationTimings, SpawnSpec, Supervisor};
+
+    use super::*;
+
+    /// A sink that records payloads for test assertions.
+    struct RecordingSink(Mutex<Vec<AdapterEventPayload>>);
+
+    impl RecordingSink {
+        fn new() -> Arc<RecordingSink> {
+            Arc::new(Self(Mutex::new(Vec::new())))
+        }
+
+        fn payloads(&self) -> Vec<AdapterEventPayload> {
+            self.0.lock().expect("mutex is never poisoned").clone()
+        }
+    }
+
+    impl AdapterEventSink for RecordingSink {
+        fn emit(&self, event: AdapterEvent) -> AdapterFuture<'_, u64> {
+            let mut payloads = self.0.lock().expect("mutex is never poisoned");
+            payloads.push(event.payload);
+            Box::pin(async { Ok(0) })
+        }
+    }
+
+    fn fast_escalation() -> EscalationTimings {
+        EscalationTimings {
+            sigint_to_sigterm: std::time::Duration::from_millis(50),
+            sigterm_to_sigkill: std::time::Duration::from_millis(50),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_driver_loop_exit_reaches_the_pump_as_process_exited() {
+        let supervisor = Supervisor::with_escalation(fast_escalation());
+        let spec = SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "exit 3".into()],
+            cwd: PathBuf::from("/tmp"),
+            env: std::collections::HashMap::new(),
+            max_stdout_frame_bytes: 8192,
+            max_stderr_capture_bytes: 4096,
+        };
+        let process = supervisor.spawn(spec).await.expect("spawn /bin/sh");
+        let (client, inbound_rx) = CodexRpcClient::spawn(process);
+        // Keep `client` bound so the exit is observed via stdout close,
+        // not `outbound_rx` closure.
+        let _client = client;
+
+        let sink = RecordingSink::new();
+        let pump = CodexAdapter::spawn_pump(
+            inbound_rx,
+            RunId::new(),
+            TaskId::new(),
+            WorkerId::new(),
+            sink.clone() as Arc<dyn AdapterEventSink>,
+            Arc::new(Mutex::new(HashMap::new())),
+            None,
+        );
+        pump.await.expect("pump completed");
+
+        let payloads = sink.payloads();
+        let exited: Vec<_> = payloads
+            .iter()
+            .filter(|p| matches!(p, AdapterEventPayload::ProcessExited { .. }))
+            .collect();
+        assert_eq!(
+            exited.len(),
+            1,
+            "expected exactly one ProcessExited, got {exited:?}"
+        );
+        assert!(
+            matches!(
+                &exited[0],
+                AdapterEventPayload::ProcessExited {
+                    exit_code: Some(3),
+                    signal: None
+                }
+            ),
+            "expected ProcessExited {{ exit_code: Some(3), signal: None }}, got {:?}",
+            exited[0]
+        );
     }
 }

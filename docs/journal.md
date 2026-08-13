@@ -1855,6 +1855,30 @@ already-lowercased, `_`/`-`-stripped match binding instead of the original vendo
 text, so the one piece of diagnostic detail meant to help someone grep vendor docs for an
 unrecognized reason has already been mangled past matching them.
 
+**R47** — Claude and Codex adapters never emitted `ProcessExited`, so their concurrency slots leaked
+on every completed run, permanently disabling the runtime after `concurrency_ceiling` cumulative
+runs (the exact failure mode R2 closed for the mechanism as a whole, open again for two of the
+four adapters). Fixed across five steps: added `TerminationOutcome::exit_signals()` and
+`ManagedProcess::settle()` to the supervisor (`supervisor/process.rs`); Claude's `run_session` now
+yields an outcome from all three break arms and emits `ProcessExited` after cleanup
+(`adapter/claude/mod.rs`); Codex's `driver_loop` carries the exit through `InboundMessage` to the
+pump (`adapter/codex/client.rs`), `spawn_pump` emits `ProcessExited` and leaves the loop, and both
+`cancel` and `dispose` were fixed to not abort the pump before it reports (`adapter/codex/mod.rs`);
+OMP-RPC's `run_pump` now emits `ProcessExited` on its terminate arm, not just stdout-closed
+(`adapter/omp_rpc/mod.rs`); and the registry's completion watcher was replaced with
+`SettlementSink` — a per-run oneshot that fires on the first `ProcessExited`, immune to broadcast
+lag or late subscription (`adapter/event_sink.rs`, `adapter/registry.rs`). The registry's old
+`is_process_exited_for` was deleted. Defended by new tests: `settle_reports_a_self_exit_code_without_escalating`
+and `settle_escalates_a_process_that_will_not_exit_on_its_own` (`tests/supervisor.rs`),
+`session_exit_tests` (`adapter/claude/mod.rs`), `pump_exit_tests` (`adapter/codex/mod.rs`), and
+`settlement_tests` / `settlement_sink_tests` (`adapter/registry.rs`, `adapter/event_sink.rs`) — the
+former using a real `DatabaseHandle::start()` harness with `tempfile::TempDir` so the DB actor
+persists through the test. `PolicyEvaluator::release()` saturates at zero, so a double release is
+safe, and the oneshot's exactly-once semantics guarantee the slot releases precisely once per run.
+A full end-to-end integration test driving a Claude or Codex run through the real registry's
+completion watcher and asserting the concurrency slot is returned does not yet exist — the existing
+component tests prove emission and the mocked release path, but the integration gap remains.
+
 ### The documentation half: eleven doc-accuracy findings, most already stale on arrival
 
 The same first review round filed eleven Low-severity documentation findings (R19, R21-R28) —
@@ -1873,14 +1897,17 @@ was nothing left to fix.
 
 `REVIEW.md` itself was restructured on 2026-08-12 from a full audit trail (every finding, resolved
 or not, with its evidence) into an open-items-only backlog — R1-R11, R19, and R21-R28 no longer
-appear there at all. This journal entry is now the only place their resolution evidence is
-recorded; if you're looking for *why* R34, R35, R36, R39, R42, or R44 exist, the answer in every
-case is "as a byproduct of the fix directly above it in this entry." That same 2026-08-12 pass also
-ran a full fresh re-verification of every item that *was* still open, adding twenty new findings
-(R47-R66) surfaced by reading the runtime core, the adapters, the conformance harness, the TS
-extension, and the release/docs surface with fresh eyes — the most severe of them (R47-R49) sitting
-at Critical, a reminder that a review closing its filed findings is not the same claim as a system
-having no more bugs.
+appear there at all. R47 joined that list the same day it was resolved, pruned from `REVIEW.md`
+and recorded here. This journal entry is now the only place resolution evidence for R1-R11 and
+R47 is recorded; if you're looking for *why* R34, R35, R36, R39, R42, R44, or R67 exist, the
+answer in every case is "as a byproduct of a fix directly above it in this entry." That same
+2026-08-12 pass also ran a full fresh re-verification of every item that *was* still open, adding
+twenty new findings (R47-R66) surfaced by reading the runtime core, the adapters, the conformance
+harness, the TS extension, and the release/docs surface with fresh eyes — the most severe of them
+(R47-R49) initially sitting at Critical, though R47 was resolved the same day it was found, leaving
+(R48-R49) as the remaining Critical pair, with R67 retaining the integration-coverage residue — a
+reminder that a review closing its filed findings is not the same claim as a system having no more
+bugs.
 
 ## Reading order, if you're new here
 

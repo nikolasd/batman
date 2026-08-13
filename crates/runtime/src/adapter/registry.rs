@@ -30,9 +30,10 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use batman_protocol::{RunId, TaskId, WorkerId};
+use tokio::sync::oneshot;
 
 use super::capability::{AdapterCapabilities, NestedCapability};
-use super::event_sink::DomainAdapterEventSink;
+use super::event_sink::{DomainAdapterEventSink, SettlementSink};
 use super::mcp_config::AdapterMcpConfig;
 use super::profile::{StartupOptions, WorkerProfile};
 use super::r#trait::{Adapter, AdapterMessage, StartSpec};
@@ -221,7 +222,6 @@ impl RunDriver for AdapterRegistry {
                 guard.insert(ctx.run_id, build_placeholder_adapter());
             }
 
-            let events_tx = ctx.events_tx.clone();
             let run_id = ctx.run_id;
             match run_one(
                 &ctx,
@@ -233,64 +233,22 @@ impl RunDriver for AdapterRegistry {
             )
             .await
             {
-                Ok(adapter) => {
+                Ok((adapter, settled)) => {
                     running.lock().insert(run_id, adapter);
-                    // Evicts and disposes this run's adapter once its
-                    // supervised process actually exits. This is the
-                    // only terminal-settlement signal available without
-                    // a new `RunDriver` method (see the module doc's
-                    // scope-boundary note) -- it is carried on the very
-                    // `events_tx` `RunDriverContext` already supplies,
-                    // so it needs no additional wiring.
                     let running_for_watcher = Arc::clone(&running);
                     let authorization_for_watcher = Arc::clone(&authorization);
-                    let mut events_rx = events_tx.subscribe();
-                    // The pane resolved at submit time, so the detach
-                    // names the same backend the attach did without
-                    // re-probing the registry. `None` means no pane was
-                    // ever attached (headless), and a detach without a
-                    // prior attach must never be journaled.
                     let display = ctx.display.clone();
                     let db = Arc::clone(&ctx.db);
                     let project_id = ctx.project_id;
-                    tokio::spawn(async move {
-                        loop {
-                            match events_rx.recv().await {
-                                Ok(envelope) => {
-                                    if is_process_exited_for(&envelope.event, run_id) {
-                                        let evicted = running_for_watcher.lock().remove(&run_id);
-                                        if let Some(adapter) = evicted {
-                                            let _ = adapter.dispose().await;
-                                        }
-                                        // Release the concurrency slot now that the run has settled.
-                                        authorization_for_watcher.release();
-                                        if let Some(selection) = display
-                                            && let Some(backend) = selection.selected
-                                        {
-                                            emit_pane_detached(
-                                                &db,
-                                                project_id,
-                                                run_id,
-                                                backend,
-                                                selection.placement,
-                                            )
-                                            .await;
-                                        }
-                                        break;
-                                    }
-                                }
-                                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                    // Missed some notifications; continue waiting.
-                                    continue;
-                                }
-                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                    // Sender dropped (runtime shutting down); release slot and exit.
-                                    authorization_for_watcher.release();
-                                    break;
-                                }
-                            }
-                        }
-                    });
+                    tokio::spawn(watch_settlement(
+                        settled,
+                        running_for_watcher,
+                        authorization_for_watcher,
+                        display,
+                        db,
+                        project_id,
+                        run_id,
+                    ));
                     Ok(())
                 }
                 Err(err) => {
@@ -376,15 +334,36 @@ async fn emit_pane_detached(
         .await;
 }
 
-fn is_process_exited_for(event: &batman_protocol::RuntimeEvent, run_id: RunId) -> bool {
-    matches!(
-        event,
-        batman_protocol::RuntimeEvent::AdapterProcessEvent {
-            kind: batman_protocol::RuntimeEventKind::AdapterProcessExited,
-            run_id: event_run_id,
-            ..
-        } if *event_run_id == run_id
-    )
+/// Settles one run: waits for its `ProcessExited`, then evicts and
+/// disposes its adapter, returns the concurrency slot, and journals the
+/// display detach. `Err` from `settled` means the run's sink was dropped
+/// without any process exit ever being observed -- the terminal adapter,
+/// which supervises no process of its own and emits none (a pre-existing
+/// gap with a different root cause, tracked separately). Never release or
+/// journal a detach on that path: there is no settlement to record, and a
+/// release without one would hand this run's slot to another.
+async fn watch_settlement(
+    settled: oneshot::Receiver<()>,
+    running: Arc<Mutex<HashMap<RunId, Arc<dyn Adapter>>>>,
+    authorization: Arc<dyn AdapterAuthorization>,
+    display: Option<batman_protocol::DisplaySelection>,
+    db: Arc<crate::db::DatabaseHandle>,
+    project_id: batman_protocol::ProjectId,
+    run_id: RunId,
+) {
+    if settled.await.is_err() {
+        return;
+    }
+    let evicted = running.lock().remove(&run_id);
+    if let Some(adapter) = evicted {
+        let _ = adapter.dispose().await;
+    }
+    authorization.release();
+    if let Some(selection) = display
+        && let Some(backend) = selection.selected
+    {
+        emit_pane_detached(&db, project_id, run_id, backend, selection.placement).await;
+    }
 }
 
 /// A never-started, immediately-idle placeholder occupying the run-id
@@ -414,7 +393,7 @@ async fn run_one(
     mcp: Option<AdapterMcpConfig>,
     broker: Option<Arc<CoordinationBroker>>,
     org_security_patterns: Vec<String>,
-) -> Result<Arc<dyn Adapter>, String> {
+) -> Result<(Arc<dyn Adapter>, oneshot::Receiver<()>), String> {
     let profile = resolve_profile(ctx).await.map_err(String::from)?;
 
     // Handle TerminalDegraded specially (it has no adapter kind)
@@ -488,6 +467,7 @@ async fn run_one(
             .as_deref()
             .and_then(|p| p.cost_ceiling_per_run_usd),
     ));
+    let (sink, settled) = SettlementSink::wrap(sink);
     if let Err(err) = adapter
         .start(
             StartSpec {
@@ -504,7 +484,7 @@ async fn run_one(
         authorization.release();
         return Err(err.to_string());
     }
-    Ok(adapter)
+    Ok((adapter, settled))
 }
 
 async fn resolve_profile(ctx: &RunDriverContext) -> Result<WorkerProfile, RegistryError> {
@@ -677,5 +657,127 @@ mod build_adapter_tests {
             "Copilot branch must accept Some(mcp): {}",
             result.err().map(|e| e.to_string()).unwrap_or_default()
         );
+    }
+}
+
+#[cfg(test)]
+mod settlement_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use batman_protocol::ProjectId;
+    use tokio::sync::oneshot;
+
+    use super::*;
+
+    /// Counts how many times `release()` was called.
+    struct CountingAuthorization(Arc<AtomicUsize>);
+
+    impl CountingAuthorization {
+        fn new() -> Arc<Self> {
+            Arc::new(Self(Arc::new(AtomicUsize::new(0))))
+        }
+
+        fn release_count(&self) -> usize {
+            self.0.load(Ordering::Relaxed)
+        }
+    }
+
+    impl AdapterAuthorization for CountingAuthorization {
+        fn authorize(
+            &self,
+            _profile: &WorkerProfile,
+            _effective_capabilities: &AdapterCapabilities,
+            _policy: Option<&crate::config::RuntimePolicy>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn release(&self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    async fn harness() -> (Arc<crate::db::DatabaseHandle>, tempfile::TempDir) {
+        let dir = tempfile::Builder::new()
+            .prefix("bat-settlement-")
+            .tempdir_in("/tmp")
+            .expect("create temp dir");
+        let db_path = dir.path().join("state.db");
+        let db = Arc::new(
+            crate::db::DatabaseHandle::start(db_path)
+                .await
+                .expect("start database"),
+        );
+        (db, dir)
+    }
+
+    #[tokio::test]
+    async fn an_observed_exit_evicts_the_adapter_and_releases_the_slot() {
+        let (db, _dir) = harness().await;
+        let project_id = ProjectId::new();
+        let run_id = RunId::new();
+        let authorization = CountingAuthorization::new();
+        let running = Arc::new(Mutex::new(HashMap::new()));
+        running.lock().insert(run_id, build_placeholder_adapter());
+
+        let (tx, rx) = oneshot::channel();
+        tx.send(()).expect("send settlement");
+
+        watch_settlement(
+            rx,
+            Arc::clone(&running),
+            Arc::clone(&authorization) as Arc<dyn AdapterAuthorization>,
+            None,
+            Arc::clone(&db),
+            project_id,
+            run_id,
+        )
+        .await;
+
+        assert_eq!(
+            authorization.release_count(),
+            1,
+            "expected exactly one release"
+        );
+        assert!(
+            running.lock().get(&run_id).is_none(),
+            "adapter should have been evicted"
+        );
+        db.shutdown().await.expect("shutdown database");
+    }
+
+    #[tokio::test]
+    async fn a_dropped_sink_without_an_exit_never_releases_a_slot() {
+        let (db, _dir) = harness().await;
+        let project_id = ProjectId::new();
+        let run_id = RunId::new();
+        let authorization = CountingAuthorization::new();
+        let running = Arc::new(Mutex::new(HashMap::new()));
+        running.lock().insert(run_id, build_placeholder_adapter());
+
+        let (tx, rx) = oneshot::channel();
+        drop(tx); // Simulate sink dropped without ProcessExited
+
+        watch_settlement(
+            rx,
+            Arc::clone(&running),
+            Arc::clone(&authorization) as Arc<dyn AdapterAuthorization>,
+            None,
+            Arc::clone(&db),
+            project_id,
+            run_id,
+        )
+        .await;
+
+        assert_eq!(
+            authorization.release_count(),
+            0,
+            "dropped sink must never release a slot"
+        );
+        assert!(
+            running.lock().get(&run_id).is_some(),
+            "adapter should still be in the map"
+        );
+        db.shutdown().await.expect("shutdown database");
     }
 }

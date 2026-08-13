@@ -28,7 +28,7 @@ use batman_protocol::{
     TaskId, WorkerId,
 };
 use serde_json::json;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 
 use crate::db::DatabaseHandle;
 use crate::domain::{DomainRepository, embed_envelope};
@@ -428,5 +428,152 @@ impl AdapterEventSink for DomainAdapterEventSink {
 
             Ok(sequence)
         })
+    }
+}
+
+/// Wraps a run's [`AdapterEventSink`] and reports terminal settlement
+/// exactly once: the first [`AdapterEventPayload::ProcessExited`] this run
+/// emits fires the paired receiver, after the inner sink has finished
+/// journaling it. Observing the payload here rather than re-reading it off
+/// the shared `events/subscribe` broadcast makes the signal per-run,
+/// immune to a lagged broadcast receiver, and impossible to miss by
+/// subscribing too late.
+pub(crate) struct SettlementSink {
+    inner: Arc<dyn AdapterEventSink>,
+    settled: std::sync::Mutex<Option<oneshot::Sender<()>>>,
+}
+
+impl SettlementSink {
+    /// Wraps `inner`, returning the sink to hand to the adapter and the
+    /// receiver that resolves once this run's vendor process has exited.
+    #[must_use]
+    pub(crate) fn wrap(
+        inner: Arc<dyn AdapterEventSink>,
+    ) -> (Arc<dyn AdapterEventSink>, oneshot::Receiver<()>) {
+        let (tx, rx) = oneshot::channel();
+        (
+            Arc::new(Self {
+                inner,
+                settled: std::sync::Mutex::new(Some(tx)),
+            }),
+            rx,
+        )
+    }
+}
+
+impl AdapterEventSink for SettlementSink {
+    fn emit(&self, event: AdapterEvent) -> AdapterFuture<'_, u64> {
+        // Match by reference: `event` is moved into the inner `emit`
+        // below, so a by-value match would consume the payload before
+        // the inner sink needs it.
+        let is_exit = matches!(&event.payload, AdapterEventPayload::ProcessExited { .. });
+        Box::pin(async move {
+            let result = self.inner.emit(event).await;
+            // Fired even when the journal write failed: the process has
+            // exited either way, and a lost journal row must never also
+            // cost the run its concurrency slot. Liveness over durability
+            // here: a leaked slot would permanently block the system.
+            if is_exit
+                && let Some(tx) = self
+                    .settled
+                    .lock()
+                    .expect("settlement mutex is never poisoned")
+                    .take()
+            {
+                let _ = tx.send(());
+            }
+            result
+        })
+    }
+}
+
+#[cfg(test)]
+mod settlement_sink_tests {
+    use super::*;
+
+    struct StubSink;
+
+    impl AdapterEventSink for StubSink {
+        fn emit(&self, _event: AdapterEvent) -> AdapterFuture<'_, u64> {
+            Box::pin(async { Ok(0) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_non_exit_payload_leaves_the_receiver_pending() {
+        let (sink, mut rx) = SettlementSink::wrap(Arc::new(StubSink));
+        sink.emit(AdapterEvent {
+            run_id: RunId::new(),
+            task_id: TaskId::new(),
+            worker_id: WorkerId::new(),
+            payload: AdapterEventPayload::ProcessStarted { pid: 1 },
+        })
+        .await
+        .expect("emit");
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ),
+            "receiver should still be pending after non-exit payload"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_exit_payload_resolves_the_receiver() {
+        let (sink, mut rx) = SettlementSink::wrap(Arc::new(StubSink));
+        sink.emit(AdapterEvent {
+            run_id: RunId::new(),
+            task_id: TaskId::new(),
+            worker_id: WorkerId::new(),
+            payload: AdapterEventPayload::ProcessExited {
+                exit_code: Some(0),
+                signal: None,
+            },
+        })
+        .await
+        .expect("emit");
+        assert!(
+            rx.try_recv().is_ok(),
+            "receiver should resolve after ProcessExited"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_duplicate_exit_payload_fires_the_receiver_only_once() {
+        let (sink, mut rx) = SettlementSink::wrap(Arc::new(StubSink));
+        // First emit fires the receiver
+        sink.emit(AdapterEvent {
+            run_id: RunId::new(),
+            task_id: TaskId::new(),
+            worker_id: WorkerId::new(),
+            payload: AdapterEventPayload::ProcessExited {
+                exit_code: Some(0),
+                signal: None,
+            },
+        })
+        .await
+        .expect("first emit");
+        assert!(rx.try_recv().is_ok(), "first emit should fire receiver");
+
+        // Second emit still succeeds but does not fire again
+        sink.emit(AdapterEvent {
+            run_id: RunId::new(),
+            task_id: TaskId::new(),
+            worker_id: WorkerId::new(),
+            payload: AdapterEventPayload::ProcessExited {
+                exit_code: Some(1),
+                signal: None,
+            },
+        })
+        .await
+        .expect("second emit");
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+            ),
+            "second emit must not fire receiver again (channel already consumed)"
+        );
     }
 }

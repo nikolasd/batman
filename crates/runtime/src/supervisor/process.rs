@@ -82,6 +82,13 @@ impl Default for EscalationTimings {
     }
 }
 
+/// How long a process whose protocol stream has already ended gets to
+/// exit on its own before [`ManagedProcess::settle`] escalates. A
+/// completed vendor run is already exiting when its stdout closes, so
+/// this window is almost always uncontended; it exists so a wedged
+/// process cannot hold a concurrency slot open indefinitely.
+const SETTLE_GRACE: Duration = Duration::from_secs(1);
+
 /// The result of [`ManagedProcess::terminate`].
 #[derive(Debug, Clone, Copy)]
 pub enum TerminationOutcome {
@@ -90,6 +97,18 @@ pub enum TerminationOutcome {
     Exited { code: Option<i32> },
     /// The process had to be escalated all the way to SIGKILL.
     Killed,
+}
+
+impl TerminationOutcome {
+    /// The `(exit_code, signal)` pair
+    /// `AdapterEventPayload::ProcessExited` carries for this outcome.
+    #[must_use]
+    pub fn exit_signals(self) -> (Option<i32>, Option<String>) {
+        match self {
+            Self::Exited { code } => (code, None),
+            Self::Killed => (None, Some("SIGKILL".to_string())),
+        }
+    }
 }
 
 /// Spawns supervised processes, each in its own process group.
@@ -227,6 +246,25 @@ impl ManagedProcess {
     /// signal.
     pub async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
         self.child.wait().await
+    }
+
+    /// Settles a process whose protocol stream has ended: waits out
+    /// [`SETTLE_GRACE`] for a self-exit -- the ordinary end of a completed
+    /// run -- and escalates through [`Self::terminate`] only if it is still
+    /// alive, so a normal completion never pays the escalation window while a
+    /// wedged process (or a live process-group member the leader left behind)
+    /// is still reached. Always returns an outcome; never blocks
+    /// indefinitely.
+    pub async fn settle(&mut self) -> TerminationOutcome {
+        match tokio::time::timeout(SETTLE_GRACE, self.child.wait()).await {
+            Ok(Ok(status)) => TerminationOutcome::Exited {
+                code: status.code(),
+            },
+            // Timed out (still running) or `wait()` itself failed
+            // (outcome unknown) -- both must escalate rather than be
+            // reported as a confirmed graceful exit.
+            Ok(Err(_)) | Err(_) => self.terminate().await,
+        }
     }
 
     /// Sends `signal` to the whole process group (not just the direct
