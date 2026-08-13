@@ -1904,8 +1904,8 @@ answer in every case is "as a byproduct of a fix directly above it in this entry
 2026-08-12 pass also ran a full fresh re-verification of every item that *was* still open, adding
 twenty new findings (R47-R66) surfaced by reading the runtime core, the adapters, the conformance
 harness, the TS extension, and the release/docs surface with fresh eyes — the most severe of them
-the most severe of them (R47-R49) initially sitting at Critical, though R47 was resolved the same
-day it was found, and R48 itself resolved the next day (Part XI), leaving R49 alone at Critical.
+(R47-R49) initially sitting at Critical, though R47 was resolved the same day it was found, and R48
+and R49 both the next day (Parts XI and XII), clearing the Critical tier entirely.
 R67 retains the integration-coverage residue — a reminder that a review closing its filed findings
 is not the same claim as a system having no more bugs.
 
@@ -1946,8 +1946,40 @@ and asserts the run comes back quarantined, the journaled event carries `cost_ce
 null vendor refs, and `policy/violation/decide` can release it — that last step being the one that
 proves the projection row exists, since `decide` reads it rather than the journal.
 
-R49 remains open: the built-in `api_key` redaction pattern still does not match Anthropic's own
-`sk-ant-api03-…` key shape.
+R49, the other half of that pair, is closed in Part XII.
+
+## Part XII — Closing the last Critical: a denylist blind to its own vendor
+
+R49 was the last Critical, and the smallest diff in this journal: one character class. The built-in
+`api_key` redaction rule read `sk-[A-Za-z0-9]{16,}` — a pattern that looks exactly like it covers
+`sk-`-prefixed vendor keys and covers none of the ones this runtime is pointed at. Anthropic issues
+`sk-ant-api03-<base64url>`; OpenAI issues `sk-proj-<base64url>`. Both put a hyphen three characters
+in, right where the pattern demanded `[A-Za-z0-9]`. `bearer_token` needs a `Bearer ` prefix,
+`github_pat` needs `ghp_`, `aws_access_key` is a different shape entirely, and `jwt` needs three
+dot-separated segments — so nothing else in the built-in set caught it either.
+
+Classification was never the failure. `Secret`- and `Thinking`-classified fragments are dropped
+before they are ever scanned, and that is the primary boundary commit 5 built. The denylist exists
+for the *second* case: a vendor CLI narrating a key back inside ordinary `Visible` text — an echoed
+error, a debug line, a dumped environment. That is the one case it could not handle, and the
+journal is append-only, so anything that got through was durable.
+
+What made it invisible for so long is worth more than the fix. Every test that asserted the rule
+worked used a literal written *from the pattern* — `sk-ABCDEFGHIJKLMNOPQRSTUVWX`, all alphanumeric,
+sixteen-plus characters, matching by construction. The suite and the bug shared one assumption, so
+the suite agreed with the bug. The new tests are written from the vendors' documented key shapes
+instead, and `redaction_boundary.rs` — the test that byte-scans `runtime.db`, the WAL, `runtime.log`
+and the replay output rather than trusting the redactor's return value — now carries an
+Anthropic-shaped key through the real append path.
+
+The widening is `\bsk-[A-Za-z0-9_-]{16,}`, and the leading word boundary is not decoration. Without
+it the widened class happily consumes ordinary hyphenated prose: `disk-space-check-failed` contains
+`sk-space-check-failed`, nineteen characters of a perfectly legal match. Over-redacting diagnostics
+is a quieter failure than leaking a key, but it is still a failure, so
+`hyphenated_prose_is_not_mistaken_for_an_api_key` guards that direction explicitly.
+
+With R49 closed the Critical tier is empty for the first time since the 2026-08-12 review pass. The
+High tier is not, and `REVIEW.md` still lists eight.
 
 ## Reading order, if you're new here
 

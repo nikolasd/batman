@@ -11,12 +11,13 @@ TypeScript/workspace, and build/docs/release, split across four parallel reviewe
 findings were corrected in place (R17, R20, R43, R46) where the mechanism had changed since last
 verified.
 
-**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R47, R48) plus the
+**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R47, R48, R49) plus the
 eleven documentation findings that were resolved or already-stale (R19, R21-R28) has been pruned from
 this document. That history — what broke, the fix commit, the test that proved it, and which
 still-open items below exist *because* of that fix — now lives in
 [`docs/journal.md` Part X](journal.md#part-x--reviewmds-second-pass-seven-more-fixes-eleven-doc-corrections-and-the-residue-that-outlived-them)
-(R1-R11, R47) and [Part XI](journal.md#part-xi--halving-the-critical-pair-a-ceiling-that-could-not-be-enforced) (R48).
+(R1-R11, R47), [Part XI](journal.md#part-xi--halving-the-critical-pair-a-ceiling-that-could-not-be-enforced) (R48),
+and [Part XII](journal.md#part-xii--closing-the-last-critical-a-denylist-blind-to-its-own-vendor) (R49).
 This document only tracks what's still broken.
 
 **Baseline, last run 2026-08-12** (during an unrelated state-root rename; results apply to this
@@ -36,22 +37,6 @@ release/install/distribution path and documentation a user or contributor actual
 operate the system correctly.
 
 ## Findings
-
-### Critical
-
-#### R49. Built-in `api_key` redaction pattern does not match Anthropic's own real API key format
-
-#### R49. Built-in `api_key` redaction pattern does not match Anthropic's own real API key format
-
-**Location:** `crates/runtime/src/security/redaction.rs:159-160`
-
-**Evidence:** the built-in rule is `Regex::new(r"sk-[A-Za-z0-9]{16,}")`. Anthropic's real key shape, `sk-ant-api03-<40+ chars>`, and OpenAI's `sk-proj-...` shape both contain hyphens inside the segment the pattern expects to be `[A-Za-z0-9]` only — neither matches. No other built-in rule covers this shape (`bearer_token` requires a `Bearer ` prefix; `github_pat` requires `ghp_`; `aws_access_key` is a different shape entirely).
-
-Any vendor CLI narrating such a key back in `Visible`-classified text — echoing an error message, a debug log line, a misconfigured env var — passes through `Redactor::sanitize`/`sanitize_json` completely unredacted and becomes durable in the append-only journal, a direct violation of invariant #4 ("content redacted before it becomes durable") for the primary vendor this codebase targets.
-
-**Fix:** widen the pattern to `sk-[A-Za-z0-9-]{16,}` (or a more precise Anthropic/OpenAI-shape-aware pair of rules), and add a redaction test asserting a real-shaped `sk-ant-api03-...` string is caught.
-
-**Priority:** Critical — a live secrets-leak path into durable storage for the most common vendor key format, silently defeating a named security invariant.
 
 ### High
 
@@ -396,7 +381,7 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
-- **Critical:** 1 (R49) — R48 resolved 2026-08-13 (see docs/journal.md Part XI)
+- **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII)
 - **High:** 8 (R41, R33, R44 — carried forward from earlier rounds; R50, R51, R52, R53, R54 — new)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
 - **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
