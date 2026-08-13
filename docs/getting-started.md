@@ -197,6 +197,19 @@ BATMAN enforces a strict redaction boundary: raw vendor content (which may conta
 - Rewrites built-in regex-pattern matches (e.g., API keys) with `[REDACTED:<rule id>]` markers
 - [`PersistableEvent`] fields are private with no public constructor
 
+The built-in rules, applied to every `Visible` string before it can become durable:
+
+| Rule id | Shape it catches |
+|---|---|
+| `api_key` | `sk-`-prefixed vendor keys, including the hyphenated/underscored shapes Anthropic (`sk-ant-api03-…`) and OpenAI (`sk-proj-…`) actually issue |
+| `bearer_token` | `Bearer <token>` (20+ chars) in free text |
+| `github_pat` | `ghp_`-prefixed GitHub personal access tokens |
+| `aws_access_key` | `AKIA`-prefixed AWS access key IDs |
+| `jwt` | Three `.`-separated base64url segments |
+
+Org-configured patterns (below) are applied *in addition to* these; they can never remove built-in
+coverage.
+
 ```rust
 let redactor = Redactor::new();
 let sanitized = redactor.sanitize(raw_event)?;

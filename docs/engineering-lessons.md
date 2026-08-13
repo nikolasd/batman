@@ -61,3 +61,40 @@ A durable mutation must broadcast the same event it just committed, in the same 
 **The lesson:** This is now invariant #7 in the README, and it is not enforced by the type system — the compiler cannot catch "this new mutation appended an event but forgot to broadcast it". Any new `DomainRepository` mutation method **must** be wired through `embed_envelope`/`take_envelope`/`self.broadcast(&mut result)` at its call site, matching every existing sibling in `service/orchestration.rs`, or the monitor will silently show stale state for that mutation alone.
 
 **Regression tests:** `crates/runtime/tests/orchestration_rpc.rs`'s `events_replay_round_trips_committed_mutation_events` and `events_subscribe_delivers_live_notifications_for_orchestration_mutations` are the regression tests for both halves; the latter reproduced the bug as an infinite hang, not a clean failure — run it with a test-runner timeout if you ever suspect a new mutation has regressed this.
+
+---
+
+## Security and Redaction
+
+### A redaction denylist is only as good as the shapes it was actually tested against
+
+**Location:** `crates/runtime/src/security/redaction.rs::Redactor::new` (see [ADR-0006](adr/0006-type-enforced-redaction-boundary.md))
+
+A pattern that looks like it covers a vendor's API keys is worthless if it was written against a
+remembered key format rather than the one that vendor issues.
+
+**The bug:** the built-in `api_key` rule was `sk-[A-Za-z0-9]{16,}` — a plausible-looking `sk-`
+pattern that matched none of the keys the vendors this codebase drives actually issue. Anthropic's
+`sk-ant-api03-…` and OpenAI's `sk-proj-…` both put hyphens (and base64url underscores) inside the
+token, immediately after the three characters the pattern accepted. Every unit test asserting the
+rule worked used a hand-written `sk-ABCDEFGHIJKLMNOPQRSTUVWX` literal that shared the pattern's
+assumption, so the whole test suite agreed with the bug. Classification (`Secret`/`Thinking`
+fragments) is the primary boundary and was unaffected — but the denylist exists precisely for the
+case where a vendor narrates a key back inside `Visible` text, which is exactly what it could not
+catch.
+
+**The fix:** `\bsk-[A-Za-z0-9_-]{16,}`, with tests written from the vendors' documented key shapes
+rather than from the pattern. The leading `\b` is load-bearing in the other direction: without it
+the widened character class swallows ordinary hyphenated prose such as `disk-space-check-failed`.
+
+**The lesson:** when a redaction/denylist pattern is added or widened, the test input must come from
+the real producer's format, never from the pattern's own shape — and every widening needs a
+paired negative test proving normal text is still untouched, because over-redaction of diagnostics
+is a silent failure too.
+
+**Regression tests:** `anthropic_shaped_api_key_is_redacted`,
+`openai_project_shaped_api_key_is_redacted`,
+`hyphenated_prose_is_not_mistaken_for_an_api_key`,
+`sanitize_json_redacts_an_anthropic_shaped_key_at_any_depth` (all in `security/redaction.rs`), plus
+`crates/runtime/tests/redaction_boundary.rs`, which carries an Anthropic-shaped key through the real
+append path and byte-scans the database, WAL, log, and replay output for it.
