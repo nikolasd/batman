@@ -52,6 +52,10 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
+      # A failure on one platform must not cancel the other before it reports its own
+      # result — that cancellation previously hid CI-6 (a real, distinct macOS-only
+      # defect) until CI-4 was fixed (CI-5).
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     # The runtime's default posture is that vendor CLIs are ordinary

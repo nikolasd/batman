@@ -19,7 +19,7 @@ they are fixed and verified one at a time, not batched.
 | CI-2 | `security` (gitleaks) | Fixed | Shallow clone made gitleaks re-scan the whole repo as "new" on every push; no allowlist configured either |
 | CI-3 | `bundle-check` | Fixed | Committed `dist/index.js` wasn't rebuilt after `fast-uri` dependency bump |
 | CI-4 | `test (macos-latest)` | Fixed | `duplicate_start_is_rejected` test is host-dependent; broke when slot-release-on-failure was fixed |
-| CI-5 | `test (ubuntu-latest)` | Open | Cancelled as a side effect of CI-4 (matrix `fail-fast: true`); not independent |
+| CI-5 | `test (ubuntu-latest)` | Fixed | Cancelled as a side effect of CI-4 (matrix `fail-fast: true`); not independent |
 | CI-6 | `test (macos-latest)` | Open | `claude_adapter.rs` real-CLI tests unconditionally require an installed `claude` binary, absent on CI runners; previously masked by CI-4 failing first alphabetically |
 | CI-7 | `security` (gitleaks) | Open | CI-2's own allowlist is scoped to the original fixture files only; `CI-FAILS.md` quotes the same literal fixture secret in prose and isn't covered, so gitleaks (correctly) flags this doc |
 
@@ -274,17 +274,18 @@ macos-latest]`) has no `fail-fast: false`, so it defaults to `fail-fast: true`. 
 `test (macos-latest)` failed (CI-4), GitHub Actions cancelled the sibling `test (ubuntu-latest)` job
 outright. There is no ubuntu-specific defect here.
 
-**Proposed fix:** no code fix needed — this resolves automatically once `test (macos-latest)`
-completes normally. Separately worth considering: add `fail-fast: false` to this matrix so a failure
-on one platform doesn't hide whether the other platform would have passed or failed on its own
-merits (useful signal when debugging exactly this kind of situation — it's the reason CI-6 stayed
-invisible until CI-4 was fixed).
+**Fix applied:** added `fail-fast: false` to the `test` job's matrix
+(`.github/workflows/ci.yml`) so a failure on one platform no longer cancels the sibling job before it
+reports its own result. This is the exact CI-6 masking scenario documented above: `test
+(ubuntu-latest)` being cancelled outright, rather than running to completion and reporting
+independently, is what let a real, distinct macOS-only defect (CI-6) stay invisible until CI-4 was
+fixed. `fail-fast: false` prevents one platform's failure from hiding an independent failure — or
+independent success — on the other.
 
-**Status:** Open (tracked for visibility; no independent action beyond `test (macos-latest)` going
-green, which as of CI-4's fix now depends on CI-6 too, and the optional `fail-fast: false` follow-up).
-CI-4 itself is confirmed fixed — `duplicate_start_is_rejected` passed on the `test (macos-latest)`
-re-run (commit `497fd7f`, run `31705841465`) — but that job still failed overall on the unrelated
-CI-6 defect below, so this one hasn't resolved yet.
+**Status:** Fixed — verified locally that the YAML still parses correctly after the edit. Full
+confirmation (that `test (ubuntu-latest)` and `test (macos-latest)` now run and report independently
+rather than one cancelling the other) can only happen on GitHub Actions, on the next push — same
+caveat pattern as CI-1 through CI-4.
 
 ---
 
