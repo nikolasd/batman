@@ -148,6 +148,42 @@ fn ctx(
     }
 }
 
+/// Blocks the (single) `authorize()` call this test double ever receives
+/// until the test explicitly releases it via `release_rx`, and signals
+/// `entered_tx` the moment it's inside that call.
+///
+/// `authorize()` runs synchronously inside `run_one`, *after*
+/// `AdapterRegistry::start` has already synchronously inserted this run's
+/// reservation into its `running` map and *before* the real adapter is
+/// constructed or spawned (see `registry.rs`'s own `start`/`run_one`).
+/// Blocking there deterministically keeps that reservation held for as
+/// long as the test needs, regardless of whether a real `omp` binary is
+/// on `PATH` -- unlike racing a real adapter spawn, whose latency (and,
+/// on hosts without `omp`, immediate `ENOENT`) is exactly what made
+/// `duplicate_start_is_rejected` host-dependent (see CI-4 in
+/// `CI-FAILS.md`).
+struct BlockingAuthorization {
+    entered_tx: std::sync::mpsc::Sender<()>,
+    release_rx: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl AdapterAuthorization for BlockingAuthorization {
+    fn authorize(
+        &self,
+        _profile: &WorkerProfile,
+        _effective_capabilities: &AdapterCapabilities,
+        _policy: Option<&batman_runtime::config::RuntimePolicy>,
+    ) -> Result<(), String> {
+        let _ = self.entered_tx.send(());
+        let _ = self.release_rx.lock().unwrap().recv();
+        Ok(())
+    }
+
+    fn release(&self) {
+        // No-op: this test never exercises settlement-triggered release.
+    }
+}
+
 #[tokio::test]
 async fn a_terminal_profile_uses_terminal_adapter() {
     let (db, _dir, project_id) = harness().await;
@@ -228,24 +264,42 @@ async fn authorization_denial_prevents_the_adapter_from_ever_starting() {
     assert_eq!(registry.running_count(), 0);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn duplicate_start_is_rejected() {
     let (db, _dir, project_id) = harness().await;
     let (run_id, task_id, worker_id) =
         seed_worker_and_run(&db, project_id, Some(&omp_rpc_profile())).await;
+
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
     let registry = AdapterRegistry::new(
-        Arc::new(FixtureAuthorization { allow: true }),
+        Arc::new(BlockingAuthorization {
+            entered_tx,
+            release_rx: std::sync::Mutex::new(release_rx),
+        }),
         PathBuf::from("/tmp"),
         None,
         vec![],
     );
 
-    // First start should succeed (or fail based on host, but not with "duplicate" error)
-    let _result1 = registry
-        .start(ctx(db.clone(), project_id, run_id, task_id, worker_id))
-        .await;
+    // Fire the first start on its own task. `AdapterRegistry::start`'s
+    // returned future is `Send + 'static` and clones what it needs out of
+    // `&self` rather than borrowing it, so it can be spawned without
+    // wrapping `registry` in an `Arc` -- see that method's own doc
+    // comment.
+    let first =
+        tokio::spawn(registry.start(ctx(db.clone(), project_id, run_id, task_id, worker_id)));
 
-    // Second start with same worker_id should fail with "duplicate" error
+    // Wait until the first call is actually inside `authorize()`: its
+    // run-id reservation is guaranteed inserted by this point (inserted
+    // before `run_one`/`authorize` even runs) and guaranteed to stay held
+    // until we release it below.
+    entered_rx
+        .recv()
+        .expect("first start must reach authorize()");
+
+    // Second start, same run_id, while the first is still in flight --
+    // deterministic on every host, unlike racing a real adapter spawn.
     let err = registry
         .start(ctx(db, project_id, run_id, task_id, worker_id))
         .await
@@ -254,8 +308,18 @@ async fn duplicate_start_is_rejected() {
         err.contains("already has a running adapter instance"),
         "unexpected error message: {err}"
     );
-    // The first start must still be running (or have failed cleanly).
+    // The first start is provably still "running" per the registry at
+    // the exact moment the duplicate check above ran.
     assert_eq!(registry.running_count(), 1);
+
+    // Let the first call proceed and finish. Its own outcome doesn't
+    // matter here (it may still fail on ENOENT after authorize() returns,
+    // exactly as it does today on hosts without `omp`) -- only that it
+    // was still occupying its reservation when the duplicate check ran.
+    release_tx
+        .send(())
+        .expect("release the blocked first start");
+    let _ = first.await;
 }
 
 #[tokio::test]

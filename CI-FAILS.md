@@ -15,7 +15,7 @@ each other — they are fixed and verified one at a time, not batched.
 | CI-1 | `clippy` | Fixed | `useless_conversion` lint: `u64::from()` widening is a no-op on Linux (where clippy runs) but required on macOS; suppressed with `#[allow]` instead of removed |
 | CI-2 | `security` (gitleaks) | Fixed | Shallow clone made gitleaks re-scan the whole repo as "new" on every push; no allowlist configured either |
 | CI-3 | `bundle-check` | Fixed | Committed `dist/index.js` wasn't rebuilt after `fast-uri` dependency bump |
-| CI-4 | `test (macos-latest)` | Open | `duplicate_start_is_rejected` test is host-dependent; broke when slot-release-on-failure was fixed |
+| CI-4 | `test (macos-latest)` | Fixed | `duplicate_start_is_rejected` test is host-dependent; broke when slot-release-on-failure was fixed |
 | CI-5 | `test (ubuntu-latest)` | Open | Cancelled as a side effect of CI-4 (matrix `fail-fast: true`); not independent |
 
 ---
@@ -218,14 +218,44 @@ In other words: this test's assertion on "duplicate" detection was only ever inc
 enough for the second call to collide with it) — it was never a reliable test of duplicate-detection
 under CI's real conditions, and the recent (correct) slot-release fix exposed that.
 
-**Proposed fix:** make the test deterministic instead of host-dependent — inject a fake
-authorization/adapter double for this test that blocks on its first `start()` call until explicitly
-released, so the "duplicate while running" condition is constructed directly rather than raced
-against a real (and here, absent) `omp` binary. This does not require any change to
-`crates/runtime/src/adapter/registry.rs` itself — the slot-release fix is correct and should stay as
-is.
+**Fix applied:** made the test deterministic instead of host-dependent. `AdapterRegistry`'s one
+production dependency-injection seam is `AdapterAuthorization` (`registry.rs`'s own
+`FixtureAuthorization`/`CountingAuthorization` are prior test doubles for it); added a third,
+`BlockingAuthorization`, local to `adapter_registry.rs`. Its `authorize()` blocks the calling thread
+until the test explicitly releases it. `authorize()` runs synchronously *after*
+`AdapterRegistry::start` has already inserted the run's reservation into its `running` map and
+*before* the real adapter is constructed or spawned, so blocking there deterministically holds that
+reservation open for as long as the test needs, regardless of whether `omp` is installed. The first
+`start()` now runs on its own `tokio::spawn`ed task; the test waits for a signal that it has reached
+`authorize()` (guaranteeing the reservation is held), fires the second `start()` for the same
+`run_id`, asserts the duplicate rejection deterministically, then releases the first call and lets it
+finish (its own eventual outcome no longer matters to the assertions). Blocking a thread inside an
+`async fn` needs a second worker thread to make progress on anything else, so this one test switches
+to `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]` (`rt-multi-thread` is already an
+enabled tokio feature workspace-wide; no dependency change needed). This requires zero changes to
+`crates/runtime/src/adapter/registry.rs` — the slot-release fix (`86244da`) is correct and untouched;
+only the test file changed.
 
-**Status:** Open
+An alternative was considered and rejected: the repo already has a genuine controllable fake for the
+OMP-RPC wire protocol (`crates/fake-worker`'s `omp-rpc-host-tool` mode, driven through
+`OmpRpcAdapter::with_binary(...)` — see `tests/omp_rpc_adapter.rs`), which blocks mid-`prompt` until
+fed a response on stdin. It would exercise a more realistic "genuinely still running" condition, but
+`AdapterRegistry::build_adapter` hardcodes `OmpRpcAdapter::new` with no seam to substitute
+`with_binary`'s alternate binary path — using it would require adding a test-only override to
+`registry.rs` itself, which the `AdapterAuthorization`-blocking approach avoids entirely.
+
+**Status:** Fixed — verified locally in both directions: `cargo test --test adapter_registry
+duplicate_start_is_rejected` passes with the real `omp` on `PATH` (12s, since the first call's
+adapter genuinely probes/spawns it), *and* passes running the already-built test binary directly
+with `omp`'s directory stripped from `PATH` (0.02s, `ENOENT` exactly as on both CI runners) —
+reproducing the CI condition on this machine and confirming the fix no longer depends on host
+`omp` availability either way. Full file (`cargo test --test adapter_registry`, 6/6) and
+`cargo test --workspace` (all green, one unrelated pre-existing local-only failure in
+`copilot_adapter.rs` excluded — an installed Copilot CLI version not yet in that test's hardcoded
+known-versions list, confirmed via `git stash` to predate this change and unconnected to it) run as
+regression sanity checks, plus `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+and `cargo fmt --all --check`. Final confirmation is the `test (macos-latest)` job going green on
+push — same caveat pattern as CI-1/2/3.
 
 ---
 
