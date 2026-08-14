@@ -2065,6 +2065,86 @@ and `a_released_lease_with_a_failed_teardown_does_not_block_a_new_shared_writer`
 
 With R41 and R50 both closed, the High tier drops to six: R33, R44, and R51-R54 remain.
 
+## Part XIV — Fixture mode's broken promise: a kill switch only one caller ever asked about
+
+R52 was a promise the code stated in three places and checked in none of them. The `conformance`
+module's own doc calls fixture mode "default, always safe, zero model calls"; `CLAUDE.md` tells
+contributors that `BATMAN_DISABLE_VENDOR_CLI=1` "skips live vendor CLI calls" and that CI always sets
+it precisely to avoid billed calls; `release.yml`'s `conformance` job comments that "this gate uses
+fixture mode only regardless — the switch is a second, independent safeguard." The narrow reading of
+the promise held — no billed inference ever happened in fixture mode — and the load-bearing one did
+not. Fixture mode spawned real vendor binaries, on all four adapters, whether or not the switch was
+set.
+
+The mechanism is a single asymmetry between two sibling functions. Every adapter's `live_report()`
+opens with an early `if vendor_cli_invocation_disabled() { return Err(...) }`, so the switch is
+honored before that path reaches anything that spawns. `fixture_report()` had no such guard, and
+nothing anywhere in its call graph consulted the function either — yet that call graph still reached
+real subprocesses in two distinct places. PROBE called `adapter.probe()`, which spawns
+`claude --version`, `codex --version`, `copilot --acp`, or `omp --version` depending on the adapter.
+And the five scenarios whose only proof is a live vendor process —
+`READ_ONLY_START_AND_PROGRESS`, `FOLLOW_UP`, `SESSION_RESUME`, `RUNTIME_RESTART`,
+`CANCELLATION_SCOPE` — spawned it directly, minus the four Codex already failed honestly on via
+`requires_live_turn_scenario()`. This was caught by running it rather than by reading it:
+`BATMAN_DISABLE_VENDOR_CLI=1 PATH=/usr/bin:/bin ./target/debug/batcave conformance --adapter claude --fixture`
+exited 1 with `probe failed: ... failed to spawn "claude": No such file or directory (os error 2)`
+in the scenario details, identically for the other three adapters. That distinction matters: the
+evidence is an attempted spawn, not merely an unread environment variable.
+
+The guard went into the shared helpers, not into `fixture_report()`, and that choice is the whole
+design of the fix. Because every `live_report()` already returns early *before* reaching
+`probe_scenario()`, `live_process_scenarios()`, `cancellation_scope_scenario()`, `real_client()`,
+`resolve_conformance_selector()`, `resume_flag_probe()` and the rest, gating those helpers themselves
+changes nothing about live mode's behavior while fixing the caller that never gated at all — one
+check per real-spawn choke point instead of duplicated branching in two callers. What each gated
+helper returns is deliberately asymmetric. A new shared `vendor_cli_required_scenario()` in
+`crates/runtime/src/conformance/mod.rs` returns an honest **fail** for a scenario that has no
+fixture-only proof, because skipping it must never be counted as proof that it works. PROBE is the
+one exception and gets a **pass**, via `vendor_cli_skipped_probe()` — the wording extracted out of
+`probe_availability()` in this same fix so every adapter reports the skip identically rather than
+inventing its own phrasing. Turning a skipped probe into a denial would make every run in CI
+unauthorized, which is why that one degrades upward.
+
+Reconciling `fixture-mode-baseline.json` against real post-fix output then exposed a second defect
+nobody previously had to notice: the baseline had been silently asserting vendor-CLI presence all
+along. Its `"claude": []` and `"ompRpc": []` — zero expected failures — were only ever true on a
+development machine that happened to have all four vendor CLIs installed and, for Claude,
+authenticated. Nothing guaranteed that of any runner, and specifically not of `release.yml`'s bare
+`ubuntu-latest` `conformance` job, which installs none of them. With the switch set and `PATH`
+scrubbed to `/usr/bin:/bin`, so the guard's effect is provable even on a machine that does have all
+four, `claude` gained five newly-honest failures (`read_only_start_and_progress`, `follow_up`,
+`session_resume`, `runtime_restart`, `cancellation_scope`), `codex` gained one
+(`read_only_start_and_progress` — its other four were already correctly listed, having never depended
+on this fix), `copilot` gained three (`read_only_start_and_progress`, `follow_up`,
+`cancellation_scope`), and `ompRpc` gained four (`follow_up`, `cancellation_scope`, `session_resume`,
+`runtime_restart`). `PROBE` stayed a pass in all four, which is the proof that the fix distinguishes
+"cannot prove, skip honestly" from "cannot prove, therefore broken."
+
+That corrected baseline is correct specifically in the switch-set posture, and the fix accepts that
+knowingly: both jobs that gate on it (`ci.yml`'s `test`, `release.yml`'s `conformance`) always set the
+switch, so it is the posture that matters, but it does mean a `cargo test --workspace` run *without*
+the switch on a machine with the vendor CLIs installed will now trip the same "baselined failure
+unexpectedly passed" gate from the other direction — the correct trade, given the previous baseline
+carried the mirror defect in the direction that actually shipped, which is R52 itself, and now
+documented inline in the baseline file's own `switchComment` key.
+`conformance_fixture_with_the_kill_switch_never_spawns_a_vendor_cli` (`crates/runtime/tests/conformance.rs`)
+defends it the same way the bug was found: it runs the real compiled `batcave` binary for each of the
+four adapters with the switch set and `PATH` scrubbed, asserts all fourteen scenarios still ran, that
+no scenario detail contains `"failed to spawn"` or `"No such file or directory"`, and that `probe`
+still passes. Asserting on the absence of an `ENOENT`-shaped detail — rather than on the switch being
+read somewhere — is what makes it a real regression test.
+`BATMAN_DISABLE_VENDOR_CLI=1 cargo test --workspace` passes (718 passed, plus the one pre-existing
+unrelated failure `copilot_adapter::real_binary_initialize_and_session_list_never_invoke_a_model`,
+which spawns the real `copilot` binary from the test itself, outside the conformance call graph
+entirely, and fails identically on unmodified `main`); `cargo clippy -D warnings`,
+`cargo fmt --all --check` and `bun run generate --check` are clean — no protocol types moved, this was
+pure runtime logic.
+
+With R52 closed the High tier drops to five: R33, R44, R51, R53 and R54 remain. As with every fix in
+this journal whose real target is a machine this repo cannot stand up locally, final confirmation that
+the release pipeline's `conformance` job goes green on a bare CI runner with no vendor CLI installed
+can only come from GitHub Actions on the next push or tag.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
