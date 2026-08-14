@@ -3,18 +3,28 @@
 //! After an unclean shutdown (crash, OOM kill, SIGKILL), runs may be left in
 //! non-terminal states (`queued`, `starting`, `working`, `waitingUser`,
 //! `waitingPeer`, `paused`). The [`RecoveryCoordinator`] finds these stuck
-//! runs -- ones whose most recent journaled event (or creation time, if
-//! none) predates [`RecoveryConfig::stuck_threshold`] -- and transitions
-//! each to an appropriate terminal state: `queued`/`starting`/`working` to
-//! `failed` (no evidence the work ever completed), and `waitingUser`/
-//! `waitingPeer`/`paused` to `cancelled` when the corresponding
-//! [`RecoveryConfig`] flag opts in (these runs are intentionally waiting on
-//! a human/peer, so recovering them by default would cancel valid work).
+//! runs and transitions each to an appropriate terminal state:
+//! `queued`/`starting`/`working` to `failed` (no evidence the work ever
+//! completed), and `waitingUser`/`waitingPeer`/`paused` to `cancelled` when
+//! the corresponding [`RecoveryConfig`] flag opts in (these runs are
+//! intentionally waiting on a human/peer, so recovering them by default
+//! would cancel valid work).
 //!
-//! [`crate::lifecycle::serve`] runs this sweep once, synchronously, after
-//! opening the database but before the socket accepts any connection --
-//! every run this sweep would touch is guaranteed stale from before this
-//! process started, so there is no risk of racing a live mutation.
+//! [`crate::lifecycle::serve`] runs the sweep once, synchronously, after
+//! opening the database but before the socket accepts any connection. The
+//! sweep decides by **ownership, not age**: `serve` holds the single-instance
+//! lock and the adapter registry starts with an empty running map, so every
+//! non-terminal run visible at that moment provably has no live supervisor
+//! behind it -- however recent its last event. An age threshold here (the
+//! pre-fix `stuck_threshold`) could only hide the most common real crash, in
+//! which a supervisor restarts the daemon seconds after the death (R51).
+//!
+//! There is deliberately no periodic re-sweep: no adapter emits a heartbeat,
+//! so while a daemon is alive a run can be silent for minutes without being
+//! dead, and a time-based sweep would fail runs that are merely quiet.
+//! [`DEFAULT_STALE_RUN_THRESHOLD`] exists for the doctor's read-only
+//! `stale_runs` report -- the live-daemon counterpart -- and for nothing
+//! else.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,13 +56,27 @@ pub enum RecoveryError {
     NoRunsToRecover,
 }
 
-/// Configuration for crash recovery.
-#[derive(Debug, Clone)]
-pub struct RecoveryConfig {
-    /// The threshold for considering a run "stuck". Runs in non-terminal states
-    /// that haven't had activity for longer than this duration will be recovered.
-    pub stuck_threshold: Duration,
+/// How long a run must be silent before the doctor's read-only `stale_runs`
+/// check names it. Never used to recover anything: the startup sweep decides
+/// by ownership (nothing can be live at boot), and no periodic sweep exists,
+/// because no adapter emits a heartbeat -- a time-based sweep against a live
+/// daemon would fail runs that are merely quiet.
+pub const DEFAULT_STALE_RUN_THRESHOLD: Duration = Duration::from_secs(300);
 
+/// Which non-terminal runs a stuck-run query returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SweepScope {
+    /// Every non-terminal run in the project, however recent its last event.
+    /// Sound only at startup: no run visible then can have a live supervisor.
+    EveryNonTerminal,
+    /// Only runs whose last activity predates the given silence threshold --
+    /// the live-daemon reading, used by the doctor's passive report.
+    StaleBeyond(Duration),
+}
+
+/// Configuration for crash recovery.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RecoveryConfig {
     /// Whether to recover runs in `paused` state. Paused runs are intentionally
     /// waiting for user input, so recovering them would cancel valid work.
     pub recover_paused: bool,
@@ -60,16 +84,6 @@ pub struct RecoveryConfig {
     /// Whether to recover runs in `waitingUser` or `waitingPeer` state. These
     /// runs are waiting for approval, so recovering them would cancel valid work.
     pub recover_waiting: bool,
-}
-
-impl Default for RecoveryConfig {
-    fn default() -> Self {
-        Self {
-            stuck_threshold: Duration::from_secs(300), // 5 minutes
-            recover_paused: false,
-            recover_waiting: false,
-        }
-    }
 }
 
 /// Result of a recovery operation.
@@ -138,9 +152,10 @@ impl RecoveryCoordinator {
     /// Performs crash recovery on all runs in the database.
     ///
     /// This method:
-    /// 1. Finds all runs in non-terminal states
-    /// 2. Checks if they've been stuck for longer than [`RecoveryConfig::stuck_threshold`]
-    /// 3. Transitions stuck runs to appropriate terminal states based on their
+    /// 1. Finds every run in a non-terminal state, with no age filter -- see
+    ///    the module header for why ownership, not age, is the sound test at
+    ///    startup
+    /// 2. Transitions each to an appropriate terminal state based on its
     ///    current state and the recovery configuration
     ///
     /// Each stuck run is recovered independently -- one run's transition
@@ -167,7 +182,7 @@ impl RecoveryCoordinator {
     /// # }
     /// ```
     pub async fn recover(&self) -> Result<RecoveryResult, RecoveryError> {
-        let stuck_runs = self.find_stuck_runs().await?;
+        let stuck_runs = self.find_stuck_runs(SweepScope::EveryNonTerminal).await?;
         let mut recovered_runs = Vec::with_capacity(stuck_runs.len());
         for stuck in &stuck_runs {
             match self.recover_run(stuck).await {
@@ -203,52 +218,59 @@ impl RecoveryCoordinator {
     /// A run is considered stuck if:
     /// - It's in a non-terminal state (`queued`, `starting`, `working`,
     ///   `waitingUser`, `waitingPeer`, `paused`)
-    /// - Its last activity -- the timestamp of its most recent journaled
-    ///   event, or its `created_at` if it has none -- predates
-    ///   [`RecoveryConfig::stuck_threshold`]
-    /// - If [`RecoveryConfig::recover_paused`] is `false`, runs in `paused` state
-    ///   are excluded
+    /// - It is included per `scope`: every one at startup, or -- for the
+    ///   doctor's passive report -- only those whose last activity (its most
+    ///   recent journaled event, or its `created_at` if it has none) predates
+    ///   the bound threshold
+    /// - If [`RecoveryConfig::recover_paused`] is `false`, runs in `paused`
+    ///   state are excluded
     /// - If [`RecoveryConfig::recover_waiting`] is `false`, runs in
     ///   `waitingUser` or `waitingPeer` state are excluded
-    pub(crate) async fn find_stuck_runs(&self) -> Result<Vec<StuckRun>, RecoveryError> {
-        let cutoff = time::OffsetDateTime::now_utc()
-            .checked_sub(time::Duration::seconds(
-                i64::try_from(self.config.stuck_threshold.as_secs()).unwrap_or(i64::MAX),
-            ))
-            .ok_or_else(|| {
-                RecoveryError::InvalidDatabase(
-                    "stuck threshold exceeds representable time".to_string(),
-                )
-            })?
-            .format(&time::format_description::well_known::Rfc3339)
-            .map_err(|e| {
-                RecoveryError::InvalidDatabase(format!("failed to format cutoff timestamp: {e}"))
-            })?;
+    pub(crate) async fn find_stuck_runs(
+        &self,
+        scope: SweepScope,
+    ) -> Result<Vec<StuckRun>, RecoveryError> {
+        let cutoff: Option<String> = match scope {
+            SweepScope::EveryNonTerminal => None,
+            SweepScope::StaleBeyond(threshold) => {
+                let cutoff = time::OffsetDateTime::now_utc()
+                    .checked_sub(time::Duration::seconds(
+                        i64::try_from(threshold.as_secs()).unwrap_or(i64::MAX),
+                    ))
+                    .ok_or_else(|| {
+                        RecoveryError::InvalidDatabase(
+                            "stale threshold exceeds representable time".to_string(),
+                        )
+                    })?
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .map_err(|e| {
+                        RecoveryError::InvalidDatabase(format!(
+                            "failed to format cutoff timestamp: {e}"
+                        ))
+                    })?;
+                Some(cutoff)
+            }
+        };
 
         let project_id = self.project_id;
         let cutoff_param = cutoff.clone();
         let closure: DomainClosure = Box::new(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT r.run_id, r.state, r.worker_id,
-                        COALESCE((SELECT MAX(e.timestamp) FROM events e WHERE e.run_id = r.run_id), r.created_at)
-                 FROM runs r
-                 JOIN tasks t ON r.task_id = t.task_id
-                 WHERE t.project_id = ?1
-                   AND COALESCE((SELECT MAX(e2.timestamp) FROM events e2 WHERE e2.run_id = r.run_id), r.created_at) < ?2",
-            )?;
-            let rows: Vec<(String, String, String, String)> = stmt
-                .query_map(
-                    rusqlite::params![project_id.to_string(), cutoff_param],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                        ))
-                    },
-                )?
-                .collect::<Result<Vec<_>, _>>()?;
+            let rows: Vec<(String, String, String, String)> = match &cutoff_param {
+                Some(cutoff) => {
+                    let mut stmt =
+                        conn.prepare(&format!("{STUCK_RUN_SELECT}{STALE_ONLY_PREDICATE}"))?;
+                    stmt.query_map(
+                        rusqlite::params![project_id.to_string(), cutoff],
+                        map_stuck_row,
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?
+                }
+                None => {
+                    let mut stmt = conn.prepare(STUCK_RUN_SELECT)?;
+                    stmt.query_map(rusqlite::params![project_id.to_string()], map_stuck_row)?
+                        .collect::<Result<Vec<_>, _>>()?
+                }
+            };
             Ok(serde_json::to_value(rows)?)
         });
 
@@ -354,6 +376,30 @@ fn target_state_for(current: &RunState) -> Option<RunState> {
         "waitingUser" | "waitingPeer" | "paused" => RunState::try_from("cancelled").ok(),
         _ => None,
     }
+}
+
+/// The projection both sweep scopes share: one row per run in this project,
+/// with its last activity (most recent journaled event, falling back to
+/// `created_at`). Terminal states are filtered in Rust against
+/// `RunState::is_terminal()`, never in SQL.
+const STUCK_RUN_SELECT: &str = "SELECT r.run_id, r.state, r.worker_id,
+                COALESCE((SELECT MAX(e.timestamp) FROM events e WHERE e.run_id = r.run_id), r.created_at)
+         FROM runs r
+         JOIN tasks t ON r.task_id = t.task_id
+         WHERE t.project_id = ?1";
+
+/// Appended for `SweepScope::StaleBeyond`: restricts the projection to runs
+/// whose last activity predates the bound cutoff (`?2`).
+const STALE_ONLY_PREDICATE: &str = "
+           AND COALESCE((SELECT MAX(e2.timestamp) FROM events e2 WHERE e2.run_id = r.run_id), r.created_at) < ?2";
+
+fn map_stuck_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, String, String, String)> {
+    Ok((
+        row.get::<_, String>(0)?,
+        row.get::<_, String>(1)?,
+        row.get::<_, String>(2)?,
+        row.get::<_, String>(3)?,
+    ))
 }
 
 /// A run that is stuck in a non-terminal state.

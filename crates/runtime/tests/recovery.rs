@@ -6,11 +6,12 @@
 //! run into the non-terminal state under test, then calls `recover()` and
 //! asserts the resulting terminal state.
 //!
-//! Every "stuck" run in these tests is made stale by using a
-//! near-zero `stuck_threshold` plus a short sleep, rather than by hand-
-//! crafting backdated timestamps -- this exercises the exact same
-//! last-activity computation (`MAX(events.timestamp)` per run, falling back
-//! to `runs.created_at`) that a real crashed daemon's stuck runs would hit.
+//! The startup sweep has no age filter, so no test needs to age a run:
+//! every seeded run is already "stuck" the moment it exists. The two
+//! doctor-facing tests at the end are the only ones that manipulate
+//! timestamps, and they do it by back-dating `runs.created_at` /
+//! `events.timestamp` directly -- no production API back-dates, and the
+//! doctor's silence report is the only consumer left that reads age at all.
 //!
 //! Tests run with `--test-threads=1` since they manipulate real database
 //! state through the same actor a concurrent test's `DatabaseHandle` would
@@ -18,14 +19,14 @@
 //! already isolates them, but the crate-wide convention is one thread.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use batman_protocol::{
     ProjectId, Run, RunFlags, RunState, TaskId, TaskRef, Timestamp, WorkerId, WorkerProfileRef,
 };
 use batman_runtime::db::DatabaseHandle;
+use batman_runtime::doctor::{Doctor, DoctorResult};
 use batman_runtime::domain::DomainRepository;
-use batman_runtime::recovery::{RecoveryConfig, RecoveryCoordinator};
+use batman_runtime::recovery::{DEFAULT_STALE_RUN_THRESHOLD, RecoveryConfig, RecoveryCoordinator};
 use tempfile::TempDir;
 
 /// Seeds one task + one worker + one run in `initial_state` against a real,
@@ -129,20 +130,15 @@ async fn run_state(db: &DatabaseHandle, run_id: batman_protocol::RunId) -> Strin
     .to_string()
 }
 
-/// A `RecoveryConfig` with a near-zero threshold, so any run seeded before
-/// `RECOVERY_SETTLE` elapses is provably "stuck" without hand-crafted
-/// timestamps.
-fn immediate_config(recover_paused: bool, recover_waiting: bool) -> RecoveryConfig {
+/// A `RecoveryConfig` with the given opt-in flags. There is no threshold to
+/// tune: the startup sweep takes every non-terminal run, so a test's seeded
+/// run is already "stuck" the moment it exists.
+fn config(recover_paused: bool, recover_waiting: bool) -> RecoveryConfig {
     RecoveryConfig {
-        stuck_threshold: Duration::from_millis(1),
         recover_paused,
         recover_waiting,
     }
 }
-
-/// How long every test sleeps after seeding, so its runs' last-activity
-/// timestamps provably predate `immediate_config`'s 1ms threshold.
-const RECOVERY_SETTLE: Duration = Duration::from_millis(50);
 
 async fn open_db() -> (TempDir, DatabaseHandle) {
     let state_dir = TempDir::new().unwrap();
@@ -165,21 +161,8 @@ async fn recovery_returns_empty_when_no_stuck_runs() {
 #[tokio::test]
 async fn recovery_config_default_values() {
     let config = RecoveryConfig::default();
-    assert_eq!(config.stuck_threshold, Duration::from_secs(300));
     assert!(!config.recover_paused);
     assert!(!config.recover_waiting);
-}
-
-#[tokio::test]
-async fn recovery_config_custom_values() {
-    let config = RecoveryConfig {
-        stuck_threshold: Duration::from_secs(600),
-        recover_paused: true,
-        recover_waiting: true,
-    };
-    assert_eq!(config.stuck_threshold, Duration::from_secs(600));
-    assert!(config.recover_paused);
-    assert!(config.recover_waiting);
 }
 
 // --------------------------------------------------------- kill-point tests
@@ -191,11 +174,9 @@ async fn stuck_queued_run_recovers_to_failed() {
     let (_state_dir, db) = open_db().await;
     let project_id = ProjectId::new();
     let (_task_id, _worker_id, run_id) = seed_run(&db, project_id, "queued").await;
-    tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator =
-        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, false));
+    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, config(false, false));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 1);
@@ -215,11 +196,9 @@ async fn stuck_starting_run_recovers_to_failed() {
     let (_state_dir, db) = open_db().await;
     let project_id = ProjectId::new();
     let (_task_id, _worker_id, run_id) = seed_run(&db, project_id, "starting").await;
-    tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator =
-        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, false));
+    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, config(false, false));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 1);
@@ -234,11 +213,9 @@ async fn stuck_working_run_recovers_to_failed() {
     let (_state_dir, db) = open_db().await;
     let project_id = ProjectId::new();
     let (_task_id, _worker_id, run_id) = seed_run(&db, project_id, "working").await;
-    tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator =
-        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, false));
+    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, config(false, false));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 1);
@@ -254,11 +231,9 @@ async fn stuck_waiting_peer_run_recovers_to_cancelled_when_opted_in() {
     let (_state_dir, db) = open_db().await;
     let project_id = ProjectId::new();
     let (_task_id, _worker_id, run_id) = seed_run(&db, project_id, "waitingPeer").await;
-    tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator =
-        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, true));
+    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, config(false, true));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 1);
@@ -274,11 +249,9 @@ async fn stuck_waiting_user_run_is_untouched_when_not_opted_in() {
     let (_state_dir, db) = open_db().await;
     let project_id = ProjectId::new();
     let (_task_id, _worker_id, run_id) = seed_run(&db, project_id, "waitingUser").await;
-    tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator =
-        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, false));
+    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, config(false, false));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(
@@ -295,11 +268,9 @@ async fn stuck_paused_run_recovers_to_cancelled_when_opted_in() {
     let (_state_dir, db) = open_db().await;
     let project_id = ProjectId::new();
     let (_task_id, _worker_id, run_id) = seed_run(&db, project_id, "paused").await;
-    tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator =
-        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(true, false));
+    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, config(true, false));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 1);
@@ -315,42 +286,41 @@ async fn stuck_paused_run_is_untouched_when_not_opted_in() {
     let (_state_dir, db) = open_db().await;
     let project_id = ProjectId::new();
     let (_task_id, _worker_id, run_id) = seed_run(&db, project_id, "paused").await;
-    tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator =
-        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(false, false));
+    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, config(false, false));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 0);
     assert_eq!(run_state(&db, run_id).await, "paused");
 }
 
-/// A run whose last activity is recent (well inside the stuck threshold)
-/// is never recovered, even in a non-terminal state -- recovery must not
-/// cancel/fail work that is merely in progress, only work that has gone
-/// silent for longer than the threshold.
+/// R51: the realistic crash is "the daemon died and a supervisor restarted it
+/// seconds later," so the startup sweep must recover a run whose last event is
+/// seconds old. Under the old five-minute staleness cutoff this exact run --
+/// the common case -- was skipped by the only sweep that would ever run
+/// against that crash, and stayed `working` forever with no live process.
 #[tokio::test]
-async fn fresh_non_terminal_run_is_not_recovered() {
+async fn a_run_whose_last_event_is_seconds_old_is_recovered_at_startup() {
     let (_state_dir, db) = open_db().await;
     let project_id = ProjectId::new();
     let (_task_id, _worker_id, run_id) = seed_run(&db, project_id, "working").await;
-    // No sleep: last activity is "now", well inside the default 5-minute
-    // threshold.
+    // No ageing of any kind: last activity is "now", which is exactly the
+    // crash-then-immediate-restart case.
 
     let db = Arc::new(db);
     let coordinator = RecoveryCoordinator::with_defaults(Arc::clone(&db), project_id);
     let result = coordinator.recover().await.unwrap();
 
-    assert_eq!(result.recovered_count, 0);
-    assert_eq!(run_state(&db, run_id).await, "working");
+    assert_eq!(result.recovered_count, 1);
+    assert_eq!(run_state(&db, run_id).await, "failed");
 }
 
-/// A run already in a terminal state is never touched by recovery, however
-/// old its last activity -- it has no outgoing edges and recovery must
-/// never attempt (and fail) a transition out of one.
+/// A run already in a terminal state is never touched by recovery -- it has
+/// no outgoing edges and recovery must never attempt (and fail) a
+/// transition out of one.
 #[tokio::test]
-async fn terminal_run_is_never_touched_regardless_of_age() {
+async fn terminal_run_is_never_touched() {
     let (_state_dir, db) = open_db().await;
     let project_id = ProjectId::new();
     let (_task_id, _worker_id, run_id) = seed_run(&db, project_id, "working").await;
@@ -362,11 +332,9 @@ async fn terminal_run_is_never_touched_regardless_of_age() {
     }))
     .await
     .unwrap();
-    tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator =
-        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(true, true));
+    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, config(true, true));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 0);
@@ -382,15 +350,111 @@ async fn multiple_stuck_runs_are_all_recovered_independently() {
     let (_t1, _w1, queued_run) = seed_run(&db, project_id, "queued").await;
     let (_t2, _w2, working_run) = seed_run(&db, project_id, "working").await;
     let (_t3, _w3, paused_run) = seed_run(&db, project_id, "paused").await;
-    tokio::time::sleep(RECOVERY_SETTLE).await;
 
     let db = Arc::new(db);
-    let coordinator =
-        RecoveryCoordinator::new(Arc::clone(&db), project_id, immediate_config(true, true));
+    let coordinator = RecoveryCoordinator::new(Arc::clone(&db), project_id, config(true, true));
     let result = coordinator.recover().await.unwrap();
 
     assert_eq!(result.recovered_count, 3);
     assert_eq!(run_state(&db, queued_run).await, "failed");
     assert_eq!(run_state(&db, working_run).await, "failed");
     assert_eq!(run_state(&db, paused_run).await, "cancelled");
+}
+
+// ------------------------------------------- doctor's silence-threshold report
+
+/// Back-dates a run's last activity -- both `runs.created_at` and every event
+/// it journaled -- past `DEFAULT_STALE_RUN_THRESHOLD`. Raw SQL on purpose: no
+/// production API back-dates a timestamp, and the doctor's report is the only
+/// consumer left that reads age at all.
+async fn backdate_past_stale_threshold(db: &DatabaseHandle, run_id: batman_protocol::RunId) {
+    let old = (time::OffsetDateTime::now_utc()
+        - time::Duration::seconds(
+            i64::try_from(DEFAULT_STALE_RUN_THRESHOLD.as_secs()).unwrap() + 60,
+        ))
+    .format(&time::format_description::well_known::Rfc3339)
+    .unwrap();
+    db.run_domain_op(Box::new(move |conn| {
+        conn.execute(
+            "UPDATE runs SET created_at = ?1 WHERE run_id = ?2",
+            rusqlite::params![old, run_id.to_string()],
+        )?;
+        conn.execute(
+            "UPDATE events SET timestamp = ?1 WHERE run_id = ?2",
+            rusqlite::params![old, run_id.to_string()],
+        )?;
+        Ok(serde_json::json!({}))
+    }))
+    .await
+    .expect("backdate run activity");
+}
+
+/// A `Doctor` reading the same database and project the seeded runs live in.
+/// No policy: `configuration_valid` then reports `skipped:`, which these
+/// tests never inspect -- only the `stale_runs` entry.
+fn doctor_over(db: &Arc<DatabaseHandle>, state_dir: &TempDir, project_id: ProjectId) -> Doctor {
+    Doctor::new(
+        Some(Arc::clone(db)),
+        Some(state_dir.path().to_path_buf()),
+        None,
+    )
+    .with_runtime_context(
+        state_dir.path().join("runtime.sock"),
+        state_dir.path().to_path_buf(),
+        project_id,
+    )
+}
+
+fn error_for<'a>(result: &'a DoctorResult, check_name: &str) -> Option<&'a str> {
+    result
+        .failed_checks
+        .iter()
+        .find(|c| c.check_name == check_name)
+        .map(|c| c.error.as_str())
+}
+
+/// The doctor's `stale_runs` report runs against a *live* daemon, where a
+/// quiet run is not a dead run, so it must keep the silence threshold the
+/// startup sweep no longer has: a run whose last event is seconds old must
+/// not be named.
+#[tokio::test]
+async fn the_doctors_stale_run_report_ignores_a_run_that_is_merely_recent() {
+    let (state_dir, db) = open_db().await;
+    let project_id = ProjectId::new();
+    let (_task_id, _worker_id, _run_id) = seed_run(&db, project_id, "working").await;
+
+    let db = Arc::new(db);
+    let doctor = doctor_over(&db, &state_dir, project_id);
+    let result = doctor.check().await.unwrap();
+
+    assert!(
+        result.passed_checks.iter().any(|name| name == "stale_runs"),
+        "a merely-recent run must not be reported stale: {:?}",
+        result.failed_checks
+    );
+}
+
+/// And the threshold is not merely a constant: a run back-dated past it is
+/// named in the report, by id.
+#[tokio::test]
+async fn the_doctors_stale_run_report_names_a_run_silent_past_the_threshold() {
+    let (state_dir, db) = open_db().await;
+    let project_id = ProjectId::new();
+    let (_task_id, _worker_id, run_id) = seed_run(&db, project_id, "working").await;
+    backdate_past_stale_threshold(&db, run_id).await;
+
+    let db = Arc::new(db);
+    let doctor = doctor_over(&db, &state_dir, project_id);
+    let result = doctor.check().await.unwrap();
+
+    let error = error_for(&result, "stale_runs").unwrap_or_else(|| {
+        panic!(
+            "expected the stale_runs check to fail: {:?}",
+            result.failed_checks
+        )
+    });
+    assert!(
+        error.contains(&run_id.to_string()),
+        "the report must name the offending run: {error}"
+    );
 }

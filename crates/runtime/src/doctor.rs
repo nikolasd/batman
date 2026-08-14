@@ -504,8 +504,12 @@ impl Doctor {
         )))
     }
 
-    /// Counts runs left in a non-terminal state with no live adapter,
-    /// reusing the recovery coordinator's own stuck-run query.
+    /// Counts runs left in a non-terminal state whose last journaled event
+    /// is older than [`crate::recovery::DEFAULT_STALE_RUN_THRESHOLD`],
+    /// reusing the recovery coordinator's own stuck-run query. Read-only: it
+    /// never transitions anything, and it never claims a silent run is dead
+    /// -- a running daemon can legitimately supervise a run that emits
+    /// nothing for minutes.
     async fn check_stale_runs(&self) -> Result<(), DoctorError> {
         let (Some(db), Some(project_id)) = (&self.db, self.project_id) else {
             return Err(DoctorError::DatabaseError(
@@ -515,7 +519,9 @@ impl Doctor {
         let coordinator =
             crate::recovery::RecoveryCoordinator::with_defaults(Arc::clone(db), project_id);
         let stuck = coordinator
-            .find_stuck_runs()
+            .find_stuck_runs(crate::recovery::SweepScope::StaleBeyond(
+                crate::recovery::DEFAULT_STALE_RUN_THRESHOLD,
+            ))
             .await
             .map_err(|e| DoctorError::DatabaseError(e.to_string()))?;
         if stuck.is_empty() {
