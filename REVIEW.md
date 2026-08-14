@@ -11,7 +11,7 @@ TypeScript/workspace, and build/docs/release, split across four parallel reviewe
 findings were corrected in place (R17, R20, R43, R46) where the mechanism had changed since last
 verified.
 
-**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R41, R47, R48, R49, R50, R52) plus the
+**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R41, R47, R48, R49, R50, R51, R52) plus the
 eleven documentation findings that were resolved or already-stale (R19, R21-R28) has been pruned from
 this document. That history — what broke, the fix commit, the test that proved it, and which
 still-open items below exist *because* of that fix — now lives in
@@ -19,7 +19,8 @@ still-open items below exist *because* of that fix — now lives in
 (R1-R11, R47), [Part XI](journal.md#part-xi--halving-the-critical-pair-a-ceiling-that-could-not-be-enforced) (R48),
 [Part XII](journal.md#part-xii--closing-the-last-critical-a-denylist-blind-to-its-own-vendor) (R49),
 [Part XIII](journal.md#part-xiii--two-leaks-one-lease-releasing-what-a-failed-start-acquired) (R41, R50),
-and [Part XIV](journal.md#part-xiv--fixture-modes-broken-promise-a-kill-switch-only-one-caller-ever-asked-about) (R52).
+[Part XIV](journal.md#part-xiv--fixture-modes-broken-promise-a-kill-switch-only-one-caller-ever-asked-about) (R52),
+and [Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51).
 This document only tracks what's still broken.
 
 **Baseline, last run 2026-08-12** (during an unrelated state-root rename; results apply to this
@@ -40,17 +41,19 @@ operate the system correctly.
 
 ## Findings
 
+### Critical
+
+#### R69. No production path ever transitions a run out of `queued` — the documented run state machine is inert
+
+**Location:** `crates/runtime/src/adapter/registry.rs:198-263` (`impl RunDriver for AdapterRegistry`, `start`), `:337-367` (`watch_settlement`); `crates/runtime/src/domain/repository.rs:1133-1140` (`record_adapter_event`'s own doc comment); `crates/runtime/src/service/run_driver.rs:89-127` (`FakeRunDriver`, the only implementation that does this); `docs/architecture.md:680-686`
+
+**Evidence:** `AdapterRegistry` is the real, production `RunDriver` (`impl RunDriver for AdapterRegistry`, `registry.rs:198`). Its `start` (`:199-263`) spawns the adapter via `run_one` and hands settlement to `watch_settlement` (`:337-367`), but neither ever calls `transition_run`: `watch_settlement` only evicts and disposes the adapter, releases the concurrency slot, and journals the display detach on `ProcessExited`. Grepping `crates/runtime/src/adapter/` for `transition_run` returns zero hits. `record_adapter_event`'s own doc comment (`domain/repository.rs:1133-1140`) says it "never itself applies a run-state transition -- adapters call `transition_run` directly for that" — a claim adapter code never fulfills. The only production `transition_run` call sites are `run_cancel` (user-triggered cancellation), the approval service (`working` → `waitingUser`), and the policy violation service — none of them advance `queued -> starting -> working`, and none mark a run `succeeded`/`failed` on its own completion. The `queued -> starting -> working` sequence `docs/architecture.md:680-686` documents as real is only ever exercised by `FakeRunDriver` (`service/run_driver.rs:89-127`), used exclusively by orchestration tests. Concretely: a real run's row in `runs` never leaves `queued` on its own, however successfully its actual vendor process runs and exits — discovered while resolving R51, whose boot-time recovery sweep is currently the only mechanism in this codebase that ever terminalizes any run at all.
+
+**Fix:** apply the documented edges from evidence the adapter layer already journals: transition `queued -> starting` on `AdapterProcessStarted`, `starting -> working` on the adapter's first acknowledgement/vendor-session event, and a terminal edge (`succeeded`/`failed`, deciding by exit code and cancellation scope) inside `watch_settlement`'s existing `ProcessExited` handling — broadcasting each committed envelope per the event-broadcast invariant.
+
+**Priority:** Critical — the durable run state machine, the approval flow, and the peer-request flow are all unreachable in production, and every consumer of run state (the monitor, `run/get`, `run/list`) reads a value that is wrong for every real run. Discovered 2026-08-14 while resolving R51.
+
 ### High
-
-#### R51. Crash recovery's one-shot sweep misses the realistic "crash then immediate restart" case
-
-**Location:** `crates/runtime/src/recovery.rs:68` (`stuck_threshold: Duration::from_secs(300)`); `crates/runtime/src/lifecycle.rs:150-151`
-
-**Evidence:** `RecoveryCoordinator::recover()` runs exactly once per `serve()` invocation, sweeping runs whose last event is older than a 5-minute threshold. No periodic re-tick exists — contrast with retention pruning (`lifecycle.rs:312-328`), which explicitly re-ticks every 24h. If a daemon crashes mid-run and a supervisor restarts it within seconds (the realistic operational case this feature exists for), the crashed run's last event is only seconds old, fails the `last_activity < now - 300s` test, and is skipped by the only sweep that will ever run against that crash. The run stays `working` forever with no live process; only `batcave doctor`'s passive `stale_runs` check will ever flag it, and nothing acts on that automatically.
-
-**Fix:** either lower the effective threshold for the startup sweep specifically, or add a periodic re-sweep (matching the retention-pruning pattern) so a run that becomes stale after the boot-time sweep still gets recovered without requiring another restart.
-
-**Priority:** High — the feature's stated purpose (recover from a crash) fails on the most common real trigger for a crash: a supervisor restarting the daemon quickly.
 
 #### R33. `serde_json/preserve_order` breaks fingerprint determinism and two documented invariants
 
@@ -363,8 +366,8 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
-- **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII)
-- **High:** 6 (R33, R44 — carried forward from earlier rounds; R51, R53, R54, R68 — new) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV)
+- **Critical:** 1 (R69 — discovered 2026-08-14 while resolving R51) — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII)
+- **High:** 5 (R33, R44 — carried forward from earlier rounds; R53, R54, R68 — new) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
 - **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged

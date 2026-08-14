@@ -2179,6 +2179,100 @@ target is a machine this repo cannot stand up locally, final confirmation that t
 `conformance` job goes green on a bare CI runner with no vendor CLI installed can only come from
 GitHub Actions on the next push or tag.
 
+## Part XV — Crash recovery's five-minute blind spot: the one crash it could not see
+
+R51 in REVIEW.md ranked first among the High-severity items, on end-to-end functionality
+completeness: `RecoveryCoordinator::recover()` runs exactly once per `serve()`
+(`lifecycle.rs:149-151`), and pre-fix it only recovered runs whose most recent journaled event
+predated a 300-second `RecoveryConfig::stuck_threshold` (`recovery.rs:68`). A daemon that crashes and
+is restarted seconds later by a supervisor — systemd, a process manager, or a human hitting the up
+arrow — leaves every mid-flight run's last activity seconds old, which fails that cutoff, and no
+second sweep ever runs against that crash: retention re-ticks every 24 hours
+(`lifecycle.rs:312-331`), but recovery never re-ticks. The runs most likely to need recovery — the
+ones from the crash that just happened — were exactly the ones the sweep was built to ignore, and
+they stayed `working`/`queued` with no live process behind them, forever.
+
+The threshold wasn't merely too large; it was unsound at the one call site that used it. `serve`
+holds the single-instance `flock` before running the sweep, and `AdapterRegistry`'s `running` map
+(`adapter/registry.rs:151`) is constructed empty for this process
+(`adapter/registry.rs:164-172` in the earlier read, `running_adapter`/`running_count` at
+`:186-188`/`:193-195`) — so every non-terminal run visible at that moment provably has no live
+supervisor behind it, however recent its last event. The module's own doc comment already asserted
+this ("every run this sweep can see predates this process"); the age filter contradicted the
+invariant the same file documented.
+
+The fix replaces the single age-gated query with an explicit `SweepScope`: `EveryNonTerminal` for the
+boot sweep (no cutoff parameter at all), and `StaleBeyond(Duration)` for the doctor's separate,
+read-only `stale_runs` report, which *is* checking a live daemon and must not fail a run that is
+merely quiet. Both scopes share one SQL projection (`STUCK_RUN_SELECT`, with `STALE_ONLY_PREDICATE`
+appended only for `StaleBeyond`) so the "last activity" definition — most recent journaled event,
+falling back to `created_at` — can never drift between the two readings. `stuck_threshold` is deleted
+from `RecoveryConfig` outright rather than left present-and-ignored, so the trap cannot be re-armed
+by a future caller reading the struct and assuming it still does something. The renamed constant,
+`DEFAULT_STALE_RUN_THRESHOLD`, now lives beside its only consumer, exported from `lib.rs` for
+`doctor.rs` to reach; `check_stale_runs`'s own doc comment, which had claimed the check counted runs
+"with no live adapter" — something it never verified, since it only ever read timestamps — is
+corrected in the same commit to describe what it actually does: count runs silent past the threshold,
+read-only, never claiming a quiet run is a dead one.
+
+R51's REVIEW.md entry offered a periodic re-sweep as the alternative fix; it is refused here, on
+evidence rather than preference. No heartbeat exists anywhere in `AdapterEventPayload`
+(`adapter/event_sink.rs:55-62`: only `ProcessStarted`/`ProcessExited`), and the vendor event
+normalizers emit nothing for thinking or unrecognized frames, so a live, working run can go silent
+for minutes without being dead — a time-based sweep against a *running* daemon would fail runs that
+are merely quiet, trading one false negative for a worse false positive.
+`AdapterRegistry::running_adapter` (`adapter/registry.rs:186-188`) could in principle supply real
+liveness instead of a timestamp guess, but pursuing that here would have been solving a problem this
+fix doesn't have: the deeper blocker, discovered while verifying this exact path, is that in
+production nothing calls it either.
+
+That deeper finding is worth stating plainly rather than left to be rediscovered. `AdapterRegistry`
+is the real `RunDriver` (`impl RunDriver for AdapterRegistry`, `adapter/registry.rs:198`), and its
+`start` (`:199-263`) reserves the run-id slot, calls `run_one` to spawn the adapter, and spawns
+`watch_settlement` to wait for `ProcessExited` — but neither `run_one` nor `watch_settlement`
+(`:337-367`) ever calls `transition_run`. `watch_settlement` only evicts and disposes the adapter,
+releases the concurrency slot, and journals the display detach. Grepping `crates/runtime/src/adapter/`
+for `transition_run` returns zero hits. The only production `transition_run` call sites are
+`run_cancel` (`service/orchestration.rs:995`, user-triggered), the approval service (`working` →
+`waitingUser`) and the policy violation service — none of them advance a run through
+`queued → starting → working`, and none of them ever mark one `succeeded` or `failed` on its own
+completion. The one place that transition sequence is actually implemented is `FakeRunDriver`
+(`service/run_driver.rs:89-127`), used only by orchestration tests. Concretely: a real, successfully
+completed run's row in `runs` never leaves `queued` on its own — which is why the boot sweep,
+imprecise as it was, has been the *only* thing in this codebase that ever terminalizes a run at all,
+and why its five-minute blind spot mattered far more than a recovery bug normally would. Tracked
+separately as R69, filed Critical below.
+
+`crates/runtime/tests/recovery.rs` no longer ages anything: `a_run_whose_last_event_is_seconds_old_is_
+recovered_at_startup` replaces `fresh_non_terminal_run_is_not_recovered`, which had encoded the defect
+itself as a passing invariant. Every sleep and the `RECOVERY_SETTLE` constant are gone, since nothing
+needs to age past a threshold that no longer exists for the boot sweep; the twelve other kill-point
+tests are otherwise unchanged in intent. Two new tests drive a real `Doctor` against the same seeded
+database to prove the silence threshold survives exactly where it is still meaningful:
+`the_doctors_stale_run_report_ignores_a_run_that_is_merely_recent` and
+`the_doctors_stale_run_report_names_a_run_silent_past_the_threshold`, the latter back-dating both
+`runs.created_at` and every journaled event's `timestamp` directly with raw SQL — the only remaining
+consumer of age at all.
+
+The end-to-end proof ran through the real compiled `batcave` binary, not just the test suite: seed a
+`working` run into a real, migrated `runtime.db` with its activity set to the current instant, restart
+`serve`, and read the log and the row back. Pre-fix, the second boot printed no
+`crash_recovery_*` log line at all and the run's state read back `working`. Post-fix, the same script
+logs `crash_recovery_transitioned_run` with `from_state=working to_state=failed`, and the row reads
+back `failed`.
+
+`BATMAN_DISABLE_VENDOR_CLI=1 cargo test --workspace` passes 719, one more than Part XIV's 718 (net:
+one test removed, three added across the two rewritten files), with the same pre-existing,
+environment-specific failure as every entry in this journal since Part XIV documented it:
+`copilot_adapter::real_binary_initialize_and_session_list_never_invoke_a_model`, because the locally
+installed Copilot CLI (1.0.80 at the time of this fix) is not yet in `COPILOT_KNOWN_CLI_VERSIONS`.
+`cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt --all --check`, and
+`bun run generate --check` are all clean — no protocol type moved, so generation is unaffected.
+
+With R51 closed, the High tier drops to five: R33, R44, R53, R54 and R68 remain. R69, opened by this
+same fix's investigation into why the boot sweep is the only thing that ever closes a run, puts
+Critical back to one.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
