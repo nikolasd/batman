@@ -71,15 +71,18 @@ against the same paths `serve` would use. Exits 0 healthy, 1 unhealthy. Inside O
 ## Crash Recovery
 
 `serve` runs recovery once, synchronously, right after opening the database and before the socket
-accepts any connection. It looks for runs stuck in `queued`, `starting`, or `working` whose most
-recent journaled event (or creation time, if none) is older than a 5-minute threshold, and
-transitions each to `failed` — there's no evidence the work completed, so it can't be resolved any
-other way. Runs sitting in `paused`, `waitingUser`, or `waitingPeer` are left alone by default, since
-those states mean the run is intentionally waiting on a human or a peer worker, not stuck. Each stuck
-run is recovered independently; one failure doesn't abort the sweep for the others.
+accepts any connection. Every run the journal still calls `queued`, `starting`, or `working` at that
+moment is transitioned to `failed`, however recent its last event: `serve` holds the single-instance
+`flock` and starts with an empty adapter registry, so a non-terminal run in the journal provably has
+no live process behind it, and there's no evidence the work completed. Runs sitting in `paused`,
+`waitingUser`, or `waitingPeer` are left alone by default, since those states mean the run is
+intentionally waiting on a human or a peer worker, not stuck. Each run is recovered independently;
+one failure doesn't abort the sweep for the others.
 
-If you suspect a run is wedged and want to confirm before the next restart naturally sweeps it,
-`batcave doctor`'s `stale_runs` check reports the same condition without transitioning anything.
+Recovery is boot-time only, deliberately: a run supervised by the *running* daemon can be silent for
+minutes without being dead — no adapter emits a heartbeat — so age alone must never fail a live run.
+`batcave doctor`'s `stale_runs` check is the live-daemon counterpart: it names runs whose last
+journaled event is older than five minutes, read-only, transitioning nothing.
 
 ### Recovering from an unexpected crash
 

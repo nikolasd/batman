@@ -167,8 +167,8 @@ batcave doctor --repo "$PWD" --state-dir "$HOME/.omp/batman" --json
 **Note:** there is no `--recover` flag on `status` or `doctor`. Crash recovery is not something you
 trigger manually — it runs automatically, once, every time `serve` starts, before the socket
 accepts any connection (see [Crash Recovery](#crash-recovery) below). `doctor`'s `stale_runs` check
-reports the same stuck-run condition without acting on it, if you want to confirm one exists before
-the next restart sweeps it.
+is the read-only, live-daemon counterpart: it reports a run that has been silent for longer than
+five minutes without acting on it.
 
 ### Stop the Server
 
@@ -266,16 +266,16 @@ batcave audit export --repo "$PWD" --state-dir "$HOME/.omp/batman/repos/<reposit
 
 ### RecoveryCoordinator
 
-`RecoveryCoordinator` is wired into `lifecycle::serve()` and runs automatically at daemon startup. It scans for runs stuck in non-terminal states past a configurable `stuck_threshold` (default: 5 minutes) and transitions them to terminal states. 13 kill-point tests verify the recovery matrix.
+`RecoveryCoordinator` is wired into `lifecycle::serve()` and runs automatically at daemon startup. It transitions every run the journal still calls non-terminal to a terminal state — `queued`/`starting`/`working` to `failed` — without consulting how recent its last event is, because `serve` holds the single-instance lock and starts with an empty adapter registry, so no non-terminal run can still have a live process. `paused`/`waitingUser`/`waitingPeer` runs are skipped unless `RecoveryConfig` opts in. 14 tests verify the recovery matrix plus the doctor's separate silence-threshold report.
 
 **References:** `crates/runtime/src/recovery.rs`, `crates/runtime/src/lifecycle.rs`
 
 ### Manual Recovery
 
 There's no flag to trigger recovery on demand — it only ever runs automatically, once, inside
-`batcave serve` at startup, before the socket accepts any connection. To confirm a run is actually
-stuck without waiting for (or forcing) a restart, check `doctor`'s `stale_runs` check, which reports
-the same condition read-only:
+`batcave serve` at startup, before the socket accepts any connection. To see a run that has gone
+silent while the daemon is up, check `doctor`'s `stale_runs` check, which reports runs silent for
+longer than five minutes, read-only:
 
 ```bash
 batcave doctor --repo "$PWD" --state-dir "$HOME/.omp/batman" --json
@@ -285,11 +285,14 @@ batcave doctor --repo "$PWD" --state-dir "$HOME/.omp/batman" --json
 
 ```rust
 pub struct RecoveryConfig {
-    pub stuck_threshold: Duration,  // Default: 5 minutes
-    pub recover_paused: bool,       // Default: false
-    pub recover_waiting: bool,      // Default: false
+    pub recover_paused: bool,   // Default: false
+    pub recover_waiting: bool,  // Default: false
 }
 ```
+
+Recovery has no stuck-run threshold: the startup sweep decides by ownership, not age. The five-minute
+silence threshold belongs to the doctor's passive `stale_runs` report and lives beside it as
+`recovery::DEFAULT_STALE_RUN_THRESHOLD`.
 
 ## Doctor (Health Checks)
 
@@ -447,20 +450,19 @@ authorization outright; the rest are advisory.
 
 ### Recovery Issues
 
-Recovery isn't independently configurable from the CLI — `stuck_threshold`,
-`recover_paused`, and `recover_waiting` are constructor parameters on `RecoveryConfig`, used by
-whatever code calls `RecoveryCoordinator` (currently just `lifecycle::serve()`'s own defaults). If a
-run looks like it should have been recovered and wasn't:
+Recovery isn't configurable from the CLI — `recover_paused` and `recover_waiting` are the only fields
+on `RecoveryConfig`, used by whatever code calls `RecoveryCoordinator` (currently just
+`lifecycle::serve()`'s own defaults). If a run looks like it should have been recovered and wasn't:
 
 **Solution**:
-1. Confirm it's actually eligible: recovery only touches `queued`/`starting`/`working` runs whose
-   last event is older than the stuck threshold (5 minutes by default) — `paused`/`waitingUser`/
-   `waitingPeer` runs are left alone unless recovery was built with `recover_paused`/
-   `recover_waiting` enabled.
-2. Recovery only runs at `serve` startup, not continuously — a run that just became stale won't be
-   recovered until the next restart.
-3. Use `batcave doctor --json`'s `stale_runs` check to confirm a run is actually stuck, independent
-   of whether recovery has swept it yet.
+1. Confirm it's actually eligible: the startup sweep touches `queued`/`starting`/`working` runs only
+   — `paused`/`waitingUser`/`waitingPeer` runs are left alone unless recovery was built with
+   `recover_paused`/`recover_waiting` enabled.
+2. Recovery only runs at `serve` startup, not continuously — a run that goes silent while the daemon
+   is up stays where it is until the next restart, deliberately: a quiet run is not a dead run while
+   its supervisor is alive.
+3. Use `batcave doctor --json`'s `stale_runs` check to see runs silent for longer than five minutes,
+   without waiting for a restart.
 
 ## Contributing
 

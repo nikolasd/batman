@@ -47,7 +47,7 @@ Small, dependency-light, and the vocabulary for everything else.
 | `src/cli.rs` | clap definitions for `serve`/`status`/`stop`/`version`/`schema`/`monitor`/`audit`; maps outcomes to exit codes (73 = lost the singleton race) |
 | `src/lifecycle.rs` | `serve()`/`status()`/`stop()`: flock singleton, lock metadata, idle shutdown, graceful-stop ordering, log routing, doctor integration |
 | `src/doctor.rs` | `Doctor` — health checking with rollout gates, adapter availability, configuration validity |
-| `src/recovery.rs` | `RecoveryCoordinator` — finds stuck runs after unclean shutdown, transitions to terminal states based on `stuck_threshold`, `recover_paused`, `recover_waiting` |
+| `src/recovery.rs` | `RecoveryCoordinator` — recovers every non-terminal run at startup (ownership, not age); `recover_paused`/`recover_waiting` gates; `DEFAULT_STALE_RUN_THRESHOLD` for the doctor's read-only `stale_runs` report |
 | `src/paths.rs` | `RuntimePaths::resolve`, VCS-root discovery, `repository_id_from_canonical_root` |
 | `src/security/mod.rs` | `StateRoot::resolve` precedence, `ensure_private_dir`/`ensure_private_file` (0700/0600, atomic) |
 | `src/security/rules.rs` | Built-in redaction regex patterns (AWS keys, API keys, GitHub tokens) |
@@ -397,12 +397,12 @@ bun test packages/extension/src/client.test.ts -t "frame"              # TS test
   monitor silently** — no error, no test failure, just a widget that never updates for that one
   mutation. See §3 above before adding one. Full story:
   [`engineering-lessons.md`](engineering-lessons.md#durable-mutations-must-broadcast-the-same-event-they-just-committed).
-- **Recovery runs automatically after each `serve` command**, before the daemon starts serving,
-  based on `stuck_threshold` (default 5 minutes) and the `recover_paused`/`recover_waiting` config
-  flags. If you're debugging why a stuck run transitions to `failed`/`cancelled`, check
-  `recovery.rs:recovery_test` for the stuck threshold configuration. There's no flag to trigger
-  recovery on demand — use `doctor`'s `stale_runs` check to confirm a stuck run exists without
-  waiting for or forcing a restart.
+- **Recovery runs automatically after each `serve` command**, before the daemon starts serving, and
+  sweeps *every* run the journal still calls non-terminal — there is no age threshold on it, because
+  nothing can be live at boot. If you're debugging why a stuck run transitions to `failed`/
+  `cancelled`, `crates/runtime/tests/recovery.rs` is the matrix; `recover_paused`/`recover_waiting`
+  are the only knobs. There's no flag to trigger recovery on demand — use `doctor`'s `stale_runs`
+  check (five-minute silence threshold, read-only) to see a wedged run without forcing a restart.
 - **Rollout gates must all be `true` before production use.** The `Doctor::check()` runs on
   every `serve` and `status` command. If any gate is unresolved, the doctor reports it and
   the runtime refuses to serve in production mode. Check your config files (`~/.batman/config.yaml`,

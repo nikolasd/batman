@@ -76,11 +76,13 @@ already holds it, the new process prints the live holder's identity (`pid`, `ins
 `RuntimeStopping` event → close the database actor → remove `runtime.sock` → release the flock. The
 socket's disappearance is therefore proof the journal already shut down cleanly.
 
-Before accepting any connection, `serve` runs crash recovery once: any run left in `queued`,
-`starting`, or `working` for longer than the stuck threshold (5 minutes) with no live adapter is
-transitioned to `failed`. Runs in `paused`/`waitingUser`/`waitingPeer` are left alone by default
-(they're intentionally waiting on a human or peer), unless recovery is explicitly configured to
-also cancel those.
+Before accepting any connection, `serve` runs crash recovery once: every run left in `queued`,
+`starting`, or `working` is transitioned to `failed`, however recent its last event — `serve` holds
+the single-instance lock and its adapter registry starts empty, so no such run can still have a live
+process. Runs in `paused`/`waitingUser`/`waitingPeer` are left alone by default (they're
+intentionally waiting on a human or peer), unless recovery is explicitly configured to also cancel
+those. `doctor`'s `stale_runs` check is the live-daemon counterpart: it reports runs silent for
+longer than five minutes without transitioning anything.
 
 ### `batcave status`
 
