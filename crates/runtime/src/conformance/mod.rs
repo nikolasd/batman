@@ -29,10 +29,11 @@ pub use report::{ConformanceMode, ConformanceReport, ScenarioResult};
 use crate::adapter::{AdapterCapabilities, AdapterKind};
 
 /// Set to `"1"` to forbid every vendor-CLI process this runtime would
-/// spawn purely to *observe* the CLI -- conformance live suites and the
-/// availability probe. A development and CI switch only: production
-/// leaves it unset, and which adapters a run may use is decided by org
-/// policy (`RuntimePolicy::allowed_adapters`), not by this variable.
+/// spawn purely to *observe* the CLI -- conformance live *and fixture*
+/// suites and the availability probe. A development and CI switch only:
+/// production leaves it unset, and which adapters a run may use is
+/// decided by org policy (`RuntimePolicy::allowed_adapters`), not by
+/// this variable.
 ///
 /// It deliberately does **not** gate `Adapter::start()`: run execution is
 /// authorized by policy, so a development switch must never be able to

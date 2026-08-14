@@ -94,6 +94,16 @@ operate the system correctly.
 
 **Priority:** High — a real, reachable race with contradictory side effects, not just a theoretical one.
 
+#### R68. `BATMAN_DISABLE_VENDOR_CLI=1` deterministically shrinks `effective_capabilities` on the production run-authorization path
+
+**Location:** `crates/runtime/src/adapter/registry.rs:412`; `crates/runtime/src/conformance/report.rs:132-161` (`downgrade_on_scenario_failure`); `crates/runtime/src/policy/evaluate.rs:317-324`; `crates/runtime/src/conformance/mod.rs:55-64` (`vendor_cli_required_scenario`)
+
+**Evidence:** `registry.rs:412` calls `conformance::run_fixture_conformance(kind)` on every real run submission and feeds `.effective_capabilities` straight into `authorization.authorize(...)`. `downgrade_on_scenario_failure` downgrades `steering → None` when `FOLLOW_UP` fails and `resume → None` when `SESSION_RESUME` fails. Since R52's fix (docs/journal.md Part XIV), both scenarios fail *by construction* on all four adapters whenever `BATMAN_DISABLE_VENDOR_CLI=1` — `vendor_cli_required_scenario()` returns an honest `fail` because a skipped scenario must never be counted as proof. So a daemon whose environment carries the switch (an exported dev-shell variable, an inherited harness environment) denies any run whose policy lists `steering` or `resume` in `required_capabilities` (`evaluate.rs:317-324`), with a `CapabilityMissing` error that never mentions the switch. This contradicts the invariant `DISABLE_VENDOR_CLI_ENV`'s own doc comment states — that a development switch must never be able to silently stop production work. Two mitigations bound the blast radius: the impact is config-gated (an empty `required_capabilities` is unaffected), and the pre-fix behavior was worse, not better — the same downgrade already happened under the switch on any machine lacking the vendor CLIs, so the fix replaced machine-dependent authorization with deterministic authorization.
+
+**Fix:** add a `skipped` discriminator to `ScenarioResult` (distinct from both `pass` and `fail`) and have `vendor_cli_required_scenario()` return it, so `downgrade_on_scenario_failure` can distinguish "a real attempt disproved this capability" from "not attempted because the kill switch is set" and leave the declared capability untouched in the latter case. `batcave conformance` output must keep surfacing skipped scenarios as not-proven so no caller mistakes a skip for a pass. Making `vendor_cli_required_scenario()` return a `pass` is **not** an acceptable shortcut — that fabricates proof and reintroduces R52.
+
+**Priority:** High — a development-only switch can silently deny production runs, against a documented invariant, with an error message that gives the operator no path to the cause.
+
 ### Medium
 
 #### R12. Claude error result subtypes are normalized as usage only
@@ -354,7 +364,7 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII)
-- **High:** 5 (R33, R44 — carried forward from earlier rounds; R51, R53, R54 — new) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV)
+- **High:** 6 (R33, R44 — carried forward from earlier rounds; R51, R53, R54, R68 — new) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
 - **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged

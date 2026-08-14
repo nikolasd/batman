@@ -2140,10 +2140,44 @@ entirely, and fails identically on unmodified `main`); `cargo clippy -D warnings
 `cargo fmt --all --check` and `bun run generate --check` are clean — no protocol types moved, this was
 pure runtime logic.
 
-With R52 closed the High tier drops to five: R33, R44, R51, R53 and R54 remain. As with every fix in
-this journal whose real target is a machine this repo cannot stand up locally, final confirmation that
-the release pipeline's `conformance` job goes green on a bare CI runner with no vendor CLI installed
-can only come from GitHub Actions on the next push or tag.
+Four pre-existing adapter test files moved in the same commit and belong in the regression net rather
+than beside it: `crates/runtime/tests/claude_adapter.rs`, `codex_adapter.rs`, `copilot_adapter.rs` and
+`omp_rpc_adapter.rs` each asserted "every provable scenario passes," which stopped being true once
+switch-gated scenarios started reporting honest failures. Each now allows a scenario to fail *only* if
+its detail names `DISABLE_VENDOR_CLI_ENV`, so the relaxation is scoped to the reason for the failure
+and a genuine regression under the switch still fails the test. `copilot_adapter.rs`'s version was, as
+committed, the only test defending copilot's `real_client()` guard specifically: that guard's
+would-be regression signature is `copilot CLI not found on PATH`, which is not `ENOENT`-shaped and so
+matched neither of the two marker strings the new CLI regression test originally checked. A follow-up
+commit widened that marker list to include copilot's and `omp_rpc::resume_flag_probe`'s own
+signatures, so all four guards are now covered directly by the single test as well.
+
+One behavioral consequence of this fix reaches beyond conformance, and it is worth stating plainly
+rather than leaving to be rediscovered. `adapter::registry` calls `run_fixture_conformance(kind)` on
+every real run submission and feeds the resulting `effective_capabilities` straight into
+`authorization.authorize(...)`, and `conformance::report::downgrade_on_scenario_failure` downgrades
+`steering → None` when `FOLLOW_UP` fails and `resume → None` when `SESSION_RESUME` fails. Post-fix,
+with the switch set, those two scenarios fail by construction on all four adapters — so a daemon whose
+environment happens to carry `BATMAN_DISABLE_VENDOR_CLI=1` (an exported dev shell variable, an
+inherited harness environment) will deny any run whose policy lists `steering` or `resume` in
+`required_capabilities`, with a `CapabilityMissing` error that never mentions the switch. That sits in
+tension with the invariant asserted in `DISABLE_VENDOR_CLI_ENV`'s own doc comment — a development
+switch must never silently stop production work. Three things keep it a disclosure rather than a
+regression: the impact is opt-in and config-gated, since an empty `required_capabilities` is
+unaffected; the pre-fix behavior was strictly worse rather than better, because the same downgrade
+already happened under the switch on any machine lacking the vendor CLIs — i.e. on every CI runner —
+so the fix replaces machine-dependent authorization with deterministic authorization; and the
+principled repair is a `skipped` discriminator on `ScenarioResult`, letting
+`downgrade_on_scenario_failure` tell "disproved by a real attempt" from "never attempted because the
+switch is set," which is a larger change than this fix should smuggle in. Making
+`vendor_cli_required_scenario()` return a pass instead would fabricate proof and reintroduce exactly
+the defect R52 closed, so that is not the answer. The discriminator is tracked as R68.
+
+With R52 closed the High tier drops to five: R33, R44, R51, R53 and R54 remain (R68, opened by the
+final review of this same fix, brings it back to six). As with every fix in this journal whose real
+target is a machine this repo cannot stand up locally, final confirmation that the release pipeline's
+`conformance` job goes green on a bare CI runner with no vendor CLI installed can only come from
+GitHub Actions on the next push or tag.
 
 ## Reading order, if you're new here
 

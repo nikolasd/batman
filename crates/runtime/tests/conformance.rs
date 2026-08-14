@@ -81,6 +81,11 @@ fn conformance_fixture_all_writes_four_reports_matching_stdout() {
     let output = batcave()
         .args(["conformance", "--adapter", "all", "--fixture", "--output"])
         .arg(&output_path)
+        // The committed baseline declares the switch-set posture, and the
+        // baseline gate is bidirectional, so setting the switch here rather
+        // than inheriting it keeps this deterministic on a machine that does
+        // have the vendor CLIs installed.
+        .env(batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV, "1")
         .output()
         .expect("batcave conformance --adapter all --fixture must be runnable");
     assert!(
@@ -113,6 +118,9 @@ fn conformance_fixture_one_adapter_writes_a_single_element_array() {
     let output = batcave()
         .args(["conformance", "--adapter", "codex", "--fixture", "--output"])
         .arg(&output_path)
+        // Same reason as the `--adapter all` case above: the baseline gate is
+        // only deterministic with the switch explicitly set.
+        .env(batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV, "1")
         .output()
         .expect("must be runnable");
     assert!(output.status.success());
@@ -228,7 +236,18 @@ fn conformance_fixture_with_the_kill_switch_never_spawns_a_vendor_cli() {
             let detail = scenario["detail"]
                 .as_str()
                 .expect("a scenario carries a detail");
-            for spawn_marker in ["No such file or directory", "failed to spawn"] {
+            // The first two catch the `ENOENT` shape claude, codex and
+            // omp_rpc's `resume_flag_probe` would produce; the last two are
+            // copilot's `real_client` and omp_rpc's `resume_flag_probe` own
+            // pre-guard failure signatures, which are not `ENOENT`-shaped and
+            // would otherwise only be caught indirectly by
+            // `crates/runtime/tests/copilot_adapter.rs`.
+            for spawn_marker in [
+                "No such file or directory",
+                "failed to spawn",
+                "copilot CLI not found on PATH",
+                "the omp binary is unavailable to run",
+            ] {
                 assert!(
                     !detail.contains(spawn_marker),
                     "{adapter}/{name}: fixture mode attempted a real vendor-CLI spawn despite \
