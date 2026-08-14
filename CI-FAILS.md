@@ -21,7 +21,7 @@ they are fixed and verified one at a time, not batched.
 | CI-4 | `test (macos-latest)` | Fixed | `duplicate_start_is_rejected` test is host-dependent; broke when slot-release-on-failure was fixed |
 | CI-5 | `test (ubuntu-latest)` | Fixed | Cancelled as a side effect of CI-4 (matrix `fail-fast: true`); not independent |
 | CI-6 | `test (macos-latest)` | Fixed | `claude_adapter.rs` real-CLI tests unconditionally require an installed `claude` binary, absent on CI runners; previously masked by CI-4 failing first alphabetically |
-| CI-7 | `security` (gitleaks) | Open | CI-2's own allowlist is scoped to the original fixture files only; `CI-FAILS.md` quotes the same literal fixture secret in prose and isn't covered, so gitleaks (correctly) flags this doc |
+| CI-7 | `security` (gitleaks) | Fixed | CI-2's own allowlist is scoped to the original fixture files only; `CI-FAILS.md` quoted the same literal fixture secret in prose and wasn't covered, so gitleaks (correctly) flagged this doc |
 
 ---
 
@@ -135,7 +135,7 @@ was never read, and the action already hardcodes `-v` itself.
 
 One more thing verified locally (`gitleaks` 8.30.1 installed on this machine): the current default
 `aws-access-token` rule's regex charset is base32 (`[A-Z2-7]`), which the `rules.rs:162` fixture
-(`AKIA1234567890ABCDEF`, containing `0/1/8/9`) no longer matches at all — that specific finding may
+(the fixture's literal AWS-shaped key, containing the digits 0/1/8/9) no longer matches at all — that specific finding may
 already be moot under whatever "latest" gitleaks the action resolves at CI run time (the workflow
 pins no `GITLEAKS_VERSION`). Allowlisted anyway as cheap, harmless insurance against the ruleset
 reverting or the pinned version differing.
@@ -410,13 +410,29 @@ same literal in its own explanatory prose is exactly that "different file" case,
 author noticed was already sitting in the repo at the time — a self-inflicted, foreseeable-in-
 hindsight gap, not a new leak and not a regression from any change in this session.
 
-**Proposed fix (not yet applied — tracked here, per this doc's own one-at-a-time policy):** needs a
-decision, not just a mechanical patch, because either direction has a real cost: (a) add a second
-allowlist entry scoped to `CI-FAILS.md` for this exact literal — cheapest, but sets a precedent that
-this doc's own prose is exempt from the scan, which could paper over a genuinely new leak quoted here
-in the future; or (b) stop quoting the literal fixture secret verbatim in `CI-FAILS.md` and reference
-it descriptively instead (e.g. "the fake AWS-shaped key fixture in `rules.rs:162`") — keeps the
-scoping meaningful everywhere but loses this document's evidentiary precision for CI-1/2/3's own
-resolved findings.
+**Fix applied:** needed a decision, not just a mechanical patch, because either direction had a real
+cost: (a) add a second allowlist entry scoped to `CI-FAILS.md` for this exact literal — cheapest, but
+sets a precedent that this doc's own prose is exempt from the scan, which could paper over a
+genuinely new leak quoted here in the future; or (b) stop quoting the literal fixture secret verbatim
+in `CI-FAILS.md` and reference it descriptively instead — keeps the scoping meaningful everywhere but
+loses this document's evidentiary precision for CI-1/2/3's own resolved findings. Confirmed with the
+repo owner: **(b), de-literalize** — no `.gitleaks.toml` change. Rejected (a) specifically because of
+CI-2's own over-match sanity check ("a planted decoy with the identical secret text in a *different*
+file still gets flagged — the scoping doesn't over-match"): that check was a deliberate confirmation
+that the narrow `paths` scoping is working as intended, and widening it to cover `CI-FAILS.md` would
+undo exactly the property it was verifying. This also matches the precedent this CI-7 section already
+set for itself above (it deliberately didn't re-quote the secret while describing the problem).
+Replaced the literal fixture secret in the CI-2 section's "One more thing verified locally..."
+paragraph (line 138 at time of writing) with a descriptive reference, matching this section's own
+phrasing.
 
-**Status:** Open
+**Status:** Fixed — verified locally by grepping the repo for the fixture's literal secret string:
+only `crates/runtime/src/security/rules.rs:162` (the fixture itself) and `.gitleaks.toml`'s own
+allowlist regex remain; `CI-FAILS.md` no longer matches. Also re-ran `gitleaks detect --no-git --source .
+--config .gitleaks.toml -v` ("no leaks found") — though per CI-2's own note, this specific
+`aws-access-token` rule/gitleaks-8.30.1-version combination may already not have matched this fixture
+regardless of the edit, so this local run doesn't by itself prove the fix bites; the `rg` sweep is the
+decisive local check. Docs-only change — `crates/runtime/src/security/rules.rs:162` and its test
+(`test_org_rule_applies_correctly`) are untouched, no `.gitleaks.toml` edit, no Rust/TS changes, so no
+`cargo fmt`/`clippy`/test run applies here. Final confirmation (the `security` job going green on the
+next push) can only happen on GitHub Actions — same caveat pattern as every other item in this doc.
