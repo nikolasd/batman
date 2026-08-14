@@ -63,6 +63,13 @@ pub async fn probe_scenario() -> (
 ) {
     let adapter = new_adapter();
     let declared_capabilities = adapter.capabilities();
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        return (
+            batman_runtime::conformance::vendor_cli_skipped_probe(),
+            None,
+            declared_capabilities,
+        );
+    }
     match adapter.probe().await {
         Ok(result) => (
             ScenarioResult::pass(
@@ -463,6 +470,17 @@ impl batman_runtime::adapter::AdapterEventSink for CollectingSink {
 ///   (never a model's reply, since this session's `--resume` lookup
 ///   fails before the vendor CLI ever reads stdin).
 async fn live_process_scenarios() -> Vec<ScenarioResult> {
+    use batman_runtime::conformance::vendor_cli_required_scenario;
+
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        return vec![
+            vendor_cli_required_scenario(scenario::READ_ONLY_START_AND_PROGRESS),
+            vendor_cli_required_scenario(scenario::FOLLOW_UP),
+            vendor_cli_required_scenario(scenario::SESSION_RESUME),
+            vendor_cli_required_scenario(scenario::RUNTIME_RESTART),
+        ];
+    }
+
     let run_id = RunId::new();
     let task_id = TaskId::new();
     let worker_id = WorkerId::new();
@@ -580,6 +598,11 @@ async fn live_process_scenarios() -> Vec<ScenarioResult> {
 /// terminates the whole vendor process identically -- this exercises
 /// `CancelScope::Subtree` as representative of all three.
 async fn cancellation_scope_scenario() -> ScenarioResult {
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        return batman_runtime::conformance::vendor_cli_required_scenario(
+            scenario::CANCELLATION_SCOPE,
+        );
+    }
     let adapter = new_adapter();
     let sink = Arc::new(CollectingSink::default());
 

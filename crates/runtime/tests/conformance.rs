@@ -182,6 +182,78 @@ fn conformance_requires_exactly_one_of_fixture_or_live() {
     assert!(!output_path.exists());
 }
 
+/// R52: fixture mode used to reach a real vendor-CLI spawn on every
+/// adapter regardless of the kill switch -- `probe_scenario`, Claude's
+/// `live_process_scenarios`/`cancellation_scope_scenario`, Codex's
+/// `spawn_raw_client`, Copilot's `real_client`, and OMP-RPC's
+/// `resolve_conformance_selector`/`resume_flag_probe` all spawned before
+/// anything consulted `BATMAN_DISABLE_VENDOR_CLI`.
+///
+/// `PATH` is scrubbed to `/usr/bin:/bin` so the assertion is meaningful on
+/// a developer machine that does have the vendor CLIs installed: with the
+/// switch honored nothing is spawned at all, and with it ignored the spawn
+/// fails loudly with an `ENOENT`-shaped detail. Asserting on the absence of
+/// that detail -- rather than on the switch merely being read somewhere --
+/// is what actually proves no spawn was attempted.
+#[test]
+fn conformance_fixture_with_the_kill_switch_never_spawns_a_vendor_cli() {
+    for adapter in ["claude", "codex", "copilot", "ompRpc"] {
+        let output_path = std::env::temp_dir().join(format!(
+            "batman-conformance-test-no-spawn-{adapter}-{}.json",
+            std::process::id()
+        ));
+        let output = batcave()
+            .args(["conformance", "--adapter", adapter, "--fixture", "--output"])
+            .arg(&output_path)
+            .env(batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV, "1")
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .expect("must be runnable");
+        assert!(
+            output.status.success(),
+            "{adapter}: fixture mode with the kill switch set must still satisfy the committed \
+             baseline: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let reports: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|err| panic!("{adapter}: stdout must be valid JSON: {err}"));
+        let scenarios = reports[0]["scenarios"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{adapter}: scenarios must be a JSON array"))
+            .clone();
+        assert_eq!(scenarios.len(), 14, "{adapter}: every scenario must be run");
+        for scenario in &scenarios {
+            let name = scenario["name"].as_str().expect("a scenario names itself");
+            let detail = scenario["detail"]
+                .as_str()
+                .expect("a scenario carries a detail");
+            for spawn_marker in ["No such file or directory", "failed to spawn"] {
+                assert!(
+                    !detail.contains(spawn_marker),
+                    "{adapter}/{name}: fixture mode attempted a real vendor-CLI spawn despite \
+                     {}=1 -- detail was {detail:?}",
+                    batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV
+                );
+            }
+        }
+
+        // PROBE is the one scenario that must degrade to a *pass* (skipped,
+        // not failed): turning it into a denial would make every run in CI
+        // unauthorized, exactly as `probe_availability`'s own doc explains.
+        let probe = scenarios
+            .iter()
+            .find(|s| s["name"] == "probe")
+            .unwrap_or_else(|| panic!("{adapter}: probe must be among the scenarios"));
+        assert_eq!(
+            probe["passed"], true,
+            "{adapter}: a skipped probe must pass, not fail: {probe:?}"
+        );
+
+        let _ = std::fs::remove_file(&output_path);
+    }
+}
+
 #[test]
 fn conformance_live_with_the_kill_switch_reports_an_honest_error_not_a_hard_failure() {
     let output_path = std::env::temp_dir().join(format!(

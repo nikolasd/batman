@@ -86,6 +86,13 @@ pub async fn probe_scenario() -> (
 ) {
     let adapter = new_adapter();
     let declared_capabilities = adapter.capabilities();
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        return (
+            batman_runtime::conformance::vendor_cli_skipped_probe(),
+            None,
+            declared_capabilities,
+        );
+    }
     match adapter.probe().await {
         Ok(result) => (
             ScenarioResult::pass(
@@ -554,6 +561,11 @@ async fn read_only_start_and_progress_scenario_inner() -> Result<ScenarioResult,
 }
 
 async fn read_only_start_and_progress_scenario() -> ScenarioResult {
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        return batman_runtime::conformance::vendor_cli_required_scenario(
+            scenario::READ_ONLY_START_AND_PROGRESS,
+        );
+    }
     match read_only_start_and_progress_scenario_inner().await {
         Ok(result) => result,
         Err(err) => ScenarioResult::fail(

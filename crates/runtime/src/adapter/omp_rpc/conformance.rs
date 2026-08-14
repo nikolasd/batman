@@ -156,9 +156,15 @@ pub async fn probe() -> (ScenarioResult, Option<String>, AdapterCapabilities) {
 /// selector costs nothing here precisely because no scenario prompts --
 /// the same property the module doc already relies on.
 ///
-/// Returns `None` (never invents a selector) only when `omp` itself is
-/// unreachable or reports an empty catalog.
+/// Returns `None` (never invents a selector) when `omp` itself is
+/// unreachable, reports an empty catalog, or --- since resolving a selector
+/// is itself a real `omp models --json` spawn --- when
+/// `batman_runtime::conformance::vendor_cli_invocation_disabled` forbids
+/// observing the CLI at all.
 async fn resolve_conformance_selector() -> Option<String> {
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        return None;
+    }
     let output = tokio::process::Command::new("omp")
         .args(["models", "--json"])
         .output()
@@ -186,6 +192,17 @@ async fn probe_scenario(
     selector: Option<&str>,
 ) -> (ScenarioResult, Option<String>, AdapterCapabilities) {
     let declared_capabilities = super::OmpRpcAdapter::declared_capabilities();
+    // `OmpRpcAdapter::probe` spawns `omp --version` and `omp models --json`
+    // itself, so a `None` selector alone is not enough to keep this
+    // scenario off the real binary -- and a skipped probe must report the
+    // skip, never a fabricated catalog complaint.
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        return (
+            batman_runtime::conformance::vendor_cli_skipped_probe(),
+            None,
+            declared_capabilities,
+        );
+    }
     let Some(selector) = selector else {
         return (
             ScenarioResult::fail(
@@ -505,6 +522,16 @@ async fn spawn_ready_client(selector: &str) -> Option<(OmpRpcClient, std::path::
 async fn cancellation_scope_and_follow_up_scenarios(
     selector: Option<&str>,
 ) -> (ScenarioResult, ScenarioResult) {
+    // A `None` selector already short-circuits the spawn below, but its
+    // detail would blame an empty catalog; when the kill switch is what
+    // forbade the spawn, say so instead.
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        use batman_runtime::conformance::vendor_cli_required_scenario;
+        return (
+            vendor_cli_required_scenario(scenario::CANCELLATION_SCOPE),
+            vendor_cli_required_scenario(scenario::FOLLOW_UP),
+        );
+    }
     let Some(selector) = selector else {
         let detail = "`omp models --json` reported no usable model selector at all, so no \
                        `omp --mode rpc` process could be started to exercise the stdio \
@@ -684,6 +711,16 @@ async fn vendor_reconnect_scenario() -> ScenarioResult {
 /// CANCELLATION_SCOPE/FOLLOW_UP this needs no locally-reachable model
 /// selector -- only the `omp` binary itself.
 async fn resume_flag_probe() -> Result<(), String> {
+    // Spawns the real `omp` binary regardless of any selector, so this is
+    // the only place that can keep `SESSION_RESUME`/`RUNTIME_RESTART` off
+    // the vendor CLI when the kill switch is set.
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        return Err(format!(
+            "skipped: real vendor CLI invocation is disabled \
+             ({}=1); the `--resume <id>` flag probe can only run via live_report",
+            batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV
+        ));
+    }
     let bogus_id = format!(
         "batman-conformance-nonexistent-{}-{}",
         std::process::id(),

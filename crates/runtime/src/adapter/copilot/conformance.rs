@@ -75,6 +75,12 @@ fn real_copilot_binary() -> Option<PathBuf> {
 /// `session/prompt` -- callers only ever drive `initialize`/`session/new`/
 /// `session/load`/`session/list`, none of which invoke a model.
 async fn real_client(cwd: &Path) -> Result<CopilotAcpClient, String> {
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        return Err(format!(
+            "real copilot CLI invocation is disabled: {}=1",
+            batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV
+        ));
+    }
     let copilot =
         real_copilot_binary().ok_or_else(|| "copilot CLI not found on PATH".to_string())?;
     timeout(
@@ -103,6 +109,13 @@ pub async fn probe_scenario() -> (
 ) {
     let adapter = new_adapter();
     let declared_capabilities = adapter.capabilities();
+    if batman_runtime::conformance::vendor_cli_invocation_disabled() {
+        return (
+            batman_runtime::conformance::vendor_cli_skipped_probe(),
+            None,
+            declared_capabilities,
+        );
+    }
     match adapter.probe().await {
         Ok(result) => (
             ScenarioResult::pass(

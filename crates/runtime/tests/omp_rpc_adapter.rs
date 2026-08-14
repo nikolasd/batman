@@ -905,6 +905,21 @@ async fn fixture_report_covers_every_canonical_scenario_exactly_once_and_passes_
         if allowed_to_fail.contains(&result.name) {
             continue;
         }
+        // Under the kill switch, SESSION_RESUME/RUNTIME_RESTART's shared
+        // `resume_flag_probe` is forbidden from spawning the real `omp`
+        // binary and reports an honest skip instead (R52). Any *other*
+        // reason for failing here is still a real regression.
+        if batman_runtime::conformance::vendor_cli_invocation_disabled() && !result.passed {
+            assert!(
+                result
+                    .detail
+                    .contains(batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV),
+                "scenario {:?} failed for a reason other than the kill switch: {}",
+                result.name,
+                result.detail
+            );
+            continue;
+        }
         assert!(
             result.passed,
             "scenario {:?} must pass without any local model server dependency, but failed: {}",

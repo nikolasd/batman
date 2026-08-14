@@ -45,6 +45,35 @@ pub fn vendor_cli_invocation_disabled() -> bool {
     std::env::var(DISABLE_VENDOR_CLI_ENV).as_deref() == Ok("1")
 }
 
+/// An honest, non-spawning result for a scenario that can only be proven by
+/// a real vendor-CLI spawn, for use when [`vendor_cli_invocation_disabled`]
+/// is set. Mirrors [`probe_availability`]'s reasoning for PROBE (skip, don't
+/// fabricate a pass) but returns `fail` rather than `pass`, because unlike
+/// PROBE these scenarios have no adapter-neutral "not applicable" state --
+/// skipping them must not silently count as proof they work.
+#[must_use]
+pub fn vendor_cli_required_scenario(name: &'static str) -> ScenarioResult {
+    ScenarioResult::fail(
+        name,
+        format!(
+            "skipped: real vendor CLI invocation is disabled ({DISABLE_VENDOR_CLI_ENV}=1); this \
+             scenario has no fixture-only proof and can only run via live_report \
+             ({DISABLE_VENDOR_CLI_ENV} unset)"
+        ),
+    )
+}
+
+/// The exact detail [`probe_availability`] uses when the kill switch skips
+/// a PROBE, so every adapter's own `probe_scenario` reports the skip
+/// identically rather than each inventing its own wording.
+#[must_use]
+pub fn vendor_cli_skipped_probe() -> ScenarioResult {
+    ScenarioResult::pass(
+        scenario::PROBE,
+        format!("vendor CLI probe skipped: {DISABLE_VENDOR_CLI_ENV}=1"),
+    )
+}
+
 /// Runs one adapter kind's full fixture conformance suite (never a model
 /// call) and returns its report.
 pub async fn run_fixture_conformance(kind: AdapterKind) -> ConformanceReport {
@@ -99,10 +128,7 @@ static PROBE_CACHE: std::sync::LazyLock<
 /// every run in CI unauthorized.
 pub async fn probe_availability(kind: AdapterKind) -> ScenarioResult {
     if vendor_cli_invocation_disabled() {
-        return ScenarioResult::pass(
-            scenario::PROBE,
-            format!("vendor CLI probe skipped: {DISABLE_VENDOR_CLI_ENV}=1"),
-        );
+        return vendor_cli_skipped_probe();
     }
 
     {

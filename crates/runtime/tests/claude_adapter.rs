@@ -973,11 +973,19 @@ async fn resume_with_worker_mcp_configured_activates_a_token_and_cleans_up_on_ex
 
 #[tokio::test]
 async fn conformance_fixture_report_covers_every_canonical_scenario_and_all_pass() {
-    if real_claude_binary().is_none() {
+    use batman_runtime::conformance::{
+        DISABLE_VENDOR_CLI_ENV, scenario, vendor_cli_invocation_disabled,
+    };
+
+    // The kill switch removes the real `claude` process just as surely as an
+    // absent binary does, so the scenarios backed only by a real spawn
+    // report an honest skip instead (R52). Coverage still has to hold; which
+    // scenarios can *pass* no longer does.
+    let vendor_cli_disabled = vendor_cli_invocation_disabled();
+    if !vendor_cli_disabled && real_claude_binary().is_none() {
         eprintln!("skipping: `claude` is not on PATH");
         return;
     }
-    use batman_runtime::conformance::scenario;
 
     let report = batman_runtime::adapter::claude::conformance::fixture_report().await;
 
@@ -1010,6 +1018,16 @@ async fn conformance_fixture_report_covers_every_canonical_scenario_and_all_pass
     // scenario here is a real regression, never a fabricated pass to
     // paper over.
     for scenario_result in &report.scenarios {
+        if vendor_cli_disabled && !scenario_result.passed {
+            assert!(
+                scenario_result.detail.contains(DISABLE_VENDOR_CLI_ENV),
+                "scenario {} failed for a reason other than the kill switch, which is a real \
+                 regression: {}",
+                scenario_result.name,
+                scenario_result.detail
+            );
+            continue;
+        }
         assert!(
             scenario_result.passed,
             "scenario {} failed: {}",

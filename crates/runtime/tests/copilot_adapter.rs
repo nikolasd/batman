@@ -694,6 +694,21 @@ async fn fixture_conformance_report_covers_every_canonical_scenario_and_provable
         if honest_gaps.contains(&scenario.name) {
             continue;
         }
+        // Under the kill switch, every scenario routed through
+        // `real_client` is forbidden from spawning `copilot --acp` at all
+        // and reports an honest skip instead (R52). Any *other* reason for
+        // failing here is still a real regression.
+        if batman_runtime::conformance::vendor_cli_invocation_disabled() && !scenario.passed {
+            assert!(
+                scenario
+                    .detail
+                    .contains(batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV),
+                "scenario {} failed for a reason other than the kill switch: {}",
+                scenario.name,
+                scenario.detail
+            );
+            continue;
+        }
         assert!(
             scenario.passed,
             "expected scenario {} to pass, detail: {}",

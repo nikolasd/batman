@@ -581,6 +581,21 @@ async fn fixture_conformance_report_covers_every_canonical_scenario_exactly_once
             );
             continue;
         }
+        // Under the kill switch, READ_ONLY_START_AND_PROGRESS's real
+        // `codex app-server` spawn is forbidden too, so it reports an
+        // honest skip rather than spawning (R52). Any *other* reason for
+        // failing here is still a real regression.
+        if batman_runtime::conformance::vendor_cli_invocation_disabled() && !result.passed {
+            assert!(
+                result
+                    .detail
+                    .contains(batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV),
+                "scenario {} failed for a reason other than the kill switch: {}",
+                result.name,
+                result.detail
+            );
+            continue;
+        }
         assert!(
             result.passed,
             "expected scenario {} to pass, got: {}",
