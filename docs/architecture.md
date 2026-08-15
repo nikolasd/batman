@@ -30,7 +30,8 @@ with no history in it — for how it got this way, see [journal.md](journal.md) 
 [0019](adr/0019-monitor-is-one-reducer-over-replay-and-live-no-separate-modes.md),
 [0020](adr/0020-per-mutation-event-broadcast-is-not-optional.md),
 [0021](adr/0021-shared-client-authenticates-with-the-union-of-required-roles.md),
-[0022](adr/0022-github-release-download-cache-replaces-npm-leaf-packages.md)
+[0022](adr/0022-github-release-download-cache-replaces-npm-leaf-packages.md),
+[0023](adr/0023-run-state-edges-from-adapter-evidence.md)
 
 ## Level 1: System Context (C4-1)
 
@@ -325,6 +326,7 @@ graph TB
 #### Adapter Layer
 - **Adapter Trait** ([`crates/runtime/src/adapter/trait.rs`](crates/runtime/src/adapter/trait.rs)): `Adapter` trait with `start`/`resume`/`send`/`cancel`/`dispose`
 - **Adapter Registry** ([`crates/runtime/src/adapter/registry.rs`](crates/runtime/src/adapter/registry.rs)): Implements `RunDriver` against four worker adapters
+- **Run Lifecycle Sink** ([`crates/runtime/src/adapter/run_lifecycle.rs`](crates/runtime/src/adapter/run_lifecycle.rs)): Applies `RunState` edges from journaled adapter evidence
 - **Claude Adapter** ([`crates/runtime/src/adapter/claude/mod.rs`](crates/runtime/src/adapter/claude/mod.rs)): `claude stream-json` protocol
 - **Codex Adapter** ([`crates/runtime/src/adapter/codex/mod.rs`](crates/runtime/src/adapter/codex/mod.rs)): `codex app-server` protocol
 - **Copilot Adapter** ([`crates/runtime/src/adapter/copilot/mod.rs`](crates/runtime/src/adapter/copilot/mod.rs)): `copilot --acp` protocol
@@ -670,7 +672,9 @@ sequenceDiagram
     Service->>DB: insert run (state: queued)
     Service->>Adapter: run_driver.start(ctx)
     Adapter->>Worker: spawn supervised process
+    Adapter->>Service: transition_run (queued -> starting)
     Worker->>Adapter: normalized events
+    Adapter->>Service: transition_run (starting -> working)
     Adapter->>Service: adapter events (via event_sink)
     Service->>DB: append adapter events
     DB-->>Service: Committed { sequence, envelope }
@@ -690,7 +694,18 @@ sequenceDiagram
 1. **Initialization**: OMP extension authenticates via `ClientAuth::OmpExtension`, receives protocol capabilities and allowed methods
 2. **Task submission**: OMP calls `task/upsert` → `run/submit` → adapter registry starts worker process
 3. **Event broadcast**: Every durable mutation broadcasts the same event it committed, in the same call
-4. **State transitions**: Only the runtime applies state edges, and only after process/protocol evidence
+4. **State transitions**: Only the runtime applies state edges, and only after process/protocol evidence:
+
+   | evidence | edge |
+   |---|---|
+   | `ProcessStarted` | `queued -> starting` |
+   | any other payload except `ProcessExited` | up to `working` |
+   | `ProcessExited { exit_code: Some(0), signal: None }` | `-> succeeded` |
+   | `ProcessExited` with a non-zero code or a signal | `-> failed` |
+   | `ProcessExited` with no code and no signal | `-> lost` |
+
+   The terminal edge is committed durably before the settlement signal that releases the run's
+   concurrency slot.
 
 ## Known Deferred Items
 

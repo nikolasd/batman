@@ -61,11 +61,12 @@ Small, dependency-light, and the vocabulary for everything else.
 | `src/domain/repository.rs` | `DomainRepository` — every projection-mutating command; `append_and_apply` (event + projection, one transaction); `Committed`, `embed_envelope`/`take_envelope` |
 | `src/domain/transitions.rs` | `check_transition`, `TransitionError::Illegal` — the canonical `RunState` lifecycle relation |
 | `src/service/orchestration.rs` | `OrchestrationService` — routes every Task/Worker/Run/Message/Approval/Reconcile method to `DomainRepository` or `service/query.rs` |
-| `src/service/query.rs` | Read-only lookup closures (`task_get_op`, etc.) run through `DatabaseHandle::run_domain_op` |
+| `src/service/query.rs` | Read-only lookup closures (`task_get_op`, `run_state_op`, etc.) run through `DatabaseHandle::run_domain_op` |
 | `src/service/run_driver.rs` | `RunDriver` trait, `RunDriverContext`, `FakeRunDriver` (`queued -> starting -> working`) |
 | `src/adapter/trait.rs` | `Adapter` trait with `start`/`resume`/`send`/`cancel`/`dispose` |
 | `src/adapter/registry.rs` | `AdapterRegistry` — implements `RunDriver` against four worker adapters, `AdapterAuthorization` trait, `FixtureAuthorization`/`DenyByDefaultAuthorization` |
 | `src/adapter/event_sink.rs` | `DomainAdapterEventSink` — sanitizes, journals, and broadcasts adapter events |
+| `src/adapter/run_lifecycle.rs` | `RunLifecycleSink` — applies `queued -> starting -> working` and the terminal edge from adapter evidence |
 | `src/adapter/error.rs` | `AdapterError` — adapter-specific error types |
 | `src/adapter/capability.rs` | `AdapterCapabilities` — capability declarations for each adapter |
 | `src/adapter/mcp_config.rs` | MCP configuration generation for adapter processes |
@@ -226,7 +227,9 @@ mutation, the durable journal, and the embedded monitor connect.
    production, configurable in tests), constructs the matching adapter (Claude/Codex/Copilot/OMP-RPC),
    and spawns a supervised process via `Supervisor`. With no driver, it returns `adapter_unavailable`
    *after* the queued run already committed in step 3 — the run is never silently dropped just
-   because nothing can start it yet.
+   because nothing can start it yet. With the registry wired (production,
+   `run_lifecycle.rs:261-273`), the run now advances `queued -> starting -> working` as the
+   adapter journals evidence, and terminalizes on process exit.
 6. **The monitor observes it** — `monitor/controller.ts`'s `client.subscribe` callback (already
    running from `session_start`) receives the notification from step 4, `model.ts::reduceEvent`
    builds/updates the run's row from the `RunEvent` payload, and `refresh()` calls

@@ -2273,6 +2273,87 @@ With R51 closed, the High tier drops to five: R33, R44, R53, R54 and R68 remain.
 same fix's investigation into why the boot sweep is the only thing that ever closes a run, puts
 Critical back to one.
 
+## Part XVI — A state machine with no production writer: closing the last Critical
+
+R69, opened by Part XV's own investigation, was BATMAN's last Critical open item: no production
+path ever moved a run out of `queued`. `AdapterRegistry` is the real `RunDriver`
+(`adapter/registry.rs:198`), but grepping `crates/runtime/src/adapter/` for `transition_run`
+returned zero hits — neither `run_one` (`:389-488`) nor `watch_settlement` (`:345-367`) ever called
+it. The only production call sites were `run_cancel` (user-triggered), the approval service's
+`working <-> waitingUser` toggle, and the policy-violation service; none of them ever walked a run
+through `queued -> starting -> working`, and none of them marked one `succeeded` or `failed` on its
+own completion. `RunState::can_transition_to` (ADR-0012) was thoroughly tested, and `FakeRunDriver`
+(ADR-0013) drove it end to end — but only in orchestration tests, never from a live `omp` session.
+A well-tested relation with zero production callers is exactly as broken as an untested one; see
+the new `## Run Lifecycle` entry in `engineering-lessons.md` for the lesson stated plainly.
+
+The fix is `RunLifecycleSink` (`crates/runtime/src/adapter/run_lifecycle.rs`), wrapping each run's
+`AdapterEventSink` so that, after the inner sink journals an event, the sink commits (and
+broadcasts) the lifecycle edge that event is evidence of:
+
+| evidence | edge |
+|---|---|
+| `ProcessStarted` | `queued -> starting` |
+| any other payload except `ProcessExited` | up to `working` |
+| `ProcessExited { exit_code: Some(0), signal: None }` | `-> succeeded` |
+| `ProcessExited` with a non-zero code or a signal | `-> failed` |
+| `ProcessExited` with no code and no signal | `-> lost` |
+
+Edges are walked, never jumped — `queued -> working`, `starting -> succeeded`, and
+`waitingUser -> succeeded` are all illegal in `RunState::can_transition_to`, so a target is reached
+by committing each legal hop in turn, which is also what keeps `runs.started_at` correct
+(`transition_run` stamps it only on the `starting` edge). Edges are forward-only: `working` applies
+only from `queued`/`starting`, so vendor output arriving while a run sits in `waitingUser` or
+`paused` never clobbers it. And a terminal state always wins — every walk stops the moment it
+observes one, and `transition_run` itself rejects an illegal edge even if a concurrent commit wins
+the race.
+
+Two decisions were worth recording as ADR-0023 rather than left implicit. First, the terminal edge
+is applied inside the per-run sink, before `SettlementSink` fires the signal that releases the
+run's concurrency slot — transitioning instead inside `watch_settlement` was considered and
+rejected, because that signal fires immediately after, which would let another run be authorized
+while this one still read non-terminal. Second, an exit with no observable code and no signal maps
+to `lost`, not a guessed `succeeded`/`failed` — the same "name the uncertainty" precedent ADR-0015
+already set for OMP-native facts.
+
+Fixing this exposed two secondary defects that had to move with it. `CopilotClientEvent::ProcessExited`
+previously carried no exit status at all (`copilot/client.rs`); the sink's `terminal_state_for` needs
+a real `exit_code`/`signal` to distinguish `succeeded` from `failed` from `lost`, so the client now
+reports the supervised process's real termination outcome. And the policy-violation service's
+cancel path had an ordering race against this same sink now applying edges concurrently, fixed in
+`policy/violation.rs` and `coordination/broker.rs` alongside it. R12 (Claude error-result subtypes
+not modeled) and R13 (violation-cancel's warning not distinguishing "no running adapter" from a
+kill failure) stay open and untouched — this fix decides the terminal state from process exit
+status only, which is the evidence R69 named.
+
+The proof is layered, not just unit tests against a stub. `run_lifecycle.rs`'s 9 unit tests
+(`process_started_moves_a_queued_run_to_starting` through
+`vendor_output_never_reopens_working_on_a_run_that_started_waiting`) pin every edge and guard
+against a real, migrated SQLite database. Two end-to-end tests then prove the same production
+chain (`DomainAdapterEventSink` wrapped in `RunLifecycleSink`) against a genuinely spawned process:
+`tests/run_lifecycle.rs`'s `a_real_worker_process_walks_its_run_from_queued_into_working` drives a
+real `fake-worker --mode rpc` child through `OmpRpcAdapter` and polls the seeded run to `working`,
+asserting the journaled `RunEvent` states are exactly `["queued", "starting", "working"]`; its
+sibling `a_real_worker_process_exit_settles_its_run` disposes that same adapter and polls for a
+terminal state. `adapter/claude/mod.rs`'s new `run_state_tests` module reuses the existing
+`session_exit_tests` harness (a real `/bin/sh` + `Supervisor::with_escalation` + `run_session`, no
+real Claude CLI involved) with the production sink chain in place of `RecordingSink`, proving a
+clean exit walks `["starting", "working", "succeeded"]` and a non-zero exit walks to `failed`.
+`tests/copilot_adapter.rs`'s new `a_supervised_process_exit_is_reported_with_its_real_status` spawns
+`/bin/sh -c 'exit 3'` under `CopilotAcpClient::spawn_with_raw_args` and asserts `next_event()` yields
+`ProcessExited { exit_code: Some(3), signal: None }` — the exact status the client silently
+swallowed before this fix.
+
+`BATMAN_DISABLE_VENDOR_CLI=1 cargo test --workspace` passes 735 of 736, with the same
+pre-existing, environment-specific failure as every entry in this journal since Part XIV documented
+it: `copilot_adapter::real_binary_initialize_and_session_list_never_invoke_a_model`, because the
+locally installed Copilot CLI (1.0.80 at the time of this fix) is not yet in
+`COPILOT_KNOWN_CLI_VERSIONS`. `cargo clippy --all-targets --all-features -- -D warnings`,
+`cargo fmt --all --check`, and `bun run generate --check` are all clean.
+
+With R69 closed, **Critical drops to zero** for the first time this journal records. The High tier
+is unchanged at five: R33, R44, R53, R54 and R68 remain.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start

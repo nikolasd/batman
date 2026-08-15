@@ -64,6 +64,44 @@ A durable mutation must broadcast the same event it just committed, in the same 
 
 ---
 
+## Run Lifecycle
+
+### A documented state machine with no production writer is inert
+
+**Location:** `crates/runtime/src/adapter/registry.rs`, `crates/runtime/src/adapter/run_lifecycle.rs` (see [ADR-0023](adr/0023-run-state-edges-from-adapter-evidence.md))
+
+ADR-0012 defined the run-lifecycle relation and ADR-0013 shipped `FakeRunDriver` as its only
+implementer. The real `AdapterRegistry` — the production `RunDriver` — never called
+`transition_run` anywhere in `run_one` or `watch_settlement`; grepping `crates/runtime/src/adapter/`
+for `transition_run` returned zero hits. Every real run's row stayed `queued` however successfully
+its vendor process ran and exited; `run/get`, `run/list`, the `/batman` monitor, and the approval
+flow all read a value that was wrong for every real run, and only a daemon restart
+(`RecoveryCoordinator`) ever terminalized anything.
+
+**The lesson:** A state machine whose only exerciser is a test fake reads as implemented in
+review — the `FakeRunDriver`-only `queued -> starting -> working` sequence looked like coverage of
+a real path, because the relation itself (`RunState::can_transition_to`) was thoroughly tested and
+the fake drove it end to end. It wasn't: the fake is never wired into a live `omp` session. Grep
+for production call sites of the transition function itself, not for the transition table or its
+unit tests — a well-tested relation with zero production callers is exactly as broken as an
+untested one.
+
+**The fix:** `RunLifecycleSink` wraps each run's `AdapterEventSink` and applies the evidence table
+(`ProcessStarted` -> `starting`, first non-exit payload -> `working`, `ProcessExited` ->
+`succeeded`/`failed`/`lost`) after the inner sink journals each event, walking every intermediate
+hop the legal-edge table forces and never overwriting a terminal state.
+
+**Regression tests:** `crates/runtime/src/adapter/run_lifecycle.rs`'s 9 unit tests
+(`process_started_moves_a_queued_run_to_starting` through
+`vendor_output_never_reopens_working_on_a_run_that_started_waiting`), plus the end-to-end proofs
+against real processes: `crates/runtime/tests/run_lifecycle.rs`'s
+`a_real_worker_process_walks_its_run_from_queued_into_working` and
+`a_real_worker_process_exit_settles_its_run`, `crates/runtime/src/adapter/claude/mod.rs`'s
+`run_state_tests` module, and `crates/runtime/tests/copilot_adapter.rs`'s
+`a_supervised_process_exit_is_reported_with_its_real_status`.
+
+---
+
 ## Workspace Leases and Resource Cleanup
 
 ### A resource acquired before a fallible step must be released on every path out of it

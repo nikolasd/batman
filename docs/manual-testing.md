@@ -277,9 +277,9 @@ stream, and the message-send (from a *different* process) got pushed to it over 
 already had open — no reconnect, no re-typed `/batman`, no polling.
 
 Only the trailing "latest activity" field changes here; the run's own `state` stays `queued`
-throughout, because nothing in this scenario ever starts a real adapter. A `starting`/`working`
-transition needs `FakeRunDriver` or a real adapter, neither of which is reachable from a live
-`omp` session — only from `cargo test -p batman-runtime --test orchestration_rpc`.
+throughout, because this scenario never starts an adapter. A real `batman_run` against a
+configured worker profile walks `queued -> starting -> working` and terminalizes on process exit
+(`crates/runtime/src/adapter/run_lifecycle.rs`).
 
 ### 3c. Replay after a full restart
 

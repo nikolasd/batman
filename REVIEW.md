@@ -41,18 +41,6 @@ operate the system correctly.
 
 ## Findings
 
-### Critical
-
-#### R69. No production path ever transitions a run out of `queued` — the documented run state machine is inert
-
-**Location:** `crates/runtime/src/adapter/registry.rs:198-263` (`impl RunDriver for AdapterRegistry`, `start`), `:337-367` (`watch_settlement`); `crates/runtime/src/domain/repository.rs:1133-1140` (`record_adapter_event`'s own doc comment); `crates/runtime/src/service/run_driver.rs:89-127` (`FakeRunDriver`, the only implementation that does this); `docs/architecture.md:680-686`
-
-**Evidence:** `AdapterRegistry` is the real, production `RunDriver` (`impl RunDriver for AdapterRegistry`, `registry.rs:198`). Its `start` (`:199-263`) spawns the adapter via `run_one` and hands settlement to `watch_settlement` (`:337-367`), but neither ever calls `transition_run`: `watch_settlement` only evicts and disposes the adapter, releases the concurrency slot, and journals the display detach on `ProcessExited`. Grepping `crates/runtime/src/adapter/` for `transition_run` returns zero hits. `record_adapter_event`'s own doc comment (`domain/repository.rs:1133-1140`) says it "never itself applies a run-state transition -- adapters call `transition_run` directly for that" — a claim adapter code never fulfills. The only production `transition_run` call sites are `run_cancel` (user-triggered cancellation), the approval service (`working` → `waitingUser`), and the policy violation service — none of them advance `queued -> starting -> working`, and none mark a run `succeeded`/`failed` on its own completion. The `queued -> starting -> working` sequence `docs/architecture.md:680-686` documents as real is only ever exercised by `FakeRunDriver` (`service/run_driver.rs:89-127`), used exclusively by orchestration tests. Concretely: a real run's row in `runs` never leaves `queued` on its own, however successfully its actual vendor process runs and exits — discovered while resolving R51, whose boot-time recovery sweep is currently the only mechanism in this codebase that ever terminalizes any run at all.
-
-**Fix:** apply the documented edges from evidence the adapter layer already journals: transition `queued -> starting` on `AdapterProcessStarted`, `starting -> working` on the adapter's first acknowledgement/vendor-session event, and a terminal edge (`succeeded`/`failed`, deciding by exit code and cancellation scope) inside `watch_settlement`'s existing `ProcessExited` handling — broadcasting each committed envelope per the event-broadcast invariant.
-
-**Priority:** Critical — the durable run state machine, the approval flow, and the peer-request flow are all unreachable in production, and every consumer of run state (the monitor, `run/get`, `run/list`) reads a value that is wrong for every real run. Discovered 2026-08-14 while resolving R51.
-
 ### High
 
 #### R33. `serde_json/preserve_order` breaks fingerprint determinism and two documented invariants
@@ -366,7 +354,7 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
-- **Critical:** 1 (R69 — discovered 2026-08-14 while resolving R51) — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII)
+- **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
 - **High:** 5 (R33, R44 — carried forward from earlier rounds; R53, R54, R68 — new) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
 - **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
