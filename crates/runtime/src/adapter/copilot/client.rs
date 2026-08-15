@@ -90,8 +90,13 @@ pub enum CopilotClientEvent {
         request_id: i64,
         request: CopilotPermissionRequest,
     },
-    /// The supervised `copilot --acp` process's stdout closed.
-    ProcessExited,
+    /// The supervised `copilot --acp` process's stdout closed; carries the
+    /// supervised process's own exit status via
+    /// [`crate::supervisor::TerminationOutcome::exit_signals`].
+    ProcessExited {
+        exit_code: Option<i32>,
+        signal: Option<String>,
+    },
 }
 
 /// The negotiated ACP capabilities from a real `initialize` response --
@@ -201,14 +206,14 @@ impl CopilotAcpClient {
         let reader_write_tx = write_tx.clone();
         let reader_shutdown = shutdown.clone();
         let reader_task = tokio::spawn(async move {
-            loop {
+            let stdout_closed = loop {
                 tokio::select! {
                     biased;
-                    () = reader_shutdown.notified() => break,
+                    () = reader_shutdown.notified() => break false,
                     written = write_rx.recv() => {
                         match written {
                             Some(bytes) => { let _ = process.write_stdin(&bytes).await; }
-                            None => break,
+                            None => break false,
                         }
                     }
                     frame = process.next_stdout_frame() => {
@@ -220,16 +225,21 @@ impl CopilotAcpClient {
                                 &events_tx,
                                 &reader_write_tx,
                             ),
-                            None => {
-                                let _ = events_tx.send(CopilotClientEvent::ProcessExited);
-                                break;
-                            }
+                            None => break true,
                         }
                     }
                 }
-            }
+            };
             process.close_stdin();
-            let _ = process.terminate().await;
+            let outcome = if stdout_closed {
+                process.settle().await
+            } else {
+                process.terminate().await
+            };
+            if stdout_closed {
+                let (exit_code, signal) = outcome.exit_signals();
+                let _ = events_tx.send(CopilotClientEvent::ProcessExited { exit_code, signal });
+            }
         });
 
         Ok(Self {

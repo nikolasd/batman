@@ -440,10 +440,30 @@ impl ViolationService {
             .map_err(ViolationError::Db)
     }
 
-    /// Calls the live adapter's `cancel(CancelScope::Worker)` if one is
-    /// running (mirrors `OrchestrationService::run_cancel`'s subprocess
-    /// termination), then transitions the run to `cancelled`.
+    /// Transitions the run to `cancelled` and then calls the live adapter's
+    /// `cancel(CancelScope::Worker)` if one is running (mirrors
+    /// `OrchestrationService::run_cancel`'s subprocess termination).
     async fn cancel_and_transition(&self, run_id: RunId) -> Result<(), ViolationError> {
+        // Transition first, mirroring `OrchestrationService::run_cancel`:
+        // the adapter's own exit event now terminalizes runs
+        // (`adapter/run_lifecycle.rs`), so killing first would race a
+        // `failed` edge against this `cancelled` one. The kill is still
+        // attempted on every path out of the transition -- a failed
+        // transition must never leave a live vendor process behind.
+        let project_id = self.project_id;
+        let to = RunState::try_from("cancelled").expect("cancelled is valid");
+        let mut result = self
+            .db
+            .run_domain_op(Box::new(move |conn| {
+                let mut repo = DomainRepository::new(conn, project_id);
+                repo.transition_run(run_id, &to)
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+            }))
+            .await
+            .map_err(ViolationError::Domain);
+        if let Ok(committed) = result.as_mut() {
+            self.broadcast(committed);
+        }
         if let Some(driver) = &self.run_driver
             && let Err(err) = driver
                 .cancel_run(run_id, crate::adapter::CancelScope::Worker)
@@ -455,20 +475,7 @@ impl ViolationService {
                 "failed to cancel adapter subprocess for policy violation"
             );
         }
-
-        let project_id = self.project_id;
-        let to = RunState::try_from("cancelled").expect("cancelled is valid");
-        let mut result = self
-            .db
-            .run_domain_op(Box::new(move |conn| {
-                let mut repo = DomainRepository::new(conn, project_id);
-                repo.transition_run(run_id, &to)
-                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
-            }))
-            .await
-            .map_err(ViolationError::Domain)?;
-        self.broadcast(&mut result);
-        Ok(())
+        result.map(|_| ())
     }
 
     /// `policy/violation/decide`: resolves `violation_id` as `resolution`

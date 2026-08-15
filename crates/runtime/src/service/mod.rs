@@ -7,7 +7,7 @@
 //! `queued -> starting -> working` transitions for tests and fixtures.
 
 mod orchestration;
-mod query;
+pub(crate) mod query;
 mod run_driver;
 
 pub use orchestration::{OrchestrationService, ServiceError};

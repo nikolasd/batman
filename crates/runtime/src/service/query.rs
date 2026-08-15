@@ -52,6 +52,24 @@ pub fn run_flags_op(run_id: RunId) -> DomainClosure {
         })
     })
 }
+/// Reads a run's current lifecycle state, for the adapter layer's
+/// evidence-driven transitions (`crate::adapter::run_lifecycle`) and the
+/// coordination broker's settled-run gate.
+pub fn run_state_op(run_id: RunId) -> DomainClosure {
+    Box::new(move |conn| {
+        conn.query_row(
+            "SELECT state FROM runs WHERE run_id = ?1",
+            [run_id.to_string()],
+            |row| Ok(json!({ "state": row.get::<_, String>(0)? })),
+        )
+        .optional()
+        .map_err(DomainError::Sqlite)?
+        .ok_or(DomainError::NotFound {
+            kind: "run",
+            id: run_id.to_string(),
+        })
+    })
+}
 
 pub fn worker_get_op(worker_id: WorkerId) -> DomainClosure {
     Box::new(move |conn| {

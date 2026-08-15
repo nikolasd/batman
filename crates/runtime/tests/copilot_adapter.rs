@@ -249,6 +249,31 @@ async fn real_binary_port_zero_opens_no_tcp_listener() {
     }
 }
 
+#[tokio::test]
+async fn a_supervised_process_exit_is_reported_with_its_real_status() {
+    let client = CopilotAcpClient::spawn_with_raw_args(
+        Path::new("/bin/sh"),
+        Path::new("."),
+        vec!["-c".to_string(), "exit 3".to_string()],
+        HashMap::new(),
+    )
+    .await
+    .expect("spawning /bin/sh -c 'exit 3'");
+
+    let event = timeout(Duration::from_secs(5), client.next_event())
+        .await
+        .expect("the process exit event arrives promptly")
+        .expect("the reader task is still alive");
+
+    match event {
+        CopilotClientEvent::ProcessExited { exit_code, signal } => {
+            assert_eq!(exit_code, Some(3));
+            assert_eq!(signal, None);
+        }
+        other => panic!("expected ProcessExited, got {other:?}"),
+    }
+}
+
 // -------------------------------------------------- normalize.rs (fixtures)
 
 #[test]

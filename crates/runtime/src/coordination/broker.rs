@@ -120,18 +120,7 @@ impl CoordinationBroker {
     async fn require_live_run(&self, run_id: RunId) -> Result<(), CoordinationError> {
         let state: String = self
             .db
-            .run_domain_op(Box::new(move |conn| {
-                conn.query_row(
-                    "SELECT state FROM runs WHERE run_id = ?1",
-                    [run_id.to_string()],
-                    |row| row.get(0),
-                )
-                .map(|state: String| json!({ "state": state }))
-                .map_err(|_| crate::domain::DomainError::NotFound {
-                    kind: "run",
-                    id: run_id.to_string(),
-                })
-            }))
+            .run_domain_op(crate::service::query::run_state_op(run_id))
             .await?
             .get("state")
             .and_then(Value::as_str)

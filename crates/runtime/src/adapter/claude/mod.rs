@@ -848,3 +848,286 @@ mod session_exit_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod run_state_tests {
+    //! R69: `run_session` drives a seeded run's durable `RunState` through
+    //! the *production* sink chain from the evidence it emits, with a real
+    //! supervised `/bin/sh` child standing in for `claude` (no real CLI or
+    //! model on PATH).
+    //!
+    //! The child prints the first line of
+    //! `fixtures/adapters/claude/initialize.jsonl` verbatim, so the real
+    //! `RawFrame::parse`/`ClaudeNormalizer` path produces the
+    //! `VendorSessionEstablished` that is the first non-exit payload the
+    //! sink sees — which walks a `queued` run `queued -> starting ->
+    //! working` — and then exits with a fixed status, which `run_session`
+    //! reads back from the OS into `ProcessExited` and which terminalizes
+    //! the run. The seeded `RunQueued` event (`DomainRepository::submit_run`)
+    //! is the walk's starting point in the journal, so the
+    //! exact-sequence assertions include it.
+
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use batman_protocol::{
+        EventEnvelope, ProjectId, Run, RunFlags, RunId, RunState, RuntimeEvent, TaskId, TaskRef,
+        Timestamp, Worker, WorkerId, WorkerProfileRef,
+    };
+    use batman_runtime::adapter::{AdapterEventSink, DomainAdapterEventSink, RunLifecycleSink};
+    use batman_runtime::config::NestedViolationAction;
+    use batman_runtime::db::DatabaseHandle;
+    use batman_runtime::domain::DomainRepository;
+    use batman_runtime::policy::ViolationService;
+    use batman_runtime::supervisor::{EscalationTimings, SpawnSpec, Supervisor};
+    use tempfile::TempDir;
+    use tokio::sync::broadcast;
+
+    use super::*;
+
+    /// The first line of the vendored initialize fixture — emitted
+    /// verbatim by the fake vendor process so the real `RawFrame::parse`
+    /// path produces the `SystemInit` the normalizer turns into
+    /// `VendorSessionEstablished`.
+    fn init_line() -> &'static str {
+        static LINE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+            let json =
+                include_str!("../../../../../fixtures/adapters/claude/initialize.jsonl");
+            json.lines()
+                .next()
+                .expect("the fixture's first line is the init frame")
+                .to_string()
+        });
+        LINE.as_str()
+    }
+
+    /// A real, migrated database on a throwaway file: the same pattern
+    /// `run_lifecycle.rs`'s unit tests use (per-test `TempDir`, explicit
+    /// `shutdown` so the database actor thread never outlives the test).
+    async fn open_db() -> (TempDir, Arc<DatabaseHandle>) {
+        let dir = tempfile::Builder::new()
+            .prefix("bat-claude-run-state-")
+            .tempdir_in("/tmp")
+            .expect("create temp dir");
+        let db_path = dir.path().join("state.db");
+        let db = Arc::new(
+            DatabaseHandle::start(db_path)
+                .await
+                .expect("start database"),
+        );
+        (dir, db)
+    }
+
+    /// Seeds one task + worker + `queued` run through the real
+    /// `DomainRepository` API (copied from `run_lifecycle.rs`'s unit-test
+    /// harness) — the run row and its journaled `RunQueued` event are the
+    /// walk's starting point.
+    async fn seed_run(
+        db: &DatabaseHandle,
+        project_id: ProjectId,
+    ) -> (TaskId, WorkerId, RunId) {
+        let task_id = TaskId::new();
+        let worker_id = WorkerId::new();
+        let run_id = RunId::new();
+        db.run_domain_op(Box::new(move |conn| {
+            let mut repo = DomainRepository::new(conn, project_id);
+            repo.upsert_task(
+                task_id,
+                &TaskRef {
+                    owner_client_instance_id: "omp-1".to_string(),
+                    revision: 1,
+                },
+            )?;
+            let worker = Worker {
+                worker_id,
+                profile_ref: WorkerProfileRef {
+                    id: worker_id,
+                    fingerprint: "sha256:fake".to_string(),
+                    adapter: "claude".to_string(),
+                    model: "test".to_string(),
+                    permission_envelope: serde_json::json!({}),
+                },
+                parent_worker_id: None,
+                created_at: Timestamp::now(),
+            };
+            repo.create_worker(&worker)?;
+            let run = Run {
+                run_id,
+                task_id,
+                worker_id,
+                state: RunState::try_from("queued").expect("queued is a valid state"),
+                flags: RunFlags::default(),
+                vendor_session_id: None,
+                started_at: None,
+                completed_at: None,
+            };
+            repo.submit_run(&run, None)?;
+            Ok(serde_json::json!({}))
+        }))
+        .await
+        .expect("seed run");
+        (task_id, worker_id, run_id)
+    }
+
+    /// The production sink chain for this run — `DomainAdapterEventSink`
+    /// (sanitize + journal + broadcast) wrapped in `RunLifecycleSink` (the
+    /// evidence-driven `RunState` edges under test) — mirroring
+    /// `registry::run_one` minus the settlement layer, which only observes
+    /// the terminal edge this suite proves `RunLifecycleSink` commits.
+    fn production_sink_chain(
+        db: &Arc<DatabaseHandle>,
+        project_id: ProjectId,
+        events_tx: broadcast::Sender<EventEnvelope>,
+        run_id: RunId,
+    ) -> Arc<dyn AdapterEventSink> {
+        let violation = Arc::new(ViolationService::new(
+            Arc::clone(db),
+            project_id,
+            events_tx.clone(),
+            None,
+            NestedViolationAction::default(),
+        ));
+        let domain_sink = Arc::new(DomainAdapterEventSink::new(
+            Arc::clone(db),
+            project_id,
+            events_tx.clone(),
+            Vec::new(),
+            false,
+            violation,
+            None,
+        ));
+        RunLifecycleSink::wrap(domain_sink, Arc::clone(db), project_id, events_tx, run_id)
+    }
+
+    /// Reads a run's current projected state directly, for assertions.
+    async fn run_state(db: &DatabaseHandle, run_id: RunId) -> String {
+        db.run_domain_op(Box::new(move |conn| {
+            let state: String = conn.query_row(
+                "SELECT state FROM runs WHERE run_id = ?1",
+                [run_id.to_string()],
+                |row| row.get(0),
+            )?;
+            Ok(serde_json::json!(state))
+        }))
+        .await
+        .expect("read run state")
+        .as_str()
+        .expect("state is a string")
+        .to_string()
+    }
+
+    /// Every journaled run-state event for `run_id`, in sequence order:
+    /// the `state` each `RunEvent` recorded, so the exact walk the sink
+    /// committed is readable back out of the durable journal.
+    async fn run_states(db: &DatabaseHandle, run_id: RunId) -> Vec<String> {
+        let raw: Vec<String> = db
+            .run_domain_op(Box::new(move |conn| {
+                let mut stmt = conn
+                    .prepare("SELECT event_json FROM events WHERE run_id = ?1 ORDER BY sequence")?;
+                let rows: Vec<String> = stmt
+                    .query_map([run_id.to_string()], |row| row.get(0))?
+                    .collect::<Result<_, _>>()?;
+                Ok(serde_json::json!(rows))
+            }))
+            .await
+            .expect("read journaled events")
+            .as_array()
+            .expect("rows are an array")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_string)
+            .collect();
+        raw.into_iter()
+            .filter_map(|raw| {
+                let event: RuntimeEvent =
+                    serde_json::from_str(&raw).expect("parse a journaled event");
+                match event {
+                    RuntimeEvent::RunEvent { state, .. } => Some(state),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    /// Runs the whole session: a real supervised `/bin/sh` child stands in
+    /// for `claude` — it prints the fixture's init frame and exits with
+    /// `code`; `run_session` normalizes the frame through the real
+    /// normalizer, drives the production sink chain, and settles the
+    /// process when stdout closes, emitting the OS-observed exit status.
+    async fn drive_fake_claude(code: i32) -> (TempDir, Arc<DatabaseHandle>, RunId) {
+        let (dir, db) = open_db().await;
+        let project_id = ProjectId::new();
+        let (task_id, worker_id, run_id) = seed_run(&db, project_id).await;
+        let (events_tx, _events_rx) = broadcast::channel(64);
+        let sink = production_sink_chain(&db, project_id, events_tx, run_id);
+
+        let script = format!("printf '%s\\n' '{}'; exit {code}\n", init_line());
+        let spec = SpawnSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), script],
+            cwd: PathBuf::from("/tmp"),
+            env: HashMap::new(),
+            max_stdout_frame_bytes: 8192,
+            max_stderr_capture_bytes: 4096,
+        };
+        let supervisor = Supervisor::with_escalation(EscalationTimings {
+            sigint_to_sigterm: Duration::from_millis(50),
+            sigterm_to_sigkill: Duration::from_millis(50),
+        });
+        let process = supervisor.spawn(spec).await.expect("spawn /bin/sh");
+        let (commands_tx, commands_rx) = mpsc::channel(4);
+        // Keep `commands_tx` bound so the channel-closed arm is not the
+        // one taken — we want the stdout-closed path.
+        let _commands_tx = commands_tx;
+
+        run_session(
+            process,
+            commands_rx,
+            ClaudeNormalizer::new(),
+            sink,
+            (run_id, task_id, worker_id),
+            Arc::new(StdMutex::new(SharedSessionInfo::default())),
+            "claude".to_string(),
+            None,
+        )
+        .await;
+        (dir, db, run_id)
+    }
+
+    #[tokio::test]
+    async fn a_vendor_session_that_exits_cleanly_walks_its_run_to_succeeded() {
+        let (dir, db, run_id) = drive_fake_claude(0).await;
+        assert_eq!(run_state(&db, run_id).await, "succeeded");
+        assert_eq!(
+            run_states(&db, run_id).await,
+            vec![
+                "queued".to_string(),
+                "starting".to_string(),
+                "working".to_string(),
+                "succeeded".to_string(),
+            ],
+            "the walked edges must be exactly queued -> starting -> working -> succeeded"
+        );
+        db.shutdown().await.expect("shutdown database");
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn a_vendor_session_that_exits_nonzero_walks_its_run_to_failed() {
+        let (dir, db, run_id) = drive_fake_claude(7).await;
+        assert_eq!(run_state(&db, run_id).await, "failed");
+        assert_eq!(
+            run_states(&db, run_id).await,
+            vec![
+                "queued".to_string(),
+                "starting".to_string(),
+                "working".to_string(),
+                "failed".to_string(),
+            ],
+            "the walked edges must be exactly queued -> starting -> working -> failed"
+        );
+        db.shutdown().await.expect("shutdown database");
+        drop(dir);
+    }
+}

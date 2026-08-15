@@ -15,6 +15,7 @@ pub mod omp_rpc;
 mod profile;
 mod profile_store;
 pub mod registry;
+mod run_lifecycle;
 pub mod terminal;
 #[path = "trait.rs"]
 mod r#trait;
@@ -40,6 +41,7 @@ pub use profile::{
 };
 pub use profile_store::{ProfileStore, ProfileStoreError};
 pub use registry::{AdapterAuthorization, AdapterRegistry, FixtureAuthorization, RegistryError};
+pub use run_lifecycle::RunLifecycleSink;
 pub use r#trait::{
     Adapter, AdapterMessage, AdapterSnapshot, CancelScope, ProbeResult, StartSpec, VendorSessionRef,
 };

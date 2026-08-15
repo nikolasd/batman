@@ -434,10 +434,13 @@ impl AdapterEventSink for DomainAdapterEventSink {
 /// Wraps a run's [`AdapterEventSink`] and reports terminal settlement
 /// exactly once: the first [`AdapterEventPayload::ProcessExited`] this run
 /// emits fires the paired receiver, after the inner sink has finished
-/// journaling it. Observing the payload here rather than re-reading it off
-/// the shared `events/subscribe` broadcast makes the signal per-run,
-/// immune to a lagged broadcast receiver, and impossible to miss by
-/// subscribing too late.
+/// journaling it -- which, in the production chain where the inner sink is
+/// [`super::run_lifecycle::RunLifecycleSink`], also means after the run's
+/// terminal `RunState` edge is durable, ordering the state before the
+/// concurrency-slot release this signal triggers. Observing the payload here
+/// rather than re-reading it off the shared `events/subscribe` broadcast makes
+/// the signal per-run, immune to a lagged broadcast receiver, and impossible
+/// to miss by subscribing too late.
 pub(crate) struct SettlementSink {
     inner: Arc<dyn AdapterEventSink>,
     settled: std::sync::Mutex<Option<oneshot::Sender<()>>>,

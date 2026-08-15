@@ -33,9 +33,10 @@ use batman_protocol::{RunId, TaskId, WorkerId};
 use tokio::sync::oneshot;
 
 use super::capability::{AdapterCapabilities, NestedCapability};
-use super::event_sink::{DomainAdapterEventSink, SettlementSink};
+use super::event_sink::{AdapterEventSink, DomainAdapterEventSink, SettlementSink};
 use super::mcp_config::AdapterMcpConfig;
 use super::profile::{StartupOptions, WorkerProfile};
+use super::run_lifecycle::RunLifecycleSink;
 use super::r#trait::{Adapter, AdapterMessage, StartSpec};
 use crate::adapter::CancelScope;
 use crate::conformance;
@@ -336,12 +337,17 @@ async fn emit_pane_detached(
 
 /// Settles one run: waits for its `ProcessExited`, then evicts and
 /// disposes its adapter, returns the concurrency slot, and journals the
-/// display detach. `Err` from `settled` means the run's sink was dropped
-/// without any process exit ever being observed -- the terminal adapter,
-/// which supervises no process of its own and emits none (a pre-existing
-/// gap with a different root cause, tracked separately). Never release or
-/// journal a detach on that path: there is no settlement to record, and a
-/// release without one would hand this run's slot to another.
+/// display detach. The run's terminal `RunState` edge is already durable by
+/// the time this watcher runs: `RunLifecycleSink` commits it as part of
+/// journaling the very `ProcessExited` this signal is fired from, so the
+/// slot is never released -- and no other run authorized -- while this run
+/// still reads non-terminal. `Err` from `settled` means the run's sink was
+/// dropped without any process exit ever being observed -- the terminal
+/// adapter, which supervises no process of its own and emits none (a
+/// pre-existing gap with a different root cause, tracked separately); that
+/// path therefore leaves the run non-terminal until the boot recovery sweep.
+/// Never release or journal a detach on that path: there is no settlement to
+/// record, and a release without one would hand this run's slot to another.
 async fn watch_settlement(
     settled: oneshot::Receiver<()>,
     running: Arc<Mutex<HashMap<RunId, Arc<dyn Adapter>>>>,
@@ -456,7 +462,7 @@ async fn run_one(
             return Err(err.into());
         }
     };
-    let sink = Arc::new(DomainAdapterEventSink::new(
+    let sink: Arc<dyn AdapterEventSink> = Arc::new(DomainAdapterEventSink::new(
         Arc::clone(&ctx.db),
         ctx.project_id,
         ctx.events_tx.clone(),
@@ -467,6 +473,13 @@ async fn run_one(
             .as_deref()
             .and_then(|p| p.cost_ceiling_per_run_usd),
     ));
+    let sink = RunLifecycleSink::wrap(
+        sink,
+        Arc::clone(&ctx.db),
+        ctx.project_id,
+        ctx.events_tx.clone(),
+        ctx.run_id,
+    );
     let (sink, settled) = SettlementSink::wrap(sink);
     if let Err(err) = adapter
         .start(

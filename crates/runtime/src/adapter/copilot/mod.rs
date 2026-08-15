@@ -302,16 +302,13 @@ impl CopilotAdapter {
                         // integration point (see the shared adapter
                         // contract's approvals section).
                     }
-                    CopilotClientEvent::ProcessExited => {
+                    CopilotClientEvent::ProcessExited { exit_code, signal } => {
                         let _ = sink
                             .emit(AdapterEvent {
                                 run_id,
                                 task_id,
                                 worker_id,
-                                payload: AdapterEventPayload::ProcessExited {
-                                    exit_code: None,
-                                    signal: None,
-                                },
+                                payload: AdapterEventPayload::ProcessExited { exit_code, signal },
                             })
                             .await;
                         if let Some(mcp) = &mcp {
