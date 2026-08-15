@@ -892,8 +892,7 @@ mod run_state_tests {
     /// `VendorSessionEstablished`.
     fn init_line() -> &'static str {
         static LINE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-            let json =
-                include_str!("../../../../../fixtures/adapters/claude/initialize.jsonl");
+            let json = include_str!("../../../../../fixtures/adapters/claude/initialize.jsonl");
             json.lines()
                 .next()
                 .expect("the fixture's first line is the init frame")
@@ -923,10 +922,7 @@ mod run_state_tests {
     /// `DomainRepository` API (copied from `run_lifecycle.rs`'s unit-test
     /// harness) — the run row and its journaled `RunQueued` event are the
     /// walk's starting point.
-    async fn seed_run(
-        db: &DatabaseHandle,
-        project_id: ProjectId,
-    ) -> (TaskId, WorkerId, RunId) {
+    async fn seed_run(db: &DatabaseHandle, project_id: ProjectId) -> (TaskId, WorkerId, RunId) {
         let task_id = TaskId::new();
         let worker_id = WorkerId::new();
         let run_id = RunId::new();

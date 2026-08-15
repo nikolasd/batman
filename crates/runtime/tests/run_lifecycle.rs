@@ -30,12 +30,12 @@ use batman_runtime::adapter::{
 };
 use batman_runtime::config::NestedViolationAction;
 use batman_runtime::db::DatabaseHandle;
-use batman_runtime::policy::ViolationService;
 use batman_runtime::domain::DomainRepository;
+use batman_runtime::policy::ViolationService;
 use batman_runtime::recovery::RecoveryCoordinator;
+use tempfile::TempDir;
 use tokio::sync::broadcast;
 use tokio::time::{Instant, MissedTickBehavior};
-use tempfile::TempDir;
 
 /// The `fake-worker` binary that stands in for `omp` (see
 /// `omp_rpc_adapter.rs`'s own copy — each `tests/*.rs` file is its own
@@ -112,10 +112,7 @@ async fn open_db() -> (TempDir, Arc<DatabaseHandle>) {
 /// Seeds one task + worker + `queued` run through the real `DomainRepository`
 /// API (the same shape as `tests/recovery.rs`'s `seed_run`), returning the
 /// run's identifiers for the caller to drive further.
-async fn seed_run(
-    db: &DatabaseHandle,
-    project_id: ProjectId,
-) -> (TaskId, WorkerId, RunId) {
+async fn seed_run(db: &DatabaseHandle, project_id: ProjectId) -> (TaskId, WorkerId, RunId) {
     let task_id = TaskId::new();
     let worker_id = WorkerId::new();
     let run_id = RunId::new();
@@ -211,8 +208,8 @@ async fn run_state(db: &DatabaseHandle, run_id: RunId) -> String {
 async fn run_states(db: &DatabaseHandle, run_id: RunId) -> Vec<String> {
     let raw: Vec<String> = db
         .run_domain_op(Box::new(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT event_json FROM events WHERE run_id = ?1 ORDER BY sequence")?;
+            let mut stmt =
+                conn.prepare("SELECT event_json FROM events WHERE run_id = ?1 ORDER BY sequence")?;
             let rows: Vec<String> = stmt
                 .query_map([run_id.to_string()], |row| row.get(0))?
                 .collect::<Result<_, _>>()?;
@@ -228,8 +225,7 @@ async fn run_states(db: &DatabaseHandle, run_id: RunId) -> Vec<String> {
         .collect();
     raw.into_iter()
         .filter_map(|raw| {
-            let event: RuntimeEvent =
-                serde_json::from_str(&raw).expect("parse a journaled event");
+            let event: RuntimeEvent = serde_json::from_str(&raw).expect("parse a journaled event");
             match event {
                 RuntimeEvent::RunEvent { state, .. } => Some(state),
                 _ => None,
@@ -260,11 +256,7 @@ async fn run_timestamp_set(db: &DatabaseHandle, run_id: RunId, column: &'static 
 /// Runs `is_done` against a fresh read of `state` on a 50 ms tick until it
 /// returns `true`, then returns that state. This is the test's only source of
 /// "the run reached X": it reads the durable row, never an in-memory snapshot.
-async fn poll_state(
-    db: &DatabaseHandle,
-    run_id: RunId,
-    is_done: impl Fn(&str) -> bool,
-) -> String {
+async fn poll_state(db: &DatabaseHandle, run_id: RunId, is_done: impl Fn(&str) -> bool) -> String {
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut interval = tokio::time::interval(Duration::from_millis(50));
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -279,9 +271,7 @@ async fn poll_state(
         }
         last = run_state(db, run_id).await;
     }
-    panic!(
-        "run did not reach a terminal state within 10s; last observed: {last}"
-    );
+    panic!("run did not reach a terminal state within 10s; last observed: {last}");
 }
 
 // ----------------------------------------------------------------- tests
@@ -347,10 +337,7 @@ async fn a_real_worker_process_walks_its_run_from_queued_into_working() {
         "the walked edges must be exactly queued -> starting -> working"
     );
 
-    adapter
-        .dispose()
-        .await
-        .expect("dispose the fake worker");
+    adapter.dispose().await.expect("dispose the fake worker");
     db.shutdown().await.expect("shutdown database");
 }
 
@@ -401,28 +388,21 @@ async fn a_real_worker_process_exit_settles_its_run() {
         state = run_state(&db, run_id).await;
     }
 
-    adapter
-        .dispose()
-        .await
-        .expect("dispose the fake worker");
+    adapter.dispose().await.expect("dispose the fake worker");
 
     let final_state = poll_state(&db, run_id, |s| {
         RunState::try_from(s).is_ok_and(|r| r.is_terminal())
     })
     .await;
     assert!(
-        RunState::try_from(final_state.as_str())
-            .is_ok_and(|r| r.is_terminal()),
+        RunState::try_from(final_state.as_str()).is_ok_and(|r| r.is_terminal()),
         "the run must read a terminal state after dispose, got {final_state}"
     );
 
     let states = run_states(&db, run_id).await;
     let terminals: Vec<&String> = states
         .iter()
-        .filter(|s| {
-            RunState::try_from(s.as_str())
-                .is_ok_and(|r| r.is_terminal())
-        })
+        .filter(|s| RunState::try_from(s.as_str()).is_ok_and(|r| r.is_terminal()))
         .collect();
     assert_eq!(
         terminals.len(),
@@ -437,10 +417,7 @@ async fn a_real_worker_process_exit_settles_its_run() {
     // The startup sweep must not touch a run the state machine already
     // terminalized (R51's sweep takes every *non-terminal* run).
     let coordinator = RecoveryCoordinator::with_defaults(Arc::clone(&db), project_id);
-    let result = coordinator
-        .recover()
-        .await
-        .expect("recovery must succeed");
+    let result = coordinator.recover().await.expect("recovery must succeed");
     assert!(
         result.recovered_runs.is_empty(),
         "the recovery sweep must leave a terminalized run untouched: {result:?}"
