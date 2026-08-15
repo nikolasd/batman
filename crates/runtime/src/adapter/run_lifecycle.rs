@@ -162,16 +162,16 @@ impl RunLifecycle {
         let Some(current) = self.current().await else {
             return;
         };
-        if current == state("queued") {
-            if let Err(err) = self.commit(&state("starting")).await {
-                tracing::warn!(
-                    error = %err,
-                    run_id = %self.run_id,
-                    from = %current,
-                    to = "starting",
-                    "failed to move a queued run to starting"
-                );
-            }
+        if current == state("queued")
+            && let Err(err) = self.commit(&state("starting")).await
+        {
+            tracing::warn!(
+                error = %err,
+                run_id = %self.run_id,
+                from = %current,
+                to = "starting",
+                "failed to move a queued run to starting"
+            );
         }
     }
 
@@ -263,10 +263,10 @@ impl AdapterEventSink for RunLifecycleSink {
                     .await;
             } else if process_started {
                 self.lifecycle.observe_process_started().await;
-            } else if !self.working_observed.load(Ordering::Relaxed) {
-                if self.lifecycle.observe_vendor_activity().await {
-                    self.working_observed.store(true, Ordering::Relaxed);
-                }
+            } else if !self.working_observed.load(Ordering::Relaxed)
+                && self.lifecycle.observe_vendor_activity().await
+            {
+                self.working_observed.store(true, Ordering::Relaxed);
             }
             result
         })
