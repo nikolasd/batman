@@ -12,7 +12,7 @@
 //! | `ProcessExited` with a non-zero code or a signal | `-> failed` |
 //! | `ProcessExited` with no code and no signal | `-> lost` |
 //!
-//! Three properties this shape depends on:
+//! Four properties this shape depends on:
 //!
 //! * **Edges are walked, never jumped.** Codex emits no `ProcessStarted` at
 //!   all (its `spawn_client` observes the pid but journals nothing), and
@@ -29,6 +29,11 @@
 //!   terminal when its exit arrives; every walk stops on a terminal state, and
 //!   `transition_run` itself rejects the edge and appends nothing even if a
 //!   concurrent commit wins the race.
+//! * **No edge without durable evidence.** A failed inner `emit` (the
+//!   sanitize/journal/broadcast step never actually committed anything) never
+//!   reaches any `observe_*` call: `RunLifecycleSink::emit` gates every
+//!   lifecycle observation on the inner sink's `Result` being `Ok`, so a run
+//!   never advances on evidence that was never actually journaled.
 //!
 //! The terminal edge lives here rather than in `registry::watch_settlement`
 //! so it is durable *before* `SettlementSink` fires the settlement signal that
@@ -257,16 +262,18 @@ impl AdapterEventSink for RunLifecycleSink {
         let process_started = matches!(&event.payload, AdapterEventPayload::ProcessStarted { .. });
         Box::pin(async move {
             let result = self.inner.emit(event).await;
-            if let Some((exit_code, signal)) = exit {
-                self.lifecycle
-                    .observe_process_exited(exit_code, signal.as_deref())
-                    .await;
-            } else if process_started {
-                self.lifecycle.observe_process_started().await;
-            } else if !self.working_observed.load(Ordering::Relaxed)
-                && self.lifecycle.observe_vendor_activity().await
-            {
-                self.working_observed.store(true, Ordering::Relaxed);
+            if result.is_ok() {
+                if let Some((exit_code, signal)) = exit {
+                    self.lifecycle
+                        .observe_process_exited(exit_code, signal.as_deref())
+                        .await;
+                } else if process_started {
+                    self.lifecycle.observe_process_started().await;
+                } else if !self.working_observed.load(Ordering::Relaxed)
+                    && self.lifecycle.observe_vendor_activity().await
+                {
+                    self.working_observed.store(true, Ordering::Relaxed);
+                }
             }
             result
         })
@@ -318,16 +325,34 @@ mod tests {
     };
     use tempfile::TempDir;
 
+    use crate::adapter::AdapterError;
+
     use super::*;
 
     /// The inner sink these tests wrap: accepts every event, journals
     /// nothing, and resolves with the fixed sequence `0` -- so every state
     /// change these tests observe is the work of the lifecycle edge itself.
     struct StubSink;
-
     impl AdapterEventSink for StubSink {
         fn emit(&self, _event: AdapterEvent) -> AdapterFuture<'_, u64> {
             Box::pin(async { Ok(0) })
+        }
+    }
+
+    /// The inner sink `a_failed_inner_emit_never_applies_a_lifecycle_edge`
+    /// wraps: every event fails as if the sanitize/journal/broadcast step
+    /// never actually committed anything, so no evidence was ever durable.
+    struct FailingSink;
+
+    impl AdapterEventSink for FailingSink {
+        fn emit(&self, _event: AdapterEvent) -> AdapterFuture<'_, u64> {
+            Box::pin(async {
+                Err(AdapterError::process(
+                    "stub",
+                    "emit",
+                    "journal write failed",
+                ))
+            })
         }
     }
 
@@ -822,6 +847,50 @@ mod tests {
             run_states(&db, run_id).await,
             before,
             "no RunEvent may be appended for output that is at-or-past working"
+        );
+        db.shutdown().await.expect("shutdown database");
+    }
+
+    #[tokio::test]
+    async fn a_failed_inner_emit_never_applies_a_lifecycle_edge() {
+        let (_dir, db) = open_db().await;
+        let project_id = ProjectId::new();
+        let (task_id, worker_id, run_id) = seed_run(&db, project_id).await;
+        let (tx, _rx) = broadcast::channel(64);
+        let sink = RunLifecycleSink::wrap(
+            Arc::new(FailingSink),
+            Arc::clone(&db),
+            project_id,
+            tx,
+            run_id,
+        );
+
+        let err = sink
+            .emit(AdapterEvent {
+                run_id,
+                task_id,
+                worker_id,
+                payload: AdapterEventPayload::ProcessStarted { pid: 1234 },
+            })
+            .await
+            .expect_err("the inner sink's failure must propagate");
+        assert_eq!(
+            err.to_string(),
+            "adapter stub operation emit failed (process): journal write failed"
+        );
+
+        // No edge without durable evidence: a `ProcessStarted` whose journal
+        // write never actually committed must never move the run, because
+        // nothing durable backs the `starting` edge it would otherwise apply.
+        assert_eq!(
+            run_state(&db, run_id).await,
+            "queued",
+            "a run must not advance on evidence its own sink failed to journal"
+        );
+        assert_eq!(
+            run_states(&db, run_id).await,
+            vec!["queued".to_string()],
+            "no RunEvent may be appended for an emit the inner sink rejected"
         );
         db.shutdown().await.expect("shutdown database");
     }
