@@ -574,7 +574,7 @@ async fn fixture_conformance_report_covers_every_canonical_scenario_exactly_once
     for result in &report.scenarios {
         if requires_live_turn.contains(&result.name) {
             assert!(
-                !result.passed,
+                !result.proved(),
                 "{} is not provable without a model call in fixture_report; it must be an \
                  honest passed: false, not a fabricated pass",
                 result.name
@@ -585,7 +585,7 @@ async fn fixture_conformance_report_covers_every_canonical_scenario_exactly_once
         // `codex app-server` spawn is forbidden too, so it reports an
         // honest skip rather than spawning (R52). Any *other* reason for
         // failing here is still a real regression.
-        if batman_runtime::conformance::vendor_cli_invocation_disabled() && !result.passed {
+        if batman_runtime::conformance::vendor_cli_invocation_disabled() && !result.proved() {
             assert!(
                 result
                     .detail
@@ -597,9 +597,10 @@ async fn fixture_conformance_report_covers_every_canonical_scenario_exactly_once
             continue;
         }
         assert!(
-            result.passed,
+            result.proved(),
             "expected scenario {} to pass, got: {}",
-            result.name, result.detail
+            result.name,
+            result.detail
         );
     }
 }

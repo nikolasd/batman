@@ -24,7 +24,7 @@ pub mod report;
 pub mod scenario;
 pub mod scrub;
 
-pub use report::{ConformanceMode, ConformanceReport, ScenarioResult};
+pub use report::{ConformanceMode, ConformanceReport, ScenarioOutcome, ScenarioResult};
 
 use crate::adapter::{AdapterCapabilities, AdapterKind};
 

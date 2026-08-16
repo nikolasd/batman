@@ -413,16 +413,19 @@ impl Doctor {
     }
 
     /// Probes the vendor CLI for `kind`. A missing or unauthenticated CLI
-    /// fails: a run submitted against it would fail too.
+    /// fails: a run submitted against it would fail too. A *skipped* probe
+    /// (the kill switch) is reported as usable because it was never
+    /// attempted -- the switch is a development convenience, not evidence
+    /// the CLI is broken.
     async fn check_adapter(kind: AdapterKind) -> Result<(), DoctorError> {
         let result = crate::conformance::probe_availability(kind).await;
-        if result.passed {
-            Ok(())
-        } else {
+        if result.disproved() {
             Err(DoctorError::AdapterUnavailable {
                 adapter: kind.wire_name().to_string(),
                 reason: result.detail,
             })
+        } else {
+            Ok(())
         }
     }
 

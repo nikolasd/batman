@@ -12,7 +12,8 @@ import { readFileSync } from "node:fs";
 /** One scenario outcome. `name` is a `conformance::scenario` constant. */
 export interface ScenarioResult {
   readonly name: string;
-  readonly passed: boolean;
+  /** `"pass"` proved, `"fail"` disproved, `"skipped"` never attempted. */
+  readonly outcome: "pass" | "fail" | "skipped";
   readonly detail: string;
 }
 
@@ -136,7 +137,7 @@ function assertAdapterReportValid(value: unknown, adapterName: string): void {
   if (report.scenarios.length === 0) {
     throw new Error(`Adapter ${adapterName} has zero scenarios — the conformance report appears to be a stub. ` + `A real run spawns 'batcave conformance' and records every canonical scenario.`);
   }
-  const passing = report.scenarios.filter((s) => s.passed);
+  const passing = report.scenarios.filter((s) => s.outcome === "pass");
   if (passing.length === 0) {
     throw new Error(`Adapter ${adapterName} has no passing scenarios — ${report.scenarios.length} total, all failing.`);
   }
@@ -173,8 +174,12 @@ function assertCapabilities(value: unknown, adapterName: string, which: string):
  *    downgraded to that capability's sentinel — an effective capability the
  *    adapter never declared would be a fabricated claim.
  * 2. Every gated capability still holding a non-sentinel value must have its
- *    backing scenario passing. A capability asserted on the strength of a
- *    failed scenario is exactly what this gate refuses to publish.
+ *    backing scenario passing or, if never attempted (skipped), must carry
+ *    the declared value through. A capability asserted on the strength of a
+ *    disproved scenario is exactly what this gate refuses to publish.
+ * 3. Every gated capability downgraded to its sentinel must be backed by a
+ *    *disproved* scenario, never a skip: a skip is the absence of evidence,
+ *    and absence of evidence never removes a declared capability.
  */
 function assertEffectiveIsProven(declared: AdapterCapabilities, effective: AdapterCapabilities, scenarios: readonly ScenarioResult[], adapterName: string): void {
   const gatedFields = new Set<string>(CAPABILITY_GATES.map((g) => g.field));
@@ -202,8 +207,16 @@ function assertEffectiveIsProven(declared: AdapterCapabilities, effective: Adapt
     }
 
     // (2) A surviving capability must be backed by a passing scenario.
-    if (effectiveValue !== gate.sentinel && !scenario.passed) {
-      throw new Error(`Adapter ${adapterName} claims effectiveCapabilities.${gate.field} = '${effectiveValue}' but its ` + `backing scenario '${gate.scenario}' FAILED: ${scenario.detail}`);
+    if (effectiveValue !== gate.sentinel && scenario.outcome === "fail") {
+      throw new Error(`Adapter ${adapterName} claims effectiveCapabilities.${gate.field} = '${effectiveValue}' but its ` + `backing scenario '${gate.scenario}' DISPROVED it: ${scenario.detail}`);
+    }
+
+    // (3) A capability downgraded to its sentinel must be backed by a
+    // genuine disproof. A skip means "never attempted" and must leave the
+    // capability declared -- a regression that downgrades on a skip would
+    // otherwise pass this gate silently.
+    if (effectiveValue === gate.sentinel && declaredValue !== gate.sentinel && scenario.outcome !== "fail") {
+      throw new Error(`Adapter ${adapterName} downgraded effectiveCapabilities.${gate.field} from '${declaredValue}' to the '${gate.sentinel}' sentinel, but its ` + `backing scenario '${gate.scenario}' was NOT disproved (outcome: '${scenario.outcome}'): ${scenario.detail}`);
     }
   }
 }

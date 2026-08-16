@@ -134,7 +134,7 @@ async fn an_uninstalled_vendor_cli_is_denied_at_authorization_and_the_kill_switc
 
     let skipped = probe_availability(AdapterKind::Codex).await;
     assert!(
-        skipped.passed,
+        skipped.proved(),
         "the switch must PASS rather than deny: a denial would make every \
          run in CI unauthorized, detail was {:?}",
         skipped.detail
@@ -167,7 +167,7 @@ async fn an_uninstalled_vendor_cli_is_denied_at_authorization_and_the_kill_switc
 
     let unavailable = probe_availability(AdapterKind::Claude).await;
     assert!(
-        !unavailable.passed,
+        !unavailable.proved(),
         "an unresolvable vendor CLI must fail the probe: {:?}",
         unavailable.detail
     );

@@ -723,7 +723,7 @@ async fn fixture_conformance_report_covers_every_canonical_scenario_and_provable
         // `real_client` is forbidden from spawning `copilot --acp` at all
         // and reports an honest skip instead (R52). Any *other* reason for
         // failing here is still a real regression.
-        if batman_runtime::conformance::vendor_cli_invocation_disabled() && !scenario.passed {
+        if batman_runtime::conformance::vendor_cli_invocation_disabled() && !scenario.proved() {
             assert!(
                 scenario
                     .detail
@@ -735,9 +735,10 @@ async fn fixture_conformance_report_covers_every_canonical_scenario_and_provable
             continue;
         }
         assert!(
-            scenario.passed,
+            scenario.proved(),
             "expected scenario {} to pass, detail: {}",
-            scenario.name, scenario.detail
+            scenario.name,
+            scenario.detail
         );
     }
 }

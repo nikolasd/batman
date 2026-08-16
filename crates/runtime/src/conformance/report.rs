@@ -10,16 +10,35 @@ use serde::Serialize;
 
 use crate::adapter::AdapterCapabilities;
 
+/// Whether a scenario proved its capability, disproved it, or was never
+/// attempted at all.
+///
+/// The third case is load-bearing, not cosmetic:
+/// [`downgrade_on_scenario_failure`] removes a capability only on a
+/// *disproof*. Encoding "not attempted" as `Fail` is what let a
+/// development-only kill switch deny production runs (REVIEW.md R68);
+/// encoding it as `Pass` would fabricate proof (R52).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScenarioOutcome {
+    /// Attempted, and the observed behaviour matched what the scenario claims.
+    Pass,
+    /// Attempted, and the observed behaviour contradicted the claim.
+    Fail,
+    /// Never attempted -- no evidence in either direction.
+    Skipped,
+}
+
 /// One scenario's outcome within a [`ConformanceReport`].
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScenarioResult {
     /// One of `super::scenario::ALL`'s exact strings.
     pub name: &'static str,
-    pub passed: bool,
+    pub outcome: ScenarioOutcome,
     /// A human-readable explanation, always present -- on failure, what
     /// went wrong; on success, what was actually observed (the concrete
-    /// evidence, not just "ok"); for a not-applicable scenario, why.
+    /// evidence, not just "ok"); on a skip, what was not attempted and why.
     pub detail: String,
 }
 
@@ -28,7 +47,7 @@ impl ScenarioResult {
     pub fn pass(name: &'static str, detail: impl Into<String>) -> Self {
         Self {
             name,
-            passed: true,
+            outcome: ScenarioOutcome::Pass,
             detail: detail.into(),
         }
     }
@@ -37,9 +56,36 @@ impl ScenarioResult {
     pub fn fail(name: &'static str, detail: impl Into<String>) -> Self {
         Self {
             name,
-            passed: false,
+            outcome: ScenarioOutcome::Fail,
             detail: detail.into(),
         }
+    }
+
+    #[must_use]
+    pub fn skip(name: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            name,
+            outcome: ScenarioOutcome::Skipped,
+            detail: detail.into(),
+        }
+    }
+
+    /// Attempted and proved. The only outcome that counts as evidence for a capability.
+    #[must_use]
+    pub fn proved(&self) -> bool {
+        self.outcome == ScenarioOutcome::Pass
+    }
+
+    /// Attempted and disproved. The only outcome that removes a capability.
+    #[must_use]
+    pub fn disproved(&self) -> bool {
+        self.outcome == ScenarioOutcome::Fail
+    }
+
+    /// Never attempted -- neither proof nor disproof.
+    #[must_use]
+    pub fn was_skipped(&self) -> bool {
+        self.outcome == ScenarioOutcome::Skipped
     }
 }
 
@@ -65,9 +111,10 @@ pub struct ConformanceReport {
     pub declared_capabilities: AdapterCapabilities,
     pub effective_capabilities: AdapterCapabilities,
     pub scenarios: Vec<ScenarioResult>,
-    /// True only if every scenario in `scenarios` passed. A single
-    /// failing scenario still produces a complete report (every other
-    /// scenario still runs) -- this flag is the aggregate, not a
+    /// True only if every scenario in `scenarios` proved its capability.
+    /// A single failing *or skipped* scenario makes this false -- the flag
+    /// means "every scenario proved", not "nothing failed" -- while every
+    /// other scenario still runs; this flag is the aggregate, not a
     /// short-circuit.
     pub passed: bool,
 }
@@ -89,7 +136,9 @@ impl ConformanceReport {
     /// "unsupported"/`none`-shaped variant only when a scenario whose
     /// name directly proves it failed. A capability with no
     /// corresponding scenario in this run is left as declared (there is
-    /// nothing to disprove it with) -- callers that need a stricter
+    /// nothing to disprove it with); a *skipped* scenario -- one that was
+    /// never attempted -- leaves its capability declared too, exactly as
+    /// an absent one does. Callers that need a stricter
     /// "only capabilities with a passing scenario" guarantee should
     /// additionally consult `scenarios` themselves, exactly as the
     /// plan's own "every effective capability points to a passing
@@ -103,7 +152,7 @@ impl ConformanceReport {
         declared_capabilities: AdapterCapabilities,
         scenarios: Vec<ScenarioResult>,
     ) -> Self {
-        let passed = scenarios.iter().all(|s| s.passed);
+        let passed = scenarios.iter().all(ScenarioResult::proved);
         let effective_capabilities =
             downgrade_on_scenario_failure(declared_capabilities, &scenarios);
         Self {
@@ -129,29 +178,33 @@ impl From<crate::adapter::AdapterKind> for AdapterKindLabel {
     }
 }
 
+/// Downgrades each gated capability to its most restrictive variant when
+/// the scenario that proves it was *disproved*. A *skipped* scenario --
+/// one never attempted -- is not a disproof: it leaves the capability
+/// declared, exactly as an absent scenario does.
 fn downgrade_on_scenario_failure(
     mut capabilities: AdapterCapabilities,
     scenarios: &[ScenarioResult],
 ) -> AdapterCapabilities {
-    let failed = |name: &str| scenarios.iter().any(|s| s.name == name && !s.passed);
+    let disproved = |name: &str| scenarios.iter().any(|s| s.name == name && s.disproved());
     use crate::adapter::{
         ApprovalsCapability, NestedCapability, ResumeCapability, SteeringCapability,
         WorkspaceControlCapability,
     };
-    if failed(super::scenario::APPROVAL) {
+    if disproved(super::scenario::APPROVAL) {
         capabilities.approvals = ApprovalsCapability::None;
     }
-    if failed(super::scenario::FOLLOW_UP) {
+    if disproved(super::scenario::FOLLOW_UP) {
         capabilities.steering = SteeringCapability::None;
     }
-    if failed(super::scenario::SESSION_RESUME) {
+    if disproved(super::scenario::SESSION_RESUME) {
         capabilities.resume = ResumeCapability::None;
     }
-    if failed(super::scenario::ISOLATED_WRITE) {
+    if disproved(super::scenario::ISOLATED_WRITE) {
         capabilities.workspace_control = WorkspaceControlCapability::ReadOnly;
     }
-    if failed(super::scenario::MANAGED_NESTING_REJECTION) {
-        // A failed rejection scenario means the adapter did NOT prove
+    if disproved(super::scenario::MANAGED_NESTING_REJECTION) {
+        // A disproved rejection scenario means the adapter did NOT prove
         // `nested: none` -- the safe direction to move is to whatever
         // this capability's own most restrictive variant is, never
         // toward `Managed` (that direction requires a passing proof,

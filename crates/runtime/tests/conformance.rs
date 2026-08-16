@@ -265,7 +265,7 @@ fn conformance_fixture_with_the_kill_switch_never_spawns_a_vendor_cli() {
             .find(|s| s["name"] == "probe")
             .unwrap_or_else(|| panic!("{adapter}: probe must be among the scenarios"));
         assert_eq!(
-            probe["passed"], true,
+            probe["outcome"], "pass",
             "{adapter}: a skipped probe must pass, not fail: {probe:?}"
         );
 

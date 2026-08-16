@@ -28,12 +28,12 @@ function capabilities(): AdapterConformanceReport["declaredCapabilities"] {
 /** The five scenarios that gate a capability, plus one ungated scenario. */
 function scenarios(): AdapterConformanceReport["scenarios"] {
   return [
-    { name: "approval", passed: true, detail: "ok" },
-    { name: "follow_up", passed: true, detail: "ok" },
-    { name: "session_resume", passed: true, detail: "ok" },
-    { name: "isolated_write", passed: true, detail: "ok" },
-    { name: "managed_nesting_rejection", passed: true, detail: "ok" },
-    { name: "probe", passed: true, detail: "ok" },
+    { name: "approval", outcome: "pass", detail: "ok" },
+    { name: "follow_up", outcome: "pass", detail: "ok" },
+    { name: "session_resume", outcome: "pass", detail: "ok" },
+    { name: "isolated_write", outcome: "pass", detail: "ok" },
+    { name: "managed_nesting_rejection", outcome: "pass", detail: "ok" },
+    { name: "probe", outcome: "pass", detail: "ok" },
   ];
 }
 
@@ -99,7 +99,7 @@ describe("conformance gate", () => {
 
   test("a report where every scenario failed is rejected", () => {
     const message = rejectionFor((r) => {
-      (r.adapters.codex as { scenarios: unknown }).scenarios = scenarios().map((s) => ({ ...s, passed: false }));
+      (r.adapters.codex as { scenarios: unknown }).scenarios = scenarios().map((s) => ({ ...s, outcome: "fail" }));
     });
     expect(message).toContain("no passing scenarios");
   });
@@ -124,7 +124,7 @@ describe("conformance gate", () => {
     const message = rejectionFor((r) => {
       const codex = r.adapters.codex;
       const resume = codex.scenarios.find((s) => s.name === "session_resume");
-      (resume as { passed: boolean; detail: string }).passed = false;
+      (resume as { outcome: "pass" | "fail" | "skipped"; detail: string }).outcome = "fail";
       (resume as { detail: string }).detail = "vendor refused session/load";
       // `effectiveCapabilities.resume` still claims "session" anyway.
     });
@@ -147,7 +147,7 @@ describe("conformance gate", () => {
     const report = validReport();
     const copilot = report.adapters.copilot;
     const resume = copilot.scenarios.find((s) => s.name === "session_resume");
-    (resume as { passed: boolean }).passed = false;
+    (resume as { outcome: "pass" | "fail" | "skipped" }).outcome = "fail";
     (copilot.effectiveCapabilities as { resume: string }).resume = "none";
     expect(() => assertReportComplete(report)).not.toThrow();
   });

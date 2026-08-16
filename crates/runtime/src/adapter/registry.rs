@@ -432,9 +432,12 @@ async fn run_one(
     // letting `adapter.start()` fail after a process is spawned. The probe
     // is a version handshake only -- never a model call -- and is cached
     // for 60s, so repeated submits do not re-spawn the binary.
+    //
+    // Only a *disproof* denies: a skipped probe (the kill switch) was never
+    // attempted, so it is not evidence the CLI is unusable.
     if let Some(kind) = profile.adapter_kind() {
         let availability = conformance::probe_availability(kind).await;
-        if !availability.passed {
+        if availability.disproved() {
             authorization.release();
             return Err(format!(
                 "adapter {} is unavailable: {}",

@@ -783,20 +783,21 @@ async fn run_conformance(adapter: String, fixture: bool, live: bool, output: Pat
                 .get(adapter.as_str())
                 .cloned()
                 .unwrap_or_default();
-            let actual_failures: Vec<String> = report
+            let unproven: Vec<String> = report
                 .scenarios
                 .iter()
-                .filter(|s| !s.passed)
+                .filter(|s| !s.proved())
                 .map(|s| s.name.to_string())
                 .collect();
-            // Check for unexpected failures (not in baseline).
-            let unexpected: Vec<&String> = actual_failures
+            // Check for unproven scenarios (failed or skipped -- neither is
+            // proof) not in the baseline.
+            let unexpected: Vec<&String> = unproven
                 .iter()
                 .filter(|name| !expected_failures.contains(name))
                 .collect();
             if !unexpected.is_empty() {
                 return fail(&format!(
-                    "adapter {} failed scenario(s) not in the fixture-mode baseline: {}",
+                    "adapter {} has scenario(s) not proven and not in the fixture-mode baseline: {}",
                     adapter,
                     unexpected
                         .iter()
@@ -808,7 +809,7 @@ async fn run_conformance(adapter: String, fixture: bool, live: bool, output: Pat
             // Check for baseline entries that now pass (rotting baseline).
             let now_passing: Vec<&String> = expected_failures
                 .iter()
-                .filter(|name| !actual_failures.contains(name))
+                .filter(|name| !unproven.contains(name))
                 .collect();
             if !now_passing.is_empty() {
                 return fail(&format!(

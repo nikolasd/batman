@@ -13,8 +13,8 @@
 //! rejection; and unexpected-child observation normalization."
 //!
 //! Not every scenario applies to every adapter (e.g. `VENDOR_RECONNECT`
-//! is OMP-RPC-specific; a foreign adapter's suite reports it `passed:
-//! true` with a detail explaining it is not applicable, never silently
+//! is OMP-RPC-specific; a foreign adapter's suite reports it `outcome:
+//! "pass"` with a detail explaining it is not applicable, never silently
 //! omits it -- omission and "not applicable" must stay distinguishable
 //! from an unrun scenario).
 
