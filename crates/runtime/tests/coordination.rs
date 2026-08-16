@@ -1059,11 +1059,14 @@ async fn coordination_request_child_draws_on_the_same_per_sender_budget_as_send(
     let replay = omp
         .call(5, "events/replay", json!({ "afterSequence": 0 }))
         .await;
+    let events = replay["result"]
+        .as_array()
+        .expect("events/replay returns an array");
     assert!(
-        !replay["result"]
-            .to_string()
-            .contains("childWorkerRequested"),
-        "a rate-limited requestChild must never reach the journal: {replay:?}"
+        !events
+            .iter()
+            .any(|e| e.to_string().contains("childWorkerRequested")),
+        "a rate-limited requestChild must never reach the journal: {events:?}"
     );
 }
 
