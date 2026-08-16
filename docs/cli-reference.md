@@ -247,6 +247,13 @@ frames; `--live` shells out to the real vendor CLI (gated by adapter-specific en
 entry rather than a hard process failure if the vendor CLI is unavailable or refuses (e.g. out of
 credits). The report is written to `--output` and also printed to stdout.
 
+Each scenario in the report is `pass`, `fail`, or `skipped` — never collapsed to a boolean. `skipped`
+means the scenario was never attempted (e.g. `BATMAN_DISABLE_VENDOR_CLI=1` suppresses every real
+vendor-CLI spawn) and counts as neither proof nor disproof: it leaves the capability it would gate
+at its declared value in `effective_capabilities`, and only a genuine `fail` downgrades it (R68).
+`passed: true` on the top-level report still requires every scenario to have `pass`ed — a skip marks
+the report unpassed even though it downgrades nothing, so a skip is never mistaken for full proof.
+
 ### `batcave adapters`
 
 Runs every adapter's fixture conformance suite and prints declared vs. effective capabilities — the

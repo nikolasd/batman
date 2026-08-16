@@ -2354,6 +2354,62 @@ locally installed Copilot CLI (1.0.80 at the time of this fix) is not yet in
 With R69 closed, **Critical drops to zero** for the first time this journal records. The High tier
 is unchanged at five: R33, R44, R53, R54 and R68 remain.
 
+## Part XVII — Skipped is not Fail: the discriminator R68 asked for
+
+R68 was self-inflicted by the previous fix. Part XIV closed R52 by making every unattempted
+vendor-CLI scenario report an honest `fail` rather than a fabricated `pass` — correct locally, but
+`AdapterRegistry::run_one` feeds every fixture conformance report's `effective_capabilities`
+straight into the production authorizer, and `downgrade_on_scenario_failure` read any `fail` as a
+disproof. So `BATMAN_DISABLE_VENDOR_CLI=1` — a development and CI convenience — deterministically
+stripped `steering` and `resume` from every adapter's effective capabilities, denying any run whose
+policy required them, with an error that never named the switch as the cause. Two outcomes,
+`pass`/`fail`, could not express three states: proved, disproved, and never attempted.
+
+The fix, across three commits, gave `ScenarioResult` the third state the gate actually needed.
+`7163ab1` introduced `ScenarioOutcome { Pass, Fail, Skipped }`, renamed the wire field `passed` to
+`outcome`, and added `was_skipped()`/`proved()`/`disproved()` predicates — a pure refactor with no
+behavior change beyond the JSON field rename, since nothing yet produced `Skipped`.
+`ed6c5b3` then flipped every "not attempted" producer from `fail` to `skip`: the shared
+`vendor_cli_skipped_probe()`/`vendor_cli_required_scenario()` helpers, Codex's
+`requires_live_turn_scenario()`, Copilot's `real_client()` and `session_resume_probe()` refusals, and
+OMP-RPC's `resume_flag_probe()` refusal — introducing a shared `VendorUnavailable { Skipped, Failed }`
+so each producer keeps the deliberate-refusal-vs-attempted-failure distinction it already had, just
+expressed in the new vocabulary. `downgrade_on_scenario_failure` and the availability gate both read
+`disproved()` only, so a skip downgrades nothing and fabricates nothing — R68 and R52 both stay
+closed by construction, not by convention.
+
+A third commit, `bf38d95`, is the proof neither of the first two carried on its own: that the
+production authorizer really does still approve a run the pre-fix behavior would have denied.
+`crates/runtime/tests/kill_switch_authorization.rs` sets `BATMAN_DISABLE_VENDOR_CLI=1`, runs every
+adapter's real fixture conformance suite, and asserts `effective_capabilities ==
+declared_capabilities` for all four. That equality alone would hold vacuously on an all-`pass`
+report regardless of whether the fix works, so the test also asserts, as a whole-run aggregate,
+that at least one of the four reports carries a `was_skipped()` scenario — and, specifically for Codex, that `FOLLOW_UP` and
+`SESSION_RESUME` are among the skips, since those are the two scenarios gating the `steering`/`resume`
+capabilities the next assertion depends on. (An earlier draft of this test checked `!report.passed`
+instead, which a genuine, unrelated `Fail` could also satisfy with zero scenarios actually skipped —
+caught before landing and replaced with the direct `was_skipped()` check.) The test then takes
+Codex's resulting effective set through the real `PolicyEvaluator::authorize()` against a policy
+requiring `steering` + `resume` and asserts `Ok(())` — the exact denial R68 described, now proved
+absent end to end rather than argued about layer by layer. It mutates the process-global
+`BATMAN_DISABLE_VENDOR_CLI` variable via `unsafe { std::env::set_var }`, so the file holds exactly one
+`#[tokio::test(flavor = "current_thread")]`, the same constraint `vendor_cli_availability.rs`
+(Part XIV) already established. Two unit tests moved into `conformance/report.rs`'s own suite
+alongside it: `a_skipped_scenario_leaves_its_gated_capability_declared` proves a skip alone changes
+nothing, and `a_skip_never_masks_a_real_disproof_of_a_different_gate` proves a skip sharing a report
+with a genuine failure of a *different* capability still lets that failure downgrade correctly — the
+skip doesn't accidentally shield anything beyond its own gate.
+
+`cargo test --workspace` passes both with and without the switch set — 736 passed either way, plus
+the same pre-existing, environment-specific failure every entry since Part XIV has carried,
+`copilot_adapter::real_binary_initialize_and_session_list_never_invoke_a_model` (locally installed
+Copilot CLI 1.0.80 still isn't in `COPILOT_KNOWN_CLI_VERSIONS`), confirmed unrelated by reproducing
+it identically on unmodified `main`. `cargo clippy --all-targets --all-features -- -D warnings`,
+`cargo fmt --all --check` (on the touched files; three pre-existing, untouched files carry their own
+unrelated formatting drift), and `bun run generate --check` are all clean; `bun test` passes 149.
+
+With R68 closed, the High tier drops to four: R33, R44, R53 and R54 remain.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
