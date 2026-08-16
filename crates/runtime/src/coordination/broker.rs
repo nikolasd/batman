@@ -185,9 +185,11 @@ impl CoordinationBroker {
     /// coordination call draws on the *same* window -- `send`,
     /// `requestChild`, and `publishArtifact` alike -- so a worker cannot
     /// evade the limit by rotating between methods. Charged as soon as the
-    /// sender's identity is known and always before journaling; a call
-    /// refused by an earlier gate (settled run, oversized text,
-    /// quarantine) costs no budget.
+    /// sender's identity is known and always before journaling: a call
+    /// refused by an earlier gate (settled run, oversized text, quarantine)
+    /// costs no budget, while one that clears the charge and is refused by
+    /// a later gate (`send`'s task-ownership or `replyTo` visibility
+    /// checks) has already spent its unit.
     fn charge_rate_limit(&self, sender: WorkerId) -> Result<(), CoordinationError> {
         self.rate_limiter
             .check(sender, std::time::Instant::now())
@@ -566,7 +568,10 @@ impl CoordinationBroker {
     /// event is the record. `artifactRef` and `description` are each
     /// bounded to [`COORDINATION_PAYLOAD_MAX_BYTES`] (either one can become
     /// the journaled message payload), and the call charges the run's
-    /// worker on the shared per-sender budget before journaling.
+    /// worker on the shared per-sender budget before journaling. The
+    /// quarantine gate deliberately runs ahead of the charge so a
+    /// quarantined worker still sees `POLICY_QUARANTINED`, not
+    /// `RATE_LIMITED` -- keep that order.
     pub async fn publish_artifact(
         &self,
         run_id: RunId,
