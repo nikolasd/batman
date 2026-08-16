@@ -114,10 +114,14 @@ pub enum CoordinationChildDecision {
     },
 }
 
-/// The upper bound on a `coordination/send` payload, in bytes. A larger
-/// payload is rejected with `INVALID_PARAMS` before any journaling.
+/// The upper bound on any single worker-supplied string a `coordination/*`
+/// call can journal (`send`'s `payload`, `requestChild`'s `reason`,
+/// `publishArtifact`'s `artifactRef`/`description`), in bytes. A larger
+/// value is rejected with `INVALID_PARAMS` before any journaling.
 pub const COORDINATION_PAYLOAD_MAX_BYTES: usize = 64 * 1024;
 
-/// The maximum messages one sender may send within a one-minute window
-/// before `coordination/send` returns `RATE_LIMITED`.
+/// The maximum journaling coordination calls one sender may make within a
+/// one-minute window before `coordination/send`,
+/// `coordination/requestChild`, or `coordination/publishArtifact` returns
+/// `RATE_LIMITED`. One budget, shared across the three methods.
 pub const COORDINATION_RATE_LIMIT_PER_MINUTE: u32 = 30;

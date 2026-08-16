@@ -68,7 +68,10 @@ impl From<crate::domain::DomainError> for CoordinationError {
 
 /// Routes the worker-safe `coordination/*` operations to the domain
 /// repository, enforcing message bounds, reply visibility, task
-/// ownership, and the per-sender rate limit before any journaling.
+/// ownership, and the per-sender rate limit before any journaling. The
+/// byte bound and the rate-limit budget are shared by every journaling
+/// call -- `send`, `requestChild`, and `publishArtifact` -- not just
+/// `send`.
 pub struct CoordinationBroker {
     db: Arc<DatabaseHandle>,
     project_id: ProjectId,
@@ -163,6 +166,37 @@ impl CoordinationBroker {
         Ok(())
     }
 
+    /// Rejects caller-supplied text whose UTF-8 byte length exceeds
+    /// [`COORDINATION_PAYLOAD_MAX_BYTES`] before any of it can be
+    /// journaled. `field` names the wire field so a worker that supplies
+    /// several strings learns which one it oversized.
+    fn reject_oversized(field: &str, value: &str) -> Result<(), CoordinationError> {
+        if value.len() > COORDINATION_PAYLOAD_MAX_BYTES {
+            return Err(CoordinationError::invalid_params(format!(
+                "{field} of {} bytes exceeds the {}-byte maximum",
+                value.len(),
+                COORDINATION_PAYLOAD_MAX_BYTES
+            )));
+        }
+        Ok(())
+    }
+
+    /// Charges one unit of `sender`'s per-minute budget. Every journaling
+    /// coordination call draws on the *same* window -- `send`,
+    /// `requestChild`, and `publishArtifact` alike -- so a worker cannot
+    /// evade the limit by rotating between methods. Charged as soon as the
+    /// sender's identity is known and always before journaling; a call
+    /// refused by an earlier gate (settled run, oversized text,
+    /// quarantine) costs no budget.
+    fn charge_rate_limit(&self, sender: WorkerId) -> Result<(), CoordinationError> {
+        self.rate_limiter
+            .check(sender, std::time::Instant::now())
+            .map_err(|err| CoordinationError {
+                code: error_code::RATE_LIMITED,
+                message: err.to_string(),
+            })
+    }
+
     /// `coordination/send`: validates bounds, reply visibility, and task
     /// ownership, checks the rate limit, then records the message
     /// (`recorded`) and immediately marks it `sent` -- no adapter exists in
@@ -180,20 +214,9 @@ impl CoordinationBroker {
         reply_to: Option<MessageId>,
     ) -> Result<Value, CoordinationError> {
         self.require_live_run(run_id).await?;
-        if payload.len() > COORDINATION_PAYLOAD_MAX_BYTES {
-            return Err(CoordinationError::invalid_params(format!(
-                "payload of {} bytes exceeds the {}-byte maximum",
-                payload.len(),
-                COORDINATION_PAYLOAD_MAX_BYTES
-            )));
-        }
+        Self::reject_oversized("payload", &payload)?;
 
-        self.rate_limiter
-            .check(sender_worker_id, std::time::Instant::now())
-            .map_err(|err| CoordinationError {
-                code: error_code::RATE_LIMITED,
-                message: err.to_string(),
-            })?;
+        self.charge_rate_limit(sender_worker_id)?;
 
         // A child (a run's own messages) cannot address a task other than
         // the one its run belongs to.
@@ -511,12 +534,19 @@ impl CoordinationBroker {
     /// `coordination/requestChild`: records intent only, transitions the
     /// requesting run to `waitingPeer`, and notifies OMP (via the durable
     /// event journal OMP already replays). Never creates a task or worker.
+    /// Bounds `reason` to [`COORDINATION_PAYLOAD_MAX_BYTES`] and charges
+    /// the requesting worker's shared per-sender budget before journaling,
+    /// because the reason text lands verbatim in a durable
+    /// `ChildWorkerRequested` event.
     pub async fn request_child(
         &self,
         run_id: RunId,
         reason: String,
     ) -> Result<Value, CoordinationError> {
         self.require_live_run(run_id).await?;
+        Self::reject_oversized("reason", &reason)?;
+        let (_, sender_worker_id) = self.run_participants(run_id).await?;
+        self.charge_rate_limit(sender_worker_id)?;
         let project_id = self.project_id;
         let mut result = self
             .db
@@ -533,7 +563,10 @@ impl CoordinationBroker {
 
     /// `coordination/publishArtifact`: journals an artifact reference for
     /// the scoped run without a dedicated projection table -- the durable
-    /// event is the record.
+    /// event is the record. `artifactRef` and `description` are each
+    /// bounded to [`COORDINATION_PAYLOAD_MAX_BYTES`] (either one can become
+    /// the journaled message payload), and the call charges the run's
+    /// worker on the shared per-sender budget before journaling.
     pub async fn publish_artifact(
         &self,
         run_id: RunId,
@@ -541,10 +574,14 @@ impl CoordinationBroker {
         description: Option<String>,
     ) -> Result<Value, CoordinationError> {
         self.require_live_run(run_id).await?;
+        Self::reject_oversized("artifactRef", &artifact_ref)?;
+        if let Some(description) = &description {
+            Self::reject_oversized("description", description)?;
+        }
         self.require_not_quarantined(run_id).await?;
-        let sender_and_task = self.run_participants(run_id).await?;
+        let (task_id, worker_id) = self.run_participants(run_id).await?;
+        self.charge_rate_limit(worker_id)?;
         let project_id = self.project_id;
-        let (task_id, worker_id) = sender_and_task;
         let kind = MessageKind::PeerMessage;
         let payload = description.unwrap_or_else(|| artifact_ref.clone());
         let mut result = self
