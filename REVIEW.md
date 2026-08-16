@@ -20,7 +20,7 @@ still-open items below exist *because* of that fix — now lives in
 [Part XII](journal.md#part-xii--closing-the-last-critical-a-denylist-blind-to-its-own-vendor) (R49),
 [Part XIII](journal.md#part-xiii--two-leaks-one-lease-releasing-what-a-failed-start-acquired) (R41, R50),
 [Part XIV](journal.md#part-xiv--fixture-modes-broken-promise-a-kill-switch-only-one-caller-ever-asked-about) (R52),
-and [Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51).
+[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), and [Part XVIII](journal.md#part-xviii-one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53).
 This document only tracks what's still broken.
 
 **Baseline, last run 2026-08-12** (during an unrelated state-root rename; results apply to this
@@ -64,16 +64,6 @@ operate the system correctly.
 **Fix:** calibrate the scrubber against all eleven fixtures' actual ID families, not one; compute `unchanged` by comparing against the pre-write committed content (read the file before `fs::write`, or diff against `git show HEAD:<path>`).
 
 **Priority:** High — the tool that produces every committed conformance fixture is unproven correct beyond the single fixture it was built against.
-
-#### R53. `coordination/publishArtifact` and `coordination/requestChild` bypass both the rate limiter and the payload-size cap
-
-**Location:** `crates/runtime/src/coordination/broker.rs:525-543` (`request_child`), `:548-590` (`publish_artifact`)
-
-**Evidence:** both functions go straight from `require_live_run`/`require_not_quarantined` to `db.run_domain_op`, never calling `self.rate_limiter.check(...)` or checking `COORDINATION_PAYLOAD_MAX_BYTES` — unlike `send()` (`broker.rs:183-207`), which enforces both before journaling. Confirmed by reading both functions directly: neither references the rate limiter or the payload cap at all.
-
-**Fix:** apply the same `rate_limiter.check(...)` and payload-size guard `send()` uses to both `request_child` and `publish_artifact`.
-
-**Priority:** High — a worker connection can call either method in a tight loop with near-max-frame-size payloads, unthrottled, appending unbounded rows to the append-only journal and broadcasting each to every live monitor subscriber.
 
 #### R54. `ViolationService::decide` has a check-then-act race across non-atomic DB round trips
 
@@ -345,7 +335,7 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
-- **High:** 4 (R33, R44 — carried forward from earlier rounds; R53, R54 — new) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII)
+- **High:** 3 (R33, R44 — carried forward from earlier rounds; R54 — new) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
 - **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged

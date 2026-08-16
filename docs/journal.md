@@ -2410,6 +2410,108 @@ unrelated formatting drift), and `bun run generate --check` are all clean; `bun 
 
 With R68 closed, the High tier drops to four: R33, R44, R53 and R54 remain.
 
+## Part XVIII — One guard, three doors: the two coordination calls that journaled unmetered
+
+The sentence that carried this finding lives in a doc comment. The one on `CoordinationBroker`
+said it routed the coordination operations "enforcing message bounds, reply visibility, task
+ownership, and the per-sender rate limit before any journaling." It reads like a property of the
+whole struct, and for as long as that sentence was the review surface, that is exactly how it was
+read. The enforcement was real — but it lived inline in one of the struct's three journaling
+methods. `send()` checked the 64 KiB byte bound and the per-sender rate budget before every
+append; `request_child()` and `publish_artifact()` went from liveness into the journal, and
+neither referenced the limiter or the bound. A worker connection
+reaches all three: the role table that has made new methods safe to add since [ADR-0009](adr/0009-role-based-authorization-from-the-connection-not-per-call.md)
+grants the worker role the whole surface, and the MCP mirror and the direct JSON-RPC path both
+land in the broker. So one socket — or one in-process RPC frame — could journal unbounded
+`reason`, `artifactRef`, or `description` text, and `publishArtifact` was the door with the loop,
+nothing after it stopping another call, each append fanning out to every live monitor subscriber
+while the comment above the struct told the reader the guard was there.
+
+Three things looked bounded, and none of them is the journal, which is the shape of the survival.
+`mcp_protocol` caps its own tool arguments at 16 KiB, so the model-facing path was visibly
+throttled — but that bound protects the tool layer, not the RPC underneath. The direct RPC path
+carries no argument bound at all; its only ceiling is the 4 MiB IPC frame cap, a limit meant to
+bound a line, a multiple of the byte bound the journal row was supposed to get. And the struct's
+comment said the guard existed, which was true — for `send`. A guard that is true of one of three
+doors and described as the guard of the broker passes every review that re-reads the comment and
+every test that drives the layered path.
+
+The finding, R53, was opened by the 2026-08-12 round that also opened R52, and it overstated the
+`requestChild` half of its own write-up, which the fix had to correct before it could be trusted.
+The write-up described a worker looping `requestChild` unthrottled; the state machine refuses it.
+A run that is `working` and asked to request a peer moves to `waitingPeer`, and the transition
+check in the domain repository rejects the second call before anything is appended — loop it
+forever and you get one journaled request and a long list of rejections, never a flood. Its real
+exposure was size, not volume. `publishArtifact` is the door that was actually both: unbounded on
+its two free-text fields, and loopable, because nothing in it or after it stops another call.
+
+The fix is deliberately small and deliberately shared. Two private helpers now sit between the
+broker and the journal, and all three journaling methods call both, before append and before
+broadcast, in a documented order. `reject_oversized` refuses any single free-text field longer
+than 65 536 UTF-8 bytes — `COORDINATION_PAYLOAD_MAX_BYTES`, 64 KiB, the constant `send` has
+always enforced — a per-field cap, with `INVALID_PARAMS` naming the field that crossed; it
+checks the field's own length, never a serialized value, and the only other bound on the direct
+path is the codec's 4 MiB IPC frame cap, which limits a line, not the row. `charge_rate_limit`
+spends the caller's unit of the per-sender budget, `RateLimited` at thirty calls a minute, the
+same budget, the same window. The key is never free caller input: `requestChild` and
+`publishArtifact` read the run's own worker row through `run_participants`, an identity lookup
+the broker already had, and `send` charges the worker identity its connection was authenticated
+as — the bound scope down the tool path, a `senderWorkerId` field the RPC handler matches
+against the connection's principal on the direct path — so a worker cannot spend another
+worker's budget, and the existing smuggled-`senderWorkerId` test stands untouched. In
+`publishArtifact`, quarantine keeps precedence over the limiter: the gate deliberately runs
+ahead of the charge, so a punished worker is refused for quarantine before a budget unit is
+spent, and cannot starve the shared meter by shouting at it — while `requestChild` and `send`
+carry no quarantine gate at all. The constant's doc comment now says what it used to
+hide — one budget, shared across the three methods — and `bun run generate --check` confirms a
+comment moves neither schema nor bindings. The fix lands in `51d76e3`; `ea11417` lands the two
+doc corrections the review afterward forced, on which gates cost budget and why quarantine comes
+first.
+
+It is proven by five tests `56c59cd` added to the coordination suite, and the falsifiability
+check went the mechanical route — the two `charge_rate_limit` calls temporarily removed, the two
+budget tests watched fail, the calls restored, the five watched pass:
+
+- `coordination_publish_artifact_draws_on_the_same_per_sender_budget_as_send` — thirty accepted
+  `coordination/send` calls, then one `publishArtifact` on the same scope token: JSON-RPC
+  `-32006` on the thirty-first.
+- `coordination_request_child_draws_on_the_same_per_sender_budget_as_send` — the same shape
+  ending in `requestChild`: `-32006`, and `events/replay` from sequence zero contains no
+  `childWorkerRequested`.
+- `coordination_request_child_rejects_a_reason_over_64_kib` — a 65 537-byte `reason` gets
+  `-32602`, and a following well-formed `requestChild` still succeeds: the run never left
+  `working`.
+- `coordination_publish_artifact_rejects_free_text_over_64_kib` — a 65 537-byte `artifactRef`
+  and a 65 537-byte `description`, `-32602` twice, and `message/list` for the run returns
+  `messages: []`.
+- `coordination_publish_artifact_accepts_a_description_at_the_limit` — exactly 65 536 bytes
+  succeeds, guarding `>` against `>=`.
+
+Three of the seventeen existing coordination tests already exercised the same two constants
+against `send` — a payload at the 64 KiB bound, one over it, and thirty-and-one messages in a
+minute — and the suite went from seventeen tests to twenty-two. The adversarial review that
+followed asked six questions and found the two that were real: the doc comment overstated
+which gates cost budget, and the `requestChild` budget test's replay probe could have failed to
+parse a replay frame and then silently skipped its assertion. Both are closed: the
+clarification in `ea11417`, and the parse-or-scream hardening in `585d85c`. The rest came
+back clean — no leak, no vacuous test, no changed signature — and the docs commit `00677ee`
+carries the lesson to its proper places: a doc comment asserting an invariant is not
+enforcement, `mcp_protocol`'s argument bounds are a second layer that masks the absence of the
+first from every test that only drives the outer layer, and when a type's doc comment promises
+an invariant, the enforcement belongs in a named helper the type's methods must call.
+
+Measured on the final tree: `cargo fmt --all --check` and `cargo clippy --all-targets
+--all-features -- -D warnings` clean; `BATMAN_DISABLE_VENDOR_CLI=1 cargo test --workspace
+--no-fail-fast` — the flag because a plain run stops at the known copilot failure and a
+fail-fast cargo then skips the twenty-nine test binaries that sort after it — ran all 49 to
+completion: 744 passed, the two standing live-CLI ignores in the claude and codex adapters, and
+the one standing failure every entry since Part XIV has carried, the locally installed Copilot
+CLI 1.0.80 still not in `COPILOT_KNOWN_CLI_VERSIONS`; `bun run generate --check` clean; `bun test
+packages` 139 passed, 0 failed, 334 assertions, fourteen files. The coordination suite within
+that run: 22 passed, 0 failed.
+
+With R53 closed, the High tier drops to three — R33, R44, and R54 remain.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
