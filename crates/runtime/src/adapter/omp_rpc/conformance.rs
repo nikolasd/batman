@@ -25,7 +25,9 @@ use batman_runtime::adapter::{
     OmpRpcStartupOptions, ProfileId, StartupOptions, WorkerProfile,
 };
 use batman_runtime::conformance::report::AdapterKindLabel;
-use batman_runtime::conformance::{ConformanceMode, ConformanceReport, ScenarioResult, VendorUnavailable, scenario};
+use batman_runtime::conformance::{
+    ConformanceMode, ConformanceReport, ScenarioResult, VendorUnavailable, scenario,
+};
 use batman_runtime::coordination::mcp_protocol::BoundScope;
 use batman_runtime::supervisor::{EnvironmentPolicy, SpawnSpec, Supervisor};
 
@@ -715,7 +717,9 @@ async fn resume_flag_probe() -> Result<(), VendorUnavailable> {
     // the only place that can keep `SESSION_RESUME`/`RUNTIME_RESTART` off
     // the vendor CLI when the kill switch is set.
     if batman_runtime::conformance::vendor_cli_invocation_disabled() {
-        return Err(VendorUnavailable::disabled("the `omp --resume <id>` flag probe"));
+        return Err(VendorUnavailable::disabled(
+            "the `omp --resume <id>` flag probe",
+        ));
     }
     let bogus_id = format!(
         "batman-conformance-nonexistent-{}-{}",
@@ -746,12 +750,12 @@ async fn resume_flag_probe() -> Result<(), VendorUnavailable> {
         Ok(Err(e)) => {
             return Err(VendorUnavailable::Failed(format!(
                 "the omp binary is unavailable to run: {e}"
-            )))
+            )));
         }
         Err(_) => {
             return Err(VendorUnavailable::Failed(
                 "omp --resume <bogus id> did not exit within 10s".to_string(),
-            ))
+            ));
         }
     };
     let combined = format!(

@@ -20,7 +20,9 @@ use batman_runtime::adapter::{
     CopilotStartupOptions, NestedCapability,
 };
 use batman_runtime::conformance::report::AdapterKindLabel;
-use batman_runtime::conformance::{ConformanceMode, ConformanceReport, ScenarioResult, VendorUnavailable, scenario};
+use batman_runtime::conformance::{
+    ConformanceMode, ConformanceReport, ScenarioResult, VendorUnavailable, scenario,
+};
 
 use super::client::CopilotAcpClient;
 use super::normalize::copilot_normalize_session_update;
@@ -76,7 +78,9 @@ fn real_copilot_binary() -> Option<PathBuf> {
 /// `session/load`/`session/list`, none of which invoke a model.
 async fn real_client(cwd: &Path) -> Result<CopilotAcpClient, VendorUnavailable> {
     if batman_runtime::conformance::vendor_cli_invocation_disabled() {
-        return Err(VendorUnavailable::disabled("driving a real copilot --acp process"));
+        return Err(VendorUnavailable::disabled(
+            "driving a real copilot --acp process",
+        ));
     }
     let copilot = real_copilot_binary()
         .ok_or_else(|| VendorUnavailable::Failed("copilot CLI not found on PATH".to_string()))?;
@@ -142,7 +146,9 @@ async fn read_only_start_and_progress_scenario() -> ScenarioResult {
     let cwd = std::env::temp_dir();
     let client = match real_client(&cwd).await {
         Ok(client) => client,
-        Err(unavailable) => return unavailable.into_scenario(scenario::READ_ONLY_START_AND_PROGRESS),
+        Err(unavailable) => {
+            return unavailable.into_scenario(scenario::READ_ONLY_START_AND_PROGRESS);
+        }
     };
     let negotiated = match call_named("initialize", client.initialize()).await {
         Ok(n) => n,
