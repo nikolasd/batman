@@ -307,4 +307,58 @@ mod tests {
         );
         assert_eq!(report.effective_capabilities.nested, NestedCapability::None);
     }
+
+    #[test]
+    fn a_skipped_scenario_leaves_its_gated_capability_declared() {
+        let declared = fully_capable();
+        let scenarios = vec![
+            ScenarioResult::pass(super::super::scenario::PROBE, "ok"),
+            ScenarioResult::skip(super::super::scenario::FOLLOW_UP, "skipped: no vendor CLI"),
+        ];
+        let report = ConformanceReport::new(
+            AdapterKindLabel::from(AdapterKind::Codex),
+            ConformanceMode::Fixture,
+            None,
+            declared,
+            scenarios,
+        );
+        // R68: an unattempted scenario is neither proof nor disproof -- it
+        // must never strip the capability it would otherwise gate.
+        assert_eq!(
+            report.effective_capabilities.steering,
+            SteeringCapability::ActiveTurn
+        );
+        assert_eq!(report.effective_capabilities, declared);
+        // A skip still marks the whole report unpassed -- "passed" means
+        // every scenario proved, not merely "nothing failed".
+        assert!(!report.passed);
+    }
+
+    #[test]
+    fn a_skip_never_masks_a_real_disproof_of_a_different_gate() {
+        let scenarios = vec![
+            ScenarioResult::pass(super::super::scenario::PROBE, "ok"),
+            ScenarioResult::skip(super::super::scenario::FOLLOW_UP, "skipped: no vendor CLI"),
+            ScenarioResult::fail(super::super::scenario::APPROVAL, "boom"),
+        ];
+        let report = ConformanceReport::new(
+            AdapterKindLabel::from(AdapterKind::Codex),
+            ConformanceMode::Fixture,
+            None,
+            fully_capable(),
+            scenarios,
+        );
+        // The skip leaves its own gate (steering) declared...
+        assert_eq!(
+            report.effective_capabilities.steering,
+            SteeringCapability::ActiveTurn
+        );
+        // ...while a genuine disproof of a different gate still downgrades,
+        // unaffected by the skip sharing the same scenario list.
+        assert_eq!(
+            report.effective_capabilities.approvals,
+            ApprovalsCapability::None
+        );
+        assert!(!report.passed);
+    }
 }
