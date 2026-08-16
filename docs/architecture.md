@@ -611,7 +611,10 @@ pub struct CoordinationError {
 
 /// Routes the worker-safe `coordination/*` operations to the domain
 /// repository, enforcing message bounds, reply visibility, task
-/// ownership, and the per-sender rate limit before any journaling.
+/// ownership, and the per-sender rate limit before any journaling. The
+/// byte bound and the rate-limit budget are shared by every journaling
+/// call -- `send`, `requestChild`, and `publishArtifact` -- not just
+/// `send`.
 pub struct CoordinationBroker { ... }
 
 impl CoordinationBroker {

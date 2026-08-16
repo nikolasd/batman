@@ -192,3 +192,45 @@ it asserts a *word* boundary, which those characters do not create.
 `sanitize_json_redacts_an_anthropic_shaped_key_at_any_depth` (all in `security/redaction.rs`), plus
 `crates/runtime/tests/redaction_boundary.rs`, which carries an Anthropic-shaped key through the real
 append path and byte-scans the database, WAL, log, and replay output for it.
+
+---
+
+## Coordination Bounds
+
+### A bound enforced at one call site is not an enforced policy
+
+**Location:** `crates/runtime/src/coordination/broker.rs::{send, request_child, publish_artifact}`
+
+A doc comment that asserts a broker-wide invariant is only as load-bearing as the single inline
+check it was written beside — and a second, stricter enforcement layer can hide its absence from
+every surface a user actually exercises.
+
+**The bug:** the byte bound and the per-sender rate limit lived inline in `send()` while the
+struct's own doc comment described them as properties of the whole broker. The two methods added
+later — `request_child()` and `publish_artifact()` — inherited the claim without the code: the
+direct JSON-RPC path had no size bound at all (the server's default 4 MiB frame cap was the only
+bound in sight), and `publish_artifact`'s journaled message could be looped without throttling of
+any kind. The MCP tool surface had its own stricter argument bounds, so every test that drove
+through that layer saw a broker that *looked* bounded; the gap was invisible from the tool
+surface.
+
+**The fix:** `reject_oversized()` and `charge_rate_limit()` as named helpers on
+`CoordinationBroker` that every journaling method calls — the byte bound on each worker-supplied
+string that can become durable content, and the per-sender rate-limit charge as soon as the
+sender's identity is resolved. The rate-limit key is the run's own `worker_id` row read through
+`run_participants()`, never a caller-supplied parameter, so a single shared window covers `send`,
+`requestChild`, and `publishArtifact` alike and a worker cannot evade it by rotating between
+methods. Quarantine keeps its position ahead of the rate-limit charge so a quarantined worker
+still sees `POLICY_QUARANTINED`, not `RATE_LIMITED`.
+
+**The lesson:** when a doc comment on a type asserts an invariant, the enforcement belongs in a
+named helper the type's methods must call, not inline in the first method that needed it — and a
+second enforcement layer (here `mcp_protocol`'s stricter argument bounds) can hide the absence of
+the first from every test that only drives the outer layer. Test the innermost layer directly.
+
+**Regression tests:** `crates/runtime/tests/coordination.rs`'s
+`coordination_request_child_rejects_a_reason_over_64_kib`,
+`coordination_publish_artifact_rejects_free_text_over_64_kib`,
+`coordination_publish_artifact_accepts_a_description_at_the_limit`,
+`coordination_publish_artifact_draws_on_the_same_per_sender_budget_as_send`, and
+`coordination_request_child_draws_on_the_same_per_sender_budget_as_send`.

@@ -85,7 +85,7 @@ Small, dependency-light, and the vocabulary for everything else.
 | `src/adapter/omp_rpc/client.rs` | OMP-RPC client implementation |
 | `src/coordination/broker.rs` | `CoordinationBroker` — record-before-delivery messaging, `sweep_unacknowledged_as_unknown` |
 | `src/coordination/scope_token.rs` | `ScopeTokenStore` (mint/verify), `PidAncestryChecker` |
-| `src/coordination/rate_limit.rs` | `RateLimiter` — 30 messages/minute/sender sliding window |
+| `src/coordination/rate_limit.rs` | `RateLimiter` — single 30-calls/minute/sender sliding window, charged by every journaling coordination call (`coordination/send`, `coordination/requestChild`, `coordination/publishArtifact`) |
 | `src/coordination/mcp.rs` | MCP tool registry proxy |
 | `src/coordination/mcp_protocol.rs` | MCP protocol types |
 | `src/approval/service.rs` | `ApprovalService` — `request`/`decide`, ownership/idempotency/settled-run enforcement, `ApprovalCallback` seam |
@@ -291,7 +291,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":"1","method":"initialize","params":{...}}' 
 | `METHOD_NOT_FOUND` for a method you know exists | Your role's method table hides it — check `ClientPrincipal::allowed_methods`; if it's `ompExtension`-only, also check you didn't authenticate as `display` (see [`engineering-lessons.md`](engineering-lessons.md#cached-client-must-authenticate-with-the-union-of-all-roles)) |
 | `ILLEGAL_TRANSITION` (-32100) | The requested `RunState` edge isn't in the canonical lifecycle relation (`domain/transitions.rs`) — check `RunState::can_transition_to` |
 | `adapter_unavailable` from `run/submit` | Expected without a wired `RunDriver` (none by default this milestone) — the run is still `queued`, check `run/list`/`run/get` |
-| `RATE_LIMITED` from `coordination/send` | More than 30 messages/minute from one sender (`coordination/rate_limit.rs`) |
+| `RATE_LIMITED` from `coordination/send`, `coordination/requestChild`, or `coordination/publishArtifact` | More than 30 journaling calls/minute from one sender — the three methods share one 30-calls-per-minute budget per sender (`coordination/rate_limit.rs`) |
 | Connection dropped with no JSON error | Peer-UID mismatch (dropped before parsing) or an over-cap frame |
 | `ValidationError` in the TS client | The daemon sent a frame the schema rejects — regenerate bindings or find the drift |
 
