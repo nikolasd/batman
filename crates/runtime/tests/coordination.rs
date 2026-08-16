@@ -864,6 +864,209 @@ async fn coordination_send_rate_limits_after_30_messages_per_minute() {
     );
 }
 
+// ------------------------------------------- requestChild/publishArtifact bounds
+
+#[tokio::test]
+async fn coordination_request_child_rejects_a_reason_over_64_kib() {
+    let harness = Harness::start().await;
+    let mut omp = omp_client(&harness, "omp-1").await;
+    let (token, run_id, _task_id, _worker_id) = seed_scoped_run(&harness, &mut omp).await;
+    let mut worker = worker_client(&harness, &token).await;
+
+    let huge_reason = "x".repeat(64 * 1024 + 1);
+    let result = worker
+        .call(
+            2,
+            "coordination/requestChild",
+            json!({
+                "runId": run_id.to_string(),
+                "reason": huge_reason,
+            }),
+        )
+        .await;
+    assert_eq!(result["error"]["code"], -32602, "{result:?}");
+
+    // A rejected requestChild must have journaled nothing: the run is
+    // still `working`, so a well-formed request still succeeds (a
+    // journaled one would have left it `waitingPeer`, and this call could
+    // never happen again).
+    let good = worker
+        .call(
+            3,
+            "coordination/requestChild",
+            json!({
+                "runId": run_id.to_string(),
+                "reason": "need help",
+            }),
+        )
+        .await;
+    assert!(good.get("error").is_none(), "{good:?}");
+}
+
+#[tokio::test]
+async fn coordination_publish_artifact_rejects_free_text_over_64_kib() {
+    let harness = Harness::start().await;
+    let mut omp = omp_client(&harness, "omp-1").await;
+    let (token, run_id, _task_id, _worker_id) = seed_scoped_run(&harness, &mut omp).await;
+    let mut worker = worker_client(&harness, &token).await;
+
+    let huge = "x".repeat(64 * 1024 + 1);
+    let first = worker
+        .call(
+            2,
+            "coordination/publishArtifact",
+            json!({
+                "runId": run_id.to_string(),
+                "artifactRef": huge.clone(),
+            }),
+        )
+        .await;
+    assert_eq!(first["error"]["code"], -32602, "{first:?}");
+
+    let second = worker
+        .call(
+            3,
+            "coordination/publishArtifact",
+            json!({
+                "runId": run_id.to_string(),
+                "artifactRef": "artifact://abc",
+                "description": huge,
+            }),
+        )
+        .await;
+    assert_eq!(second["error"]["code"], -32602, "{second:?}");
+
+    // `publishArtifact` journals through `record_message`, so an empty
+    // message list is direct proof neither rejection reached the journal.
+    let list = omp
+        .call(5, "message/list", json!({ "runId": run_id.to_string() }))
+        .await;
+    assert!(
+        list["result"]["messages"].as_array().unwrap().is_empty(),
+        "a rejected publishArtifact must never journal: {list:?}"
+    );
+}
+
+#[tokio::test]
+async fn coordination_publish_artifact_accepts_a_description_at_the_limit() {
+    let harness = Harness::start().await;
+    let mut omp = omp_client(&harness, "omp-1").await;
+    let (token, run_id, _task_id, _worker_id) = seed_scoped_run(&harness, &mut omp).await;
+    let mut worker = worker_client(&harness, &token).await;
+
+    // Exactly 65 536 bytes: the bound is `>` (exceeds), not `>=`, so this
+    // is accepted. An implementation tightening to `>=` fails here.
+    let max_description = "x".repeat(64 * 1024);
+    let result = worker
+        .call(
+            2,
+            "coordination/publishArtifact",
+            json!({
+                "runId": run_id.to_string(),
+                "artifactRef": "artifact://abc",
+                "description": max_description,
+            }),
+        )
+        .await;
+    assert!(result.get("error").is_none(), "{result:?}");
+    assert_eq!(result["result"]["artifactRef"], "artifact://abc");
+}
+
+#[tokio::test]
+async fn coordination_publish_artifact_draws_on_the_same_per_sender_budget_as_send() {
+    let harness = Harness::start().await;
+    let mut omp = omp_client(&harness, "omp-1").await;
+    let (token, run_id, task_id, worker_id) = seed_scoped_run(&harness, &mut omp).await;
+    let mut worker = worker_client(&harness, &token).await;
+
+    for i in 0..30 {
+        let send = worker
+            .call(
+                2 + i,
+                "coordination/send",
+                json!({
+                    "runId": run_id.to_string(),
+                    "senderWorkerId": worker_id.to_string(),
+                    "taskId": task_id.to_string(),
+                    "kind": "peerMessage",
+                    "payload": format!("message {i}"),
+                }),
+            )
+            .await;
+        assert!(send.get("error").is_none(), "send {i} failed: {send:?}");
+    }
+
+    // The 31st journaling call from this sender, on a *different* method,
+    // must hit the same per-minute budget `send` drew from.
+    let publish = worker
+        .call(
+            32,
+            "coordination/publishArtifact",
+            json!({
+                "runId": run_id.to_string(),
+                "artifactRef": "artifact://abc",
+            }),
+        )
+        .await;
+    assert_eq!(
+        publish["error"]["code"], -32006,
+        "publishArtifact must draw on send's per-sender budget: {publish:?}"
+    );
+}
+
+#[tokio::test]
+async fn coordination_request_child_draws_on_the_same_per_sender_budget_as_send() {
+    let harness = Harness::start().await;
+    let mut omp = omp_client(&harness, "omp-1").await;
+    let (token, run_id, task_id, worker_id) = seed_scoped_run(&harness, &mut omp).await;
+    let mut worker = worker_client(&harness, &token).await;
+
+    for i in 0..30 {
+        let send = worker
+            .call(
+                2 + i,
+                "coordination/send",
+                json!({
+                    "runId": run_id.to_string(),
+                    "senderWorkerId": worker_id.to_string(),
+                    "taskId": task_id.to_string(),
+                    "kind": "peerMessage",
+                    "payload": format!("message {i}"),
+                }),
+            )
+            .await;
+        assert!(send.get("error").is_none(), "send {i} failed: {send:?}");
+    }
+
+    // The 31st journaling call from this sender, on a *different* method,
+    // must hit the same per-minute budget `send` drew from.
+    let request = worker
+        .call(
+            32,
+            "coordination/requestChild",
+            json!({
+                "runId": run_id.to_string(),
+                "reason": "need help",
+            }),
+        )
+        .await;
+    assert_eq!(
+        request["error"]["code"], -32006,
+        "requestChild must draw on send's per-sender budget: {request:?}"
+    );
+
+    // The throttled call must not have journaled a child-request event.
+    let replay = omp
+        .call(5, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    assert!(
+        !replay["result"]
+            .to_string()
+            .contains("childWorkerRequested"),
+        "a rate-limited requestChild must never reach the journal: {replay:?}"
+    );
+}
+
 // ---------------------------------------------------------- scope tokens
 
 #[tokio::test]
