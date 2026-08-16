@@ -909,12 +909,14 @@ async fn fixture_report_covers_every_canonical_scenario_exactly_once_and_passes_
         // `resume_flag_probe` is forbidden from spawning the real `omp`
         // binary and reports an honest skip instead (R52). Any *other*
         // reason for failing here is still a real regression.
-        if batman_runtime::conformance::vendor_cli_invocation_disabled() && !result.proved() {
+        if batman_runtime::conformance::vendor_cli_invocation_disabled()
+            && result.was_skipped()
+        {
             assert!(
                 result
                     .detail
                     .contains(batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV),
-                "scenario {:?} failed for a reason other than the kill switch: {}",
+                "scenario {:?} was skipped for a reason other than the kill switch: {}",
                 result.name,
                 result.detail
             );

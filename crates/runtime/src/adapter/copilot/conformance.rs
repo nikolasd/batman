@@ -20,7 +20,7 @@ use batman_runtime::adapter::{
     CopilotStartupOptions, NestedCapability,
 };
 use batman_runtime::conformance::report::AdapterKindLabel;
-use batman_runtime::conformance::{ConformanceMode, ConformanceReport, ScenarioResult, scenario};
+use batman_runtime::conformance::{ConformanceMode, ConformanceReport, ScenarioResult, VendorUnavailable, scenario};
 
 use super::client::CopilotAcpClient;
 use super::normalize::copilot_normalize_session_update;
@@ -74,22 +74,19 @@ fn real_copilot_binary() -> Option<PathBuf> {
 /// Spawns a real `copilot --acp` process rooted at `cwd`. Never sends a
 /// `session/prompt` -- callers only ever drive `initialize`/`session/new`/
 /// `session/load`/`session/list`, none of which invoke a model.
-async fn real_client(cwd: &Path) -> Result<CopilotAcpClient, String> {
+async fn real_client(cwd: &Path) -> Result<CopilotAcpClient, VendorUnavailable> {
     if batman_runtime::conformance::vendor_cli_invocation_disabled() {
-        return Err(format!(
-            "real copilot CLI invocation is disabled: {}=1",
-            batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV
-        ));
+        return Err(VendorUnavailable::disabled("driving a real copilot --acp process"));
     }
-    let copilot =
-        real_copilot_binary().ok_or_else(|| "copilot CLI not found on PATH".to_string())?;
+    let copilot = real_copilot_binary()
+        .ok_or_else(|| VendorUnavailable::Failed("copilot CLI not found on PATH".to_string()))?;
     timeout(
         Duration::from_secs(10),
         CopilotAcpClient::spawn(&copilot, cwd, Vec::new(), HashMap::new()),
     )
     .await
-    .map_err(|_| "spawning copilot --acp timed out".to_string())?
-    .map_err(|err| format!("spawning copilot --acp failed: {err}"))
+    .map_err(|_| VendorUnavailable::Failed("spawning copilot --acp timed out".to_string()))?
+    .map_err(|err| VendorUnavailable::Failed(format!("spawning copilot --acp failed: {err}")))
 }
 
 async fn call_named<T>(
@@ -145,7 +142,7 @@ async fn read_only_start_and_progress_scenario() -> ScenarioResult {
     let cwd = std::env::temp_dir();
     let client = match real_client(&cwd).await {
         Ok(client) => client,
-        Err(detail) => return ScenarioResult::fail(scenario::READ_ONLY_START_AND_PROGRESS, detail),
+        Err(unavailable) => return unavailable.into_scenario(scenario::READ_ONLY_START_AND_PROGRESS),
     };
     let negotiated = match call_named("initialize", client.initialize()).await {
         Ok(n) => n,
@@ -229,7 +226,7 @@ async fn follow_up_scenario() -> ScenarioResult {
     let cwd_str = cwd.to_string_lossy().to_string();
     let client = match real_client(&cwd).await {
         Ok(client) => client,
-        Err(detail) => return ScenarioResult::fail(scenario::FOLLOW_UP, detail),
+        Err(unavailable) => return unavailable.into_scenario(scenario::FOLLOW_UP),
     };
     if let Err(detail) = call_named("initialize", client.initialize()).await {
         client.shutdown().await;
@@ -391,7 +388,7 @@ async fn cancellation_scope_scenario() -> ScenarioResult {
     let cwd = std::env::temp_dir();
     let client = match real_client(&cwd).await {
         Ok(client) => client,
-        Err(detail) => return ScenarioResult::fail(scenario::CANCELLATION_SCOPE, detail),
+        Err(unavailable) => return unavailable.into_scenario(scenario::CANCELLATION_SCOPE),
     };
     let pid = client.pid();
     client.shutdown().await;
@@ -431,20 +428,20 @@ async fn cancellation_scope_scenario() -> ScenarioResult {
 /// can `session/load` -- reaching it that way would require an actual
 /// turn, which is a model call this suite must never make. `Ok` still
 /// covers the case where a future/different CLI does persist it.
-async fn session_resume_probe() -> Result<String, String> {
+async fn session_resume_probe() -> Result<String, VendorUnavailable> {
     let cwd = std::env::temp_dir();
     let cwd_str = cwd.to_string_lossy().to_string();
 
     let first = real_client(&cwd).await?;
     if let Err(e) = call_named("initialize", first.initialize()).await {
         first.shutdown().await;
-        return Err(e);
+        return Err(VendorUnavailable::Failed(e));
     }
     let session_id = match call_named("session/new", first.session_new(&cwd_str)).await {
         Ok(id) => id,
         Err(e) => {
             first.shutdown().await;
-            return Err(e);
+            return Err(VendorUnavailable::Failed(e));
         }
     };
     first.shutdown().await;
@@ -452,19 +449,19 @@ async fn session_resume_probe() -> Result<String, String> {
     let second = real_client(&cwd).await?;
     if let Err(e) = call_named("initialize", second.initialize()).await {
         second.shutdown().await;
-        return Err(e);
+        return Err(VendorUnavailable::Failed(e));
     }
     let load_result = call_named("session/load", second.session_load(&session_id, &cwd_str)).await;
     second.shutdown().await;
     load_result.map_err(|detail| {
-        format!(
+        VendorUnavailable::Failed(format!(
             "session {session_id} was real (created via a real session/new) but a brand-new process could not session/load it: {detail} -- the installed copilot CLI does not appear to persist a never-prompted session across a process boundary; proving full cross-process resume would require an actual turn (a model call), which this suite must never make"
-        )
+        ))
     })?;
     Ok(session_id)
 }
 
-async fn session_resume_scenario(cached: &Result<String, String>) -> ScenarioResult {
+async fn session_resume_scenario(cached: &Result<String, VendorUnavailable>) -> ScenarioResult {
     match cached {
         Ok(session_id) => ScenarioResult::pass(
             scenario::SESSION_RESUME,
@@ -472,11 +469,11 @@ async fn session_resume_scenario(cached: &Result<String, String>) -> ScenarioRes
                 "a brand-new CopilotAcpClient reached real, previously-created session {session_id} via session/load alone"
             ),
         ),
-        Err(detail) => ScenarioResult::fail(scenario::SESSION_RESUME, detail.clone()),
+        Err(unavailable) => unavailable.clone().into_scenario(scenario::SESSION_RESUME),
     }
 }
 
-async fn runtime_restart_scenario(cached: &Result<String, String>) -> ScenarioResult {
+async fn runtime_restart_scenario(cached: &Result<String, VendorUnavailable>) -> ScenarioResult {
     match cached {
         Ok(session_id) => ScenarioResult::pass(
             scenario::RUNTIME_RESTART,
@@ -484,7 +481,7 @@ async fn runtime_restart_scenario(cached: &Result<String, String>) -> ScenarioRe
                 "session {session_id} persisted across a full process teardown and a fresh client instance, proving durability across what a runtime restart would require -- reached via session/load alone, never start()"
             ),
         ),
-        Err(detail) => ScenarioResult::fail(scenario::RUNTIME_RESTART, detail.clone()),
+        Err(unavailable) => unavailable.clone().into_scenario(scenario::RUNTIME_RESTART),
     }
 }
 
@@ -741,20 +738,20 @@ pub async fn fixture_report() -> ConformanceReport {
 /// need a second real turn checking the first is remembered, which
 /// this suite does not spend). Only reachable through [`live_report`],
 /// which runs by default unless `BATMAN_DISABLE_VENDOR_CLI=1` is set.
-async fn session_resume_probe_live() -> Result<String, String> {
+async fn session_resume_probe_live() -> Result<String, VendorUnavailable> {
     let cwd = std::env::temp_dir();
     let cwd_str = cwd.to_string_lossy().to_string();
 
     let first = real_client(&cwd).await?;
     if let Err(e) = call_named("initialize", first.initialize()).await {
         first.shutdown().await;
-        return Err(e);
+        return Err(VendorUnavailable::Failed(e));
     }
     let session_id = match call_named("session/new", first.session_new(&cwd_str)).await {
         Ok(id) => id,
         Err(e) => {
             first.shutdown().await;
-            return Err(e);
+            return Err(VendorUnavailable::Failed(e));
         }
     };
     if let Err(e) = call_named(
@@ -764,22 +761,22 @@ async fn session_resume_probe_live() -> Result<String, String> {
     .await
     {
         first.shutdown().await;
-        return Err(e);
+        return Err(VendorUnavailable::Failed(e));
     }
     first.shutdown().await;
 
     let second = real_client(&cwd).await?;
     if let Err(e) = call_named("initialize", second.initialize()).await {
         second.shutdown().await;
-        return Err(e);
+        return Err(VendorUnavailable::Failed(e));
     }
     let load_result = call_named("session/load", second.session_load(&session_id, &cwd_str)).await;
     second.shutdown().await;
     load_result.map_err(|detail| {
-        format!(
+        VendorUnavailable::Failed(format!(
             "session {session_id} completed a real turn but a brand-new process still could \
              not session/load it: {detail}"
-        )
+        ))
     })?;
     Ok(session_id)
 }

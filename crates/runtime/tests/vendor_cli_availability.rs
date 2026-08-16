@@ -134,9 +134,9 @@ async fn an_uninstalled_vendor_cli_is_denied_at_authorization_and_the_kill_switc
 
     let skipped = probe_availability(AdapterKind::Codex).await;
     assert!(
-        skipped.proved(),
-        "the switch must PASS rather than deny: a denial would make every \
-         run in CI unauthorized, detail was {:?}",
+        skipped.was_skipped(),
+        "the switch must SKIP rather than deny: a denial would make every run in \
+         CI unauthorized, and a pass would fabricate proof, detail was {:?}",
         skipped.detail
     );
     assert!(

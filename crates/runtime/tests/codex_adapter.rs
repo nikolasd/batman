@@ -574,9 +574,9 @@ async fn fixture_conformance_report_covers_every_canonical_scenario_exactly_once
     for result in &report.scenarios {
         if requires_live_turn.contains(&result.name) {
             assert!(
-                !result.proved(),
+                result.was_skipped(),
                 "{} is not provable without a model call in fixture_report; it must be an \
-                 honest passed: false, not a fabricated pass",
+                 honest skip, not a fabricated pass or a disproof",
                 result.name
             );
             continue;

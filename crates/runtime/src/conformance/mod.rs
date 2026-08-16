@@ -48,13 +48,12 @@ pub fn vendor_cli_invocation_disabled() -> bool {
 
 /// An honest, non-spawning result for a scenario that can only be proven by
 /// a real vendor-CLI spawn, for use when [`vendor_cli_invocation_disabled`]
-/// is set. Mirrors [`probe_availability`]'s reasoning for PROBE (skip, don't
-/// fabricate a pass) but returns `fail` rather than `pass`, because unlike
-/// PROBE these scenarios have no adapter-neutral "not applicable" state --
-/// skipping them must not silently count as proof they work.
+/// is set. The outcome is [`ScenarioOutcome::Skipped`]: neither proof nor
+/// disproof. So a development kill switch can never downgrade the capability
+/// a scenario gates (R68) and never fabricates one (R52).
 #[must_use]
 pub fn vendor_cli_required_scenario(name: &'static str) -> ScenarioResult {
-    ScenarioResult::fail(
+    ScenarioResult::skip(
         name,
         format!(
             "skipped: real vendor CLI invocation is disabled ({DISABLE_VENDOR_CLI_ENV}=1); this \
@@ -64,15 +63,57 @@ pub fn vendor_cli_required_scenario(name: &'static str) -> ScenarioResult {
     )
 }
 
-/// The exact detail [`probe_availability`] uses when the kill switch skips
-/// a PROBE, so every adapter's own `probe_scenario` reports the skip
-/// identically rather than each inventing its own wording.
+/// The exact detail [`probe_availability`] uses when the kill switch skips a
+/// PROBE. Like every other skipped scenario it is
+/// [`ScenarioOutcome::Skipped`] -- an unattempted probe is neither evidence
+/// for nor against the CLI, so it denies nothing (only a real disproof does)
+/// and fabricates nothing.
 #[must_use]
 pub fn vendor_cli_skipped_probe() -> ScenarioResult {
-    ScenarioResult::pass(
+    ScenarioResult::skip(
         scenario::PROBE,
         format!("vendor CLI probe skipped: {DISABLE_VENDOR_CLI_ENV}=1"),
     )
+}
+/// Why a scenario's real-vendor precondition could not be met: the runtime
+/// deliberately declined to spawn, or a real attempt was made and failed.
+///
+/// Adapters carry this instead of a bare `String` so the distinction survives
+/// the trip back to the [`ScenarioResult`] that a capability downgrade reads.
+#[derive(Debug, Clone)]
+pub enum VendorUnavailable {
+    /// [`vendor_cli_invocation_disabled`] forbade the spawn: no evidence either way.
+    Skipped(String),
+    /// A real attempt was made and it failed.
+    Failed(String),
+}
+
+impl VendorUnavailable {
+    /// The kill-switch refusal, worded once for every adapter.
+    #[must_use]
+    pub fn disabled(what: &str) -> Self {
+        Self::Skipped(format!(
+            "skipped: {what} requires a real vendor-CLI spawn, which {DISABLE_VENDOR_CLI_ENV}=1 \
+             forbids; run it via live_report ({DISABLE_VENDOR_CLI_ENV} unset)"
+        ))
+    }
+
+    /// The human-readable detail, for whichever variant this is.
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::Skipped(d) | Self::Failed(d) => d,
+        }
+    }
+
+    /// Turns this into the scenario outcome it actually justifies.
+    #[must_use]
+    pub fn into_scenario(self, name: &'static str) -> ScenarioResult {
+        match self {
+            Self::Skipped(detail) => ScenarioResult::skip(name, detail),
+            Self::Failed(detail) => ScenarioResult::fail(name, detail),
+        }
+    }
 }
 
 /// Runs one adapter kind's full fixture conformance suite (never a model
@@ -123,10 +164,12 @@ static PROBE_CACHE: std::sync::LazyLock<
 /// not re-spawn the binary.
 ///
 /// Honors [`DISABLE_VENDOR_CLI_ENV`] **permissively**: when the switch is
-/// set this returns a passing result without spawning anything, and does
-/// not cache it. Pass rather than fail is deliberate -- the switch is a
-/// development and CI convenience, and turning it into a denial would make
-/// every run in CI unauthorized.
+/// set this returns an honest *skipped* result without spawning anything,
+/// and does not cache it. A skip rather than a fail is deliberate -- the
+/// switch is a development and CI convenience, and only a real disproof
+/// (an actual failed probe) may deny; a skip never does. A skip rather
+/// than a pass is equally deliberate: a probe that never ran is no
+/// evidence the CLI works.
 pub async fn probe_availability(kind: AdapterKind) -> ScenarioResult {
     if vendor_cli_invocation_disabled() {
         return vendor_cli_skipped_probe();

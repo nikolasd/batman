@@ -257,16 +257,17 @@ fn conformance_fixture_with_the_kill_switch_never_spawns_a_vendor_cli() {
             }
         }
 
-        // PROBE is the one scenario that must degrade to a *pass* (skipped,
-        // not failed): turning it into a denial would make every run in CI
-        // unauthorized, exactly as `probe_availability`'s own doc explains.
+        // PROBE is the one scenario that must degrade to a *skip*: a pass
+        // would fabricate proof the probe never produced (R52), and a denial
+        // would make every run in CI unauthorized -- exactly as
+        // `probe_availability`'s own doc explains.
         let probe = scenarios
             .iter()
             .find(|s| s["name"] == "probe")
             .unwrap_or_else(|| panic!("{adapter}: probe must be among the scenarios"));
         assert_eq!(
-            probe["outcome"], "pass",
-            "{adapter}: a skipped probe must pass, not fail: {probe:?}"
+            probe["outcome"], "skipped",
+            "{adapter}: a kill-switched probe must be skipped, not pass or fail: {probe:?}"
         );
 
         let _ = std::fs::remove_file(&output_path);

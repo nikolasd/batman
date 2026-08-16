@@ -1018,11 +1018,11 @@ async fn conformance_fixture_report_covers_every_canonical_scenario_and_all_pass
     // scenario here is a real regression, never a fabricated pass to
     // paper over.
     for scenario_result in &report.scenarios {
-        if vendor_cli_disabled && !scenario_result.proved() {
+        if vendor_cli_disabled && scenario_result.was_skipped() {
             assert!(
                 scenario_result.detail.contains(DISABLE_VENDOR_CLI_ENV),
-                "scenario {} failed for a reason other than the kill switch, which is a real \
-                 regression: {}",
+                "scenario {} was skipped for a reason other than the kill switch, which is \
+                 a real regression: {}",
                 scenario_result.name,
                 scenario_result.detail
             );

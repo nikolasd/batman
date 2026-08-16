@@ -25,7 +25,7 @@ use batman_runtime::adapter::{
     OmpRpcStartupOptions, ProfileId, StartupOptions, WorkerProfile,
 };
 use batman_runtime::conformance::report::AdapterKindLabel;
-use batman_runtime::conformance::{ConformanceMode, ConformanceReport, ScenarioResult, scenario};
+use batman_runtime::conformance::{ConformanceMode, ConformanceReport, ScenarioResult, VendorUnavailable, scenario};
 use batman_runtime::coordination::mcp_protocol::BoundScope;
 use batman_runtime::supervisor::{EnvironmentPolicy, SpawnSpec, Supervisor};
 
@@ -710,16 +710,12 @@ async fn vendor_reconnect_scenario() -> ScenarioResult {
 /// appears with no `--model` flag at all), so unlike PROBE/
 /// CANCELLATION_SCOPE/FOLLOW_UP this needs no locally-reachable model
 /// selector -- only the `omp` binary itself.
-async fn resume_flag_probe() -> Result<(), String> {
+async fn resume_flag_probe() -> Result<(), VendorUnavailable> {
     // Spawns the real `omp` binary regardless of any selector, so this is
     // the only place that can keep `SESSION_RESUME`/`RUNTIME_RESTART` off
     // the vendor CLI when the kill switch is set.
     if batman_runtime::conformance::vendor_cli_invocation_disabled() {
-        return Err(format!(
-            "skipped: real vendor CLI invocation is disabled \
-             ({}=1); the `--resume <id>` flag probe can only run via live_report",
-            batman_runtime::conformance::DISABLE_VENDOR_CLI_ENV
-        ));
+        return Err(VendorUnavailable::disabled("the `omp --resume <id>` flag probe"));
     }
     let bogus_id = format!(
         "batman-conformance-nonexistent-{}-{}",
@@ -732,7 +728,7 @@ async fn resume_flag_probe() -> Result<(), String> {
     let workdir =
         std::env::temp_dir().join(format!("omp-rpc-conformance-resume-{}", std::process::id()));
     std::fs::create_dir_all(&workdir)
-        .map_err(|e| format!("creating scratch workdir failed: {e}"))?;
+        .map_err(|e| VendorUnavailable::Failed(format!("creating scratch workdir failed: {e}")))?;
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -747,8 +743,16 @@ async fn resume_flag_probe() -> Result<(), String> {
 
     let output = match result {
         Ok(Ok(output)) => output,
-        Ok(Err(e)) => return Err(format!("the omp binary is unavailable to run: {e}")),
-        Err(_) => return Err("omp --resume <bogus id> did not exit within 10s".to_string()),
+        Ok(Err(e)) => {
+            return Err(VendorUnavailable::Failed(format!(
+                "the omp binary is unavailable to run: {e}"
+            )))
+        }
+        Err(_) => {
+            return Err(VendorUnavailable::Failed(
+                "omp --resume <bogus id> did not exit within 10s".to_string(),
+            ))
+        }
     };
     let combined = format!(
         "{}{}",
@@ -758,10 +762,10 @@ async fn resume_flag_probe() -> Result<(), String> {
     if combined.contains(&bogus_id) && combined.to_lowercase().contains("not found") {
         Ok(())
     } else {
-        Err(format!(
+        Err(VendorUnavailable::Failed(format!(
             "expected the real vendor's own \"Session ... not found\" error for an unknown \
              --resume id; got: {combined}"
-        ))
+        )))
     }
 }
 
@@ -797,7 +801,7 @@ async fn session_resume_scenario() -> ScenarioResult {
                  declared_capabilities()'s own ResumeCapability::Session, not a stronger claim."
             ),
         ),
-        Err(detail) => ScenarioResult::fail(scenario::SESSION_RESUME, detail),
+        Err(unavailable) => unavailable.into_scenario(scenario::SESSION_RESUME),
     }
 }
 
@@ -837,7 +841,7 @@ async fn runtime_restart_scenario() -> ScenarioResult {
              resuming the session *reference* is real, resuming prior *content* without a model \
              call is not claimed.",
         ),
-        Err(detail) => ScenarioResult::fail(scenario::RUNTIME_RESTART, detail),
+        Err(unavailable) => unavailable.into_scenario(scenario::RUNTIME_RESTART),
     }
 }
 

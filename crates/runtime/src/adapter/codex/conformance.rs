@@ -468,24 +468,26 @@ fn vendor_reconnect_scenario() -> ScenarioResult {
     )
 }
 
-/// A scenario genuinely unprovable without a live model call, with a
+/// A scenario fixture mode genuinely cannot attempt, with a
 /// caller-supplied reason. Used for `FOLLOW_UP`, `SESSION_RESUME`,
 /// `RUNTIME_RESTART`, and `CANCELLATION_SCOPE`: this adapter's real
 /// `codex app-server` binary only persists a thread's resumable rollout
 /// to disk once a turn actually runs (confirmed against the installed
 /// 0.145.0 binary -- a bare `thread/start` with no turn leaves no rollout
 /// file at all), and `turn/start` itself is what invokes the model, so
-/// none of these four can be proven without one. See `live_report`,
-/// which runs by default unless `BATMAN_DISABLE_VENDOR_CLI=1` is set,
-/// for the real proof.
+/// none of these four can be proven without one. The outcome is `Skipped`,
+/// not `Fail`: a scenario fixture mode cannot attempt is not one it
+/// disproved, so it must not strip Codex's declared `steering` / `resume`
+/// from `effective_capabilities` (R68). See `live_report`, which runs by
+/// default unless `BATMAN_DISABLE_VENDOR_CLI=1` is set, for the real proof.
 fn requires_live_turn_scenario(name: &'static str, mechanism: &str) -> ScenarioResult {
-    ScenarioResult::fail(
+    ScenarioResult::skip(
         name,
         format!(
-            "{mechanism} -- codex only persists a thread's resumable rollout once a turn \
-             actually runs, and turn/start is what invokes the model, so this is not provable \
-             without a live model call in fixture_report; see live_report (runs by default \
-             unless BATMAN_DISABLE_VENDOR_CLI=1 is set)"
+            "skipped: {mechanism} -- codex only persists a thread's resumable rollout once a \
+             turn actually runs, and turn/start is what invokes the model, so this is not \
+             attempted in fixture_report; see live_report (runs by default unless \
+             BATMAN_DISABLE_VENDOR_CLI=1 is set)"
         ),
     )
 }
