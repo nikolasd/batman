@@ -10,27 +10,37 @@
 //! trip is therefore not a transaction -- a decision made from the result
 //! of an earlier round trip can be stale by the time a later one runs.
 //!
-//! These tests drive two `decide` calls through `tokio::join!` in a single
-//! task, never `tokio::spawn`. That is what makes the interleave
-//! deterministic here: `join!` polls its child futures in argument order on
-//! every poll of the combined future, and each `run_domain_op` await parks
-//! the polling task until the actor replies. So on the first poll, future A
-//! enqueues its first command and parks *before* future B is polled at all
-//! -- future B's first command is enqueued before A can possibly resume.
-//! The channel's capacity (32) is never exhausted by the handful of
-//! commands these tests issue, so every send completes synchronously; the
-//! actor is the only consumer, so enqueue order is exactly processing
-//! order. The result is a provable command sequence: A's round trip N is
-//! always enqueued -- and thus processed -- before B's round trip N, for
-//! every N, because A is always polled first on the poll that lets it
-//! enqueue that round trip. `tokio::spawn` would give each `decide` call
-//! its own task, and the executor is free to interleave two tasks in any
-//! order; only single-task `join!` polling gives the deterministic
-//! ordering these tests rely on.
+//! These tests drive two `decide` calls through `tokio::join!(biased; ...)`
+//! in a single task, never `tokio::spawn`. Plain (non-`biased`) `join!`
+//! rotates which branch it polls first on every poll of the combined
+//! future -- a fairness mechanism documented on the macro itself -- so it
+//! does *not* guarantee argument order beyond the very first poll; an
+//! earlier version of this file wrongly assumed it did. `biased;` pins
+//! polling to declaration order on every poll, so the first-declared
+//! future always enqueues its next `run_domain_op` command before the
+//! second is even polled, which makes the actor's enqueue -- and thus
+//! processing -- order fully deterministic and reproducible across runs:
+//! the first-declared `decide` call always reaches the guarded write
+//! before the second.
 //!
-//! Each test verified this determinism empirically in addition to the
-//! argument above: run 20x with `--exact` during development, no flakes
-//! observed.
+//! That said, the underlying invariant these tests defend does not
+//! actually depend on `biased`: because both calls share one task and the
+//! actor is a strictly FIFO single consumer, their `run_domain_op` sends
+//! can never be simultaneous or unordered from the actor's point of view,
+//! whichever call happens to be enqueued first -- so the guarded
+//! `UPDATE ... WHERE resolution IS NULL` in `resolve_policy_violation`
+//! always admits exactly one writer. `biased` is used to make *which*
+//! call wins reproducible and easy to reason about, not to make "exactly
+//! one wins" true -- that already follows from the guard plus the FIFO
+//! actor. `tokio::spawn` would remove even the ordering `biased` gives:
+//! each `decide` call would run on its own independently scheduled task,
+//! free to enqueue its commands in whatever order the executor picks.
+//!
+//! Every assertion below still derives its expectation from whichever
+//! call actually returned `Ok`, rather than assuming which one wins, as a
+//! second line of defense if this reasoning is ever wrong again. Each
+//! test was also checked empirically: run 20x with `--exact`, no flakes
+//! observed, both before and after `biased` was added.
 
 use std::sync::Arc;
 
@@ -247,6 +257,7 @@ async fn concurrent_release_and_cancel_admit_exactly_one_decision() {
     let svc = service(Arc::clone(&db), project_id);
 
     let (release, cancel) = tokio::join!(
+        biased;
         svc.decide(violation_id, "omp-1", "release"),
         svc.decide(violation_id, "omp-1", "cancel"),
     );
@@ -312,6 +323,7 @@ async fn concurrent_identical_releases_journal_one_event_and_report_already_deci
     let svc = service(Arc::clone(&db), project_id);
 
     let (first, second) = tokio::join!(
+        biased;
         svc.decide(violation_id, "omp-1", "release"),
         svc.decide(violation_id, "omp-1", "release"),
     );
@@ -385,6 +397,7 @@ async fn releasing_a_violation_whose_run_settles_mid_decide_is_refused() {
     let svc = service(Arc::clone(&db), project_id);
 
     let (release, ()) = tokio::join!(
+        biased;
         svc.decide(violation_id, "omp-1", "release"),
         cancel_the_run(&db, project_id, run_id),
     );
