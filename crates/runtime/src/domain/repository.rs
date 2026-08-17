@@ -64,18 +64,17 @@ pub struct Committed {
     pub envelope: EventEnvelope,
 }
 
-/// A policy violation's correlating ids, current resolution (`None` if
-/// unresolved), owning run's state, and owning task's
-/// `owner_client_instance_id` -- everything [`crate::policy::ViolationService`]
-/// needs to enforce ownership, idempotency, and the
-/// never-revive-a-terminal-run invariant before deciding.
+/// A policy violation's correlating ids and its owning task's
+/// `owner_client_instance_id` -- everything
+/// [`crate::policy::ViolationService`] needs to enforce ownership before
+/// deciding. It is deliberately minimal: whether a decision may commit at
+/// all is decided inside [`DomainRepository::resolve_policy_violation`]
+/// (R54), not by any field read here.
 #[derive(Debug, Clone)]
 pub struct PolicyViolationSnapshot {
     pub run_id: String,
     pub task_id: String,
     pub worker_id: String,
-    pub resolution: Option<String>,
-    pub run_state: String,
     pub owner_client_instance_id: String,
 }
 
@@ -893,10 +892,13 @@ impl<'c> DomainRepository<'c> {
         )
     }
 
-    /// Looks up a policy violation's `run_id`/`task_id`/`worker_id`,
-    /// `resolution` (`None` if unresolved), and owning task's
-    /// `owner_client_instance_id`, for [`crate::policy::ViolationService`]
-    /// to enforce ownership and idempotency before deciding.
+    /// Looks up a policy violation's `run_id`/`task_id`/`worker_id` and the
+    /// owning task's `owner_client_instance_id`, for
+    /// [`crate::policy::ViolationService`] to enforce ownership before
+    /// deciding. It does not carry `resolution` or the run's state: gating
+    /// on those happens inside
+    /// [`DomainRepository::resolve_policy_violation`] (R54), where it
+    /// cannot race the write.
     ///
     /// # Errors
     /// Returns [`DomainError::NotFound`] if `violation_id` does not exist.
@@ -906,10 +908,9 @@ impl<'c> DomainRepository<'c> {
     ) -> Result<PolicyViolationSnapshot, DomainError> {
         self.conn
             .query_row(
-                "SELECT v.run_id, v.task_id, v.worker_id, v.resolution, r.state,
+                "SELECT v.run_id, v.task_id, v.worker_id,
                         t.owner_client_instance_id
                  FROM policy_violations v
-                 JOIN runs r ON v.run_id = r.run_id
                  JOIN tasks t ON v.task_id = t.task_id
                  WHERE v.violation_id = ?1",
                 [violation_id.to_string()],
@@ -918,9 +919,7 @@ impl<'c> DomainRepository<'c> {
                         run_id: row.get::<_, String>(0)?,
                         task_id: row.get::<_, String>(1)?,
                         worker_id: row.get::<_, String>(2)?,
-                        resolution: row.get::<_, Option<String>>(3)?,
-                        run_state: row.get::<_, String>(4)?,
-                        owner_client_instance_id: row.get::<_, String>(5)?,
+                        owner_client_instance_id: row.get::<_, String>(3)?,
                     })
                 },
             )

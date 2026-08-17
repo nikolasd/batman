@@ -28,8 +28,14 @@
 //! `policy/violation/decide`, restricted to the violation's task's
 //! `owner_client_instance_id` (the owning `ompExtension` client) -- the
 //! same ownership pattern as [`crate::approval::ApprovalService::decide`].
-//! Releasing quarantine on an already-terminal/cancelled run is refused;
-//! it must never be revived.
+//! Ownership is the only caller-side pre-check; whether a decision may
+//! commit at all -- conflict, idempotent replay, settled run -- is enforced
+//! inside the guarded write in
+//! [`crate::domain::repository::DomainRepository::resolve_policy_violation`],
+//! so two concurrent `decide` calls cannot both journal a decision or both
+//! fire side effects (R54). Releasing quarantine on an
+//! already-terminal/cancelled run is refused in that same transaction; it
+//! must never be revived.
 
 use std::sync::Arc;
 
@@ -479,10 +485,21 @@ impl ViolationService {
     }
 
     /// `policy/violation/decide`: resolves `violation_id` as `resolution`
-    /// (`"release"` or `"cancel"`) after verifying `principal_instance_id`
-    /// owns the violation's task, the resolution does not conflict with a
-    /// prior one, and -- for `"release"` -- that the run has not already
-    /// settled.
+    /// (`"release"` or `"cancel"`).
+    ///
+    /// The only caller-side pre-check is ownership: `principal_instance_id`
+    /// must own the violation's task. The rest is decided by
+    /// [`DomainRepository::resolve_policy_violation`] inside the same
+    /// transaction as the write: whether a different resolution is already
+    /// on record (a losing call is refused with
+    /// [`ViolationError::Conflict`]), whether this is an idempotent replay
+    /// ([`DecideOutcome::AlreadyDecided`], which re-applies nothing), and
+    /// -- for `"release"` -- whether the run has already settled
+    /// ([`ViolationError::RunSettled`]). The database actor interleaves
+    /// whole `run_domain_op` round trips, so these cannot be caller-side
+    /// pre-checks (R54): the guarded write is the arbiter, exactly one
+    /// `PolicyViolationDecided` event is journaled per violation, and only
+    /// the deciding call fires side effects.
     ///
     /// # Errors
     /// Returns [`ViolationError::Forbidden`] if `principal_instance_id`
@@ -513,8 +530,6 @@ impl ViolationService {
                     "runId": s.run_id,
                     "taskId": s.task_id,
                     "workerId": s.worker_id,
-                    "resolution": s.resolution,
-                    "runState": s.run_state,
                     "ownerClientInstanceId": s.owner_client_instance_id,
                 }))
             }))
@@ -531,33 +546,16 @@ impl ViolationService {
             });
         }
 
-        if let Some(existing) = snapshot["resolution"].as_str() {
-            return if existing == resolution {
-                Ok(DecideOutcome::AlreadyDecided)
-            } else {
-                Err(ViolationError::Conflict { violation_id })
-            };
-        }
-
         let run_id = RunId::parse(snapshot["runId"].as_str().unwrap_or_default())
             .map_err(|_| ViolationError::NotFound { violation_id })?;
         let task_id = TaskId::parse(snapshot["taskId"].as_str().unwrap_or_default())
             .map_err(|_| ViolationError::NotFound { violation_id })?;
         let worker_id = WorkerId::parse(snapshot["workerId"].as_str().unwrap_or_default())
             .map_err(|_| ViolationError::NotFound { violation_id })?;
-        let run_state = RunState::try_from(snapshot["runState"].as_str().unwrap_or_default())
-            .map_err(|_| ViolationError::NotFound { violation_id })?;
-
-        if resolution == "release" && run_state.is_terminal() {
-            return Err(ViolationError::RunSettled {
-                violation_id,
-                run_id,
-            });
-        }
 
         let resolved_by = principal_instance_id.to_string();
         let resolution_owned = resolution.to_string();
-        let mut result = self
+        let mut result = match self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
@@ -572,7 +570,25 @@ impl ViolationService {
                 .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
-            .map_err(ViolationError::Domain)?;
+        {
+            Ok(value) => value,
+            // The guarded write is the arbiter: a losing racer never journals
+            // an event and never reaches the side effects below.
+            Err(DomainError::AlreadyResolved { existing, .. }) => {
+                return if existing == resolution {
+                    Ok(DecideOutcome::AlreadyDecided)
+                } else {
+                    Err(ViolationError::Conflict { violation_id })
+                };
+            }
+            Err(DomainError::RunSettled { .. }) => {
+                return Err(ViolationError::RunSettled {
+                    violation_id,
+                    run_id,
+                });
+            }
+            Err(err) => return Err(ViolationError::Domain(err)),
+        };
         self.broadcast(&mut result);
 
         if resolution == "release" {

@@ -71,6 +71,14 @@ impl From<DomainError> for ServiceError {
                 code: error_code::INVALID_PARAMS,
                 message: format!("{kind} {id} not found"),
             },
+            DomainError::AlreadyResolved { kind, id, existing } => Self {
+                code: error_code::INVALID_PARAMS,
+                message: format!("{kind} {id} was already resolved as {existing}"),
+            },
+            DomainError::RunSettled { run_id } => Self {
+                code: error_code::INVALID_PARAMS,
+                message: format!("run {run_id} has already settled"),
+            },
             other => Self::internal(other.to_string()),
         }
     }
