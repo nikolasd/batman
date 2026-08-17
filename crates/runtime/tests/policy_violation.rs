@@ -10,37 +10,56 @@
 //! trip is therefore not a transaction -- a decision made from the result
 //! of an earlier round trip can be stale by the time a later one runs.
 //!
-//! These tests drive two `decide` calls through `tokio::join!(biased; ...)`
-//! in a single task, never `tokio::spawn`. Plain (non-`biased`) `join!`
-//! rotates which branch it polls first on every poll of the combined
-//! future -- a fairness mechanism documented on the macro itself -- so it
-//! does *not* guarantee argument order beyond the very first poll; an
-//! earlier version of this file wrongly assumed it did. `biased;` pins
-//! polling to declaration order on every poll, so the first-declared
-//! future always enqueues its next `run_domain_op` command before the
-//! second is even polled, which makes the actor's enqueue -- and thus
-//! processing -- order fully deterministic and reproducible across runs:
-//! the first-declared `decide` call always reaches the guarded write
-//! before the second.
+//! The first two tests below drive two `decide` calls through
+//! `tokio::join!(biased; ...)` in a single task, never `tokio::spawn`.
+//! Plain (non-`biased`) `join!` rotates which branch it polls first on
+//! every poll of the combined future -- a fairness mechanism documented on
+//! the macro itself -- so it does *not* guarantee argument order beyond
+//! the very first poll; an earlier version of this file wrongly assumed it
+//! did. `biased;` pins polling to declaration order on every poll, so the
+//! first-declared future always enqueues its next `run_domain_op` command
+//! before the second is even polled, which makes the actor's enqueue --
+//! and thus processing -- order deterministic and reproducible across
+//! runs: the first-declared `decide` call always reaches the guarded
+//! write before the second.
 //!
-//! That said, the underlying invariant these tests defend does not
-//! actually depend on `biased`: because both calls share one task and the
-//! actor is a strictly FIFO single consumer, their `run_domain_op` sends
-//! can never be simultaneous or unordered from the actor's point of view,
-//! whichever call happens to be enqueued first -- so the guarded
+//! The underlying invariant these two tests defend does not actually
+//! depend on `biased`: because both calls share one task and the actor is
+//! a strictly FIFO single consumer, their `run_domain_op` sends can never
+//! be simultaneous or unordered from the actor's point of view, whichever
+//! call happens to be enqueued first -- so the guarded
 //! `UPDATE ... WHERE resolution IS NULL` in `resolve_policy_violation`
-//! always admits exactly one writer. `biased` is used to make *which*
-//! call wins reproducible and easy to reason about, not to make "exactly
-//! one wins" true -- that already follows from the guard plus the FIFO
-//! actor. `tokio::spawn` would remove even the ordering `biased` gives:
-//! each `decide` call would run on its own independently scheduled task,
-//! free to enqueue its commands in whatever order the executor picks.
+//! always admits exactly one writer. `biased` is used to make *which* call
+//! wins reproducible and easy to reason about, not to make "exactly one
+//! wins" true -- that already follows from the guard plus the FIFO actor.
+//! `tokio::spawn` would remove even the ordering `biased` gives: each
+//! `decide` call would run on its own independently scheduled task, free
+//! to enqueue its commands in whatever order the executor picks. Every
+//! assertion in these two tests still derives its expectation from
+//! whichever call actually returned `Ok`, rather than assuming which one
+//! wins, as a second line of defense. Checked empirically too: run 20x
+//! with `--exact`, no flakes observed, both before and after `biased` was
+//! added.
 //!
-//! Every assertion below still derives its expectation from whichever
-//! call actually returned `Ok`, rather than assuming which one wins, as a
-//! second line of defense if this reasoning is ever wrong again. Each
-//! test was also checked empirically: run 20x with `--exact`, no flakes
-//! observed, both before and after `biased` was added.
+//! The fourth test, `releasing_a_violation_whose_run_has_already_settled_is_refused`,
+//! deliberately does *not* join! `decide` against the run-settling
+//! transition, even though that would look like the more direct test of
+//! "the run settles mid-decide". An adversarial review of an earlier draft
+//! found a residual gap in that shape: `decide`'s first round trip (the
+//! snapshot) could in principle have its actor reply arrive so fast that
+//! the *entire* `decide` future resolves inside one poll, before the
+//! run-settling future is ever touched -- vanishingly unlikely (the window
+//! is a handful of CPU instructions against real SQLite work measured in
+//! microseconds, and it did not reproduce in dozens of runs), but a real
+//! timing dependency rather than a scheduling guarantee, and the review
+//! was right to reject resting a determinism claim on it. This test
+//! instead settles the run first, sequentially, then calls `decide` --
+//! zero timing dependency, and it still proves exactly the thing R54
+//! changed: `PolicyViolationSnapshot` no longer carries `run_state`, so
+//! the guard's own live read of `runs.state` inside
+//! `resolve_policy_violation`'s transaction is the *only* thing left that
+//! can refuse this release, and this test shows that read is correct on
+//! its own terms.
 
 use std::sync::Arc;
 
@@ -389,22 +408,27 @@ async fn deciding_the_same_resolution_twice_sequentially_stays_idempotent() {
 }
 
 #[tokio::test]
-async fn releasing_a_violation_whose_run_settles_mid_decide_is_refused() {
+async fn releasing_a_violation_whose_run_has_already_settled_is_refused() {
     let (_state_dir, db) = open_db().await;
     let db = Arc::new(db);
     let project_id = ProjectId::new();
     let (violation_id, run_id, ..) = seed_quarantined_violation(&db, project_id).await;
     let svc = service(Arc::clone(&db), project_id);
 
-    let (release, ()) = tokio::join!(
-        biased;
-        svc.decide(violation_id, "omp-1", "release"),
-        cancel_the_run(&db, project_id, run_id),
-    );
+    // Settle the run out from under the violation *before* calling decide --
+    // sequentially, with no join! and no dependence on actor-reply timing.
+    // `PolicyViolationSnapshot` no longer carries `run_state` (R54): the
+    // only thing that can still catch this is the guard's own live read of
+    // `runs.state` inside `resolve_policy_violation`'s transaction. This
+    // proves that read is correct on its own terms, deterministically,
+    // rather than relying on a race actually landing mid-decide.
+    cancel_the_run(&db, project_id, run_id).await;
+
+    let release = svc.decide(violation_id, "omp-1", "release").await;
 
     assert!(
         matches!(release, Err(ViolationError::RunSettled { .. })),
-        "a release racing a run settling to cancelled must be refused: {release:?}"
+        "a release on an already-settled run must be refused: {release:?}"
     );
     assert_eq!(
         violation_resolution(&db, violation_id).await,
