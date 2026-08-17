@@ -34,9 +34,10 @@ pub enum DomainError {
     #[error("{kind} {id} not found")]
     NotFound { kind: &'static str, id: String },
     /// A guarded mutation refused to write because the row already carries a
-    /// resolution committed by an earlier decision. `existing` is the
-    /// resolution on record, so a service layer can distinguish an
-    /// idempotent replay from a contradictory second decision.
+    /// resolution (or, for an approval, a decision) committed by an earlier
+    /// decision. `existing` is the resolution on record, so a service layer
+    /// can distinguish an idempotent replay from a contradictory second
+    /// decision.
     #[error("{kind} {id} was already resolved as {existing}")]
     AlreadyResolved {
         kind: &'static str,
@@ -770,7 +771,24 @@ impl<'c> DomainRepository<'c> {
         )
     }
 
-    /// Records an approval decision. Emits an `ApprovalDecided` event.
+    /// Records an approval decision: sets `decision`/`decided_at`/`decided_by`
+    /// and appends an `ApprovalDecided` event.
+    ///
+    /// This is the **only** authority on whether an approval may be decided.
+    /// The database actor interleaves whole `run_domain_op` closures, never
+    /// a service's sequence of round trips, so any caller-side pre-check is
+    /// advisory only (R70): the `UPDATE` guarded by `decision IS NULL`
+    /// is the guard. The `UPDATE` deliberately precedes the terminal-run
+    /// guard so an already-decided approval reports
+    /// [`DomainError::AlreadyResolved`] even when its run has also settled;
+    /// an `Err` returned here discards the appended event together with the
+    /// rejected write (the transaction rolls back as a whole).
+    ///
+    /// # Errors
+    /// Returns [`DomainError::NotFound`] if no such approval exists,
+    /// [`DomainError::AlreadyResolved`] if a decision is already on record,
+    /// or [`DomainError::RunSettled`] if the run has reached a terminal
+    /// state.
     pub fn decide_approval(
         &mut self,
         approval_id: batman_protocol::ApprovalId,
@@ -813,10 +831,53 @@ impl<'c> DomainRepository<'c> {
         self.append_and_apply(&event, Some(task_id), None, Some(run_id), move |tx| {
             let now = Timestamp::now();
             let _ = reason;
-            tx.execute(
-                "UPDATE approvals SET decision = ?1, decided_at = ?2, decided_by = ?3 WHERE approval_id = ?4",
-                rusqlite::params![decision, now.as_str(), serde_json::to_string(&decided_by).expect("DecidedBy always serializes"), approval_id.to_string()],
+            let affected = tx.execute(
+                "UPDATE approvals SET decision = ?1, decided_at = ?2, decided_by = ?3
+                 WHERE approval_id = ?4 AND decision IS NULL",
+                rusqlite::params![
+                    decision,
+                    now.as_str(),
+                    serde_json::to_string(&decided_by).expect("DecidedBy always serializes"),
+                    approval_id.to_string(),
+                ],
             )?;
+            if affected == 0 {
+                // Either a concurrent decision won the row, or the approval
+                // does not exist. Classify from inside the same transaction;
+                // nothing else can have changed it since.
+                let existing: Option<String> = tx
+                    .query_row(
+                        "SELECT decision FROM approvals
+                         WHERE approval_id = ?1 AND decision IS NOT NULL",
+                        [approval_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                return Err(match existing {
+                    Some(existing) => DomainError::AlreadyResolved {
+                        kind: "approval",
+                        id: approval_id.to_string(),
+                        existing,
+                    },
+                    None => DomainError::NotFound {
+                        kind: "approval",
+                        id: approval_id.to_string(),
+                    },
+                });
+            }
+            let state: String = tx
+                .query_row("SELECT state FROM runs WHERE run_id = ?1", [run_id.to_string()], |row| {
+                    row.get(0)
+                })?;
+            let parsed = RunState::try_from(state.as_str()).map_err(|_| DomainError::NotFound {
+                kind: "run-state",
+                id: state.clone(),
+            })?;
+            if parsed.is_terminal() {
+                return Err(DomainError::RunSettled {
+                    run_id: run_id.to_string(),
+                });
+            }
             Ok(())
         })
     }
