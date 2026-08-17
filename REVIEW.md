@@ -65,6 +65,16 @@ operate the system correctly.
 
 **Priority:** High — the tool that produces every committed conformance fixture is unproven correct beyond the single fixture it was built against.
 
+#### R70. `ApprovalService::decide` has the same check-then-act race R54 fixed in `ViolationService::decide`
+
+**Location:** `crates/runtime/src/approval/service.rs:170-176,184-188,268-310`; `crates/runtime/src/domain/repository.rs:761-809` (`decide_approval`)
+
+**Evidence:** structurally identical to pre-fix `ViolationService::decide` (R54, resolved — see `docs/journal.md` Part XIX): one snapshot round trip (`service.rs:268-310`, selecting `a.decision` and `r.state`), an in-memory conflict check, an in-memory terminal-run check, then `decide_approval`'s unconditional `UPDATE approvals SET decision = ?1, decided_at = ?2, decided_by = ?3 WHERE approval_id = ?4` (`repository.rs:803-806`) with no `decision IS NULL` guard and no affected-row check. Two concurrent `approval/decide` calls for the same `approvalId` (e.g. a UI double-submit) can both read `decision: None`, both write, and both invoke the adapter callback — the exact double-application R54 closed for policy violations, unfixed here.
+
+**Fix:** apply the same pattern R54 established: move the guard into `decide_approval`'s `append_and_apply` closure (`WHERE decision IS NULL`, affected-row check, classify a zero-row result as an existing decision vs. a vanished approval), move the terminal-run check inside the same transaction, and add matching `DomainError`/`ApprovalError` variants. Add concurrent regression tests mirroring `crates/runtime/tests/policy_violation.rs`.
+
+**Priority:** High — a real, reachable race with contradictory side effects, identical in kind and severity to R54 (found during R54's adversarial review, 2026-08-17; not fixed as part of that change since it is a distinct service, out of R54's stated scope).
+
 ### Medium
 
 #### R12. Claude error result subtypes are normalized as usage only
@@ -325,7 +335,7 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
-- **High:** 2 (R33, R44 — carried forward from earlier rounds) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX)
+- **High:** 3 (R33, R44 — carried forward from earlier rounds; R70 — new, found during R54's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
 - **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged

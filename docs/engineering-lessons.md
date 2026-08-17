@@ -242,14 +242,16 @@ the first from every test that only drives the outer layer. Test the innermost l
 **Location:** `crates/runtime/src/domain/repository.rs::resolve_policy_violation`;
 `crates/runtime/src/policy/violation.rs::ViolationService::decide`
 
-**The bug:** `decide` split ownership, conflict, and terminal-run checks across three separate
-`run_domain_op` round trips, then wrote in a fourth. The database actor
+**The bug:** `decide` read a single snapshot in one `run_domain_op` round trip, evaluated
+ownership, conflict, and terminal-run checks against that one in-memory snapshot, then wrote
+unconditionally in a second, separate round trip. The database actor
 (`crates/runtime/src/db/actor.rs`) is a single `std::thread` processing one whole boxed closure at
 a time off a bounded channel -- it serializes closures, never a caller's sequence of decisions
 about them. Two concurrent `decide` calls for the same violation could both read
-`resolution: None` before either wrote, and the write itself carried no guard
-(`UPDATE ... WHERE violation_id = ?4`, no `resolution IS NULL`), so both committed and both fired
-contradictory side effects -- one clearing quarantine, the other cancelling the same run.
+`resolution: None` from their own snapshot round trip before either reached the write, and the
+write itself carried no guard (`UPDATE ... WHERE violation_id = ?4`, no `resolution IS NULL`), so
+both committed and both fired contradictory side effects -- one clearing quarantine, the other
+cancelling the same run.
 
 **The fix:** move the guard into the same transaction as the write. `resolve_policy_violation`'s
 `apply` closure now runs the `UPDATE` with a `WHERE resolution IS NULL` guard, checks the
@@ -257,9 +259,11 @@ affected-row count, and -- for `"release"` -- reads the run's state from the sam
 before deciding whether it has settled. A refused write returns `Err`, which discards the whole
 transaction: the appended event and the rejected write both vanish together, at no cost in
 sequence numbers (`events.sequence` is a plain `INTEGER PRIMARY KEY`, not `AUTOINCREMENT`).
-`ViolationService::decide` shrank to one caller-side pre-check (ownership) and one guarded round
-trip; `PolicyViolationSnapshot` shrank with it, since resolution/run-state gating no longer needs
-to leave the guarded transaction.
+`ViolationService::decide` still makes the same two round trips -- a snapshot, then a write --
+but ownership is the only check left against the snapshot's in-memory result; the conflict and
+terminal-run checks that used to run against that snapshot, and could go stale before the write,
+now run inside the write's own transaction instead. `PolicyViolationSnapshot` shrank with them,
+since resolution/run-state gating no longer needs to leave the guarded transaction.
 
 **The lesson:** with a single-threaded database actor that serializes whole closures, a
 multi-round-trip service method is not a transaction, no matter how sequential it reads. A guard

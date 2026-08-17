@@ -2515,17 +2515,17 @@ With R53 closed, the High tier drops to three — R33, R44, and R54 remain.
 ## Part XIX — Two decisions, one violation: the guard that lived outside the transaction
 
 `ViolationService::decide` read like a decision procedure: load a snapshot, check it for a
-conflicting resolution, check it for a settled run, then write. Three separate
-`self.db.run_domain_op(...)` calls, three round trips to the database actor — and the actor
-(`crates/runtime/src/db/actor.rs`) is a single `std::thread` that processes one whole boxed
-closure at a time, off a bounded channel. It serializes closures, never a service's sequence of
-decisions about them. Two concurrent `decide` calls for the same `violationId` could both have
-their snapshot read `resolution: None` before either wrote — the actor has no way to know the two
-reads and two writes were meant to be one decision each — and `resolve_policy_violation`'s
-`UPDATE policy_violations SET resolution = ?1 ... WHERE violation_id = ?4` had no
-`resolution IS NULL` guard and no affected-row check. Both writes landed, both callers proceeded
-past the write to fire their side effects: one call clears the run's quarantine, the other
-cancels the run outright, on the same run.
+conflicting resolution, check it for a settled run, then write. All three checks ran against one
+snapshot from a single `self.db.run_domain_op(...)` round trip; the write was a second, separate
+round trip — and the actor (`crates/runtime/src/db/actor.rs`) is a single `std::thread` that
+processes one whole boxed closure at a time, off a bounded channel. It serializes closures, never
+a service's sequence of decisions about them. Two concurrent `decide` calls for the same
+`violationId` could both have their snapshot read `resolution: None` before either wrote — the
+actor has no way to know the two reads and two writes were meant to be one decision each — and
+`resolve_policy_violation`'s `UPDATE policy_violations SET resolution = ?1 ... WHERE violation_id
+= ?4` had no `resolution IS NULL` guard and no affected-row check. Both writes landed, both
+callers proceeded past the write to fire their side effects: one call clears the run's
+quarantine, the other cancels the run outright, on the same run.
 
 It survived because the three checks *read* as a transaction. Nothing in the code said the round
 trips could interleave; the doc comment on `PolicyViolationSnapshot` promised "everything
@@ -2546,23 +2546,36 @@ so a refused decision leaves neither the write nor the event it would have journ
 `events.sequence` is a plain `INTEGER PRIMARY KEY`, not `AUTOINCREMENT`, so a rolled-back append
 burns no sequence number either.
 
-`ViolationService::decide` lost its two extra round trips: ownership is the only caller-side
-pre-check left, and `PolicyViolationSnapshot` shrank to the four fields ownership actually needs
-(`run_id`, `task_id`, `worker_id`, `owner_client_instance_id` — `resolution` and the run's state
-came out, since nothing outside the guarded write may safely act on either). Two new
-`DomainError` variants, `AlreadyResolved` and `RunSettled`, carry the guard's verdict back out;
-`ViolationService::decide` matches on them directly, and `From<DomainError> for ServiceError`
-gained the same two arms so a future caller of the guarded write cannot surface a caller-caused
-conflict as an internal error.
+`ViolationService::decide` still makes the same two round trips it always did — a snapshot, then
+a write — but ownership is now the only check left in the snapshot's in-memory result;
+`PolicyViolationSnapshot` shrank to the four fields ownership actually needs (`run_id`, `task_id`,
+`worker_id`, `owner_client_instance_id` — `resolution` and the run's state came out, since nothing
+outside the guarded write may safely act on either). The conflict and terminal-run checks that
+used to run against that stale in-memory snapshot now run inside the write's own transaction
+instead. Two new `DomainError` variants, `AlreadyResolved` and `RunSettled`, carry the guard's
+verdict back out; `ViolationService::decide` matches on them directly, and `From<DomainError> for
+ServiceError` gained the same two arms so a future caller of the guarded write cannot surface a
+caller-caused conflict as an internal error.
 
 `crates/runtime/tests/policy_violation.rs` is new — `decide` had no dedicated Rust suite before
-this, only RPC-level coverage that cannot interleave two calls. Four tests drive genuinely
-concurrent decisions with `tokio::join!` in a single task, never `tokio::spawn`: `join!` polls its
-child futures in argument order on every poll, so the first future always enqueues its first
-`run_domain_op` command before the second future is polled at all, and the actor's bounded
-channel (capacity 32, never approached here) processes commands in the order they're enqueued.
-That makes the interleave deterministic rather than a hopeful race — argued in the test module's
-own doc comment and checked empirically, twenty runs of each concurrent test with no flake.
+this, only RPC-level coverage that cannot interleave two calls. Two of the four tests drive
+genuinely concurrent decisions with `tokio::join!(biased; ...)` in a single task, never
+`tokio::spawn`.
+Plain (non-`biased`) `join!` rotates which branch it polls first on every poll of the combined
+future — a documented fairness mechanism, not an argument-order guarantee; an earlier draft of
+this entry and the test file wrongly assumed argument order held on every poll, a mistake an
+adversarial review caught. `biased;` pins polling to declaration order on every poll instead, so
+the first-declared future always enqueues its next `run_domain_op` command before the second is
+polled, making enqueue -- and thus processing -- order reproducible. The underlying guarantee the
+tests defend does not actually need `biased`: since both calls share one task and the actor is a
+strictly FIFO single consumer, their sends can never be simultaneous or unordered from the
+actor's point of view, so the guarded `UPDATE ... WHERE resolution IS NULL` always admits exactly
+one writer regardless of which call is enqueued first — `biased` only makes *which* call wins
+reproducible, and every assertion still derives its expectation from whichever call actually
+returned `Ok` rather than assuming a winner, as a second line of defense. `tokio::spawn` would
+remove even that: each call would run on its own independently scheduled task, free to enqueue in
+whatever order the executor picks. Checked empirically too: twenty runs of each concurrent test
+with no flake, both before and after `biased` was added.
 `concurrent_release_and_cancel_admit_exactly_one_decision` interleaves a `release` and a `cancel`
 for the same violation and asserts exactly one `Decided`, one `Conflict`, one journaled
 `PolicyViolationDecided` event, and only the winner's side effect visible in the run's projected
@@ -2571,9 +2584,11 @@ with two identical resolutions: one `Decided`, one `AlreadyDecided`, one event �
 idempotent-replay contract the deleted pre-check used to serve.
 `deciding_the_same_resolution_twice_sequentially_stays_idempotent` proves the same idempotency
 without concurrency, as a control.
-`releasing_a_violation_whose_run_settles_mid_decide_is_refused` interleaves a `release` against a
-run transition to `cancelled` and proves the terminal-run guard reads the run's state from inside
-the write's own transaction, refusing the release and leaving no orphaned event.
+`releasing_a_violation_whose_run_has_already_settled_is_refused` settles the run first,
+sequentially, then calls `decide("release")` — no `join!`, no timing dependency — and still
+proves exactly what changed: `PolicyViolationSnapshot` no longer carries `run_state`, so the
+guard's own live read of `runs.state` inside `resolve_policy_violation`'s transaction is the only
+thing left that can refuse it.
 
 Falsifiability was checked mechanically, not asserted: with the `resolution IS NULL` guard and its
 affected-row check removed, three of the four tests failed
@@ -2581,8 +2596,31 @@ affected-row check removed, three of the four tests failed
 `concurrent_identical_releases_journal_one_event_and_report_already_decided`, and
 `deciding_the_same_resolution_twice_sequentially_stays_idempotent` — a stronger falsification than
 either alone requires); with the terminal-run check removed,
-`releasing_a_violation_whose_run_settles_mid_decide_is_refused` failed. Both guards restored,
+`releasing_a_violation_whose_run_has_already_settled_is_refused` failed. Both guards restored,
 `git diff` against the committed tree came back empty, and all four passed again.
+
+The adversarial review that followed asked six questions and found two defects that were already
+real at that point, both caught and fixed within this same pass: the `join!` argument-order claim
+in the test module doc and this Part's own prose (`biased;` added, the explanation corrected
+above), and the "three separate round trips" misstatement of the pre-fix code's actual shape
+(pre-fix `decide` always made exactly two round trips — one snapshot from which all three checks
+were read in memory, one write — corrected above and in `engineering-lessons.md`). It also raised
+two Warnings. The first: the fourth test's original design — racing `decide("release")` against
+the run-settling transition through `tokio::join!`, exactly like the first two tests — rested its
+"fully deterministic regardless of `biased`" claim on an actor-reply-timing assumption:
+vanishingly unlikely to fail (a handful of CPU instructions against real SQLite work measured in
+microseconds) but real, not a scheduling guarantee. That test was rewritten to settle the run
+sequentially before calling `decide`, removing the timing dependency entirely rather than
+accepting a weaker claim. The second: `ApprovalService::decide`
+(`crates/runtime/src/approval/service.rs`) carries the identical unguarded-`UPDATE` pattern this
+fix just closed for policy violations — a real, reachable race, structurally the same bug, in a
+different service. It is out of this change's scope and is registered as R70 in `REVIEW.md`
+rather than fixed here. Four Suggestions came back clean: two partial `# Errors` lists, one
+FK-guarded-unreachable error reclassification (a missing `runs` row would surface `-32603` instead
+of `-32602`, impossible today under `foreign_keys = ON` and no delete path), and one
+side-effect-failure edge case (a decision can commit and then fail to apply its side effect,
+identical before and after this diff) — all pre-existing, none altered by this change, none
+warranting action here.
 
 Measured on the final tree: `cargo fmt --all --check` and `cargo clippy --all-targets
 --all-features -- -D warnings` clean; `BATMAN_DISABLE_VENDOR_CLI=1 cargo test --workspace
@@ -2592,7 +2630,9 @@ has carried, the locally installed Copilot CLI 1.0.80 still not in `COPILOT_KNOW
 `bun run generate --check` clean (no `crates/protocol` type moved, so neither the schema nor the
 bindings did either); `bun test packages` 139 passed, 0 failed, 334 assertions, fourteen files.
 
-With R54 closed, the High tier drops to two — R33 and R44 remain.
+R54's fix drops the pre-existing High tier from three to two (R33, R44) on its own; the review
+above immediately reopens it to three by surfacing R70, the identical bug in
+`ApprovalService::decide`.
 
 ## Reading order, if you're new here
 
