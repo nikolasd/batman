@@ -15,7 +15,7 @@ use batman_protocol::{
     RunFlags, RunId, RunMessage, RunState, RuntimeEvent, RuntimeEventKind, TaskId, TaskRef,
     Timestamp, Worker, WorkerId,
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
 use tokio::sync::broadcast;
 
@@ -33,6 +33,20 @@ pub enum DomainError {
     /// A referenced record was not found.
     #[error("{kind} {id} not found")]
     NotFound { kind: &'static str, id: String },
+    /// A guarded mutation refused to write because the row already carries a
+    /// resolution committed by an earlier decision. `existing` is the
+    /// resolution on record, so a service layer can distinguish an
+    /// idempotent replay from a contradictory second decision.
+    #[error("{kind} {id} was already resolved as {existing}")]
+    AlreadyResolved {
+        kind: &'static str,
+        id: String,
+        existing: String,
+    },
+    /// A guarded mutation refused to write because the run it belongs to has
+    /// already reached a terminal state.
+    #[error("run {run_id} has already settled")]
+    RunSettled { run_id: String },
     /// A serialization step failed.
     #[error("failed to serialize event: {0}")]
     Serialize(#[from] serde_json::Error),
@@ -922,8 +936,21 @@ impl<'c> DomainRepository<'c> {
     /// those via [`DomainRepository::set_run_flags`]/
     /// [`DomainRepository::transition_run`] as separate commits.
     ///
+    /// This is the **only** authority on whether a violation may be resolved.
+    /// The database actor interleaves whole `run_domain_op` closures, never
+    /// a service's sequence of round trips, so any caller-side pre-check is
+    /// advisory only (R54): the `UPDATE` guarded by `resolution IS NULL`
+    /// is the guard. The `UPDATE` deliberately precedes the terminal-run
+    /// guard so an already-decided violation reports
+    /// [`DomainError::AlreadyResolved`] even when its run has also settled;
+    /// an `Err` returned here discards the appended event together with the
+    /// rejected write (the transaction rolls back as a whole).
+    ///
     /// # Errors
-    /// Returns [`DomainError::NotFound`] if `violation_id` does not exist.
+    /// Returns [`DomainError::NotFound`] if no such violation exists,
+    /// [`DomainError::AlreadyResolved`] if a resolution is already on
+    /// record, or [`DomainError::RunSettled`] if `resolution` is
+    /// `"release"` and the run has reached a terminal state.
     pub fn resolve_policy_violation(
         &mut self,
         violation_id: PolicyViolationId,
@@ -952,11 +979,53 @@ impl<'c> DomainRepository<'c> {
             Some(run_id),
             move |tx| {
                 let now = Timestamp::now();
-                tx.execute(
+                let affected = tx.execute(
                     "UPDATE policy_violations SET resolution = ?1, resolved_by = ?2, resolved_at = ?3
-                     WHERE violation_id = ?4",
+                     WHERE violation_id = ?4 AND resolution IS NULL",
                     rusqlite::params![resolution, resolved_by, now.as_str(), violation_id.to_string()],
                 )?;
+                if affected == 0 {
+                    // Either a concurrent decision won the row, or the
+                    // violation does not exist. Classify from inside the same
+                    // transaction; nothing else can have changed it since.
+                    let existing: Option<String> = tx
+                        .query_row(
+                            "SELECT resolution FROM policy_violations
+                             WHERE violation_id = ?1 AND resolution IS NOT NULL",
+                            [violation_id.to_string()],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    return Err(match existing {
+                        Some(existing) => DomainError::AlreadyResolved {
+                            kind: "policy-violation",
+                            id: violation_id.to_string(),
+                            existing,
+                        },
+                        None => DomainError::NotFound {
+                            kind: "policy-violation",
+                            id: violation_id.to_string(),
+                        },
+                    });
+                }
+                if resolution == "release" {
+                    let state: String = tx.query_row(
+                        "SELECT state FROM runs WHERE run_id = ?1",
+                        [run_id.to_string()],
+                        |row| row.get(0),
+                    )?;
+                    let parsed = RunState::try_from(state.as_str()).map_err(|_| {
+                        DomainError::NotFound {
+                            kind: "run-state",
+                            id: state.clone(),
+                        }
+                    })?;
+                    if parsed.is_terminal() {
+                        return Err(DomainError::RunSettled {
+                            run_id: run_id.to_string(),
+                        });
+                    }
+                }
                 Ok(())
             },
         )
