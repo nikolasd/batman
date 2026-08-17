@@ -423,6 +423,12 @@ outright); the response's `outcome` is `"decided"` or `"alreadyDecided"`:
 { "violationId": "b8c9d0e1-f2a3-4b4c-5d6e-7f8a9b0c1d2e", "outcome": "decided" }
 ```
 
+An identical repeat of an already-decided violation returns `outcome: "alreadyDecided"` and
+re-applies nothing. A *different* resolution submitted for an already-decided violation is
+refused with `-32602`, and the first decision stands -- exactly one decision is ever journaled
+per violation, even if two clients submit concurrently. `release` is refused with `-32602` once
+the run has already reached a terminal state, because a settled run is never revived.
+
 ### `child/list`
 
 ```json

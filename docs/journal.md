@@ -2512,6 +2512,88 @@ that run: 22 passed, 0 failed.
 
 With R53 closed, the High tier drops to three — R33, R44, and R54 remain.
 
+## Part XIX — Two decisions, one violation: the guard that lived outside the transaction
+
+`ViolationService::decide` read like a decision procedure: load a snapshot, check it for a
+conflicting resolution, check it for a settled run, then write. Three separate
+`self.db.run_domain_op(...)` calls, three round trips to the database actor — and the actor
+(`crates/runtime/src/db/actor.rs`) is a single `std::thread` that processes one whole boxed
+closure at a time, off a bounded channel. It serializes closures, never a service's sequence of
+decisions about them. Two concurrent `decide` calls for the same `violationId` could both have
+their snapshot read `resolution: None` before either wrote — the actor has no way to know the two
+reads and two writes were meant to be one decision each — and `resolve_policy_violation`'s
+`UPDATE policy_violations SET resolution = ?1 ... WHERE violation_id = ?4` had no
+`resolution IS NULL` guard and no affected-row check. Both writes landed, both callers proceeded
+past the write to fire their side effects: one call clears the run's quarantine, the other
+cancels the run outright, on the same run.
+
+It survived because the three checks *read* as a transaction. Nothing in the code said the round
+trips could interleave; the doc comment on `PolicyViolationSnapshot` promised "everything
+`ViolationService` needs to enforce ownership, idempotency, and the never-revive-a-terminal-run
+invariant" — a snapshot is not a lock, and nothing enforced that the check and the later write
+shared one point in time.
+
+The fix moves the guard into the same transaction as the write. `resolve_policy_violation`'s
+`apply` closure now runs `UPDATE ... WHERE violation_id = ?4 AND resolution IS NULL` and checks
+the affected-row count: zero means either the row already carries a resolution — read back
+inside the same transaction, so nothing else can have changed it since — or the violation never
+existed. For `"release"`, the terminal-run check moved inside the same closure too, reading
+`runs.state` from the same transaction and returning `RunSettled` if it's already terminal. The
+`UPDATE` is deliberately ordered ahead of that check, so an already-decided violation is reported
+as `AlreadyResolved` even if its run has separately settled — the same precedence the deleted
+pre-checks had. Returning `Err` from an `append_and_apply` closure discards the whole transaction,
+so a refused decision leaves neither the write nor the event it would have journaled;
+`events.sequence` is a plain `INTEGER PRIMARY KEY`, not `AUTOINCREMENT`, so a rolled-back append
+burns no sequence number either.
+
+`ViolationService::decide` lost its two extra round trips: ownership is the only caller-side
+pre-check left, and `PolicyViolationSnapshot` shrank to the four fields ownership actually needs
+(`run_id`, `task_id`, `worker_id`, `owner_client_instance_id` — `resolution` and the run's state
+came out, since nothing outside the guarded write may safely act on either). Two new
+`DomainError` variants, `AlreadyResolved` and `RunSettled`, carry the guard's verdict back out;
+`ViolationService::decide` matches on them directly, and `From<DomainError> for ServiceError`
+gained the same two arms so a future caller of the guarded write cannot surface a caller-caused
+conflict as an internal error.
+
+`crates/runtime/tests/policy_violation.rs` is new — `decide` had no dedicated Rust suite before
+this, only RPC-level coverage that cannot interleave two calls. Four tests drive genuinely
+concurrent decisions with `tokio::join!` in a single task, never `tokio::spawn`: `join!` polls its
+child futures in argument order on every poll, so the first future always enqueues its first
+`run_domain_op` command before the second future is polled at all, and the actor's bounded
+channel (capacity 32, never approached here) processes commands in the order they're enqueued.
+That makes the interleave deterministic rather than a hopeful race — argued in the test module's
+own doc comment and checked empirically, twenty runs of each concurrent test with no flake.
+`concurrent_release_and_cancel_admit_exactly_one_decision` interleaves a `release` and a `cancel`
+for the same violation and asserts exactly one `Decided`, one `Conflict`, one journaled
+`PolicyViolationDecided` event, and only the winner's side effect visible in the run's projected
+state. `concurrent_identical_releases_journal_one_event_and_report_already_decided` does the same
+with two identical resolutions: one `Decided`, one `AlreadyDecided`, one event — the
+idempotent-replay contract the deleted pre-check used to serve.
+`deciding_the_same_resolution_twice_sequentially_stays_idempotent` proves the same idempotency
+without concurrency, as a control.
+`releasing_a_violation_whose_run_settles_mid_decide_is_refused` interleaves a `release` against a
+run transition to `cancelled` and proves the terminal-run guard reads the run's state from inside
+the write's own transaction, refusing the release and leaving no orphaned event.
+
+Falsifiability was checked mechanically, not asserted: with the `resolution IS NULL` guard and its
+affected-row check removed, three of the four tests failed
+(`concurrent_release_and_cancel_admit_exactly_one_decision`,
+`concurrent_identical_releases_journal_one_event_and_report_already_decided`, and
+`deciding_the_same_resolution_twice_sequentially_stays_idempotent` — a stronger falsification than
+either alone requires); with the terminal-run check removed,
+`releasing_a_violation_whose_run_settles_mid_decide_is_refused` failed. Both guards restored,
+`git diff` against the committed tree came back empty, and all four passed again.
+
+Measured on the final tree: `cargo fmt --all --check` and `cargo clippy --all-targets
+--all-features -- -D warnings` clean; `BATMAN_DISABLE_VENDOR_CLI=1 cargo test --workspace
+--no-fail-fast` ran all 50 test binaries to completion — 748 passed, the two standing live-CLI
+ignores in the claude and codex adapters, and the one standing failure every entry since Part XIV
+has carried, the locally installed Copilot CLI 1.0.80 still not in `COPILOT_KNOWN_CLI_VERSIONS`;
+`bun run generate --check` clean (no `crates/protocol` type moved, so neither the schema nor the
+bindings did either); `bun test packages` 139 passed, 0 failed, 334 assertions, fourteen files.
+
+With R54 closed, the High tier drops to two — R33 and R44 remain.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start

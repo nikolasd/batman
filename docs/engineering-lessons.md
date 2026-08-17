@@ -234,3 +234,40 @@ the first from every test that only drives the outer layer. Test the innermost l
 `coordination_publish_artifact_accepts_a_description_at_the_limit`,
 `coordination_publish_artifact_draws_on_the_same_per_sender_budget_as_send`, and
 `coordination_request_child_draws_on_the_same_per_sender_budget_as_send`.
+
+## Domain Writes and Concurrency
+
+### A check in one database round trip cannot guard a write in the next
+
+**Location:** `crates/runtime/src/domain/repository.rs::resolve_policy_violation`;
+`crates/runtime/src/policy/violation.rs::ViolationService::decide`
+
+**The bug:** `decide` split ownership, conflict, and terminal-run checks across three separate
+`run_domain_op` round trips, then wrote in a fourth. The database actor
+(`crates/runtime/src/db/actor.rs`) is a single `std::thread` processing one whole boxed closure at
+a time off a bounded channel -- it serializes closures, never a caller's sequence of decisions
+about them. Two concurrent `decide` calls for the same violation could both read
+`resolution: None` before either wrote, and the write itself carried no guard
+(`UPDATE ... WHERE violation_id = ?4`, no `resolution IS NULL`), so both committed and both fired
+contradictory side effects -- one clearing quarantine, the other cancelling the same run.
+
+**The fix:** move the guard into the same transaction as the write. `resolve_policy_violation`'s
+`apply` closure now runs the `UPDATE` with a `WHERE resolution IS NULL` guard, checks the
+affected-row count, and -- for `"release"` -- reads the run's state from the same transaction
+before deciding whether it has settled. A refused write returns `Err`, which discards the whole
+transaction: the appended event and the rejected write both vanish together, at no cost in
+sequence numbers (`events.sequence` is a plain `INTEGER PRIMARY KEY`, not `AUTOINCREMENT`).
+`ViolationService::decide` shrank to one caller-side pre-check (ownership) and one guarded round
+trip; `PolicyViolationSnapshot` shrank with it, since resolution/run-state gating no longer needs
+to leave the guarded transaction.
+
+**The lesson:** with a single-threaded database actor that serializes whole closures, a
+multi-round-trip service method is not a transaction, no matter how sequential it reads. A guard
+belongs in the same closure as the write it protects, and its verdict -- not an earlier read --
+must be the caller's only source of truth about whether the write happened.
+
+**Regression tests:** `crates/runtime/tests/policy_violation.rs`'s
+`concurrent_release_and_cancel_admit_exactly_one_decision`,
+`concurrent_identical_releases_journal_one_event_and_report_already_decided`,
+`deciding_the_same_resolution_twice_sequentially_stays_idempotent`, and
+`releasing_a_violation_whose_run_settles_mid_decide_is_refused`.
