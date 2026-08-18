@@ -30,7 +30,7 @@
         "description": "Run `copilot login` in the terminal",
         "_meta": {
           "terminal-auth": {
-            "command": "/opt/homebrew/bin/copilot",
+            "command": "/usr/local/bin/copilot",
             "args": [
               "login"
             ],

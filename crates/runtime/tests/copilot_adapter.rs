@@ -312,7 +312,7 @@ fn session_updates_fixture_normalizes_every_variant_correctly() {
     let payloads = copilot_normalize_session_update(&updates[3]);
     match &payloads[0] {
         batman_runtime::adapter::AdapterEventPayload::ToolStarted { tool_call_id, name } => {
-            assert_eq!(tool_call_id, "call-1");
+            assert_eq!(tool_call_id, "tool-000000000001");
             assert_eq!(name, "Read adapter.rs");
         }
         other => panic!("expected ToolStarted, got {other:?}"),
@@ -332,7 +332,7 @@ fn session_updates_fixture_normalizes_every_variant_correctly() {
     let payloads = copilot_normalize_session_update(&updates[6]);
     match &payloads[0] {
         batman_runtime::adapter::AdapterEventPayload::ToolProgress { tool_call_id, .. } => {
-            assert_eq!(tool_call_id, "call-2");
+            assert_eq!(tool_call_id, "tool-000000000002");
         }
         other => panic!("expected ToolProgress, got {other:?}"),
     }
@@ -512,7 +512,7 @@ async fn respond_permission_answers_a_real_pending_request_over_the_wire() {
     };
     assert_eq!(request_id, 42);
     assert_eq!(request.session_id, "11111111-1111-4111-8111-000000000001");
-    assert_eq!(request.tool_call_id, "call-2");
+    assert_eq!(request.tool_call_id, "tool-000000000001");
     assert_eq!(request.options.len(), 2);
     assert_eq!(client.pending_permission_ids(), vec![42]);
 

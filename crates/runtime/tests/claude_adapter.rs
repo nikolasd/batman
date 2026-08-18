@@ -442,7 +442,7 @@ fn initialize_fixture_normalizes_session_id_text_tools_and_final_result() {
             _ => None,
         })
         .expect("expected a ToolStarted event");
-    assert_eq!(tool_started, ("toolu_01READ", "Read"));
+    assert_eq!(tool_started, ("tool-000000000001", "Read"));
 
     let tool_result = payloads
         .iter()
@@ -461,7 +461,7 @@ fn initialize_fixture_normalizes_session_id_text_tools_and_final_result() {
             _ => None,
         })
         .expect("expected a ToolResult event");
-    assert_eq!(tool_result.0, "toolu_01READ");
+    assert_eq!(tool_result.0, "tool-000000000001");
     assert_eq!(tool_result.1, "Read");
     assert!(tool_result.2);
     assert!(tool_result.3.contains("value = 30"));
@@ -536,7 +536,7 @@ fn subagent_fixture_correlates_parent_tool_use_id_and_reports_nested_worker_once
         .collect();
     assert_eq!(
         nested,
-        vec![("toolu_02AGENT", "11111111-1111-4111-8111-000000000001")]
+        vec![("tool-000000000001", "11111111-1111-4111-8111-000000000001")]
     );
 
     // The subagent's own text is role-tagged with its parent_tool_use_id
@@ -549,7 +549,7 @@ fn subagent_fixture_correlates_parent_tool_use_id_and_reports_nested_worker_once
         })
         .collect();
     assert!(roles.contains(&"assistant"));
-    assert!(roles.contains(&"assistant:subagent:toolu_02AGENT"));
+    assert!(roles.contains(&"assistant:subagent:tool-000000000001"));
 
     // The subagent's thinking block never became an event.
     let all_text: Vec<&str> = payloads
@@ -580,8 +580,8 @@ fn subagent_fixture_correlates_parent_tool_use_id_and_reports_nested_worker_once
             _ => None,
         })
         .collect();
-    assert!(tool_results.contains(&("toolu_02BASH", "Bash", true)));
-    assert!(tool_results.contains(&("toolu_02AGENT", "Agent", true)));
+    assert!(tool_results.contains(&("tool-000000000002", "Bash", true)));
+    assert!(tool_results.contains(&("tool-000000000001", "Agent", true)));
 }
 
 #[test]
@@ -608,7 +608,7 @@ fn approval_fixture_normalizes_hook_lifecycle_without_ever_touching_the_sink() {
             _ => None,
         })
         .expect("expected an ApprovalRequested event");
-    assert_eq!(requested, ("hook_001", "require-bash-approval"));
+    assert_eq!(requested, ("hook-000000000001", "require-bash-approval"));
 
     let resolved = all_events
         .iter()
@@ -620,7 +620,7 @@ fn approval_fixture_normalizes_hook_lifecycle_without_ever_touching_the_sink() {
             _ => None,
         })
         .expect("expected an ApprovalResolved event");
-    assert_eq!(resolved, ("hook_001", "allow"));
+    assert_eq!(resolved, ("hook-000000000001", "allow"));
 }
 
 #[test]

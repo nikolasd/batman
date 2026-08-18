@@ -2,6 +2,6 @@
 {"type":"response","id":"1","command":"set_subagent_subscription","success":true,"data":{"level":"full"}}
 {"type":"response","id":"2","command":"prompt","success":true,"data":{"agentInvoked":true}}
 {"type":"subagent_started","id":"sub-1","parentId":"main","name":"reviewer"}
-{"type":"toolcall_start","toolCallId":"tc-1","name":"grep"}
-{"type":"toolcall_end","toolCallId":"tc-1","name":"grep","ok":true,"result":"3 matches"}
+{"type":"toolcall_start","toolCallId":"tool-000000000001","name":"grep"}
+{"type":"toolcall_end","toolCallId":"tool-000000000001","name":"grep","ok":true,"result":"3 matches"}
 {"type":"agent_end"}
