@@ -102,6 +102,7 @@ Small, dependency-light, and the vocabulary for everything else.
 | `src/display/terminal.rs` | Terminal display backend |
 | `src/display/herdr.rs` | Herdr display backend |
 | `src/display/tmux.rs` | Tmux display backend |
+| `src/canonical_json.rs` | Canonical, recursively key-sorted JSON bytes for hashing and durable storage |
 | `src/config/merge.rs` | Configuration merging with strict unknown-key rejection |
 | `src/policy/evaluate.rs` | `RuntimePolicy` with SHA-256 fingerprint, `RolloutGates` |
 | `src/audit/export.rs` | JSONL export |

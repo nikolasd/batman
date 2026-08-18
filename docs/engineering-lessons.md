@@ -320,3 +320,41 @@ pattern.
 `deciding_the_same_decision_twice_sequentially_stays_idempotent`, and
 `deciding_an_approval_whose_run_has_already_settled_is_refused` -- the approval-side mirror of the
 four `policy_violation.rs` tests named in the previous entry.
+
+---
+
+## Determinism and Content Addressing
+
+### A dependency feature enabled for one tool silently redefines every hash in the workspace
+
+**Location:** `Cargo.toml`; `crates/runtime/src/canonical_json.rs`;
+`crates/runtime/src/security/redaction.rs`; `crates/runtime/src/adapter/profile.rs`; and
+`crates/runtime/src/config/merge.rs`
+
+**The bug:** `serde_json`'s `preserve_order` feature was correctly enabled for the conformance
+fixture-capture scrubber, which must reproduce vendor frames in their original key order. It also
+made every `serde_json::Map` insertion-ordered. Three unrelated boundaries then treated
+document-order-dependent bytes as content: `Redactor::sanitize_json` persisted operation payloads,
+`WorkerProfile::fingerprint` named registered profiles, and `RuntimePolicy::compute_fingerprint`
+named merged policies. Two comments incorrectly claimed the workspace did not enable
+`preserve_order`, while `config.rs::fingerprint_is_deterministic` only compared two equal merge
+errors from locked fixtures; it never computed a fingerprint.
+
+**The lesson:** Enforce determinism at the boundary that requires it, rather than relying on a
+dependency default that another subsystem may legitimately change. `canonical_json` delegates
+owned trees to serde_json's first-party `Value::sort_all_objects` and retains a borrowed cloning
+wrapper for comparisons; that API is why the workspace's `serde_json` floor is 1.0.151.
+`sanitize_json` and profile construction sort their owned trees in place, while policy hashing and
+the raw side of the permission-envelope comparison use the wrapper. Canonicalizing both comparison
+sides ensures that a difference means redaction changed content, not that one side happened to
+arrive in another key order. The profile's final sort is defense in depth: the current struct field
+order and its already-canonical sanitized `permissionEnvelope` make it redundant today, but a
+future free-form field must not silently weaken the fingerprint.
+
+**Regression tests:** The redaction test varies top-level, nested, and array-object key order and
+asserts byte-identical sanitized JSON. Its collision test varies the insertion order of two source
+keys that redact to one key and confirms that source-key sorting makes the lexicographically
+greatest source key win. The config and adapter-contract tests vary YAML and permission-envelope
+key order before asserting equal fingerprints, and an unsorted benign envelope remains valid.
+These tests vary the order each contract claims to ignore instead of repeating one construction and
+calling the result deterministic.

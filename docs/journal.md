@@ -2756,6 +2756,68 @@ neighbor the review deliberately left alone: `decide_approval`'s `let _ = reason
 the approval's `reason` field end to end — that is R59, already open in `REVIEW.md`, unrelated to
 this race, and unchanged by this fix.
 
+## Part XXI — A feature flag for one tool, three broken content addresses
+
+`d1ef420` enabled `serde_json`'s `preserve_order` feature for a sound reason. The conformance
+fixture-capture scrubber must preserve a vendor frame's original object-key order: recapturing a
+frame must not rewrite a committed fixture merely because the scrubber rebuilt its map. But that
+feature changes `serde_json::Map` from its default sorted behavior to insertion order. Two equal
+JSON values assembled through different insertion histories now serialize to different bytes.
+The feature was local in intent and global in effect.
+
+Three boundaries had silently turned those bytes into content addresses. `Redactor::sanitize_json`
+serializes operation intent and acknowledgement payloads for durable storage;
+`WorkerProfile::fingerprint` hashes the profile content that profile registration persists and later
+serves as `profileRef.fingerprint`; and `RuntimePolicy::compute_fingerprint` hashes the merged
+policy persisted with each run. Each boundary promised an identity property that JSON object order
+cannot supply. The first two comments still claimed the workspace did *not* enable
+`preserve_order`. The one test named for the third property,
+`config.rs::fingerprint_is_deterministic`, was worse than missing coverage: it merged the locked
+fixtures twice, both merges rejected the locked `max_workers` setting, and it compared the two
+equal error strings without ever computing a fingerprint.
+
+Removing `preserve_order` would have made the three hashes appear deterministic again, but at the
+cost of rewriting the frames R44 needs to recapture byte-for-byte. The fix instead draws the
+boundary where the property is needed. `canonical_json` uses serde_json's first-party
+`Value::sort_all_objects` API to sort every object recursively in place, preserving array order;
+the borrowed `canonicalize` wrapper clones only when a caller cannot give up ownership. That
+first-party API also explains the new `serde_json >=1.0.151` floor in `Cargo.toml`. Redaction and
+profile construction own their trees and call the in-place form. Policy hashing and the raw
+permission-envelope comparison borrow their trees and use the wrapper. The old vendor-frame path
+does neither, so capture keeps its original order.
+
+Sorting only the sanitized side of `permission_envelope_contains_secret_shape` initially exposed a
+collateral false rejection: an otherwise harmless envelope with unsorted keys no longer textually
+matched its sorted sanitized form and looked secret-shaped. Both sides are now canonical before
+comparison, leaving redaction as the only possible source of a difference. The profile's final
+sort is deliberately defense in depth, not evidence that a current bug was otherwise observable:
+the struct declaration already fixes the top-level field order and its sanitized
+`permissionEnvelope` is already canonical. Removing that final sort did not fail by the current
+construction, but it protects any future free-form field from reviving the dependency on insertion
+order.
+
+The adversarial review found a separate redaction edge while checking this boundary. Sorting the
+finished redacted object makes its output order stable, but cannot choose between two different
+source keys that both redact to the same key: insertion-order-dependent last-wins behavior had
+already chosen the value before the final sort. `redact_json_value` now sorts source keys *before*
+redaction, so a collision deterministically selects the lexicographically greatest source key.
+The collision regression test supplies the same two secret-shaped keys in both insertion orders
+and observes the same surviving value.
+
+Falsifiability was mechanical, not a claim that green tests were enough:
+
+| Temporary removal or regression | Test that failed |
+|---|---|
+| Redaction's final canonical sort | `sanitize_json_is_byte_identical_for_two_differently_ordered_equal_objects` |
+| Policy fingerprint canonicalization | `key_order_in_the_yaml_layers_does_not_change_the_fingerprint` |
+| Canonicalizing the raw permission-envelope side | `a_permission_envelope_with_unsorted_keys_is_not_mistaken_for_a_secret` |
+| Sorting source keys before redaction | `sanitize_json_resolves_redacted_key_collisions_independently_of_input_order` |
+
+Each edit was restored after its named test failed. The targeted redaction tests returned 5/5, and
+the restored adapter-contract plus config tests returned 23/23. No committed fixture or test pins
+a computed digest, so the one-time change to canonical digest bytes is safe: it changes no
+externally committed value while ensuring equal future content receives one address.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start

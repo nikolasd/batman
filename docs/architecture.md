@@ -355,7 +355,7 @@ graph TB
 #### Domain and Security
 - **Domain Repository** ([`crates/runtime/src/domain/repository.rs`](crates/runtime/src/domain/repository.rs)): Only way to mutate projection tables
 - **State Transitions** ([`crates/runtime/src/domain/transitions.rs`](crates/runtime/src/domain/transitions.rs)): Validates `RunState` edges
-- **Redaction** ([`crates/runtime/src/security/redaction.rs`](crates/runtime/src/security/redaction.rs)): Type-enforced redaction boundary
+- **Redaction** ([`crates/runtime/src/security/redaction.rs`](crates/runtime/src/security/redaction.rs)): Type-enforced redaction boundary; durable JSON bytes are recursively key-sorted so `preserve_order` can remain available for fixture capture without making equal input persist differently
 - **Redaction Rules** ([`crates/runtime/src/security/rules.rs`](crates/runtime/src/security/rules.rs)): Built-in regex patterns
 
 #### Audit and Conformance
@@ -365,7 +365,7 @@ graph TB
 - **Conformance Report** ([`crates/runtime/src/conformance/report.rs`](crates/runtime/src/conformance/report.rs)): Conformance test reporting
 
 #### Configuration and Policy
-- **Config Merge** ([`crates/runtime/src/config/merge.rs`](crates/runtime/src/config/merge.rs)): Layers org/repo/user/per-run YAML with strict unknown-key rejection into an immutable, SHA-256-fingerprinted `RuntimePolicy`
+- **Config Merge** ([`crates/runtime/src/config/merge.rs`](crates/runtime/src/config/merge.rs)): Layers org/repo/user/per-run YAML with strict unknown-key rejection into an immutable, SHA-256-fingerprinted `RuntimePolicy`; hashed JSON bytes are recursively key-sorted because the fixture-capture scrubber requires `preserve_order`
 - **Policy Evaluator** ([`crates/runtime/src/policy/evaluate.rs`](crates/runtime/src/policy/evaluate.rs)): `PolicyEvaluator` implements `AdapterAuthorization` against a `RuntimePolicy` (model allowlist, concurrency ceiling) — wired into production via `lifecycle::serve()`, same as the real `ScopeTokenVerifier` `workerMcp` credential store (see [REVIEW.md](../REVIEW.md) for remaining gaps)
 
 ## Level 4: Code (C4-4)
@@ -791,5 +791,7 @@ Generated from [`crates/runtime/src/ipc/mod.rs`](crates/runtime/src/ipc/mod.rs)'
 | Approval flow | `crates/runtime/tests/approval.rs` |
 | An approval is decided at most once | `crates/runtime/tests/approval_decide_race.rs` |
 | A policy violation is decided at most once | `crates/runtime/tests/policy_violation.rs` |
+| Sanitized JSON bytes are key-order independent | `crates/runtime/src/security/redaction.rs` |
+| Profile and policy fingerprints are key-order independent | `crates/runtime/tests/config.rs`, `crates/runtime/tests/adapter_contract.rs` |
 
 Run with a test-runner timeout if you suspect a new mutation has regressed the broadcast invariant — the bug manifests as an infinite hang, not a clean failure.
