@@ -403,7 +403,7 @@ fn initialize_fixture_normalizes_session_id_text_tools_and_final_result() {
 
     match payloads[0] {
         VendorSessionEstablished { vendor_session_id } => {
-            assert_eq!(vendor_session_id, "11111111-1111-4111-8111-111111111111");
+            assert_eq!(vendor_session_id, "11111111-1111-4111-8111-000000000001");
         }
         other => panic!("expected VendorSessionEstablished first, got {other:?}"),
     }
