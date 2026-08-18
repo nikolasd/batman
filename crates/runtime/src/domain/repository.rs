@@ -40,7 +40,34 @@ pub enum DomainError {
     /// caller's snapshot read and the write cannot let a stale owner's
     /// decision through (R71).
     #[error("task {task_id} is not owned by {instance_id}")]
-    NotOwner { task_id: String, instance_id: String },
+    NotOwner {
+        task_id: String,
+        instance_id: String,
+    },
+    /// A guarded `task/upsert` write refused because the presented
+    /// revision is lower than the revision already stored -- OMP re-sent a
+    /// stale intent. Checked inside [`DomainRepository::upsert_task`]'s own
+    /// guarded write, not a caller-side pre-check read from a separate
+    /// `run_domain_op` round trip the database actor could interleave with
+    /// another write to the same task (R74, applying R70-R72's doctrine to
+    /// task writes).
+    #[error("task {task_id} revision {presented} is lower than stored revision {stored}")]
+    RevisionTooLow {
+        task_id: String,
+        presented: u64,
+        stored: u64,
+    },
+    /// A guarded `reconcile/omp` write refused because the presented
+    /// revision does not match the revision currently stored -- the
+    /// caller's snapshot of the task is stale. Checked inside
+    /// [`DomainRepository::reconcile_ownership`]'s own guarded write, for
+    /// the same reason as [`Self::RevisionTooLow`] (R74).
+    #[error("task {task_id} revision {presented} does not match stored revision {stored}")]
+    RevisionMismatch {
+        task_id: String,
+        presented: u64,
+        stored: u64,
+    },
     /// A guarded mutation refused to write because the row already carries a
     /// resolution (or, for an approval, a decision) committed by an earlier
     /// decision. `existing` is the resolution on record, so a service layer
@@ -304,9 +331,14 @@ impl<'c> DomainRepository<'c> {
         Ok(Committed { sequence, envelope })
     }
 
-    /// Upserts an OMP-owned task. Idempotent for an identical revision; a
-    /// lower revision is rejected by the caller (service layer) before this
-    /// point. Emits a `TaskCreated`/`TaskUpdated` event.
+    /// Upserts an OMP-owned task. Idempotent for an identical revision. The
+    /// monotonicity guard lives inside the write itself: the `ON CONFLICT`
+    /// arm only applies when the presented revision is not lower than the
+    /// stored one, and a refused write is classified in the same
+    /// transaction as [`DomainError::RevisionTooLow`] (R74) -- a caller-side
+    /// pre-check read in a separate `run_domain_op` round trip could be
+    /// interleaved with another write to the same task. Emits a
+    /// `TaskCreated`/`TaskUpdated` event.
     pub fn upsert_task(
         &mut self,
         task_id: batman_protocol::TaskId,
@@ -337,13 +369,14 @@ impl<'c> DomainRepository<'c> {
         let project = self.project_id;
         self.append_and_apply(&event, Some(task_id), None, None, move |tx| {
             let now = Timestamp::now();
-            tx.execute(
+            let affected = tx.execute(
                 "INSERT INTO tasks (task_id, project_id, owner_client_instance_id, revision, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?5)
                  ON CONFLICT(task_id) DO UPDATE SET
                    owner_client_instance_id = excluded.owner_client_instance_id,
                    revision = excluded.revision,
-                   updated_at = excluded.updated_at",
+                   updated_at = excluded.updated_at
+                 WHERE excluded.revision >= tasks.revision",
                 rusqlite::params![
                     task_id.to_string(),
                     project.to_string(),
@@ -352,6 +385,21 @@ impl<'c> DomainRepository<'c> {
                     now.as_str(),
                 ],
             )?;
+            if affected == 0 {
+                // The conflict arm declined: a higher revision is already
+                // stored. Classify inside the same transaction; nothing else
+                // can have changed the row since.
+                let stored: u64 = tx.query_row(
+                    "SELECT revision FROM tasks WHERE task_id = ?1",
+                    [task_id.to_string()],
+                    |row| row.get(0),
+                )?;
+                return Err(DomainError::RevisionTooLow {
+                    task_id: task_id.to_string(),
+                    presented: revision,
+                    stored,
+                });
+            }
             Ok(())
         })
     }
@@ -1146,20 +1194,20 @@ impl<'c> DomainRepository<'c> {
         worker_id: WorkerId,
         principal_instance_id: &str,
         resolution: &str,
-        resolved_by: &str,
     ) -> Result<Committed, DomainError> {
         let event = RuntimeEvent::PolicyViolationDecided {
             kind: RuntimeEventKind::PolicyViolationDecided {
                 violation_id,
                 resolution: resolution.to_string(),
-                resolved_by: resolved_by.to_string(),
+                // The resolver is by definition the authorized principal:
+                // the guarded write below refuses anyone else.
+                resolved_by: principal_instance_id.to_string(),
             },
             run_id,
             task_id,
             worker_id,
         };
         let resolution = resolution.to_string();
-        let resolved_by = resolved_by.to_string();
         let principal_instance_id = principal_instance_id.to_string();
         self.append_and_apply(
             &event,
@@ -1200,7 +1248,7 @@ impl<'c> DomainRepository<'c> {
                 let affected = tx.execute(
                     "UPDATE policy_violations SET resolution = ?1, resolved_by = ?2, resolved_at = ?3
                      WHERE violation_id = ?4 AND resolution IS NULL",
-                    rusqlite::params![resolution, resolved_by, now.as_str(), violation_id.to_string()],
+                    rusqlite::params![resolution, principal_instance_id, now.as_str(), violation_id.to_string()],
                 )?;
                 if affected == 0 {
                     // Either a concurrent decision won the row, or the
@@ -1250,13 +1298,25 @@ impl<'c> DomainRepository<'c> {
     }
 
     /// Rebinds a task's owning OMP client instance during reconciliation.
-    /// Emits a `ReconcileOwnershipChanged` event carrying old/new owner ids.
+    /// The revision match is enforced by the write itself (`AND revision =
+    /// ?`), and a successful rebind consumes the presented revision by
+    /// advancing the stored one to `revision + 1`: two concurrent
+    /// reconciles presenting the same revision admit exactly one rebind --
+    /// the loser's predicate no longer matches and is classified in the
+    /// same transaction as [`DomainError::RevisionMismatch`] (R74). Emits a
+    /// `ReconcileOwnershipChanged` event carrying old/new owner ids and the
+    /// presented (consumed) revision.
     pub fn reconcile_ownership(
         &mut self,
         task_id: batman_protocol::TaskId,
         new_owner: &str,
         revision: u64,
     ) -> Result<Committed, DomainError> {
+        // Read for the event payload only. This runs before
+        // `append_and_apply` opens its transaction because the event must be
+        // fully built first; it is safe because the database actor executes
+        // whole `run_domain_op` closures serially, so nothing can rebind the
+        // task between this read and the guarded write below.
         let old_owner: String = self
             .conn
             .query_row(
@@ -1278,10 +1338,34 @@ impl<'c> DomainRepository<'c> {
         let new_owner = new_owner.to_string();
         self.append_and_apply(&event, Some(task_id), None, None, move |tx| {
             let now = Timestamp::now();
-            tx.execute(
-                "UPDATE tasks SET owner_client_instance_id = ?1, revision = ?2, updated_at = ?3 WHERE task_id = ?4",
+            let affected = tx.execute(
+                "UPDATE tasks SET owner_client_instance_id = ?1, revision = ?2 + 1, updated_at = ?3
+                 WHERE task_id = ?4 AND revision = ?2",
                 rusqlite::params![new_owner, revision, now.as_str(), task_id.to_string()],
             )?;
+            if affected == 0 {
+                // The guarded update declined: the stored revision moved
+                // since the caller's snapshot (or the task vanished).
+                // Classify inside the same transaction.
+                let stored: Option<u64> = tx
+                    .query_row(
+                        "SELECT revision FROM tasks WHERE task_id = ?1",
+                        [task_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                return Err(match stored {
+                    Some(stored) => DomainError::RevisionMismatch {
+                        task_id: task_id.to_string(),
+                        presented: revision,
+                        stored,
+                    },
+                    None => DomainError::NotFound {
+                        kind: "task",
+                        id: task_id.to_string(),
+                    },
+                });
+            }
             Ok(())
         })
     }

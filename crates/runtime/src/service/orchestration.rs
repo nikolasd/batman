@@ -79,9 +79,24 @@ impl From<DomainError> for ServiceError {
                 code: error_code::INVALID_PARAMS,
                 message: format!("run {run_id} has already settled"),
             },
-            DomainError::NotOwner { task_id, instance_id } => Self {
+            DomainError::NotOwner {
+                task_id,
+                instance_id,
+            } => Self {
                 code: error_code::INVALID_PARAMS,
                 message: format!("task {task_id} is not owned by {instance_id}"),
+            },
+            DomainError::RevisionTooLow {
+                presented, stored, ..
+            } => Self {
+                code: error_code::INVALID_PARAMS,
+                message: format!("revision {presented} is lower than stored revision {stored}"),
+            },
+            DomainError::RevisionMismatch {
+                presented, stored, ..
+            } => Self {
+                code: error_code::INVALID_PARAMS,
+                message: format!("revision {presented} does not match stored revision {stored}"),
             },
             other => Self::internal(other.to_string()),
         }
@@ -338,17 +353,9 @@ impl OrchestrationService {
         let owner = str_field(params, "ownerClientInstanceId")?;
         let revision = u64_field(params, "revision")?;
 
-        // Idempotency / monotonicity: reject a lower revision than what is
-        // already stored; an identical revision is a no-op success.
-        let existing = self.db.run_domain_op(query::task_get_op(task_id)).await;
-        if let Ok(existing) = existing {
-            let stored_revision = existing["revision"].as_u64().unwrap_or(0);
-            if revision < stored_revision {
-                return Err(ServiceError::invalid_params(format!(
-                    "revision {revision} is lower than stored revision {stored_revision}"
-                )));
-            }
-        }
+        // Revision monotonicity is arbitrated inside `upsert_task`'s own
+        // guarded write (R74): a caller-side pre-check read in a separate
+        // round trip could be interleaved with another write to this task.
 
         let task_ref = TaskRef {
             owner_client_instance_id: owner,
@@ -1838,7 +1845,10 @@ impl OrchestrationService {
 
     /// Rebinds a task from a disconnected OMP client instance to the
     /// connected `principal`, only when task ID and monotonic OMP revision
-    /// match; journals the old/new owner IDs.
+    /// match -- enforced by the guarded write itself, which consumes the
+    /// presented revision (stored becomes `revision + 1`, returned in the
+    /// result) so contending reconciles admit exactly one winner (R74);
+    /// journals the old/new owner IDs.
     async fn reconcile_omp(
         &self,
         principal: &ClientPrincipal,
@@ -1847,17 +1857,10 @@ impl OrchestrationService {
         let task_id = parse_task_id(params.get("taskId"))?;
         let revision = u64_field(params, "revision")?;
 
-        let existing = self
-            .db
-            .run_domain_op(query::task_get_op(task_id))
-            .await
-            .map_err(ServiceError::from)?;
-        let stored_revision = existing["revision"].as_u64().unwrap_or(0);
-        if revision != stored_revision {
-            return Err(ServiceError::invalid_params(format!(
-                "revision {revision} does not match stored revision {stored_revision}"
-            )));
-        }
+        // The revision match is arbitrated inside `reconcile_ownership`'s
+        // guarded write (R74), which also consumes the presented revision by
+        // advancing the stored one -- so of two concurrent reconciles
+        // presenting the same revision, exactly one rebinds.
 
         let new_owner = principal.instance_id.clone();
         let project_id = self.project_id;
@@ -1875,6 +1878,7 @@ impl OrchestrationService {
         Ok(json!({
             "taskId": task_id.to_string(),
             "newOwnerClientInstanceId": principal.instance_id,
+            "revision": revision + 1,
             "sequence": sequence["sequence"],
         }))
     }

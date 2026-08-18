@@ -393,7 +393,11 @@ impl ViolationService {
     /// `await`, so a concurrent mutation of a *different* flag on the same
     /// run (e.g. `ApprovalService::decide`'s callback-failure path setting
     /// `protocolUnhealthy`) cannot be silently reverted by this call (R73).
-    async fn set_quarantined(&self, run_id: RunId, quarantined: bool) -> Result<(), ViolationError> {
+    async fn set_quarantined(
+        &self,
+        run_id: RunId,
+        quarantined: bool,
+    ) -> Result<(), ViolationError> {
         let project_id = self.project_id;
         let mut result = self
             .db
@@ -549,7 +553,6 @@ impl ViolationService {
             .map_err(|_| ViolationError::NotFound { violation_id })?;
 
         let principal_instance_id_owned = principal_instance_id.to_string();
-        let resolved_by = principal_instance_id.to_string();
         let resolution_owned = resolution.to_string();
         let mut result = match self
             .db
@@ -562,7 +565,6 @@ impl ViolationService {
                     worker_id,
                     &principal_instance_id_owned,
                     &resolution_owned,
-                    &resolved_by,
                 )
                 .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))

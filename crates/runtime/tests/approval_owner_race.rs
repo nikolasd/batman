@@ -184,8 +184,8 @@ fn service(
 /// A single `run_domain_op` round trip calling
 /// [`DomainRepository::reconcile_ownership`] -- the same repo method
 /// `reconcile/omp` calls (`service/orchestration.rs::reconcile_omp`) --
-/// directly, bypassing the RPC layer's own revision-match check, which is
-/// irrelevant to the race under test.
+/// directly, presenting the task's current stored revision so its guarded
+/// revision match (R74) admits the rebind.
 async fn rebind_owner(
     db: &DatabaseHandle,
     project_id: ProjectId,
@@ -275,7 +275,7 @@ async fn a_stale_owner_is_refused_by_the_guarded_write_after_a_rebind() {
     let (decide_result, _rebind) = tokio::join!(
         biased;
         svc.decide(approval_id, "omp-1", "approve", "ok", DecidedBy::Human),
-        rebind_owner(&db, project_id, task_id, "omp-2", 2),
+        rebind_owner(&db, project_id, task_id, "omp-2", 1),
     );
 
     assert!(
@@ -323,7 +323,7 @@ async fn the_new_owner_can_decide_after_a_rebind() {
     // zero timing dependency -- so this test guards the eventual fix
     // against over-rejection: a legitimate new owner must still be able to
     // decide after a rebind.
-    rebind_owner(&db, project_id, task_id, "omp-2", 2).await;
+    rebind_owner(&db, project_id, task_id, "omp-2", 1).await;
 
     let outcome = svc
         .decide(approval_id, "omp-2", "approve", "ok", DecidedBy::Human)
@@ -373,7 +373,7 @@ async fn a_former_owner_replaying_its_identical_decision_is_refused() {
         "the original owner must be able to decide: {outcome:?}"
     );
 
-    rebind_owner(&db, project_id, task_id, "omp-2", 2).await;
+    rebind_owner(&db, project_id, task_id, "omp-2", 1).await;
 
     // The guarded write checks `tasks.owner_client_instance_id` before it
     // checks whether a decision is already on record (repository.rs's

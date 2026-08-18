@@ -12,8 +12,8 @@ import { TASK_SUBAGENT_EVENT_CHANNEL, TASK_SUBAGENT_LIFECYCLE_CHANNEL, TASK_SUBA
 import type { BatmanClient } from "./client";
 import { buildStatusContext } from "./context";
 import { normalizeEventPayload, normalizeLifecyclePayload, normalizeProgressPayload } from "./omp-native/events";
-import { OMP_NATIVE_FACT_ENTRY_TYPE, persistedCorrelations, persistedFacts, type SessionEntryLike } from "./omp-native/persistence";
-import { OmpNativeReconciler, createOmpProcessEpoch, reconcileAcrossRestart, reconcileWithRuntime } from "./omp-native/reconcile";
+import { OMP_NATIVE_CORRELATION_ENTRY_TYPE, OMP_NATIVE_FACT_ENTRY_TYPE, persistedCorrelations, persistedFacts, type SessionEntryLike } from "./omp-native/persistence";
+import { OmpNativeReconciler, advancedCorrelation, createOmpProcessEpoch, reconcileAcrossRestart, reconcileWithRuntime } from "./omp-native/reconcile";
 import { resolveClient, getRuntimeStatus, type GetRuntimeStatusContext } from "./status";
 import { runDoctorCommand, buildDoctorContext, type DoctorContext } from "./doctor";
 import { installRuntimeForEnv } from "./install";
@@ -219,7 +219,20 @@ export default function batmanExtension(pi: ExtensionAPI): void {
       const client = await getClient(extCtx);
       for (const correlation of correlations) {
         try {
-          await reconcileWithRuntime(client, correlation);
+          const result = await reconcileWithRuntime(client, correlation);
+          // A successful rebind consumes the presented revision (the daemon
+          // stores `revision + 1` and returns it), so persist the advanced
+          // correlation: the next restart must present the new revision or
+          // its reconcile is refused as stale. Best-effort, like fact
+          // persistence -- losing the entry only degrades a later restart.
+          const advanced = advancedCorrelation(correlation, result);
+          if (advanced !== undefined) {
+            try {
+              pi.appendEntry(OMP_NATIVE_CORRELATION_ENTRY_TYPE, { ...advanced });
+            } catch {
+              // Best-effort persistence; the reconcile itself succeeded.
+            }
+          }
         } catch (err) {
           // A stale revision is the expected, benign case: another
           // instance already rebound this task.

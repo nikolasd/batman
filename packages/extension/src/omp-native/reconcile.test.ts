@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import type { SubagentLifecyclePayload, SubagentProgressPayload } from "@oh-my-pi/pi-coding-agent/task";
 
 import { normalizeEventPayload, normalizeLifecyclePayload, normalizeProgressPayload } from "./events";
-import { OmpNativeReconciler, createOmpProcessEpoch, reconcileAcrossRestart, reconcileWithRuntime } from "./reconcile";
+import { OmpNativeReconciler, advancedCorrelation, createOmpProcessEpoch, reconcileAcrossRestart, reconcileWithRuntime } from "./reconcile";
 import type { OmpNativeAgentFact } from "./types";
 
 const EPOCH_A = "epoch-a";
@@ -222,4 +222,21 @@ test("reconcileWithRuntime is a no-op when no task correlation is known", async 
   };
   const result = await reconcileWithRuntime(fakeClient, undefined);
   expect(result).toBeUndefined();
+});
+
+test("advancedCorrelation persists the daemon-advanced revision after a rebind", () => {
+  const advanced = advancedCorrelation({ taskId: "task-1", revision: 3 }, { taskId: "task-1", newOwnerClientInstanceId: "omp-2", revision: 4, sequence: 5 });
+  expect(advanced).toEqual({ taskId: "task-1", revision: 4 });
+});
+
+test("advancedCorrelation returns undefined when the result carries no usable revision", () => {
+  const correlation = { taskId: "task-1", revision: 3 };
+  // A daemon predating the `revision` result field, or malformed shapes:
+  // nothing new is persisted, so the old correlation stands.
+  expect(advancedCorrelation(correlation, { taskId: "task-1", sequence: 5 })).toBeUndefined();
+  expect(advancedCorrelation(correlation, undefined)).toBeUndefined();
+  expect(advancedCorrelation(correlation, null)).toBeUndefined();
+  expect(advancedCorrelation(correlation, { revision: "4" })).toBeUndefined();
+  expect(advancedCorrelation(correlation, { revision: 4.5 })).toBeUndefined();
+  expect(advancedCorrelation(correlation, { revision: -1 })).toBeUndefined();
 });

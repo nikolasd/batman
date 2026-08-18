@@ -1,57 +1,51 @@
-//! Regression tests for R74: `task/upsert` and `reconcile/omp` each split
-//! their revision check from their write into two separate
-//! `run_domain_op` round trips -- a caller-side pre-check that reads the
-//! stored revision, then a write whose statement carries no revision
+//! Regression tests for R74: `task/upsert` and `reconcile/omp` used to
+//! split their revision check from their write into two separate
+//! `run_domain_op` round trips -- a caller-side pre-check that read the
+//! stored revision, then a write whose statement carried no revision
 //! predicate of its own:
 //!
-//! - `OrchestrationService::task_upsert` (`crates/runtime/src/service/orchestration.rs:341-351`)
-//!   reads `tasks.revision` and rejects a lower revision in memory, then
-//!   calls `DomainRepository::upsert_task`
-//!   (`crates/runtime/src/domain/repository.rs:310-357`), whose
+//! - `OrchestrationService::task_upsert` read `tasks.revision` and
+//!   rejected a lower revision in memory, then called
+//!   `DomainRepository::upsert_task`, whose
 //!   `INSERT ... ON CONFLICT(task_id) DO UPDATE` unconditionally
-//!   overwrites `owner_client_instance_id`/`revision` -- its own doc
-//!   comment says "a lower revision is rejected by the caller (service
-//!   layer) before this point", i.e. nothing enforces that inside the
-//!   write itself.
-//! - `OrchestrationService::reconcile_omp` (`orchestration.rs:1850-1860`)
-//!   reads `tasks.revision` and rejects a mismatched revision in memory,
-//!   then calls `DomainRepository::reconcile_ownership`
-//!   (`repository.rs:1254-1287`), whose `UPDATE tasks SET
-//!   owner_client_instance_id = ?1, revision = ?2 ... WHERE task_id = ?4`
-//!   has no `AND revision = ?` predicate either.
+//!   overwrote `owner_client_instance_id`/`revision`.
+//! - `OrchestrationService::reconcile_omp` read `tasks.revision` and
+//!   rejected a mismatched revision in memory, then called
+//!   `DomainRepository::reconcile_ownership`, whose `UPDATE` carried no
+//!   `AND revision = ?` predicate either.
 //!
 //! `DatabaseHandle::run_domain_op` sends whole boxed closures to a
-//! single-owner actor thread over a FIFO channel, one `oneshot` reply per
-//! command (see `approval_decide_race.rs`'s header for the full
-//! actor-FIFO argument): the actor never interleaves the *inside* of two
-//! closures, only whole closures with each other, in enqueue order.
-//! Because each pre-check and its write are two separate closures, two
-//! concurrent callers can both enqueue their pre-check-read before either
-//! enqueues its write, so both reads observe the same stale stored
-//! revision and both pre-checks pass -- and then both writes land,
-//! unconditionally, in whatever order the actor happens to process them.
-//! A lower revision landing after a higher one moves the stored revision
-//! backwards and silently rebinds the owner to a stale client; two
-//! concurrent reconciles presenting the same revision both rebind instead
-//! of exactly one winning.
+//! single-owner actor thread over a FIFO channel (see
+//! `approval_decide_race.rs`'s header for the full actor-FIFO argument):
+//! the actor never interleaves the *inside* of two closures, only whole
+//! closures with each other, in enqueue order. Because each pre-check and
+//! its write were two separate closures, two concurrent callers could
+//! both enqueue their pre-check read before either enqueued its write, so
+//! both reads observed the same stale stored revision and both pre-checks
+//! passed -- and then both writes landed, unconditionally. A lower
+//! revision landing after a higher one moved the stored revision
+//! backwards and silently rebound the owner to a stale client; two
+//! concurrent reconciles presenting the same revision both rebound
+//! instead of exactly one winning. The first two tests below observed
+//! exactly those outcomes RED against that shape.
 //!
-//! `service::query` is `pub(crate)` and `task_upsert`/`reconcile_omp` are
-//! private methods on `OrchestrationService`, unreachable from an
-//! integration test, so this file reproduces their two-round-trip shape
-//! directly against the repo/db layers -- the same pattern
-//! `approval_owner_race.rs`'s `rebind_owner` uses for
-//! `reconcile_ownership` alone.
+//! The R74 fix moved both guards into the writes themselves:
+//! `upsert_task`'s `ON CONFLICT` arm only applies when the presented
+//! revision is not lower than the stored one, and
+//! `reconcile_ownership`'s `UPDATE ... AND revision = ?` consumes the
+//! presented revision on success (stored becomes `revision + 1`), each
+//! refusal classified inside the same transaction
+//! ([`DomainError::RevisionTooLow`] / [`DomainError::RevisionMismatch`]).
+//! The caller-side pre-checks were deleted, so the contract now holds
+//! under every ordering, not only the one `join!(biased; ...)` pins for
+//! reproducibility. Test 3 is the sequential guard: a stale upsert
+//! arriving strictly *after* a newer one must stay refused through the
+//! guarded write alone.
 //!
-//! Tests 1 and 2 pin the interleaving with `tokio::join!(biased; ...)`,
-//! exactly as `approval_owner_race.rs` does, so the outcome does not
-//! depend on real scheduler timing: `biased` polls the first-declared
-//! future first on every wave, so both pre-check reads are enqueued --
-//! and thus processed -- before either write, and the fix under test
-//! (a revision predicate inside the write, checked in the same
-//! transaction) is expected to make the outcome hold under every
-//! ordering, not only the one `biased` pins. Test 3 is the sequential
-//! guard: a stale upsert arriving strictly *after* a newer one, with no
-//! concurrency at all, must stay refused both before and after the fix.
+//! (`service::query` is `pub(crate)` and `task_upsert`/`reconcile_omp`
+//! are private methods on `OrchestrationService`, so this file drives the
+//! repo/db layers directly, exactly as the production service methods now
+//! do -- one guarded write round trip each.)
 
 use batman_protocol::{ProjectId, TaskId, TaskRef};
 use batman_runtime::db::DatabaseHandle;
@@ -122,10 +116,10 @@ async fn seed_task(
     .expect("seed task");
 }
 
-/// Mirrors `OrchestrationService::task_upsert`'s two round trips: a
-/// snapshot read of the stored revision (the caller-side pre-check,
-/// `orchestration.rs:341-351`), then -- only if it passes -- the write
-/// via `DomainRepository::upsert_task`.
+/// Mirrors `OrchestrationService::task_upsert`'s post-R74 shape: one
+/// guarded write round trip via [`DomainRepository::upsert_task`], whose
+/// `ON CONFLICT` arm refuses a lower revision inside its own transaction.
+/// No caller-side pre-check remains.
 async fn task_upsert_round_trips(
     db: &DatabaseHandle,
     project_id: ProjectId,
@@ -133,13 +127,6 @@ async fn task_upsert_round_trips(
     owner: &str,
     revision: u64,
 ) -> Result<(), String> {
-    if let Some((stored_revision, _)) = stored_task(db, task_id).await {
-        if revision < stored_revision {
-            return Err(format!(
-                "revision {revision} is lower than stored revision {stored_revision}"
-            ));
-        }
-    }
     let task_ref = TaskRef {
         owner_client_instance_id: owner.to_string(),
         revision,
@@ -153,10 +140,11 @@ async fn task_upsert_round_trips(
     Ok(())
 }
 
-/// Mirrors `OrchestrationService::reconcile_omp`'s two round trips: a
-/// snapshot read of the stored revision (the exact-match pre-check,
-/// `orchestration.rs:1850-1860`), then -- only if it matches -- the
-/// write via `DomainRepository::reconcile_ownership`.
+/// Mirrors `OrchestrationService::reconcile_omp`'s post-R74 shape: one
+/// guarded write round trip via [`DomainRepository::reconcile_ownership`],
+/// whose `AND revision = ?` predicate arbitrates the match inside its own
+/// transaction and consumes the presented revision on success. No
+/// caller-side pre-check remains.
 async fn reconcile_omp_round_trips(
     db: &DatabaseHandle,
     project_id: ProjectId,
@@ -164,15 +152,6 @@ async fn reconcile_omp_round_trips(
     new_owner: &str,
     revision: u64,
 ) -> Result<(), String> {
-    let stored_revision = stored_task(db, task_id)
-        .await
-        .map(|(revision, _)| revision)
-        .unwrap_or(0);
-    if revision != stored_revision {
-        return Err(format!(
-            "revision {revision} does not match stored revision {stored_revision}"
-        ));
-    }
     let new_owner = new_owner.to_string();
     db.run_domain_op(Box::new(move |conn| {
         let mut repo = DomainRepository::new(conn, project_id);
@@ -205,17 +184,16 @@ async fn reconcile_event_count(db: &DatabaseHandle) -> i64 {
     .expect("count is an integer")
 }
 
-/// RED: a lower revision must never land after -- and thus overwrite -- a
-/// higher one, even when both callers' pre-checks raced against the same
-/// stale stored revision. Seeds revision 3 (owner `omp-1`); two
-/// concurrent `task/upsert`-shaped calls present revision 5 (owner
-/// `omp-2`, declared first) and revision 4 (owner `omp-3`, declared
-/// second). `biased` enqueues both reads before either write, so both
-/// pre-checks read stored revision 3 and pass. Against today's
-/// unconditional write, the actor processes the writes in enqueue order
-/// (5 then 4), so revision 4's write lands last and wins -- the assertion
-/// below fails, observing final revision 4 owned by `omp-3` instead of
-/// the required revision 5 owned by `omp-2`.
+/// A lower revision must never land after -- and thus overwrite -- a
+/// higher one, even when both writes were enqueued while revision 3 was
+/// still stored. Seeds revision 3 (owner `omp-1`); two concurrent
+/// `task/upsert`-shaped calls present revision 5 (owner `omp-2`, declared
+/// first) and revision 4 (owner `omp-3`, declared second). Written RED
+/// against the pre-R74 shape, where both callers' pre-checks read stored
+/// revision 3 and both unconditional writes landed, revision 4 last --
+/// final state was `(4, "omp-3")`. Post-fix the guard inside the write
+/// refuses the lower revision once revision 5 is stored, under every
+/// ordering.
 #[tokio::test]
 async fn concurrent_upserts_cannot_move_a_revision_backwards() {
     let (_state_dir, db) = open_db().await;
@@ -229,11 +207,15 @@ async fn concurrent_upserts_cannot_move_a_revision_backwards() {
         task_upsert_round_trips(&db, project_id, task_id, "omp-3", 4),
     );
 
-    assert!(higher.is_ok(), "revision 5's pre-check reads stored revision 3 and must pass: {higher:?}");
     assert!(
-        lower.is_ok(),
-        "revision 4's pre-check races the same stale stored revision 3 and must also pass \
-         (that is the race under test, not a bug in this helper): {lower:?}"
+        higher.is_ok(),
+        "revision 5 is above the stored revision 3 and must land: {higher:?}"
+    );
+    let lower_err = lower
+        .expect_err("revision 4's guarded write must be refused once revision 5 is already stored");
+    assert!(
+        lower_err.contains("is lower than stored revision 5"),
+        "the refusal must classify the actual stored revision in the same transaction: {lower_err}"
     );
 
     let (final_revision, final_owner) = stored_task(&db, task_id).await.expect("task exists");
@@ -245,14 +227,14 @@ async fn concurrent_upserts_cannot_move_a_revision_backwards() {
     );
 }
 
-/// RED: two concurrent `reconcile/omp`-shaped calls presenting the same
+/// Two concurrent `reconcile/omp`-shaped calls presenting the same
 /// revision must admit exactly one rebind, not both. Seeds revision 3
 /// (owner `omp-1`); two concurrent reconciles from `omp-2` and `omp-3`
-/// both present revision 3. `biased` enqueues both reads before either
-/// write, so both pre-checks match and pass. Against today's unconditional
-/// write, both succeed and both journal a `ReconcileEvent` -- the
-/// assertions below fail, observing two successes and two events instead
-/// of exactly one of each.
+/// both present revision 3. Written RED against the pre-R74 shape, where
+/// both pre-checks matched and both unconditional writes landed (two
+/// successes, two `ReconcileEvent`s). Post-fix the winner's guarded write
+/// consumes revision 3 (stored becomes 4), so the loser's `AND revision =
+/// ?` predicate no longer matches and it is refused in-transaction.
 #[tokio::test]
 async fn concurrent_reconciles_with_the_same_revision_admit_exactly_one_rebind() {
     let (_state_dir, db) = open_db().await;
@@ -280,9 +262,9 @@ async fn concurrent_reconciles_with_the_same_revision_admit_exactly_one_rebind()
 }
 
 /// GREEN guard: a stale revision arriving strictly *after* a newer one,
-/// with no concurrency at all, is already refused by today's in-memory
-/// pre-check and must stay refused once the fix moves that check inside
-/// the guarded write.
+/// with no concurrency at all, was refused by the pre-R74 in-memory
+/// pre-check and must stay refused now that the check lives inside the
+/// guarded write.
 #[tokio::test]
 async fn a_stale_upsert_arriving_after_a_newer_one_is_refused_sequentially() {
     let (_state_dir, db) = open_db().await;

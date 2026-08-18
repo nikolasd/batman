@@ -116,3 +116,23 @@ export async function reconcileWithRuntime(client: ReconcileOmpClient, correlati
     revision: correlation.revision,
   });
 }
+
+/**
+ * The correlation to persist after a successful `reconcile/omp`: a rebind
+ * consumes the presented revision (the daemon stores `revision + 1` and
+ * returns it in the result), so the next restart must present the advanced
+ * revision or its reconcile is refused as stale (R74). Returns `undefined`
+ * when the result carries no usable revision -- e.g. a daemon predating
+ * the field -- in which case nothing new is persisted and the old
+ * correlation stands.
+ */
+export function advancedCorrelation(correlation: OmpNativeTaskCorrelation, result: unknown): OmpNativeTaskCorrelation | undefined {
+  if (result === null || typeof result !== "object") {
+    return undefined;
+  }
+  const { revision } = result as { revision?: unknown };
+  if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0) {
+    return undefined;
+  }
+  return { taskId: correlation.taskId, revision };
+}

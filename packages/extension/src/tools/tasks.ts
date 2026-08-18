@@ -14,8 +14,12 @@ export const BATMAN_TASK_TOOL_NAME = "batman_task";
 /**
  * The revision every task this tool creates is stored with. `task/upsert`
  * persists exactly the revision it is sent and returns only
- * `{ taskId, sequence }`, so this constant is also the revision a later
- * `reconcile/omp` must present -- the two must never be written separately.
+ * `{ taskId, sequence }`, so this constant is also the revision the first
+ * `reconcile/omp` after a restart must present. Each successful rebind
+ * consumes the presented revision (the daemon stores `revision + 1` and
+ * returns it), and the reconcile loop in `index.ts` persists the advanced
+ * correlation -- so later restarts present the newest persisted revision,
+ * not this constant.
  */
 const INITIAL_TASK_REVISION = 0;
 
