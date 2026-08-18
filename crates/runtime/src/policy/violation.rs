@@ -26,11 +26,20 @@
 //!
 //! [`ViolationService::decide`] resolves a violation via
 //! `policy/violation/decide`, restricted to the violation's task's
-//! `owner_client_instance_id` (the owning `ompExtension` client) -- the
-//! same ownership pattern as [`crate::approval::ApprovalService::decide`].
-//! Ownership is the only caller-side pre-check; whether a decision may
-//! commit at all -- conflict, idempotent replay, settled run -- is enforced
-//! inside the guarded write in
+//! `owner_client_instance_id` (the owning `ompExtension` client), checked
+//! caller-side against a snapshot read before the guarded write. That is
+//! no longer the same pattern [`crate::approval::ApprovalService::decide`]
+//! uses: the approval side used to pre-check ownership caller-side the
+//! same way, but now arbitrates it exclusively inside the guarded
+//! transaction in
+//! [`crate::domain::repository::DomainRepository::decide_approval`] (R71),
+//! because a `reconcile/omp` ownership rebind landing in the window
+//! between a caller-side snapshot read and the write could otherwise slip
+//! past a pre-check and leave a stale owner's decision unrefused. The
+//! violation side has not had that fix applied and still relies on the
+//! caller-side ownership pre-check the approval side used to share with
+//! it. Whether a decision may commit at all -- conflict, idempotent
+//! replay, settled run -- is enforced inside the guarded write in
 //! [`crate::domain::repository::DomainRepository::resolve_policy_violation`],
 //! so two concurrent `decide` calls cannot both journal a decision or both
 //! fire side effects (R54). Releasing quarantine on an

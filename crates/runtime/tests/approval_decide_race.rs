@@ -39,12 +39,18 @@
 //! call actually returned `Ok`, rather than assuming which one wins, as a
 //! second line of defense.
 //!
-//! The two checks `decide` still performs caller-side -- task ownership and
-//! `humanRequired` -- are not part of what these tests race: both read
-//! fields a decision write never mutates, so they cannot go stale. The
-//! seeded approval is `humanRequired: true` and both racers identify as
-//! `"omp-1"`, which owns the task, so both pre-checks pass for both racers
-//! and the guarded write is what must decide.
+//! Only `humanRequired` is still checked caller-side by `decide` -- it
+//! reads a field a decision write never mutates, so it cannot go stale.
+//! Task ownership used to be a second caller-side pre-check here, but it
+//! moved into `decide_approval`'s guarded write for R71 (see
+//! `approval_owner_race.rs`), because a `reconcile/omp` rebind landing
+//! between a caller-side snapshot read and the write could otherwise leave
+//! a stale owner's decision with nothing left to refuse it. That move is
+//! not part of what these two tests race: the seeded approval is
+//! `humanRequired: true` and both racers identify as `"omp-1"`, which owns
+//! the task, so the ownership guard admits both racers and the decision
+//! guard -- the `UPDATE ... WHERE decision IS NULL` these tests exist to
+//! defend -- is what must arbitrate between them.
 //!
 //! The fourth test, `deciding_an_approval_whose_run_has_already_settled_is_refused`,
 //! deliberately does *not* join! `decide` against the run-settling

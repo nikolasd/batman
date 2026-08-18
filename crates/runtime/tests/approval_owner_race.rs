@@ -1,7 +1,8 @@
-//! Regression tests for R71: `ApprovalService::decide`'s caller-side
-//! ownership pre-check races `reconcile/omp`'s task ownership rebind, and
-//! `decide_approval`'s guarded write never re-checks ownership, so a stale
-//! owner that passed the pre-check can still win the write.
+//! Regression tests for R71: `ApprovalService::decide` used to check task
+//! ownership as a caller-side pre-check against a snapshot loaded before
+//! the guarded write, so a `reconcile/omp` ownership rebind landing in the
+//! window between that snapshot and the write left a stale owner's
+//! decision with nothing left to refuse it.
 //!
 //! See `approval_decide_race.rs`'s header for the full actor-FIFO argument;
 //! summarized here only as far as this file's construction needs it:
@@ -11,47 +12,45 @@
 //! whole closures with each other, in the order their commands were
 //! enqueued.
 //!
-//! `ApprovalService::decide` is *two* round trips: `load_snapshot` (which
-//! reads `tasks.owner_client_instance_id` for the caller-side pre-check),
-//! then, once the pre-check and `humanRequired` check pass synchronously,
-//! `decide_approval` (the guarded write). `DomainRepository::reconcile_ownership`
-//! -- the same method `reconcile/omp` calls -- is *one* round trip: an
+//! Before the fix, `ApprovalService::decide` was *two* round trips:
+//! `load_snapshot` (which read `tasks.owner_client_instance_id` for the
+//! caller-side pre-check), then, once the pre-check and `humanRequired`
+//! check passed synchronously, `decide_approval` (the guarded write, which
+//! never re-checked ownership). `DomainRepository::reconcile_ownership` --
+//! the same method `reconcile/omp` calls -- is *one* round trip: an
 //! unguarded `UPDATE tasks SET owner_client_instance_id = ...`.
 //!
 //! The first test below drives `svc.decide` (as the *original* owner) and
 //! a direct call to `reconcile_ownership` (rebinding to a *new* owner)
-//! through `tokio::join!(biased; ...)`, `decide` declared first. On the
-//! first poll of the combined future, `biased` polls `decide` before the
-//! rebind, so `decide`'s `load_snapshot` command is enqueued in the actor's
-//! channel *before* the rebind's `UPDATE` command -- the actor's FIFO order
-//! processes `load_snapshot` first, so the pre-check reads the original
-//! owner and passes. `decide`'s second command (`decide_approval`) does
-//! not exist yet at this point: it is only sent after `load_snapshot`'s
-//! reply arrives and wakes `decide`'s future for another poll, which can
-//! only happen after the actor has already dequeued (and is processing or
-//! has processed) the rebind's command, since the rebind's `send()` onto
-//! the channel happened synchronously in the very first poll, strictly
-//! before `decide`'s second `send()` could occur. So the actor's FIFO
-//! order is guaranteed to be: `load_snapshot`, rebind `UPDATE`,
-//! `decide_approval` -- the rebind always commits between the pre-check's
-//! read and the guarded write, deterministically, with no dependence on
-//! thread-scheduling timing. This is the same enqueue-order argument
-//! `approval_decide_race.rs` uses to make "the first-declared call always
-//! reaches the guarded write before the second" true of two `decide` calls;
-//! here it makes "the rebind always lands between the first-declared
-//! `decide`'s two round trips" true instead, because the rebind is only one
-//! round trip and `decide`'s second round trip cannot be sent any earlier
-//! than described above.
+//! through `tokio::join!(biased; ...)`, `decide` declared first, to pin a
+//! reproducible interleaving: `biased` polls `decide` before the rebind on
+//! every poll, so `decide`'s `load_snapshot` command was always enqueued --
+//! and thus processed -- before the rebind's `UPDATE`, and the rebind
+//! always committed before `decide`'s second command (`decide_approval`)
+//! could possibly be sent (that second `send()` cannot occur before
+//! `load_snapshot`'s reply wakes `decide` for another poll, which cannot
+//! happen before the rebind's synchronous first-poll `send()`). Against
+//! the pre-fix code, that pinned interleaving is exactly what made this
+//! test fail RED: the stale owner's caller-side pre-check read the
+//! original owner and passed, and the unguarded write had no ownership
+//! check left to refuse it with, so the decision was accepted instead of
+//! refused. That committed RED failure is what pinned the interleaving
+//! above as real and reproducible, not hypothetical.
 //!
-//! Today `decide_approval` never re-reads task ownership, so this test
-//! currently observes the stale owner's decision being *accepted* -- that
-//! is the bug R71 describes, and this test is written to assert the fixed
-//! contract (refused, nothing journaled, nothing recorded) so it fails RED
-//! against the current code for that reason.
+//! Ownership is now arbitrated exclusively inside `decide_approval`'s
+//! guarded transaction (R71), alongside the conflict, idempotent-replay,
+//! and settled-run checks R70 already moved there: the write itself
+//! re-reads `tasks.owner_client_instance_id` and refuses a caller that no
+//! longer owns the task. That makes the `biased` enqueue ordering this
+//! file still uses no longer load-bearing for correctness -- it now exists
+//! only to keep the interleaving deterministic and easy to reason about.
+//! Ownership is arbitrated at write time, so the assertion below holds
+//! under every ordering the rebind and the decide can occur in, not only
+//! the one `biased` pins.
 //!
-//! The second test proves the fix (once it lands) must not over-reject:
-//! a rebind followed, sequentially, by a decide from the *new* owner must
-//! still succeed, with exactly one `ApprovalDecided` event.
+//! The second test proves the fix does not over-reject: a rebind followed,
+//! sequentially, by a decide from the *new* owner must still succeed, with
+//! exactly one `ApprovalDecided` event.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -251,7 +250,7 @@ async fn decided_event_count(db: &DatabaseHandle) -> i64 {
 }
 
 #[tokio::test]
-async fn a_stale_owner_that_passed_the_pre_check_is_refused_by_the_guarded_write() {
+async fn a_stale_owner_is_refused_by_the_guarded_write_after_a_rebind() {
     let (_state_dir, db) = open_db().await;
     let db = Arc::new(db);
     let project_id = ProjectId::new();
@@ -267,11 +266,12 @@ async fn a_stale_owner_that_passed_the_pre_check_is_refused_by_the_guarded_write
 
     // `decide` (as the original owner "omp-1") is declared first, so its
     // `load_snapshot` round trip is enqueued -- and thus processed -- before
-    // the rebind's `UPDATE`, reading the pre-rebind owner and passing the
-    // caller-side pre-check; the rebind then commits before `decide`'s
-    // second round trip (`decide_approval`) can possibly be sent, per the
-    // enqueue-order argument in this file's header. Deterministic, no
-    // dependence on real timing.
+    // the rebind's `UPDATE`; the rebind then commits before `decide`'s
+    // second round trip (`decide_approval`, the guarded write that now
+    // arbitrates ownership) can possibly be sent, per the enqueue-order
+    // argument in this file's header. Deterministic, no dependence on real
+    // timing -- though, per that same header, no longer load-bearing for
+    // correctness, only for reproducibility.
     let (decide_result, _rebind) = tokio::join!(
         biased;
         svc.decide(approval_id, "omp-1", "approve", "ok", DecidedBy::Human),
