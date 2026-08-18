@@ -302,3 +302,43 @@ async fn the_new_owner_can_resolve_after_a_rebind() {
         "exactly one policyViolationDecided event must be journaled"
     );
 }
+
+#[tokio::test]
+async fn a_former_owner_replaying_its_identical_resolution_is_refused() {
+    let (_state_dir, db) = open_db().await;
+    let db = Arc::new(db);
+    let project_id = ProjectId::new();
+    let (violation_id, _run_id, task_id) = seed_pending_violation(&db, project_id).await;
+    let svc = service(Arc::clone(&db), project_id);
+
+    let outcome = svc.decide(violation_id, "omp-1", "release").await;
+    assert!(
+        matches!(outcome, Ok(DecideOutcome::Decided)),
+        "the original owner must be able to resolve: {outcome:?}"
+    );
+
+    rebind_owner(&db, project_id, task_id, "omp-2", 2).await;
+
+    // The guarded write checks `tasks.owner_client_instance_id` before it
+    // checks whether a resolution is already on record (repository.rs's
+    // `resolve_policy_violation`), so a former owner replaying its own,
+    // now-recorded resolution is refused with `Forbidden` -- ownership
+    // outranks idempotent replay, it is not treated as a no-op repeat of
+    // an identical decision.
+    let replay = svc.decide(violation_id, "omp-1", "release").await;
+
+    assert!(
+        matches!(replay, Err(ViolationError::Forbidden { .. })),
+        "a former owner replaying its own identical resolution must be refused by ownership, not accepted as an idempotent replay: {replay:?}"
+    );
+    assert_eq!(
+        violation_resolution(&db, violation_id).await,
+        Some("release".to_string()),
+        "the original resolution must remain on record"
+    );
+    assert_eq!(
+        decided_event_count(&db).await,
+        1,
+        "the refused replay must not journal a second event"
+    );
+}

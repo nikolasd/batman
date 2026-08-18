@@ -349,3 +349,60 @@ async fn the_new_owner_can_decide_after_a_rebind() {
     );
     assert_eq!(run_state(&db, run_id).await, "working");
 }
+
+#[tokio::test]
+async fn a_former_owner_replaying_its_identical_decision_is_refused() {
+    let (_state_dir, db) = open_db().await;
+    let db = Arc::new(db);
+    let project_id = ProjectId::new();
+    let (approval_id, run_id, task_id) = seed_pending_approval(&db, project_id).await;
+    let calls = Arc::new(AtomicU32::new(0));
+    let svc = service(
+        Arc::clone(&db),
+        project_id,
+        Arc::new(CountingCallback {
+            calls: Arc::clone(&calls),
+        }),
+    );
+
+    let outcome = svc
+        .decide(approval_id, "omp-1", "approve", "ok", DecidedBy::Human)
+        .await;
+    assert!(
+        matches!(outcome, Ok(DecideOutcome::Decided)),
+        "the original owner must be able to decide: {outcome:?}"
+    );
+
+    rebind_owner(&db, project_id, task_id, "omp-2", 2).await;
+
+    // The guarded write checks `tasks.owner_client_instance_id` before it
+    // checks whether a decision is already on record (repository.rs's
+    // `decide_approval`), so a former owner replaying its own,
+    // now-recorded decision is refused with `Forbidden` -- ownership
+    // outranks idempotent replay, it is not treated as a no-op repeat of
+    // an identical decision.
+    let replay = svc
+        .decide(approval_id, "omp-1", "approve", "ok", DecidedBy::Human)
+        .await;
+
+    assert!(
+        matches!(replay, Err(ApprovalError::Forbidden { .. })),
+        "a former owner replaying its own identical decision must be refused by ownership, not accepted as an idempotent replay: {replay:?}"
+    );
+    assert_eq!(
+        approval_decision(&db, approval_id).await,
+        Some("approve".to_string()),
+        "the original decision must remain on record"
+    );
+    assert_eq!(
+        decided_event_count(&db).await,
+        1,
+        "the refused replay must not journal a second event"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the refused replay must not reach the adapter callback a second time"
+    );
+    assert_eq!(run_state(&db, run_id).await, "working");
+}
