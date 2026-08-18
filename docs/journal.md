@@ -2819,6 +2819,103 @@ and `cargo test --test adapter_contract --test config` returned 23/23. No commit
 test pins a computed digest, so the one-time change to canonical digest bytes is safe: it changes
 no externally committed value while ensuring equal future content receives one address.
 
+## Part XXII — The capture pipeline that graded its own homework
+
+R44 found two failures in the same tool, one hiding the other. `crates/runtime/src/conformance/
+capture.rs` writes a fixture with `fs::write`, then decided whether it had changed by re-reading
+that same just-written file and comparing it to the bytes it had just written — `unchanged` was
+`true` on every real capture and `false` on every dry run, regardless of what had been committed
+before. Its own doc comment claimed the flag meant "identical to what was already committed" —
+true only if the comparison happens before any write — but the code computed it *after* `fs::write`
+had already replaced the file, so the comparison was against itself. Underneath that, the
+scrubber that must turn a live vendor turn into fixture bytes reduced "already canonical" to one
+specific literal: `stable_session_id`/`stable_uuid` special-cased the exact `11111111-…`/`a0000000-…`
+prefixes `claude/initialize.jsonl` happens to use and passed them through unchanged; everything else
+fell through to a renumbering path. The one round-trip test, `scrubbing_scrubbed_fixture_is_identity`,
+only ever exercised that one fixture, so nothing proved the other ten fixtures — each in a different
+vendor's own ID shape — would survive a scrub, let alone a fresh capture.
+
+`aaef59e` fixed the write side first: `persist_fixture_content` now reads the existing file *before*
+deciding anything (`capture.rs:218-248`), returns that comparison as `unchanged` honestly, and a
+dry run never calls `fs::write` at all — `persist_fixture_content_dry_run_reports_differences_
+without_mutating` and its two siblings pin all three outcomes (equal, different, missing) under
+both real and dry-run modes.
+
+The scrubber side took longer because the one hardcoded special case was masking two separate
+defects. `stable_uuid` generated placeholders from a bare monotonic counter, not a value → placeholder
+map, so the *same* raw `uuid` appearing twice in one capture got two different stable ids — the
+correlation a fixture-based conformance suite depends on was never actually preserved for anything
+but session ids. `45934b0` and `c72fcdd` replaced both the passthrough and the counter with one rule:
+every session id and every raw `uuid` is canonicalized through a `HashMap<String, String>` keyed by
+first encounter, with no exception for values that already look canonical. A fixture already in
+canonical form re-derives the same numbering from its own encounter order; a fresh capture derives
+it for the first time — both paths are now the same code.
+
+That still left the values the original scrubber never touched at all: its own module comment
+said it preserved "the correlation ids that conformance suites assert on," which in practice meant
+`tool_call_id`, `messageId`, `hook_id`, `itemId`, and `agentId` were written into fixtures verbatim
+— real, one-time identifiers a live vendor CLI generates fresh on every turn. `d362a07` pinned the
+gap with a failing test, `correlation_ids_are_renumbered_by_family_and_encounter_order`, expecting a
+`msg-`/`tool-`/`hook-`/`item-`/`agent-` family placeholder that didn't exist yet; `08144b5` built it:
+`correlation_family` classifies a value by its key (or, for a bare `id`, by its grandparent object —
+`message`, `tool_use`, `item`) and `stable_correlation_id` renumbers within that family by first
+encounter, mirroring the session/uuid mechanism exactly. Three fixture-consuming tests had been
+asserting against the raw vendor values that no longer existed once fixtures were migrated —
+Copilot's `result_usage_artifacts_scenario` matched a literal `"call-2"` (`d9d5be1`, now
+`tool-000000000002`), and an OMP-RPC usage test asserted a live-captured cost of `0.0007` instead of
+the canonical `0.0142` (`5cb7b82`) — both were the correlation fix working as intended, not new bugs.
+
+`correlation_family`'s fallback — recognizing a family from a raw value's own prefix, for captures
+that reuse a vendor's id shape without a recognizable key — was scoped too broadly on first landing:
+it matched the prefix against *any* key's value, not just `id` fields, so a frame carrying
+`"subtype":"hook_started"` had its subtype discriminator silently rewritten into `hook-000000000001`
+because the string happened to start with `hook_`. `fe02a28` restricted the fallback to `key == "id"`;
+`a6d2b9c`'s `correlation_prefixes_are_only_normalized_in_id_fields` feeds exactly that frame through
+and asserts `subtype` and a `text` field reading `"msg-not-an-id"` both survive untouched while
+`hook_id: "hook-real"` still canonicalizes.
+
+`08144b5` closed two more gaps in the same pass: `command` values — an absolute path to whichever
+vendor binary happened to be installed locally — collapse to their basename under a fixed prefix
+(`normalize_command_path`), and the RFC 3339 timestamp heuristic, previously "contains `T`, ends in
+`Z`" (loose enough to misfire on ordinary text), now requires a real date-shaped prefix. Both are
+defended by one test, `normalizes_command_paths_without_misclassifying_prose_or_nested_turns`, whose
+`prose: "meetingTendsAtZ"` field is the adversarial input the old heuristic would have corrupted.
+The same commit also reverted `scrub_line` to JSON-only — non-JSON captured lines (vendor banners,
+log noise) are dropped instead of redacted-and-kept, since a capture-managed fixture must be JSON on
+every line (`drops_non_json_lines`).
+
+Manifest honesty came next: `capture-manifest.yml` had listed a fixture, `claude/result.jsonl`, that
+was never actually capturable — it covers an `error_max_turns` edge case no successful prompt can
+reproduce, so it had always been synthetic content masquerading as a captured one. `af3f4c3` removed
+it from the manifest and documented it, alongside `codex/schema-version.json`, as one of exactly two
+fixtures capture deliberately does not manage, leaving eleven real manifest entries.
+
+`d4f08a4` and `3ee9de4` then migrated all eleven to their canonical, encounter-order form, and
+`61598c7`/`bf7e32f` rewired the proof itself: `manifest_fixtures_are_scrub_render_fixed_points`
+(`capture.rs:499-594`) runs every manifest fixture through `scrub_captured_frame` and
+`render_fixture_content` — the exact functions a real capture calls — and asserts the output is
+byte-identical to what's committed, closing sub-claim 1 directly for all eleven instead of the one
+fixture the old test covered. A second half of the same test walks each fixture directory
+(ignoring dotfiles, `1ba7cf8`) and asserts its contents are exactly the manifest set plus the two
+named exclusions — a stray file can no longer hide from either the manifest or this test.
+
+Reviewing the consolidated diff caught one regression the tests hadn't: `08144b5` touched both
+`scrub.rs` and `capture.rs` in the same sweep, and while restructuring `capture_one`'s frame
+collection it silently dropped the `adapter.dispose().await.ok()` call between collecting frames and
+scrubbing them. Nothing failed loudly — a leaked vendor CLI process doesn't fail the capture that
+leaked it — but every subsequent manifest entry in the same run would have started a new adapter
+without the previous one ever being torn down. `4b6935b` restored the call.
+
+No falsifiability table accompanies this Part the way Part XIX–XXI's do: R44's proof is the fixed-
+point test itself, run against real committed content rather than a temporarily-broken copy —
+`manifest_fixtures_are_scrub_render_fixed_points` fails the moment any of the eleven fixtures stops
+being reproducible by the exact pipeline a live capture runs, which is the property sub-claim 1
+asked for. Combined with `persist_fixture_content`'s six pre/dry-run cases, the thirteen scrubber
+tests in `scrub.rs`, and `capture_status_distinguishes_unchanged_rewritten_and_would_rewrite`
+(`cli.rs`) pinning the three states a capture can report, the tool that produces every committed
+conformance fixture is now proven correct against all eleven of them, not the one it happened to be
+built against.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start

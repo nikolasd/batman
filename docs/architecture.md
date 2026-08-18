@@ -363,6 +363,8 @@ graph TB
 - **Audit Retention** ([`crates/runtime/src/audit/retention.rs`](crates/runtime/src/audit/retention.rs)): Event retention and pruning
 - **Conformance Scenarios** ([`crates/runtime/src/conformance/scenario.rs`](crates/runtime/src/conformance/scenario.rs)): Adapter conformance test scenarios
 - **Conformance Report** ([`crates/runtime/src/conformance/report.rs`](crates/runtime/src/conformance/report.rs)): Conformance test reporting
+- **Fixture Capture** ([`crates/runtime/src/conformance/capture.rs`](crates/runtime/src/conformance/capture.rs)): Drives a real vendor CLI turn per manifest entry and persists scrubbed frames only when they differ from the pre-write committed content — `unchanged` is decided by reading the existing file before any write, and a dry run never writes at all
+- **Frame Scrubber** ([`crates/runtime/src/conformance/scrub.rs`](crates/runtime/src/conformance/scrub.rs)): Rewrites nondeterministic values (session/UUID/correlation identities, timestamps, costs, cwd and command paths) into placeholders keyed by first-encounter order within their family, so a captured fixture is a fixed point of its own scrub/render pipeline
 
 #### Configuration and Policy
 - **Config Merge** ([`crates/runtime/src/config/merge.rs`](crates/runtime/src/config/merge.rs)): Layers org/repo/user/per-run YAML with strict unknown-key rejection into an immutable, SHA-256-fingerprinted `RuntimePolicy`; hashed JSON bytes are recursively key-sorted because the fixture-capture scrubber requires `preserve_order`
@@ -793,5 +795,7 @@ Generated from [`crates/runtime/src/ipc/mod.rs`](crates/runtime/src/ipc/mod.rs)'
 | A policy violation is decided at most once | `crates/runtime/tests/policy_violation.rs` |
 | Sanitized JSON bytes are key-order independent | `crates/runtime/src/security/redaction.rs` (inline tests) |
 | Profile and policy fingerprints are key-order independent | `crates/runtime/tests/config.rs`, `crates/runtime/tests/adapter_contract.rs` |
+| Every capture-managed fixture is a scrub/render fixed point | `manifest_fixtures_are_scrub_render_fixed_points` |
+| Capture's `unchanged` flag reflects pre-write bytes, never the write it guards | `crates/runtime/src/conformance/capture.rs` (`persist_fixture_content_*` inline tests) |
 
 Run with a test-runner timeout if you suspect a new mutation has regressed the broadcast invariant — the bug manifests as an infinite hang, not a clean failure.
