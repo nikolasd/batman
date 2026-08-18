@@ -866,9 +866,9 @@ async fn run_adapters(json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Runs `batcave capture`: re-records adapter fixtures from a real
-/// vendor CLI, scrubs them deterministically, and overwrites the
-/// committed files in place.
+/// Runs `batcave capture`: re-records adapter fixtures from a real vendor CLI,
+/// normalizes known nondeterministic values, and rewrites fixture bytes when
+/// the resulting capture differs from the committed artifact.
 async fn run_capture(adapter: String, fixture: Option<String>, dry_run: bool) -> ExitCode {
     use batman_runtime::adapter::AdapterKind;
     use batman_runtime::conformance::capture;
@@ -895,12 +895,15 @@ async fn run_capture(adapter: String, fixture: Option<String>, dry_run: bool) ->
     match capture::capture_adapter(kind, only, dry_run).await {
         Ok(outcome) => {
             for cf in &outcome.written {
-                let status = if cf.unchanged {
-                    "unchanged"
-                } else {
-                    "rewritten"
-                };
-                println!("{}: {} frames ({})", cf.fixture, cf.frames, status);
+                println!(
+                    "{}: {} frames ({})",
+                    cf.fixture,
+                    cf.frames,
+                    capture_status(cf.unchanged, dry_run)
+                );
+            }
+            if dry_run {
+                println!("dry run: no files written");
             }
             if let Some(report) = &outcome.report {
                 println!(
@@ -920,6 +923,16 @@ async fn run_capture(adapter: String, fixture: Option<String>, dry_run: bool) ->
     }
 }
 
+/// Describes whether capture bytes already matched, would change, or changed.
+fn capture_status(unchanged: bool, dry_run: bool) -> &'static str {
+    if unchanged {
+        "unchanged"
+    } else if dry_run {
+        "would rewrite"
+    } else {
+        "rewritten"
+    }
+}
 /// Prints an error to stderr and returns `ExitCode::FAILURE`.
 fn fail(err: &dyn std::fmt::Display) -> ExitCode {
     eprintln!("{err}");

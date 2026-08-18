@@ -1,19 +1,18 @@
 //! Deterministic scrubber for captured vendor frames.
 //!
-//! Rewrites every nondeterministic value in a captured frame -- session
-//! identifiers, absolute paths, timestamps, costs, secrets -- into stable
-//! placeholders so re-capturing an unchanged CLI produces byte-identical
-//! files, while preserving the correlation ids that conformance suites
-//! assert on.
+//! Rewrites known nondeterministic values in captured JSON frames into stable
+//! placeholders. A fixture is a fixed point only when its frames retain the
+//! same encounter order; the scrubber does not by itself establish that an
+//! unchanged vendor CLI will emit those frames.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use serde_json::Value;
 
-/// Rewrites captured vendor frames into committed-fixture form:
-/// secrets removed, then every nondeterministic value replaced by a
-/// stable placeholder, so re-capturing an unchanged CLI yields a
-/// byte-identical file.
+/// Rewrites captured JSON frames into committed-fixture form: secrets removed
+/// and known nondeterministic values replaced by stable placeholders. The
+/// result is a fixed point for a stable frame encounter order.
 pub struct Scrubber {
     redactor: crate::security::redaction::Redactor,
     cwd: String,
@@ -23,6 +22,10 @@ pub struct Scrubber {
     /// Maps each unique raw `uuid` input to a canonical UUID so repeated
     /// values remain correlated within one capture.
     uuid_ids: HashMap<String, String>,
+    /// Maps correlation inputs to canonical identifiers within their family.
+    correlation_ids: HashMap<(&'static str, String), String>,
+    /// Counts the canonical identifiers emitted for each correlation family.
+    correlation_counts: HashMap<&'static str, usize>,
 }
 
 impl Scrubber {
@@ -34,26 +37,17 @@ impl Scrubber {
             cwd,
             session_ids: HashMap::new(),
             uuid_ids: HashMap::new(),
+            correlation_ids: HashMap::new(),
+            correlation_counts: HashMap::new(),
         }
     }
 
-    /// Scrubs one captured frame. Empty lines and invalid UTF-8 input are
-    /// defensively dropped; valid UTF-8 non-JSON text is retained after path
-    /// and secret rewriting so the capture path can apply its reader policy.
+    /// Scrubs one captured JSON frame. Empty, invalid UTF-8, and non-JSON
+    /// frames are dropped because capture-managed fixtures must be JSON-only.
     pub fn scrub_line(&mut self, line: &[u8]) -> Option<String> {
-        match serde_json::from_slice(line) {
-            Ok(value) => {
-                let scrubbed = self.walk(None, None, value);
-                Some(serde_json::to_string(&scrubbed).expect("scrubbed value is serializable"))
-            }
-            Err(_) => {
-                if line.is_empty() {
-                    return None;
-                }
-                let text = std::str::from_utf8(line).ok()?;
-                Some(self.rewrite_unstructured_line(text))
-            }
-        }
+        let value = serde_json::from_slice(line).ok()?;
+        let scrubbed = self.walk(None, None, value);
+        Some(serde_json::to_string(&scrubbed).expect("scrubbed value is serializable"))
     }
 
     /// Recursively walks `val`, rewriting nondeterministic values. Both key
@@ -97,11 +91,19 @@ impl Scrubber {
             {
                 return self.stable_session_id(s);
             }
-            if key == "sessionFile" {
-                if let Some(rewritten) = self.rewrite_session_file(s) {
-                    return rewritten;
-                }
+            if let Some(family) = Self::correlation_family(key, grandparent_key, s) {
+                return self.stable_correlation_id(family, s);
             }
+
+            let mut rewritten = if key == "sessionFile" {
+                self.rewrite_session_file(s).unwrap_or_else(|| s.to_string())
+            } else {
+                s.to_string()
+            };
+            if key == "command" {
+                rewritten = Self::normalize_command_path(&rewritten);
+            }
+
             if Self::is_timestamp_key(key) {
                 return "2026-01-01T00:00:00Z".to_string();
             }
@@ -111,20 +113,38 @@ impl Scrubber {
             if key == "uuid" {
                 return self.stable_uuid(s);
             }
+            if Self::looks_like_rfc3339(&rewritten) {
+                return "2026-01-01T00:00:00Z".to_string();
+            }
+
+            return self.rewrite_text(&rewritten);
         }
 
-        // Check for RFC 3339 timestamp anywhere in a structured string value.
         if Self::looks_like_rfc3339(s) {
             return "2026-01-01T00:00:00Z".to_string();
         }
 
-        self.rewrite_unstructured_line(s)
+        self.rewrite_text(s)
     }
 
-    /// Rewrites a raw non-JSON line without applying structured-value rules.
-    fn rewrite_unstructured_line(&self, text: &str) -> String {
+    /// Rewrites path and secret text without applying key-specific rules.
+    fn rewrite_text(&self, text: &str) -> String {
         let cwd_rewritten = text.replace(&self.cwd, "/workspace/batman");
         self.redactor.redact_text(&cwd_rewritten)
+    }
+
+    /// Normalizes an absolute, single-token executable path.
+    fn normalize_command_path(command: &str) -> String {
+        if !command.starts_with('/') || command.chars().any(char::is_whitespace) {
+            return command.to_string();
+        }
+
+        Path::new(command)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .map(|name| format!("/usr/local/bin/{}", name))
+            .unwrap_or_else(|| command.to_string())
     }
 
     /// Replaces the session identity encoded in a `.omp/sessions/*.jsonl` path.
@@ -191,9 +211,53 @@ impl Scrubber {
     /// Whether the containing object identifies a session, rather than a
     /// correlation id.
     fn is_session_context(grandparent_key: Option<&str>) -> bool {
-        matches!(grandparent_key, Some("thread" | "turn"))
+        matches!(grandparent_key, Some("thread" | "turn" | "turns"))
     }
 
+    /// Returns the canonical family for an explicit key, a contextual `id`,
+    /// or a recognized raw correlation-ID prefix.
+    fn correlation_family(
+        key: &str,
+        grandparent_key: Option<&str>,
+        value: &str,
+    ) -> Option<&'static str> {
+        let explicit = match key {
+            "messageId" | "message_id" => Some("msg"),
+            "parent_tool_use_id" | "tool_use_id" | "callId" | "call_id" | "toolCallId"
+            | "tool_call_id" => Some("tool"),
+            "hook_id" | "hookId" => Some("hook"),
+            "itemId" | "item_id" => Some("item"),
+            "agentId" | "agent_id" => Some("agent"),
+            "id" => match grandparent_key {
+                Some("message") => Some("msg"),
+                Some("tool_use") => Some("tool"),
+                Some("item") => Some("item"),
+                _ => None,
+            },
+            _ => None,
+        };
+        explicit.or_else(|| Self::correlation_family_from_prefix(value))
+    }
+
+    /// Identifies correlation families already encoded in raw value prefixes.
+    fn correlation_family_from_prefix(value: &str) -> Option<&'static str> {
+        if value.starts_with("msg-") || value.starts_with("msg_") {
+            Some("msg")
+        } else if value.starts_with("tool-")
+            || value.starts_with("toolu_")
+            || value.starts_with("call-")
+        {
+            Some("tool")
+        } else if value.starts_with("hook-") || value.starts_with("hook_") {
+            Some("hook")
+        } else if value.starts_with("item-") || value.starts_with("item_") {
+            Some("item")
+        } else if value.starts_with("agent-") || value.starts_with("agent_") {
+            Some("agent")
+        } else {
+            None
+        }
+    }
     /// Key names whose values are timestamps.
     fn is_timestamp_key(k: &str) -> bool {
         matches!(
@@ -239,10 +303,30 @@ impl Scrubber {
         value
     }
 
+    /// Returns the canonical correlation ID for this capture's encounter order.
+    fn stable_correlation_id(&mut self, family: &'static str, input: &str) -> String {
+        let key = (family, input.to_string());
+        if let Some(existing) = self.correlation_ids.get(&key) {
+            return existing.clone();
+        }
+
+        let sequence = self.correlation_counts.entry(family).or_insert(0);
+        *sequence += 1;
+        let value = format!("{}-{:012}", family, sequence);
+        self.correlation_ids.insert(key, value.clone());
+        value
+    }
+
     fn looks_like_rfc3339(s: &str) -> bool {
-        // Heuristic: contains 'T' and ends with 'Z' or has an offset
-        // like +00:00. Real timestamps in fixtures are well-formed.
-        s.contains('T')
+        let bytes = s.as_bytes();
+        let has_date_prefix = bytes.len() >= 11
+            && bytes[4] == b'-'
+            && bytes[7] == b'-'
+            && bytes[10] == b'T'
+            && [0, 1, 2, 3, 5, 6, 8, 9]
+                .into_iter()
+                .all(|index| bytes[index].is_ascii_digit());
+        has_date_prefix
             && (s.ends_with('Z')
                 || (s.len() > 20 && (s.ends_with("+00:00") || s.ends_with("-00:00"))))
     }

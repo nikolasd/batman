@@ -1,6 +1,6 @@
-//! Automated fixture capture: drives a real vendor CLI turn, records every
-//! raw stdout frame, scrubs it deterministically, and overwrites the
-//! committed fixture in place.
+//! Automated fixture capture: drives a real vendor CLI turn, records JSON
+//! stdout frames, scrubs known nondeterministic values, and writes the
+//! resulting fixed-point fixture bytes in place.
 
 use crate::adapter::{
     Adapter, AdapterEvent, AdapterEventSink, AdapterFuture, AdapterKind, ClaudeStartupOptions,
@@ -64,8 +64,8 @@ pub struct CapturedFixture {
     pub fixture: String,
     /// Number of frames captured (after scrubbing).
     pub frames: usize,
-    /// True when the scrubbed bytes are identical to what was already
-    /// committed — the expected result for an unchanged CLI.
+    /// True when the rendered capture bytes matched the pre-persistence
+    /// fixture bytes. It does not assert that an unchanged CLI was captured.
     pub unchanged: bool,
 }
 
@@ -78,10 +78,9 @@ pub struct CaptureOutcome {
     pub report: Option<ConformanceReport>,
 }
 
-/// Captures every fixture the manifest declares for `kind`, overwriting
-/// each committed file in place, then re-runs `kind`'s fixture
-/// conformance suite so the caller learns immediately whether the new
-/// captures still satisfy it.
+/// Captures every fixture the manifest declares for `kind`, updates only files
+/// whose rendered bytes differ, then re-runs `kind`'s fixture conformance
+/// suite so the caller learns immediately whether the new captures satisfy it.
 ///
 /// # Errors
 /// Returns `Err` when the manifest is unreadable, `kind` has no manifest
@@ -127,32 +126,38 @@ pub async fn capture_adapter(
     std::fs::write(&config_toml, "[read_timeout]\nvalue = 30\n")
         .map_err(|e| format!("failed to write config.toml: {}", e))?;
 
-    let mut written = Vec::new();
+    let mut prepared = Vec::with_capacity(entries.len());
 
-    for entry in &entries {
+    for entry in entries {
         let frames = capture_one(&kind, scratch_path.clone(), entry, &mut tap_rx).await?;
-
         let fixture_path = PathBuf::from(FIXTURES_DIR)
             .join(adapter_fixture_dir(kind))
             .join(&entry.fixture);
         let content = render_fixture_content(&entry.fixture, &frames)?;
-        let unchanged = persist_fixture_content(&fixture_path, &content, dry_run)?;
-
-        if dry_run {
-            // Print to stdout instead of writing.
-            let mut out = std::io::stdout().lock();
-            let _ = out.write_all(content.as_bytes());
-            let _ = out.flush();
-        }
-
-        written.push(CapturedFixture {
-            fixture: entry.fixture.clone(),
-            frames: frames.len(),
-            unchanged,
-        });
+        prepared.push((entry.fixture.clone(), fixture_path, content, frames.len()));
 
         // Drain remaining frames from the tap before the next entry.
         drain_tap(&mut tap_rx).await;
+    }
+
+    let mut written = Vec::with_capacity(prepared.len());
+    for (fixture, fixture_path, content, frames) in prepared {
+        let unchanged = persist_fixture_content(&fixture_path, &content, dry_run)?;
+
+        if dry_run {
+            // Print to stdout instead of writing fixture files.
+            let mut out = std::io::stdout().lock();
+            out.write_all(content.as_bytes())
+                .map_err(|error| format!("failed to write dry-run output: {}", error))?;
+            out.flush()
+                .map_err(|error| format!("failed to flush dry-run output: {}", error))?;
+        }
+
+        written.push(CapturedFixture {
+            fixture,
+            frames,
+            unchanged,
+        });
     }
 
     // Re-run the fixture conformance suite so the caller learns immediately
@@ -219,13 +224,24 @@ fn persist_fixture_content(path: &Path, content: &str, dry_run: bool) -> Result<
         }
     };
 
-    if !dry_run {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("failed to create dir {}: {}", parent.display(), e))?;
-        }
-        std::fs::write(path, content)
-            .map_err(|e| format!("failed to write {}: {}", path.display(), e))?;
+    if !dry_run && !unchanged {
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("failed to determine parent for {}", path.display()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create dir {}: {}", parent.display(), error))?;
+
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|error| format!("failed to create temporary {}: {}", path.display(), error))?;
+        temporary
+            .write_all(content.as_bytes())
+            .map_err(|error| format!("failed to write {}: {}", path.display(), error))?;
+        temporary
+            .flush()
+            .map_err(|error| format!("failed to flush {}: {}", path.display(), error))?;
+        temporary
+            .persist(path)
+            .map_err(|error| format!("failed to replace {}: {}", path.display(), error.error))?;
     }
 
     Ok(unchanged)
@@ -264,9 +280,6 @@ async fn capture_one(
 
     // Collect frames until the turn settles or the deadline elapses.
     let raw_frames = collect_frames(tap_rx).await;
-
-    adapter.dispose().await.ok();
-
     // Scrub the frames.
     let cwd = scratch
         .to_str()
@@ -282,7 +295,7 @@ async fn capture_one(
 
     if scrubbed.is_empty() {
         return Err(format!(
-            "captured no frames for {}; the CLI produced no parseable output",
+            "captured no JSON frames for {}; the CLI produced no fixture data",
             entry.fixture
         ));
     }
@@ -290,18 +303,13 @@ async fn capture_one(
     Ok(scrubbed)
 }
 
-/// Applies the adapter's fixture-reader policy to one captured frame.
+/// Scrubs one frame; non-JSON frames are never capture-managed fixture data.
 fn scrub_captured_frame(
-    kind: AdapterKind,
+    _kind: AdapterKind,
     scrubber: &mut Scrubber,
     frame: &[u8],
 ) -> Option<String> {
-    let is_json = serde_json::from_slice::<serde_json::Value>(frame).is_ok();
-    if is_json || matches!(kind, AdapterKind::Claude | AdapterKind::OmpRpc) {
-        scrubber.scrub_line(frame)
-    } else {
-        None
-    }
+    scrubber.scrub_line(frame)
 }
 
 /// Collects frames from the tap until the turn settles (10s gap) or
