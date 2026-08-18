@@ -865,10 +865,11 @@ impl<'c> DomainRepository<'c> {
                     },
                 });
             }
-            let state: String = tx
-                .query_row("SELECT state FROM runs WHERE run_id = ?1", [run_id.to_string()], |row| {
-                    row.get(0)
-                })?;
+            let state: String = tx.query_row(
+                "SELECT state FROM runs WHERE run_id = ?1",
+                [run_id.to_string()],
+                |row| row.get(0),
+            )?;
             let parsed = RunState::try_from(state.as_str()).map_err(|_| DomainError::NotFound {
                 kind: "run-state",
                 id: state.clone(),

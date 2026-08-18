@@ -367,8 +367,8 @@ impl WorkerProfile {
 fn permission_envelope_contains_secret_shape(value: &serde_json::Value) -> bool {
     let redactor = Redactor::new();
     // Both sides must be canonical so only redaction changes the comparison.
-    let raw = serde_json::to_string(&crate::canonical_json::canonicalize(value))
-        .unwrap_or_default();
+    let raw =
+        serde_json::to_string(&crate::canonical_json::canonicalize(value)).unwrap_or_default();
     let sanitized = redactor.sanitize_json(value);
     raw != sanitized.as_str()
 }

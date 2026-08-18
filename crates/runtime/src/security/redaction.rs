@@ -675,10 +675,7 @@ mod tests {
         assert!(first_text.contains("[REDACTED:api_key]"));
         assert!(!first_text.contains("sk-ABCDEFGHIJKLMNOPQRSTUVWX"));
         assert!(!first_text.contains("sk-ZYXWVUTSRQPONMLKJIHGFEDC"));
-        assert_eq!(
-            first_text,
-            r#"{"[REDACTED:api_key]":"second value"}"#
-        );
+        assert_eq!(first_text, r#"{"[REDACTED:api_key]":"second value"}"#);
     }
 
     #[test]

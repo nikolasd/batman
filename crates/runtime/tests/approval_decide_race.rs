@@ -207,10 +207,7 @@ async fn fail_the_run(db: &DatabaseHandle, project_id: ProjectId, run_id: RunId)
     .expect("fail the run");
 }
 
-async fn approval_decision(
-    db: &DatabaseHandle,
-    approval_id: ApprovalId,
-) -> Option<String> {
+async fn approval_decision(db: &DatabaseHandle, approval_id: ApprovalId) -> Option<String> {
     db.run_domain_op(Box::new(move |conn| {
         let decision: Option<String> = conn.query_row(
             "SELECT decision FROM approvals WHERE approval_id = ?1",

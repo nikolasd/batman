@@ -519,7 +519,11 @@ impl RuntimePolicy {
     pub fn compute_fingerprint(merged: &serde_json::Value) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(crate::canonical_json::canonicalize(merged).to_string().as_bytes());
+        hasher.update(
+            crate::canonical_json::canonicalize(merged)
+                .to_string()
+                .as_bytes(),
+        );
         hex::encode(hasher.finalize())
     }
 }
