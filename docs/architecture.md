@@ -791,7 +791,7 @@ Generated from [`crates/runtime/src/ipc/mod.rs`](crates/runtime/src/ipc/mod.rs)'
 | Approval flow | `crates/runtime/tests/approval.rs` |
 | An approval is decided at most once | `crates/runtime/tests/approval_decide_race.rs` |
 | A policy violation is decided at most once | `crates/runtime/tests/policy_violation.rs` |
-| Sanitized JSON bytes are key-order independent | `crates/runtime/src/security/redaction.rs` |
+| Sanitized JSON bytes are key-order independent | `crates/runtime/src/security/redaction.rs` (inline tests) |
 | Profile and policy fingerprints are key-order independent | `crates/runtime/tests/config.rs`, `crates/runtime/tests/adapter_contract.rs` |
 
 Run with a test-runner timeout if you suspect a new mutation has regressed the broadcast invariant — the bug manifests as an infinite hang, not a clean failure.

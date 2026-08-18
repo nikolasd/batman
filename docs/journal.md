@@ -2780,11 +2780,12 @@ Removing `preserve_order` would have made the three hashes appear deterministic 
 cost of rewriting the frames R44 needs to recapture byte-for-byte. The fix instead draws the
 boundary where the property is needed. `canonical_json` uses serde_json's first-party
 `Value::sort_all_objects` API to sort every object recursively in place, preserving array order;
-the borrowed `canonicalize` wrapper clones only when a caller cannot give up ownership. That
-first-party API also explains the new `serde_json >=1.0.151` floor in `Cargo.toml`. Redaction and
-profile construction own their trees and call the in-place form. Policy hashing and the raw
-permission-envelope comparison borrow their trees and use the wrapper. The old vendor-frame path
-does neither, so capture keeps its original order.
+the borrowed `canonicalize` wrapper clones only when a caller cannot give up ownership.
+`sort_all_objects` landed in serde_json 1.0.129, the exact source minimum `Cargo.toml` now
+declares. Redaction and profile fingerprinting own their trees -- the fingerprint's canonical
+`Value` is a throwaway serialization, not a stored-profile mutation -- and call the in-place form.
+Policy hashing and the raw permission-envelope comparison borrow their trees and use the wrapper.
+The old vendor-frame path does neither, so capture keeps its original order.
 
 Sorting only the sanitized side of `permission_envelope_contains_secret_shape` initially exposed a
 collateral false rejection: an otherwise harmless envelope with unsorted keys no longer textually
@@ -2813,10 +2814,10 @@ Falsifiability was mechanical, not a claim that green tests were enough:
 | Canonicalizing the raw permission-envelope side | `a_permission_envelope_with_unsorted_keys_is_not_mistaken_for_a_secret` |
 | Sorting source keys before redaction | `sanitize_json_resolves_redacted_key_collisions_independently_of_input_order` |
 
-Each edit was restored after its named test failed. The targeted redaction tests returned 5/5, and
-the restored adapter-contract plus config tests returned 23/23. No committed fixture or test pins
-a computed digest, so the one-time change to canonical digest bytes is safe: it changes no
-externally committed value while ensuring equal future content receives one address.
+Each edit was restored after its named test failed. `cargo test sanitize_json --lib` returned 5/5,
+and `cargo test --test adapter_contract --test config` returned 23/23. No committed fixture or
+test pins a computed digest, so the one-time change to canonical digest bytes is safe: it changes
+no externally committed value while ensuring equal future content receives one address.
 
 ## Reading order, if you're new here
 

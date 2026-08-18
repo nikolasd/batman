@@ -343,13 +343,15 @@ errors from locked fixtures; it never computed a fingerprint.
 **The lesson:** Enforce determinism at the boundary that requires it, rather than relying on a
 dependency default that another subsystem may legitimately change. `canonical_json` delegates
 owned trees to serde_json's first-party `Value::sort_all_objects` and retains a borrowed cloning
-wrapper for comparisons; that API is why the workspace's `serde_json` floor is 1.0.151.
-`sanitize_json` and profile construction sort their owned trees in place, while policy hashing and
-the raw side of the permission-envelope comparison use the wrapper. Canonicalizing both comparison
-sides ensures that a difference means redaction changed content, not that one side happened to
-arrive in another key order. The profile's final sort is defense in depth: the current struct field
-order and its already-canonical sanitized `permissionEnvelope` make it redundant today, but a
-future free-form field must not silently weaken the fingerprint.
+wrapper for comparisons. `sort_all_objects` landed in serde_json 1.0.129, which `Cargo.toml` now
+declares as the exact source minimum. `sanitize_json` and `WorkerProfile::fingerprint` sort their
+owned trees in place; the fingerprint's canonical `Value` is a throwaway serialization, not a
+mutation of the stored profile. Policy hashing and the raw side of the permission-envelope
+comparison use the wrapper. Canonicalizing both comparison sides ensures that a difference means
+redaction changed content, not that one side happened to arrive in another key order. The profile's
+final sort is defense in depth: the current struct field order and its already-canonical sanitized
+`permissionEnvelope` make it redundant today, but a future free-form field must not silently
+weaken the fingerprint.
 
 **Regression tests:** The redaction test varies top-level, nested, and array-object key order and
 asserts byte-identical sanitized JSON. Its collision test varies the insertion order of two source
