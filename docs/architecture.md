@@ -793,6 +793,7 @@ Generated from [`crates/runtime/src/ipc/mod.rs`](crates/runtime/src/ipc/mod.rs)'
 | Approval flow | `crates/runtime/tests/approval.rs` |
 | An approval is decided at most once | `crates/runtime/tests/approval_decide_race.rs` |
 | An approval is decided only by the task's current owner | `crates/runtime/tests/approval_owner_race.rs` |
+| A policy violation is decided only by the task's current owner | `crates/runtime/tests/violation_owner_race.rs` |
 | A policy violation is decided at most once | `crates/runtime/tests/policy_violation.rs` |
 | Sanitized JSON bytes are key-order independent | `crates/runtime/src/security/redaction.rs` (inline tests) |
 | Profile and policy fingerprints are key-order independent | `crates/runtime/tests/config.rs`, `crates/runtime/tests/adapter_contract.rs` |

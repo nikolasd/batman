@@ -439,6 +439,9 @@ re-applies nothing. A *different* resolution submitted for an already-decided vi
 refused with `-32602`, and the first decision stands -- exactly one decision is ever journaled
 per violation, even if two clients submit concurrently. `release` is refused with `-32602` once
 the run has already reached a terminal state, because a settled run is never revived.
+Task ownership is checked before any of that, though: a caller that no longer owns the violation's
+task is refused with `-32602` (`Forbidden`), even when replaying a resolution already on record --
+ownership outranks idempotent replay.
 
 ### `child/list`
 

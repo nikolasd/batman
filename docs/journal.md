@@ -3006,6 +3006,88 @@ whole-struct write with no compare-and-swap, so a `policy_quarantined` flag set 
 `ViolationService::apply_action` during that await can be silently reverted by the callback-failure
 branch's stale copy. Both are open in `REVIEW.md` as of 2026-08-18.
 
+## Part XXIV — The same guarded write, one service over: the violation that no longer had an owner
+
+R71's own adversarial review found this one and, following the same discipline that had produced
+R71 out of Part XX's review of R70, registered it rather than fixing it in the same pass:
+`ViolationService::decide` still checked task ownership as a caller-side pre-check, unchanged by
+anything R71 did to the sibling approval path. `decide` read a `PolicyViolationSnapshot` via one
+`policy_violation_snapshot` round trip — a query that joined `tasks` to include
+`owner_client_instance_id` alongside the violation's `run_id`/`task_id`/`worker_id` — then compared
+that snapshot's owner to the caller's `principal_instance_id` entirely in memory, before the guarded
+write was ever reached. `resolve_policy_violation`'s transaction guarded only `resolution IS NULL`
+and the run's terminal state; it never re-read `tasks.owner_client_instance_id`.
+`reconcile/omp`'s ownership rebind (`DomainRepository::reconcile_ownership`, the same unguarded
+`UPDATE tasks SET owner_client_instance_id = ...` Part XXIII cited for the approval side) is a
+separate, single round trip that could commit in the window between that snapshot read and the
+write. A caller that owned the task at snapshot time, then lost it to a rebind before its write
+landed, still reached and won the guarded write — resolving a policy violation for a task it no
+longer owned. Identical mechanism to R71, one service over.
+
+`crates/runtime/tests/violation_owner_race.rs` (7076ebd, mirroring `approval_owner_race.rs`) made
+the interleaving deterministic the same way Part XXIII's test had: `tokio::join!(biased; ...)`
+against the single-owner DB actor's strictly FIFO command processing, `decide`'s two round trips
+(`policy_violation_snapshot`, then `resolve_policy_violation`) declared first so `biased` polls it
+before a direct `reconcile_ownership` rebind on every poll, guaranteeing the snapshot read enqueues
+before the rebind and the rebind commits before `decide`'s second command can possibly be sent. Run
+against the pre-fix code, the first test failed RED exactly as designed: `decide` returned
+`Ok(DecideOutcome::Decided)` for a caller the rebind had already dispossessed, because the
+caller-side pre-check read the original owner and passed, and the unguarded write had no ownership
+check left to refuse it with. A second test, `the_new_owner_can_resolve_after_a_rebind`, guarded the
+eventual fix against over-rejection — a legitimate new owner deciding sequentially after the rebind
+must still succeed — and passed unmodified throughout.
+
+`c02f56a` moved ownership out of the caller-side pre-check and into the guarded transaction,
+mirroring R71's own move one commit earlier: inside `resolve_policy_violation`'s `append_and_apply`
+closure, before the `UPDATE policy_violations ... WHERE resolution IS NULL` guard, the transaction
+now re-reads `tasks.owner_client_instance_id` for the violation's task and compares it against a
+newly threaded `principal_instance_id` parameter. A mismatch returns the existing
+`DomainError::NotOwner { task_id, instance_id }` — the same variant R71 added for
+`decide_approval`, reused rather than duplicated; a missing task row returns
+`DomainError::NotFound { kind: "task", .. }`. `ViolationService::decide` deleted its caller-side
+ownership check entirely and instead maps `DomainError::NotOwner` to `ViolationError::Forbidden`
+from inside the match on the guarded write's result, ahead of the `AlreadyResolved`/`RunSettled`
+arms — the same error a caller saw before, only where it's decided moves. `run_id`/`task_id`/
+`worker_id` stay caller-side reads from the snapshot, since a decision write never mutates any of
+them; only ownership needed to move. With ownership no longer part of the snapshot's job,
+`PolicyViolationSnapshot` dropped its now-unused `owner_client_instance_id` field and the
+`JOIN tasks` that populated it.
+
+Because the ownership check runs before the `resolution IS NULL` guard, not after, it outranks
+idempotent replay on the violation side exactly as Part XXIII established for the approval side: a
+former owner replaying its own identical resolution after losing ownership gets
+`ViolationError::Forbidden`, not `alreadyDecided`. That precedence held from `c02f56a` on, but
+nothing pinned it as a test on either service until `cbf21c9` added
+`a_former_owner_replaying_its_identical_resolution_is_refused` to `violation_owner_race.rs` and
+`a_former_owner_replaying_its_identical_decision_is_refused` to `approval_owner_race.rs` in the same
+commit — decide/resolve as the original owner, rebind to a new owner, replay the identical
+decision/resolution as the original owner, assert `Err(Forbidden)` and that the original decision,
+event count, and (for approval) callback count are unchanged.
+
+The adversarial review this fix demanded of itself returned NEEDS CHANGES on its first pass:
+`violation_owner_race.rs`'s own module doc, written before the fix landed, still narrated the race
+in the present tense as though the violation side had not yet been fixed — the same kind of
+stale-narration defect Part XXIII's review had found in the approval-side test file. `2fed760`
+rewrote the header as resolved-contract narration, mirroring `approval_owner_race.rs`'s post-R71
+shape: the pre-fix caller-side pre-check against a stale snapshot, the `biased` interleaving that
+produced the committed RED failure, and that ownership is now arbitrated inside the guarded write
+itself, so the `biased` enqueue ordering is no longer load-bearing for correctness — only for
+keeping the interleaving reproducible. It also corrected the second test's stale comment, which
+still called the landed fix "the eventual fix."
+
+The same review surfaced one more residual outside this fix's mechanism, registered rather than
+fixed in this pass via `e3e9dc7`: **R74**, task revision monotonicity — `task_upsert` and
+`reconcile_omp` both read the stored `tasks.revision` via one round trip, compare it to the
+caller-supplied revision in memory, and write in a second round trip, while neither
+`upsert_task`'s `ON CONFLICT` write nor `reconcile_ownership`'s `UPDATE` carries a revision
+predicate. Since R71 and this fix made `tasks.owner_client_instance_id` the in-transaction authority
+both `decide_approval` and `resolve_policy_violation` now trust, that write's correctness is
+load-bearing for both of them — a lost update there could silently hand a stale client the ownership
+those guarded writes are built to defend. The pattern by now has its own shape: each guarded-write
+fix's adversarial review has found the same check-then-act-across-two-round-trips defect one layer
+down — R70's review found R71, R71's review found R72 and R73, and R72's review found R74.
+`REVIEW.md` is updated in the same pass this Part records to move R72 into resolution history.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
