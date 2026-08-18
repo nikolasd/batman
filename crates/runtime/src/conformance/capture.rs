@@ -14,7 +14,7 @@ use crate::supervisor::install_frame_tap;
 use batman_protocol::{RunId, TaskId, WorkerId};
 use serde_yaml_ng as serde_yaml;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -132,30 +132,18 @@ pub async fn capture_adapter(
     for entry in &entries {
         let frames = capture_one(&kind, scratch_path.clone(), entry, &mut tap_rx).await?;
 
-        let fixture_dir = PathBuf::from(FIXTURES_DIR).join(adapter_fixture_dir(kind));
-        let fixture_path = fixture_dir.join(&entry.fixture);
-
-        let content = frames.join("\n") + "\n";
+        let fixture_path = PathBuf::from(FIXTURES_DIR)
+            .join(adapter_fixture_dir(kind))
+            .join(&entry.fixture);
+        let content = render_fixture_content(&entry.fixture, &frames)?;
+        let unchanged = persist_fixture_content(&fixture_path, &content, dry_run)?;
 
         if dry_run {
             // Print to stdout instead of writing.
             let mut out = std::io::stdout().lock();
             let _ = out.write_all(content.as_bytes());
             let _ = out.flush();
-        } else {
-            // Ensure the target directory exists.
-            if let Some(parent) = fixture_path.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("failed to create dir {}: {}", parent.display(), e))?;
-            }
-            std::fs::write(&fixture_path, &content)
-                .map_err(|e| format!("failed to write {}: {}", fixture_path.display(), e))?;
         }
-
-        // Check whether the capture changed the committed file.
-        let unchanged = !dry_run
-            && fixture_path.exists()
-            && std::fs::read_to_string(&fixture_path).is_ok_and(|existing| existing == content);
 
         written.push(CapturedFixture {
             fixture: entry.fixture.clone(),
@@ -176,6 +164,42 @@ pub async fn capture_adapter(
     };
 
     Ok(CaptureOutcome { written, report })
+}
+
+/// Renders scrubbed frames into the bytes expected by a fixture.
+fn render_fixture_content(fixture: &str, frames: &[String]) -> Result<String, String> {
+    if fixture.ends_with(".json") {
+        let [frame] = frames else {
+            return Err(format!(
+                "JSON fixture {} requires exactly one frame, captured {}",
+                fixture,
+                frames.len()
+            ));
+        };
+        let value: serde_json::Value = serde_json::from_str(frame)
+            .map_err(|e| format!("failed to parse JSON fixture {}: {}", fixture, e))?;
+        return serde_json::to_string_pretty(&value)
+            .map(|rendered| format!("{}\n", rendered))
+            .map_err(|e| format!("failed to render JSON fixture {}: {}", fixture, e));
+    }
+
+    Ok(format!("{}\n", frames.join("\n")))
+}
+
+/// Compares rendered content to the existing target before optionally replacing it.
+fn persist_fixture_content(path: &Path, content: &str, dry_run: bool) -> Result<bool, String> {
+    let unchanged = std::fs::read(path).is_ok_and(|existing| existing == content.as_bytes());
+
+    if !dry_run {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create dir {}: {}", parent.display(), e))?;
+        }
+        std::fs::write(path, content)
+            .map_err(|e| format!("failed to write {}: {}", path.display(), e))?;
+    }
+
+    Ok(unchanged)
 }
 
 /// Captures one manifest entry. Returns the scrubbed frame strings.

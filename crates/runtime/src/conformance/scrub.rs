@@ -38,12 +38,23 @@ impl Scrubber {
         }
     }
 
-    /// Scrubs one captured frame. Returns `None` when the line is not
-    /// JSON at all (vendor banner/log noise), which the caller drops.
+    /// Scrubs one captured frame. Empty and invalid UTF-8 lines are dropped;
+    /// non-empty non-JSON UTF-8 lines are redacted and retained for
+    /// malformed-frame coverage.
     pub fn scrub_line(&mut self, line: &[u8]) -> Option<String> {
-        let val = serde_json::from_slice(line).ok()?;
-        let scrubbed = self.walk(Value::Object(Map::new()), val);
-        Some(serde_json::to_string(&scrubbed).expect("scrubbed value is serializable"))
+        match serde_json::from_slice(line) {
+            Ok(value) => {
+                let scrubbed = self.walk(Value::Object(Map::new()), value);
+                Some(serde_json::to_string(&scrubbed).expect("scrubbed value is serializable"))
+            }
+            Err(_) => {
+                if line.is_empty() {
+                    return None;
+                }
+                let text = std::str::from_utf8(line).ok()?;
+                Some(self.rewrite_string(Value::Null, text))
+            }
+        }
     }
 
     /// Recursively walks `val`, rewriting nondeterministic values.
