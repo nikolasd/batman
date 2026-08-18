@@ -1,22 +1,25 @@
 //! Regression test for R73: `ApprovalService::decide`'s callback-failure
-//! path (`crates/runtime/src/approval/service.rs:250-268`) writes back the
+//! path (`crates/runtime/src/approval/service.rs`) used to write back the
 //! *whole* `RunFlags` struct it read into `ApprovalSnapshot` before the
 //! decision write and the vendor callback await. If anything else -- most
 //! plausibly `ViolationService::apply_action`'s read-modify-write shape
-//! (`crates/runtime/src/policy/violation.rs:346-413`, e.g.
-//! `set_quarantined`) -- mutates a different flag on the same run during
-//! that callback window, `decide`'s write-back silently reverts it: a lost
-//! update, not a conflict either side detects.
+//! (`crates/runtime/src/policy/violation.rs`, e.g. `set_quarantined`) --
+//! mutated a different flag on the same run during that callback window,
+//! `decide`'s write-back would silently revert it: a lost update, not a
+//! conflict either side detects. The fix: `decide`'s callback-failure path
+//! now calls `DomainRepository::set_run_flag(run_id, RunFlag::ProtocolUnhealthy,
+//! true)`, which reads the run's current flags, flips this one, and writes
+//! the row back all inside that one call, so nothing can go stale between
+//! its read and its write.
 //!
 //! `FailingCallback::acknowledge` below plays the innocent case: it fails
-//! without touching flags, so `decide`'s write-back is the *only* writer and
+//! without touching flags, so `decide`'s write is the *only* writer and
 //! `protocolUnhealthy` lands correctly. `QuarantineDuringCallback::acknowledge`
 //! plays the concurrent-mutation case: while `decide` awaits it, it performs
-//! exactly the read-modify-write `ViolationService::set_quarantined` performs
-//! (read the run's current flags through `DatabaseHandle`, flip
-//! `policy_quarantined`, write back through `DomainRepository::set_run_flags`)
-//! and then fails, so `decide`'s subsequent write-back of its stale
-//! pre-callback snapshot has something to clobber.
+//! the same guarded `set_run_flag` call `ViolationService::set_quarantined`
+//! performs in production, flipping `policy_quarantined`, and then fails,
+//! so `decide`'s subsequent guarded write of `protocol_unhealthy` has
+//! something it must not clobber.
 
 use std::sync::Arc;
 
@@ -28,7 +31,7 @@ use batman_runtime::approval::{
     ApprovalCallback, ApprovalService, CallbackFuture, DecideOutcome,
 };
 use batman_runtime::db::DatabaseHandle;
-use batman_runtime::domain::DomainRepository;
+use batman_runtime::domain::{DomainRepository, RunFlag};
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::sync::broadcast;
@@ -181,13 +184,14 @@ impl ApprovalCallback for FailingCallback {
     }
 }
 
-/// Fails every callback, but first performs exactly the read-modify-write
-/// `ViolationService::set_quarantined` performs
-/// (`crates/runtime/src/policy/violation.rs:389-413`): read the run's
-/// current flags through `DatabaseHandle`, flip `policy_quarantined`, write
-/// the whole struct back through `DomainRepository::set_run_flags`. This is
-/// the same shape `ViolationService::apply_action` can run concurrently
-/// with an in-flight `decide` -- both go through the same single-consumer
+/// Fails every callback, but first performs the exact guarded flag flip
+/// `ViolationService::set_quarantined` performs post-R73
+/// (`crates/runtime/src/policy/violation.rs`): call
+/// `DomainRepository::set_run_flag(run_id, RunFlag::PolicyQuarantined, true)`,
+/// which reads the run's current flags, flips this one, and writes the
+/// whole row back, all inside that one call. This is the same shape
+/// `ViolationService::apply_action` can run concurrently with an
+/// in-flight `decide` -- both go through the same single-consumer
 /// database actor, so this mutation is guaranteed to land, and to land
 /// strictly between `decide`'s pre-callback snapshot read and its
 /// post-callback-failure write-back, because it runs *inside* the callback
@@ -204,11 +208,10 @@ impl ApprovalCallback for QuarantineDuringCallback {
         let project_id = self.project_id;
         let run_id = self.run_id;
         Box::pin(async move {
-            let mut flags = read_run_flags(&db, run_id).await;
-            flags.policy_quarantined = true;
             db.run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.set_run_flags(run_id, &flags).map(|_| json!({}))
+                repo.set_run_flag(run_id, RunFlag::PolicyQuarantined, true)
+                    .map(|_| json!({}))
             }))
             .await
             .expect("apply quarantine inside the callback window");

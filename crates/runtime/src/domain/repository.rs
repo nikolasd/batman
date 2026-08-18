@@ -87,6 +87,35 @@ pub struct PolicyViolationSnapshot {
     pub worker_id: String,
 }
 
+/// Names one boolean field on [`RunFlags`], so
+/// [`DomainRepository::set_run_flag`] can arbitrate a single flag change
+/// inside its own guarded transaction instead of taking a whole
+/// caller-computed [`RunFlags`] struct on trust (R73). Internal to this
+/// crate -- the wire shape of `RunFlagsChanged` is unaffected; it still
+/// carries the full [`RunFlags`] struct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunFlag {
+    DegradedControl,
+    NeedsReconciliation,
+    ProtocolUnhealthy,
+    PolicyQuarantined,
+    WorkspaceDirty,
+    ChildrenActive,
+}
+
+impl RunFlag {
+    fn apply(self, flags: &mut RunFlags, value: bool) {
+        match self {
+            RunFlag::DegradedControl => flags.degraded_control = value,
+            RunFlag::NeedsReconciliation => flags.needs_reconciliation = value,
+            RunFlag::ProtocolUnhealthy => flags.protocol_unhealthy = value,
+            RunFlag::PolicyQuarantined => flags.policy_quarantined = value,
+            RunFlag::WorkspaceDirty => flags.workspace_dirty = value,
+            RunFlag::ChildrenActive => flags.children_active = value,
+        }
+    }
+}
+
 /// Embeds `envelope` into `value` under a reserved key so it survives the
 /// `run_domain_op` boundary -- whose closures are constrained to return a
 /// plain [`Value`] -- back out to the async service layer, which broadcasts
@@ -552,17 +581,62 @@ impl<'c> DomainRepository<'c> {
         )
     }
 
-    /// Sets the flags on a run. Emits a `RunFlagsChanged` event.
-    pub fn set_run_flags(
+    /// Reads the run's current flags, flips exactly `flag` to `value`, and
+    /// writes the whole row back -- all inside this one call, with nothing
+    /// else able to observe or mutate the row in between -- then emits a
+    /// `RunFlagsChanged` event carrying the resulting full [`RunFlags`]
+    /// struct (the event's wire shape is unchanged).
+    ///
+    /// This replaced a `set_run_flags(run_id, &RunFlags)` that took the
+    /// whole struct from the caller. Every real caller only ever wanted to
+    /// flip one flag, having read the "current" struct from an earlier,
+    /// separate `run_domain_op` round trip -- a snapshot that could go
+    /// stale if anything else mutated a *different* flag on the same run
+    /// while the caller was, say, awaiting a vendor callback.
+    /// [`crate::db::DatabaseHandle`]'s actor interleaves whole
+    /// `run_domain_op` closures, never a caller's async steps, so that
+    /// snapshot-then-write-back shape could silently revert a concurrent
+    /// flag change: a lost update neither side detects (R73). Reading and
+    /// writing inside this one call removes the gap -- R70-R72's
+    /// guarded-write doctrine applied to a flag flip rather than a
+    /// decision.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::NotFound`] if `run_id` does not exist.
+    pub fn set_run_flag(
         &mut self,
         run_id: batman_protocol::RunId,
-        flags: &RunFlags,
+        flag: RunFlag,
+        value: bool,
     ) -> Result<Committed, DomainError> {
+        let mut flags = self
+            .conn
+            .query_row(
+                "SELECT flags_degraded_control, flags_needs_reconciliation, flags_protocol_unhealthy,
+                        flags_policy_quarantined, flags_workspace_dirty, flags_children_active
+                 FROM runs WHERE run_id = ?1",
+                [run_id.to_string()],
+                |row| {
+                    Ok(RunFlags {
+                        degraded_control: row.get::<_, i64>(0)? != 0,
+                        needs_reconciliation: row.get::<_, i64>(1)? != 0,
+                        protocol_unhealthy: row.get::<_, i64>(2)? != 0,
+                        policy_quarantined: row.get::<_, i64>(3)? != 0,
+                        workspace_dirty: row.get::<_, i64>(4)? != 0,
+                        children_active: row.get::<_, i64>(5)? != 0,
+                    })
+                },
+            )
+            .map_err(|_| DomainError::NotFound {
+                kind: "run",
+                id: run_id.to_string(),
+            })?;
+        flag.apply(&mut flags, value);
+
         let event = RuntimeEvent::RunFlagsEvent {
             run_id,
             flags: flags.clone(),
         };
-        let flags = flags.clone();
         self.append_and_apply(&event, None, None, Some(run_id), move |tx| {
             tx.execute(
                 "UPDATE runs SET
@@ -932,7 +1006,7 @@ impl<'c> DomainRepository<'c> {
     /// Records a mid-run policy violation: inserts the [`policy_violations`]
     /// row and appends a `PolicyViolationRecorded` event. Does not touch
     /// `Run.flags` -- callers apply the quarantine flag via
-    /// [`DomainRepository::set_run_flags`] as a separate commit, so existing
+    /// [`DomainRepository::set_run_flag`] as a separate commit, so existing
     /// `RunFlagsChanged` consumers see it without new code.
     ///
     /// `code` is the machine-readable violation code (`nested_worker_denied`
@@ -1035,7 +1109,7 @@ impl<'c> DomainRepository<'c> {
     /// Resolves a previously-recorded policy violation: records
     /// `resolution`/`resolved_by` and appends a `PolicyViolationDecided`
     /// event. Does not touch `Run.flags` or run state -- callers apply
-    /// those via [`DomainRepository::set_run_flags`]/
+    /// those via [`DomainRepository::set_run_flag`]/
     /// [`DomainRepository::transition_run`] as separate commits.
     ///
     /// This is the **only** authority on whether a violation may be

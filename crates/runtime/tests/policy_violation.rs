@@ -69,7 +69,7 @@ use batman_protocol::{
 };
 use batman_runtime::config::NestedViolationAction;
 use batman_runtime::db::DatabaseHandle;
-use batman_runtime::domain::DomainRepository;
+use batman_runtime::domain::{DomainRepository, RunFlag};
 use batman_runtime::policy::{DecideOutcome, ViolationError, ViolationService};
 use serde_json::json;
 use tempfile::TempDir;
@@ -141,13 +141,10 @@ async fn seed_quarantined_violation(
         .unwrap_or_else(|e| panic!("drive to {state} failed: {e}"));
     }
 
-    let flags = RunFlags {
-        policy_quarantined: true,
-        ..Default::default()
-    };
     db.run_domain_op(Box::new(move |conn| {
         let mut repo = DomainRepository::new(conn, project_id);
-        repo.set_run_flags(run_id, &flags).map(|_| json!({}))
+        repo.set_run_flag(run_id, RunFlag::PolicyQuarantined, true)
+            .map(|_| json!({}))
     }))
     .await
     .expect("quarantine the run");

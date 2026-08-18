@@ -54,7 +54,7 @@ use tokio::sync::broadcast;
 
 use crate::config::NestedViolationAction;
 use crate::db::{DatabaseHandle, DbError};
-use crate::domain::{DomainError, DomainRepository, embed_envelope, take_envelope};
+use crate::domain::{DomainError, DomainRepository, RunFlag, embed_envelope, take_envelope};
 use crate::security::redaction::Redactor;
 use crate::service::RunDriver;
 
@@ -148,10 +148,12 @@ impl ViolationService {
 
     /// Loads a run's current `state`, full `flags`, and the
     /// `policy_fingerprint` it was authorized under, for the idempotency
-    /// check in [`ViolationService::record_nested_worker`], to
-    /// read-modify-write a single flag via
-    /// [`DomainRepository::set_run_flags`], and to make the journaled
-    /// violation auditable against a specific merged policy.
+    /// check in [`ViolationService::record_nested_worker`] /
+    /// [`ViolationService::record_cost_ceiling`] and to make the journaled
+    /// violation auditable against a specific merged policy. No longer used
+    /// to read-modify-write a flag: [`ViolationService::set_quarantined`]
+    /// arbitrates its own flag write in-tx via
+    /// [`DomainRepository::set_run_flag`] instead (R73).
     ///
     /// The fingerprint is `None` for runs created before migration 6; it is
     /// journaled as an empty string rather than a fabricated value.
@@ -243,7 +245,7 @@ impl ViolationService {
         vendor_parent_ref: &str,
         observed_event_sequence: u64,
     ) -> Result<(), ViolationError> {
-        let (state, mut flags, policy_fingerprint) = self.load_run_state_and_flags(run_id).await?;
+        let (state, flags, policy_fingerprint) = self.load_run_state_and_flags(run_id).await?;
         let already_actioned = flags.policy_quarantined || state.is_terminal();
 
         let violation_id = PolicyViolationId::new();
@@ -276,7 +278,6 @@ impl ViolationService {
         self.apply_action(
             run_id,
             worker_id,
-            &mut flags,
             already_actioned,
             Some(vendor_child_id),
             Some(vendor_parent_ref),
@@ -304,7 +305,7 @@ impl ViolationService {
         worker_id: WorkerId,
         observed_event_sequence: u64,
     ) -> Result<(), ViolationError> {
-        let (state, mut flags, policy_fingerprint) = self.load_run_state_and_flags(run_id).await?;
+        let (state, flags, policy_fingerprint) = self.load_run_state_and_flags(run_id).await?;
         let already_actioned = flags.policy_quarantined || state.is_terminal();
 
         let violation_id = PolicyViolationId::new();
@@ -332,7 +333,7 @@ impl ViolationService {
             .map_err(ViolationError::Domain)?;
         self.broadcast(&mut result);
 
-        self.apply_action(run_id, worker_id, &mut flags, already_actioned, None, None)
+        self.apply_action(run_id, worker_id, already_actioned, None, None)
             .await
     }
 
@@ -347,7 +348,6 @@ impl ViolationService {
         &self,
         run_id: RunId,
         worker_id: WorkerId,
-        flags: &mut RunFlags,
         already_actioned: bool,
         vendor_child_id: Option<&str>,
         vendor_parent_ref: Option<&str>,
@@ -358,7 +358,7 @@ impl ViolationService {
 
         match self.action {
             NestedViolationAction::Quarantine => {
-                self.set_quarantined(run_id, flags, true).await?;
+                self.set_quarantined(run_id, true).await?;
             }
             NestedViolationAction::Cancel => {
                 self.create_cancellation_intent(
@@ -371,7 +371,7 @@ impl ViolationService {
                 self.cancel_and_transition(run_id).await?;
             }
             NestedViolationAction::QuarantineAndCancel => {
-                self.set_quarantined(run_id, flags, true).await?;
+                self.set_quarantined(run_id, true).await?;
                 self.create_cancellation_intent(
                     run_id,
                     worker_id,
@@ -387,23 +387,19 @@ impl ViolationService {
     }
 
     /// Sets `flags.policy_quarantined = quarantined` via
-    /// [`DomainRepository::set_run_flags`] (read-modify-write on the
-    /// already-loaded `flags`), so existing `RunFlagsChanged` consumers
-    /// see the change without new dispatch logic.
-    async fn set_quarantined(
-        &self,
-        run_id: RunId,
-        flags: &mut RunFlags,
-        quarantined: bool,
-    ) -> Result<(), ViolationError> {
-        flags.policy_quarantined = quarantined;
+    /// [`DomainRepository::set_run_flag`], which reads the run's current
+    /// flags, flips this one, and writes it back all inside its own guarded
+    /// call -- no caller-held snapshot is read-modified-written across an
+    /// `await`, so a concurrent mutation of a *different* flag on the same
+    /// run (e.g. `ApprovalService::decide`'s callback-failure path setting
+    /// `protocolUnhealthy`) cannot be silently reverted by this call (R73).
+    async fn set_quarantined(&self, run_id: RunId, quarantined: bool) -> Result<(), ViolationError> {
         let project_id = self.project_id;
-        let flags_owned = flags.clone();
         let mut result = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.set_run_flags(run_id, &flags_owned)
+                repo.set_run_flag(run_id, RunFlag::PolicyQuarantined, quarantined)
                     .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
@@ -599,8 +595,7 @@ impl ViolationService {
         self.broadcast(&mut result);
 
         if resolution == "release" {
-            let (_, mut flags, _) = self.load_run_state_and_flags(run_id).await?;
-            self.set_quarantined(run_id, &mut flags, false).await?;
+            self.set_quarantined(run_id, false).await?;
         } else {
             self.cancel_and_transition(run_id).await?;
         }

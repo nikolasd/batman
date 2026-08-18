@@ -7,14 +7,12 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use batman_protocol::{
-    ApprovalId, ApprovalRequest, EventEnvelope, ProjectId, RunFlags, RunId, RunState,
-};
+use batman_protocol::{ApprovalId, ApprovalRequest, EventEnvelope, ProjectId, RunId, RunState};
 use serde_json::Value;
 use tokio::sync::broadcast;
 
 use crate::db::DatabaseHandle;
-use crate::domain::{DomainError, DomainRepository, embed_envelope, take_envelope};
+use crate::domain::{DomainError, DomainRepository, RunFlag, embed_envelope, take_envelope};
 
 /// A boxed future returned by [`ApprovalCallback::acknowledge`].
 pub type CallbackFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
@@ -249,18 +247,17 @@ impl ApprovalService {
             }
             Err(_) => {
                 let run_id = snapshot.run_id;
-                let mut flags = snapshot.run_flags;
-                flags.protocol_unhealthy = true;
                 let mut result = self
                     .db
                     .run_domain_op(Box::new(move |conn| {
                         let mut repo = DomainRepository::new(conn, project_id);
-                        repo.set_run_flags(run_id, &flags).map(|c| {
-                            embed_envelope(
-                                serde_json::json!({ "sequence": c.sequence }),
-                                &c.envelope,
-                            )
-                        })
+                        repo.set_run_flag(run_id, RunFlag::ProtocolUnhealthy, true)
+                            .map(|c| {
+                                embed_envelope(
+                                    serde_json::json!({ "sequence": c.sequence }),
+                                    &c.envelope,
+                                )
+                            })
                     }))
                     .await
                     .map_err(ApprovalError::Domain)?;
@@ -287,26 +284,12 @@ impl ApprovalService {
             .db
             .run_domain_op(Box::new(move |conn| {
                 conn.query_row(
-                    "SELECT a.run_id,
-                            r.flags_degraded_control, r.flags_needs_reconciliation, r.flags_protocol_unhealthy,
-                            r.flags_policy_quarantined, r.flags_workspace_dirty, r.flags_children_active,
-                            a.human_required
-                     FROM approvals a
-                     JOIN runs r ON a.run_id = r.run_id
-                     WHERE a.approval_id = ?1",
+                    "SELECT run_id, human_required FROM approvals WHERE approval_id = ?1",
                     [approval_id.to_string()],
                     |row| {
                         Ok(serde_json::json!({
                             "runId": row.get::<_, String>(0)?,
-                            "flags": {
-                                "degradedControl": row.get::<_, i64>(1)? != 0,
-                                "needsReconciliation": row.get::<_, i64>(2)? != 0,
-                                "protocolUnhealthy": row.get::<_, i64>(3)? != 0,
-                                "policyQuarantined": row.get::<_, i64>(4)? != 0,
-                                "workspaceDirty": row.get::<_, i64>(5)? != 0,
-                                "childrenActive": row.get::<_, i64>(6)? != 0,
-                            },
-                            "humanRequired": row.get::<_, i64>(7)? != 0,
+                            "humanRequired": row.get::<_, i64>(1)? != 0,
                         }))
                     },
                 )
@@ -322,20 +305,6 @@ impl ApprovalService {
                     id: "invalid".to_string(),
                 }
             })?,
-            run_flags: RunFlags {
-                degraded_control: value["flags"]["degradedControl"].as_bool().unwrap_or(false),
-                needs_reconciliation: value["flags"]["needsReconciliation"]
-                    .as_bool()
-                    .unwrap_or(false),
-                protocol_unhealthy: value["flags"]["protocolUnhealthy"]
-                    .as_bool()
-                    .unwrap_or(false),
-                policy_quarantined: value["flags"]["policyQuarantined"]
-                    .as_bool()
-                    .unwrap_or(false),
-                workspace_dirty: value["flags"]["workspaceDirty"].as_bool().unwrap_or(false),
-                children_active: value["flags"]["childrenActive"].as_bool().unwrap_or(false),
-            },
             human_required: value["humanRequired"].as_bool().unwrap_or(false),
         })
     }
@@ -343,6 +312,5 @@ impl ApprovalService {
 
 struct ApprovalSnapshot {
     run_id: RunId,
-    run_flags: RunFlags,
     human_required: bool,
 }
