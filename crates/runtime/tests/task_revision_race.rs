@@ -143,8 +143,8 @@ async fn task_upsert_round_trips(
 /// Mirrors `OrchestrationService::reconcile_omp`'s post-R74 shape: one
 /// guarded write round trip via [`DomainRepository::reconcile_ownership`],
 /// whose `AND revision = ?` predicate arbitrates the match inside its own
-/// transaction and consumes the presented revision on success. No
-/// caller-side pre-check remains.
+/// transaction; the stored revision is not consumed. No caller-side
+/// pre-check remains.
 async fn reconcile_omp_round_trips(
     db: &DatabaseHandle,
     project_id: ProjectId,
