@@ -324,6 +324,8 @@ impl Redactor {
 
     /// Recursively rebuilds `value`, applying [`Redactor::redact_visible_text`]
     /// to every string it contains (both object keys and string values).
+    /// Source keys are sorted before redaction, so collisions collapse
+    /// deterministically with the lexicographically greatest source key winning.
     fn redact_json_value(&self, value: &serde_json::Value) -> serde_json::Value {
         match value {
             serde_json::Value::String(text) => {
@@ -338,9 +340,9 @@ impl Redactor {
             serde_json::Value::Object(map) => {
                 let mut redacted = serde_json::Map::with_capacity(map.len());
                 let mut entries: Vec<_> = map.iter().collect();
-                entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
                 // Sorting source keys makes last-wins collision resolution
                 // independent of insertion order.
+                entries.sort_unstable_by_key(|(key, _)| *key);
                 for (key, val) in entries {
                     let redacted_key = self.redact_visible_text(key);
                     redacted.insert(redacted_key, self.redact_json_value(val));
@@ -662,9 +664,16 @@ mod tests {
             "sk-ABCDEFGHIJKLMNOPQRSTUVWX": "first value"
         });
 
+        let first_text = redactor.sanitize_json(&first).as_str().to_string();
+        let second_text = redactor.sanitize_json(&second).as_str().to_string();
+
+        assert_eq!(first_text, second_text);
+        assert!(first_text.contains("[REDACTED:api_key]"));
+        assert!(!first_text.contains("sk-ABCDEFGHIJKLMNOPQRSTUVWX"));
+        assert!(!first_text.contains("sk-ZYXWVUTSRQPONMLKJIHGFEDC"));
         assert_eq!(
-            redactor.sanitize_json(&first).as_str(),
-            redactor.sanitize_json(&second).as_str()
+            first_text,
+            r#"{"[REDACTED:api_key]":"second value"}"#
         );
     }
 
