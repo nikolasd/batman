@@ -521,20 +521,20 @@ fn result_usage_artifacts_scenario() -> ScenarioResult {
             format!("expected every session/update to share one sessionId, found {session_ids:?}"),
         );
     }
-    let call_2_frames: Vec<&Value> = frames
+    let stable_tool_frames: Vec<&Value> = frames
         .iter()
-        .filter(|frame| frame["params"]["update"]["toolCallId"] == "call-2")
+        .filter(|frame| frame["params"]["update"]["toolCallId"] == "tool-000000000002")
         .collect();
-    if call_2_frames.len() < 2 {
+    if stable_tool_frames.len() < 2 {
         return ScenarioResult::fail(
             scenario::RESULT_USAGE_ARTIFACTS,
-            "expected call-2's tool_call and tool_call_update to both carry the same toolCallId",
+            "expected tool-000000000002's tool_call and tool_call_update to both carry the same toolCallId",
         );
     }
     ScenarioResult::pass(
         scenario::RESULT_USAGE_ARTIFACTS,
         format!(
-            "every session/update in the fixture correlates to sessionId {:?}; tool_call/tool_call_update pairs (e.g. call-2) correlate via a shared toolCallId; ACP v1 carries no usage object at all, so usage capability is honestly declared None regardless",
+            "every session/update in the fixture correlates to sessionId {:?}; tool_call/tool_call_update pairs (e.g. tool-000000000002) correlate via a shared toolCallId; ACP v1 carries no usage object at all, so usage capability is honestly declared None regardless",
             session_ids.iter().next().unwrap()
         ),
     )

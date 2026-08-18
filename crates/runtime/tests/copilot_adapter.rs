@@ -403,7 +403,7 @@ fn declared_capabilities_match_exactly_what_this_adapter_tests() {
     assert_eq!(capabilities.nested, NestedCapability::None);
     assert_eq!(capabilities.native_view, NativeViewCapability::None);
     // Proven by the `session-updates.jsonl` `edit`-kind tool call
-    // (`call-2`)'s `diff` content normalizing into a `ToolResult`.
+    // (`tool-000000000002`)'s `diff` content normalizing into a `ToolResult`.
     assert_eq!(
         capabilities.workspace_control,
         WorkspaceControlCapability::Write
