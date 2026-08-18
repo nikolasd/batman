@@ -527,6 +527,34 @@ fn fixture_profile_rejects_secret_shaped_permission_envelope() {
 }
 
 #[test]
+fn profiles_differing_only_in_permission_envelope_key_order_share_one_fingerprint() {
+    let mut first_raw = codex_reviewer_profile(vec![]);
+    first_raw["permissionEnvelope"] = json!({
+        "allow": ["read"],
+        "deny": ["write"]
+    });
+    let mut second_raw = codex_reviewer_profile(vec![]);
+    second_raw["permissionEnvelope"] = json!({
+        "deny": ["write"],
+        "allow": ["read"]
+    });
+
+    let first: WorkerProfile = serde_json::from_value(first_raw).unwrap();
+    let second: WorkerProfile = serde_json::from_value(second_raw).unwrap();
+
+    assert_eq!(first.fingerprint(), second.fingerprint());
+}
+
+#[test]
+fn a_permission_envelope_with_unsorted_keys_is_not_mistaken_for_a_secret() {
+    let mut raw = codex_reviewer_profile(vec![]);
+    raw["permissionEnvelope"] = json!({ "zeta": "ok", "alpha": "ok" });
+    let profile: WorkerProfile = serde_json::from_value(raw).unwrap();
+
+    assert!(profile.validate(&EffectivePolicy::baseline()).is_ok());
+}
+
+#[test]
 fn fixture_profile_allows_explicitly_permitted_secret_env_name_but_never_stores_its_value() {
     let raw = codex_reviewer_profile(vec!["ANTHROPIC_API_KEY"]);
     let profile: WorkerProfile = serde_json::from_value(raw).unwrap();

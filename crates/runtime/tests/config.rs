@@ -118,40 +118,69 @@ fn unknown_yaml_keys_fail_closed() {
     );
 }
 
-/// The fingerprint should be deterministic for the same input.
 #[test]
-fn fingerprint_is_deterministic() {
-    let dir = fixtures_dir();
-
-    // Load and merge twice with the same input.
-    let layered1 = LayeredConfig::load(
-        Some(&dir.join("org.yml")),
-        Some(&dir.join("repo.yml")),
-        Some(&dir.join("user.yml")),
+fn merging_one_layer_twice_produces_the_same_fingerprint() {
+    let temporary = tempfile::tempdir().expect("temporary config directory");
+    let org = temporary.path().join("org.yml");
+    std::fs::write(
+        &org,
+        r#"retention: "90d"
+max_workers: 8
+display:
+  backend: "auto"
+concurrency:
+  ceiling: 4
+"#,
     )
-    .expect("fixtures load");
+    .expect("write org configuration");
 
-    let layered2 = LayeredConfig::load(
-        Some(&dir.join("org.yml")),
-        Some(&dir.join("repo.yml")),
-        Some(&dir.join("user.yml")),
+    let layered = LayeredConfig::load(Some(&org), None, None).expect("load org configuration");
+    let first = layered.merge(None).expect("first merge");
+    let second = layered.merge(None).expect("second merge");
+
+    assert_eq!(first.fingerprint, second.fingerprint);
+    assert_eq!(first.fingerprint.len(), 64);
+    assert!(first.fingerprint.chars().all(|character| character.is_ascii_hexdigit()));
+}
+
+#[test]
+fn key_order_in_the_yaml_layers_does_not_change_the_fingerprint() {
+    let temporary = tempfile::tempdir().expect("temporary config directory");
+    let first_org = temporary.path().join("first-org.yml");
+    let second_org = temporary.path().join("second-org.yml");
+    std::fs::write(
+        &first_org,
+        r#"retention: "90d"
+max_workers: 8
+display:
+  backend: "auto"
+concurrency:
+  ceiling: 4
+"#,
     )
-    .expect("fixtures load");
+    .expect("write first org configuration");
+    std::fs::write(
+        &second_org,
+        r#"concurrency:
+  ceiling: 4
+display:
+  backend: "auto"
+max_workers: 8
+retention: "90d"
+"#,
+    )
+    .expect("write second org configuration");
 
-    // Both should fail with the same error (locked field).
-    let result1 = layered1.merge(None);
-    let result2 = layered2.merge(None);
+    let first = LayeredConfig::load(Some(&first_org), None, None)
+        .expect("load first org configuration")
+        .merge(None)
+        .expect("merge first org configuration");
+    let second = LayeredConfig::load(Some(&second_org), None, None)
+        .expect("load second org configuration")
+        .merge(None)
+        .expect("merge second org configuration");
 
-    assert!(result1.is_err());
-    assert!(result2.is_err());
-
-    let err1 = result1.unwrap_err().to_string();
-    let err2 = result2.unwrap_err().to_string();
-
-    assert_eq!(
-        err1, err2,
-        "fingerprint should be deterministic for the same input"
-    );
+    assert_eq!(first.fingerprint, second.fingerprint);
 }
 
 /// Concurrency ceiling is clamped to max_workers when both are set.

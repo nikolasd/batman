@@ -625,15 +625,24 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_json_is_deterministic_for_same_input() {
-        // With serde_json preserve_order, output preserves input key order.
-        // The determinism guarantee is: same Value → same serialized output.
+    fn sanitize_json_is_byte_identical_for_two_differently_ordered_equal_objects() {
         let redactor = Redactor::new();
-        let value = serde_json::json!({"a": 1, "b": 2});
+        let first = serde_json::json!({
+            "zebra": { "delta": 2, "charlie": 3 },
+            "array": [{ "bravo": true, "alpha": false }],
+            "middle": "value"
+        });
+        let second = serde_json::json!({
+            "middle": "value",
+            "array": [{ "alpha": false, "bravo": true }],
+            "zebra": { "charlie": 3, "delta": 2 }
+        });
 
-        let out1 = redactor.sanitize_json(&value).as_str().to_string();
-        let out2 = redactor.sanitize_json(&value).as_str().to_string();
-        assert_eq!(out1, out2);
+        let first_sanitized = redactor.sanitize_json(&first).as_str().to_string();
+        let second_sanitized = redactor.sanitize_json(&second).as_str().to_string();
+
+        assert_eq!(first_sanitized, second_sanitized);
+        assert!(first_sanitized.starts_with(r#"{"array":"#));
     }
 
     #[test]
