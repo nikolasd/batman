@@ -11,7 +11,7 @@ TypeScript/workspace, and build/docs/release, split across four parallel reviewe
 findings were corrected in place (R17, R20, R43, R46) where the mechanism had changed since last
 verified.
 
-**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R33, R41, R44, R47-R54, R68-R70) plus the
+**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R33, R41, R44, R47-R54, R68-R71) plus the
 eleven documentation findings that were resolved or already-stale (R19, R21-R28) has been pruned from
 this document. That history — what broke, the fix commit, the test that proved it, and which
 still-open items below exist *because* of that fix — now lives in
@@ -20,7 +20,7 @@ still-open items below exist *because* of that fix — now lives in
 [Part XII](journal.md#part-xii--closing-the-last-critical-a-denylist-blind-to-its-own-vendor) (R49),
 [Part XIII](journal.md#part-xiii--two-leaks-one-lease-releasing-what-a-failed-start-acquired) (R41, R50),
 [Part XIV](journal.md#part-xiv--fixture-modes-broken-promise-a-kill-switch-only-one-caller-ever-asked-about) (R52),
-[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33), and [Part XXII](journal.md#part-xxii--the-capture-pipeline-that-graded-its-own-homework) (R44).
+[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33), [Part XXII](journal.md#part-xxii--the-capture-pipeline-that-graded-its-own-homework) (R44), and [Part XXIII](journal.md#part-xxiii--the-same-guarded-write-one-interleaving-further-the-decider-that-no-longer-owned-the-task) (R71).
 This document only tracks what's still broken.
 
 **Baseline, last run 2026-08-12** (during an unrelated state-root rename; results apply to this
@@ -42,16 +42,6 @@ operate the system correctly.
 ## Findings
 
 ### High
-
-#### R71. `ApprovalService::decide`'s ownership pre-check races `reconcile/omp`'s task ownership rebind
-
-**Location:** `crates/runtime/src/approval/service.rs:172-179` (`ApprovalService::decide`'s ownership check); `crates/runtime/src/domain/repository.rs:1124` (`UPDATE tasks SET owner_client_instance_id ...`, the `reconcile/omp` ownership rebind); `crates/runtime/src/domain/repository.rs:792-883` (`decide_approval`'s guarded write, which never re-checks the task's current owner)
-
-**Evidence:** `decide` (`service.rs:172-179`) reads a snapshot once, then compares `snapshot.owner_client_instance_id` to the caller's `principal_instance_id` entirely in memory, before ever reaching the guarded domain write. `decide_approval`'s transaction (`repository.rs:792-883`, hardened for R70) guards only `decision IS NULL` and the run's terminal state — it never re-reads `tasks.owner_client_instance_id`. Between the snapshot read and that write, `reconcile/omp` can rebind the task to a new owner via the unguarded `UPDATE tasks SET owner_client_instance_id = ?1, revision = ?2, updated_at = ?3 WHERE task_id = ?4` (`repository.rs:1124`) and commit. The old owner, having already passed the stale pre-check, still reaches and wins the guarded write — deciding an approval for a task it no longer owns. This is distinct from R70's decision-row race (two callers racing the same decision): here exactly one decider races a *rebind*, not another decider. Noted but deliberately left unfixed by R70's own adversarial review (`docs/journal.md` Part XX: "`tasks.owner_client_instance_id` is separately mutated by the reconcile path's ownership rebind, a real, reachable interleaving between reconcile and decide, but not R70's mechanism and out of this fix's scope").
-
-**Fix:** move ownership authorization into `decide_approval`'s guarded transaction instead of trusting the pre-check snapshot — either re-read `tasks.owner_client_instance_id` inside the same transaction that performs the `UPDATE approvals` and reject on mismatch, or thread the caller's `principal_instance_id` into `decide_approval` and add it as a `WHERE` condition (joined against `tasks`) so a rebind that lands before the write invalidates it. Add a deterministic regression test that interleaves a `reconcile/omp` ownership rebind between the snapshot read and the guarded write and asserts the stale owner's `decide` is refused, mirroring `approval_decide_race.rs`'s `join!(biased; ...)` pattern.
-
-**Priority:** High — a real, reachable race that lets a caller decide an approval for a task it no longer owns, violating the owner-only decision contract; same severity class as R70/R54 (found during R70's adversarial review, 2026-08-18; not fixed as part of that change since it is a distinct interleaving — reconcile vs. decide, not decide vs. decide — outside R70's stated mechanism).
 
 #### R72. `ViolationService::decide`'s ownership pre-check races `reconcile/omp`'s task ownership rebind
 
@@ -333,7 +323,7 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
-- **High:** 3 (R71, R72, R73 — new, found during R70/R71's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII)
+- **High:** 2 (R72, R73 — new, found during R71's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
 - **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
