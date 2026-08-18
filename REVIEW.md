@@ -53,6 +53,26 @@ operate the system correctly.
 
 **Priority:** High — a real, reachable race that lets a caller decide an approval for a task it no longer owns, violating the owner-only decision contract; same severity class as R70/R54 (found during R70's adversarial review, 2026-08-18; not fixed as part of that change since it is a distinct interleaving — reconcile vs. decide, not decide vs. decide — outside R70's stated mechanism).
 
+#### R72. `ViolationService::decide`'s ownership pre-check races `reconcile/omp`'s task ownership rebind
+
+**Location:** `crates/runtime/src/policy/violation.rs:533-556` (`ViolationService::decide`'s snapshot read and in-memory ownership compare); `crates/runtime/src/domain/repository.rs:1061-1139` (`resolve_policy_violation`'s guarded write, which never re-reads `tasks.owner_client_instance_id`); `crates/runtime/src/domain/repository.rs:1171` (`UPDATE tasks SET owner_client_instance_id ...`, the `reconcile/omp` ownership rebind)
+
+**Evidence:** `decide` (`violation.rs:533-546`) reads a snapshot of `tasks.owner_client_instance_id` once via `policy_violation_snapshot`, then (`violation.rs:548-556`) compares it to the caller's `principal_instance_id` entirely in memory, before ever reaching the guarded domain write. `resolve_policy_violation`'s transaction (`repository.rs:1061-1139`) guards only `resolution IS NULL` (the `UPDATE policy_violations ... WHERE ... AND resolution IS NULL` at `repository.rs:1090-1093`) and the run's terminal state — it never re-reads `tasks.owner_client_instance_id`. Between the snapshot read and that write, `reconcile/omp` can rebind the task to a new owner via the same unguarded `UPDATE tasks SET owner_client_instance_id = ?1, revision = ?2, updated_at = ?3 WHERE task_id = ?4` (`repository.rs:1171`) that R71 cites for the approval path, and commit. The old owner, having already passed the stale pre-check, still reaches and wins the guarded write — deciding a violation for a task it no longer owns. Identical mechanism to R71, one service over.
+
+**Fix:** mirror R71's fix — thread `principal_instance_id` into `resolve_policy_violation`, re-read `tasks.owner_client_instance_id` inside the same guarded transaction before the `UPDATE policy_violations` write and reject on mismatch, map the resulting `DomainError::NotOwner` to `ViolationError::Forbidden`, and delete the caller-side pre-check (`violation.rs:548-556`) once the in-transaction check subsumes it.
+
+**Priority:** High — same severity class as R70/R71: a real, reachable race that lets a caller decide a policy violation for a task it no longer owns; found during R71's adversarial review, 2026-08-18; not fixed as part of R71 since it is a distinct call path (`ViolationService::decide`, not `ApprovalService::decide`).
+
+#### R73. `ApprovalService::decide` reverts concurrent run-flag mutations across the vendor callback await
+
+**Location:** `crates/runtime/src/approval/service.rs:250-269` (the callback-failure branch's read-modify-write of `RunFlags`); sibling shape `crates/runtime/src/policy/violation.rs:248-287,395-415` (`record_nested_worker`/`record_cost_ceiling` → `apply_action` → `set_quarantined`); `crates/runtime/src/domain/repository.rs:556-585` (`set_run_flags`, a blind whole-struct write with no compare-and-swap)
+
+**Evidence:** `decide` loads `snapshot.run_flags` once via `load_snapshot` (`service.rs:178`), then awaits `self.callback.acknowledge` (`service.rs:230`); on failure (`service.rs:250-269`) it sets only `flags.protocol_unhealthy = true` on that stale snapshot before writing the entire struct back via `set_run_flags` (`repository.rs:556-585`), which blindly overwrites all six flag columns with whatever the caller passed — no compare-and-swap, no in-transaction re-read. Any flag set concurrently during the awaited window — `policy_quarantined` from `ViolationService::apply_action`'s `set_quarantined` (`violation.rs:395-415`, itself the same read-stale/await/write-whole-struct shape, spanning the `run_domain_op` await at `violation.rs:274` between the flags load at `violation.rs:248`/`309` and the write at `violation.rs:408`), `workspace_dirty`, or `children_active` — is silently reverted to its pre-await value. A lost `policy_quarantined` un-quarantines a run a concurrent violation just quarantined.
+
+**Fix:** make flag mutation targeted instead of caller-supplied whole-struct writes — either a repository-level single-flag update (e.g. `set_run_flag(run_id, flag_name, value)`) or an in-transaction read-modify-write inside `set_run_flags` itself, so a concurrent flag change during an awaited callback cannot be clobbered by an unrelated writer's stale copy. Migrate both call sites (`service.rs:250-269` and `violation.rs`'s `set_quarantined`).
+
+**Priority:** High — a lost update on durable safety flags, capable of silently un-quarantining a violating run; found during R71's adversarial review, 2026-08-18.
+
 ### Medium
 
 #### R12. Claude error result subtypes are normalized as usage only
@@ -313,7 +333,7 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
-- **High:** 1 (R71 — new, found during R70's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII)
+- **High:** 3 (R71, R72, R73 — new, found during R70/R71's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
 - **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
