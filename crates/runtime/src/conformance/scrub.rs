@@ -337,16 +337,13 @@ mod tests {
         );
     }
 
-    /// Non-empty non-JSON lines are scrubbed and retained for malformed-frame coverage.
     #[test]
-    fn preserves_non_json_lines_after_path_and_secret_scrubbing() {
+    fn drops_non_json_lines() {
         let mut scrubber = Scrubber::new("/tmp/capture-123".into());
 
-        assert_eq!(
-            scrubber.scrub_line(b"cwd=/tmp/capture-123 token=sk-ABCDEFGHIJKLMNOPQRSTUVWX"),
-            Some("cwd=/workspace/batman token=[REDACTED:api_key]".into())
-        );
+        assert_eq!(scrubber.scrub_line(b"this-is-not-json"), None);
         assert_eq!(scrubber.scrub_line(b""), None);
+        assert_eq!(scrubber.scrub_line(&[0xff]), None);
     }
 
     #[test]

@@ -712,7 +712,7 @@ mod tests {
         let mut omp_rpc_scrubber = Scrubber::new("/tmp/capture-123".into());
         assert_eq!(
             scrub_captured_frame(AdapterKind::OmpRpc, &mut omp_rpc_scrubber, raw),
-            Some("cwd=/workspace/batman token=[REDACTED:api_key]".into())
+            None
         );
 
         let mut claude_scrubber = Scrubber::new("/tmp/capture-123".into());
