@@ -59,9 +59,8 @@ fn normalize_fixture_lines(lines: &[String]) -> Vec<AdapterEventPayload> {
         if line.trim().is_empty() {
             continue;
         }
-        match serde_json::from_str::<Value>(line) {
-            Ok(frame) => events.extend(normalize_frame(&frame)),
-            Err(_) => {}
+        if let Ok(frame) = serde_json::from_str::<Value>(line) {
+            events.extend(normalize_frame(&frame));
         }
     }
     events

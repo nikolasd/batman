@@ -96,7 +96,8 @@ impl Scrubber {
             }
 
             let mut rewritten = if key == "sessionFile" {
-                self.rewrite_session_file(s).unwrap_or_else(|| s.to_string())
+                self.rewrite_session_file(s)
+                    .unwrap_or_else(|| s.to_string())
             } else {
                 s.to_string()
             };
@@ -377,10 +378,7 @@ mod tests {
         let scrubbed = scrubber.scrub_line(input.as_bytes()).expect("must parse");
         let value: Value = serde_json::from_str(&scrubbed).expect("scrubbed must be valid JSON");
 
-        assert_eq!(
-            value["session_id"],
-            "11111111-1111-4111-8111-000000000001"
-        );
+        assert_eq!(value["session_id"], "11111111-1111-4111-8111-000000000001");
         assert_eq!(value["message"]["id"], "msg-000000000001");
         assert_eq!(value["messageId"], "msg-000000000001");
         assert_eq!(value["message"]["content"][0]["id"], "tool-000000000001");
@@ -576,7 +574,10 @@ mod tests {
             } else {
                 &first[key]
             };
-            assert_eq!(value, "tool-000000000001", "{key} must share the tool family");
+            assert_eq!(
+                value, "tool-000000000001",
+                "{key} must share the tool family"
+            );
         }
         assert_eq!(first["hook_id"], "hook-000000000001");
         assert_eq!(first["item"]["id"], "item-000000000001");

@@ -754,7 +754,7 @@ mod tests {
     #[test]
     fn render_json_fixture_invalid_frame_error_names_fixture_and_bounds_preview() {
         let frame = format!("not-json-{}-tail", "x".repeat(1024));
-        let error = render_fixture_content("broken.json", &[frame.clone()])
+        let error = render_fixture_content("broken.json", std::slice::from_ref(&frame))
             .expect_err("invalid JSON fixture frame must fail");
 
         assert!(error.contains("broken.json"));
