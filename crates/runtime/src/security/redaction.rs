@@ -647,6 +647,24 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_json_resolves_redacted_key_collisions_independently_of_input_order() {
+        let redactor = Redactor::new();
+        let first = serde_json::json!({
+            "sk-ABCDEFGHIJKLMNOPQRSTUVWX": "first value",
+            "sk-ZYXWVUTSRQPONMLKJIHGFEDC": "second value"
+        });
+        let second = serde_json::json!({
+            "sk-ZYXWVUTSRQPONMLKJIHGFEDC": "second value",
+            "sk-ABCDEFGHIJKLMNOPQRSTUVWX": "first value"
+        });
+
+        assert_eq!(
+            redactor.sanitize_json(&first).as_str(),
+            redactor.sanitize_json(&second).as_str()
+        );
+    }
+
+    #[test]
     fn org_patterns_are_applied_during_redaction() {
         let redactor = Redactor::with_org_rules(&["CUSTOM_SECRET_[0-9A-Z]{16}".to_string()])
             .expect("valid pattern");
