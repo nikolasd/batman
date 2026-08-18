@@ -9,13 +9,14 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use batman_protocol::{RunId, TaskId, WorkerId};
+use batman_protocol::{ProjectId, RunId, TaskId, WorkerId};
 use batman_runtime::adapter::{
     Adapter, AdapterEvent, AdapterEventPayload, AdapterEventSink, CancelScope, OmpRpcAdapter,
     OmpRpcAdapterOptions, OmpRpcStartupOptions, ProfileId, StartSpec, StartupOptions,
     WorkerProfile,
 };
 use batman_runtime::db::DatabaseHandle;
+use batman_runtime::domain::DomainRepository;
 use batman_runtime::ipc::{PeerCredentialReader, PeerCredentials, Server, ServerConfig};
 use batman_runtime::paths::RuntimePaths;
 use batman_runtime::service::{AdapterFuture, FakeRunDriver, RunDriver, RunDriverContext};
@@ -1070,6 +1071,8 @@ async fn second_nested_worker_observed_on_an_already_actioned_run_never_double_c
 struct Harness {
     socket: PathBuf,
     owned_dir: PathBuf,
+    database: PathBuf,
+    project_id: ProjectId,
     _state: tempfile::TempDir,
     _repo: tempfile::TempDir,
     shutdown: Option<oneshot::Sender<()>>,
@@ -1117,6 +1120,8 @@ impl Harness {
         Self {
             socket,
             owned_dir,
+            database: paths.database.clone(),
+            project_id: paths.project_id,
             _state: state,
             _repo: repo,
             shutdown: Some(shutdown_tx),
@@ -3152,4 +3157,444 @@ async fn seed_artifact(
         run_id,
     };
     store.store(artifact, content).await.unwrap()
+}
+
+// -------------------------------------------------------- R77: run-lifecycle authority
+//
+// R76 closed `task/upsert`'s ownership hole, but the same review (its W2
+// finding) found that ownership gates *decisions* -- `approval/decide`,
+// `policy/violation/decide`, `reconcile/omp` -- and never the run
+// lifecycle itself. `OrchestrationService::dispatch` calls
+// `run_submit`, `run_retry`, `run_cancel`, `message_send`,
+// `workspace_acquire`, and `coordination_child_decide` with `params`
+// only -- no `principal` -- so any connected `ompExtension` instance can
+// mutate a run or task it does not own, without ever seizing it via
+// `task/upsert`. Each RED test below proves one such mutation succeeds
+// today against another instance's task/run and must instead be refused
+// `-32602`, leaving state and the journal untouched.
+
+/// Total number of durable events replayed for this project from the
+/// beginning. A refused mutation must leave this unchanged: nothing may
+/// reach the journal from an unauthorized branch.
+async fn event_count(client: &mut Client, id: i64) -> usize {
+    client
+        .call(id, "events/replay", json!({ "afterSequence": 0 }))
+        .await["result"]
+        .as_array()
+        .expect("events/replay returns an array")
+        .len()
+}
+
+/// Seeds a pending `coordination/child/decide`-able request directly
+/// through [`DomainRepository::request_child`], bypassing
+/// `coordination/requestChild` entirely: that RPC is dispatched through
+/// a distinct `workerMcp`-scoped path (`CoordinationBroker`, gated by a
+/// minted `ScopeTokenStore` token -- see `crates/runtime/tests/coordination.rs`'s
+/// `seed_scoped_run`) that this file's `Harness` does not wire up.
+/// `request_child` is `pub` and is exactly what that path calls once a
+/// worker's scope token has been verified, so this reaches the same
+/// `waitingPeer` state and `ChildWorkerRequested` journal entry a real
+/// request would, without duplicating a second harness here.
+async fn seed_pending_child_request(harness: &Harness, run_id: RunId, reason: &str) {
+    let db = Arc::new(DatabaseHandle::start(harness.database.clone()).await.unwrap());
+    let project_id = harness.project_id;
+    let reason = reason.to_string();
+    db.run_domain_op(Box::new(move |conn| {
+        let mut repo = DomainRepository::new(conn, project_id);
+        repo.request_child(run_id, &reason).map(|_| Value::Null)
+    }))
+    .await
+    .expect("seeding a pending child request must succeed");
+}
+
+/// RED: `run_submit` (`orchestration.rs`'s `dispatch` calls
+/// `self.run_submit(params).await` with no `principal`) never checks
+/// that the caller owns `taskId`. A second, unrelated instance can
+/// submit -- and, with a driver installed, actually start -- a run
+/// against a task it does not own.
+#[tokio::test]
+async fn run_submit_against_another_instances_task_is_refused() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut owner = omp_client(&harness, "omp-1").await;
+    let task = owner
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+
+    let mut attacker = omp_client(&harness, "omp-2").await;
+    let attacker_worker = attacker
+        .call(
+            2,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let attacker_worker_id = attacker_worker["result"]["workerId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let before = event_count(&mut owner, 3).await;
+
+    let submit = attacker
+        .call(
+            3,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": attacker_worker_id }),
+        )
+        .await;
+    assert_eq!(
+        submit["error"]["code"], -32602,
+        "run/submit against another instance's task must be refused: {submit:?}"
+    );
+
+    let runs = owner
+        .call(4, "run/list", json!({ "taskId": task_id }))
+        .await;
+    assert_eq!(
+        runs["result"]["runs"].as_array().unwrap().len(),
+        0,
+        "a refused submit must not have created a run: {runs:?}"
+    );
+
+    let after = event_count(&mut owner, 5).await;
+    assert_eq!(
+        after, before,
+        "a refused submit must journal nothing: before {before}, after {after}"
+    );
+}
+
+/// RED: `run_cancel` (`dispatch` calls `self.run_cancel(params).await`
+/// with no `principal`) never checks that the caller owns the run's
+/// task. A second, unrelated instance can cancel a run it does not own.
+#[tokio::test]
+async fn run_cancel_against_another_instances_run_is_refused() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut owner = omp_client(&harness, "omp-1").await;
+    let (_task_id, _worker_id, run_id) = submit_run_with_driver(&mut owner, "omp-1").await;
+
+    let mut attacker = omp_client(&harness, "omp-2").await;
+    let before = event_count(&mut owner, 5).await;
+
+    let cancel = attacker
+        .call(2, "run/cancel", json!({ "runId": run_id }))
+        .await;
+    assert_eq!(
+        cancel["error"]["code"], -32602,
+        "run/cancel by a non-owner must be refused: {cancel:?}"
+    );
+
+    let get = owner.call(6, "run/get", json!({ "runId": run_id })).await;
+    assert_eq!(
+        get["result"]["state"], "working",
+        "a refused cancel must leave the run's state untouched: {get:?}"
+    );
+
+    let after = event_count(&mut owner, 7).await;
+    assert_eq!(
+        after, before,
+        "a refused cancel must journal nothing: before {before}, after {after}"
+    );
+}
+
+/// RED: `run_retry` (`dispatch` calls `self.run_retry(params).await`
+/// with no `principal`) never checks that the caller owns the prior
+/// run's task. A second, unrelated instance can retry a terminal run
+/// belonging to another instance's task under its own `WorkerId`.
+#[tokio::test]
+async fn run_retry_against_another_instances_task_is_refused() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut owner = omp_client(&harness, "omp-1").await;
+    let (task_id, _worker_id, run_id) = submit_run_with_driver(&mut owner, "omp-1").await;
+
+    // Owner cancels its own run to reach a terminal state -- legitimate,
+    // exercises none of R77's guarded paths.
+    let cancel = owner
+        .call(5, "run/cancel", json!({ "runId": run_id }))
+        .await;
+    assert!(
+        cancel.get("error").is_none(),
+        "owner's own cancel failed: {cancel:?}"
+    );
+
+    let mut attacker = omp_client(&harness, "omp-2").await;
+    let attacker_worker = attacker
+        .call(
+            2,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let attacker_worker_id = attacker_worker["result"]["workerId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let before = event_count(&mut owner, 6).await;
+
+    let retry = attacker
+        .call(
+            3,
+            "run/retry",
+            json!({ "priorRunId": run_id, "workerId": attacker_worker_id }),
+        )
+        .await;
+    assert_eq!(
+        retry["error"]["code"], -32602,
+        "run/retry against another instance's task must be refused: {retry:?}"
+    );
+
+    let runs = owner
+        .call(7, "run/list", json!({ "taskId": task_id }))
+        .await;
+    assert_eq!(
+        runs["result"]["runs"].as_array().unwrap().len(),
+        1,
+        "a refused retry must not have created a new run: {runs:?}"
+    );
+
+    let after = event_count(&mut owner, 8).await;
+    assert_eq!(
+        after, before,
+        "a refused retry must journal nothing: before {before}, after {after}"
+    );
+}
+
+/// RED: `message_send` (`dispatch` calls `self.message_send(params).await`
+/// with no `principal`) never checks that the caller owns the run's
+/// task. A second, unrelated instance can inject a message into another
+/// instance's run, purportedly sent by that run's own worker.
+#[tokio::test]
+async fn message_send_against_another_instances_run_is_refused() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut owner = omp_client(&harness, "omp-1").await;
+    let (task_id, worker_id, run_id) = submit_run_with_driver(&mut owner, "omp-1").await;
+
+    let mut attacker = omp_client(&harness, "omp-2").await;
+    let before = event_count(&mut owner, 5).await;
+
+    let send = attacker
+        .call(
+            2,
+            "message/send",
+            json!({
+                "runId": run_id,
+                "senderWorkerId": worker_id,
+                "taskId": task_id,
+                "kind": "question",
+                "payload": "I am not the owner",
+            }),
+        )
+        .await;
+    assert_eq!(
+        send["error"]["code"], -32602,
+        "message/send against another instance's run must be refused: {send:?}"
+    );
+
+    let list = owner
+        .call(6, "message/list", json!({ "runId": run_id }))
+        .await;
+    assert_eq!(
+        list["result"]["messages"].as_array().unwrap().len(),
+        0,
+        "a refused send must not have recorded a message: {list:?}"
+    );
+
+    let after = event_count(&mut owner, 7).await;
+    assert_eq!(
+        after, before,
+        "a refused send must journal nothing: before {before}, after {after}"
+    );
+}
+
+/// RED: `workspace_acquire` (`dispatch` calls
+/// `self.workspace_acquire(params).await` with no `principal`) never
+/// checks that the caller owns the run's task. A second, unrelated
+/// instance can acquire a workspace lease scoped to another instance's
+/// run.
+#[tokio::test]
+async fn workspace_acquire_against_another_instances_run_is_refused() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut owner = omp_client(&harness, "omp-1").await;
+    let (_task_id, _worker_id, run_id) = submit_run_with_driver(&mut owner, "omp-1").await;
+
+    let mut attacker = omp_client(&harness, "omp-2").await;
+
+    let acquire = attacker
+        .call(
+            2,
+            "workspace/acquire",
+            json!({ "runId": run_id, "mode": "readOnly", "requestedIsolation": "shared" }),
+        )
+        .await;
+    assert_eq!(
+        acquire["error"]["code"], -32602,
+        "workspace/acquire against another instance's run must be refused: {acquire:?}"
+    );
+
+    let replay = owner
+        .call(6, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    assert!(
+        workspace_event_kinds_for_run(&replay, &run_id).is_empty(),
+        "a refused acquire must not have journaled any workspace event: {replay:?}"
+    );
+}
+
+/// RED: `coordination_child_decide` (`dispatch` calls
+/// `self.coordination_child_decide(params).await` with no `principal`)
+/// never checks that the caller owns the parent run's task. A second,
+/// unrelated instance can answer a `coordination/requestChild` raised on
+/// another instance's run.
+#[tokio::test]
+async fn coordination_child_decide_against_another_instances_run_is_refused() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut owner = omp_client(&harness, "omp-1").await;
+    let (_task_id, _worker_id, run_id_str) = submit_run_with_driver(&mut owner, "omp-1").await;
+    let run_id = RunId::parse(&run_id_str).unwrap();
+    seed_pending_child_request(&harness, run_id, "need help").await;
+
+    let mut attacker = omp_client(&harness, "omp-2").await;
+    let before = event_count(&mut owner, 6).await;
+
+    let decide = attacker
+        .call(
+            2,
+            "coordination/child/decide",
+            json!({ "parentRunId": run_id_str, "decision": "deny", "reason": "not yours" }),
+        )
+        .await;
+    assert_eq!(
+        decide["error"]["code"], -32602,
+        "coordination/child/decide against another instance's run must be refused: {decide:?}"
+    );
+
+    let get = owner
+        .call(7, "run/get", json!({ "runId": run_id_str }))
+        .await;
+    assert_eq!(
+        get["result"]["state"], "waitingPeer",
+        "a refused decide must leave the run awaiting its own owner's decision: {get:?}"
+    );
+
+    let after = event_count(&mut owner, 8).await;
+    assert_eq!(
+        after, before,
+        "a refused decide must journal nothing: before {before}, after {after}"
+    );
+}
+
+/// GREEN guard for R77: every guarded mutation above must still succeed
+/// when the caller genuinely owns the task/run it targets, so the
+/// eventual fix (threading `principal` and arbitrating task ownership
+/// inside each guarded write) cannot pass by universally refusing.
+/// Chains all six methods on one owning connection: submit (via
+/// `submit_run_with_driver`), workspace/acquire, message/send,
+/// coordination/child/decide, run/cancel, and run/retry.
+#[tokio::test]
+async fn owner_can_perform_every_guarded_run_lifecycle_mutation_on_its_own_task() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut owner = omp_client(&harness, "omp-1").await;
+    let (task_id, worker_id, run_id_str) = submit_run_with_driver(&mut owner, "omp-1").await;
+    let run_id = RunId::parse(&run_id_str).unwrap();
+
+    let acquire = owner
+        .call(
+            5,
+            "workspace/acquire",
+            json!({ "runId": run_id_str, "mode": "readOnly", "requestedIsolation": "shared" }),
+        )
+        .await;
+    assert!(
+        acquire.get("error").is_none(),
+        "owner's own workspace/acquire failed: {acquire:?}"
+    );
+
+    let send = owner
+        .call(
+            6,
+            "message/send",
+            json!({
+                "runId": run_id_str,
+                "senderWorkerId": worker_id,
+                "taskId": task_id,
+                "kind": "question",
+                "payload": "status?",
+            }),
+        )
+        .await;
+    assert!(
+        send.get("error").is_none(),
+        "owner's own message/send failed: {send:?}"
+    );
+
+    seed_pending_child_request(&harness, run_id, "need help").await;
+    let decide = owner
+        .call(
+            7,
+            "coordination/child/decide",
+            json!({ "parentRunId": run_id_str, "decision": "deny", "reason": "not needed" }),
+        )
+        .await;
+    assert!(
+        decide.get("error").is_none(),
+        "owner's own coordination/child/decide failed: {decide:?}"
+    );
+    let get_after_decide = owner
+        .call(8, "run/get", json!({ "runId": run_id_str }))
+        .await;
+    assert_eq!(
+        get_after_decide["result"]["state"], "working",
+        "a decided run must return to working: {get_after_decide:?}"
+    );
+
+    let cancel = owner
+        .call(9, "run/cancel", json!({ "runId": run_id_str }))
+        .await;
+    assert!(
+        cancel.get("error").is_none(),
+        "owner's own run/cancel failed: {cancel:?}"
+    );
+
+    let retry = owner
+        .call(
+            10,
+            "run/retry",
+            json!({ "priorRunId": run_id_str, "workerId": worker_id }),
+        )
+        .await;
+    assert!(
+        retry.get("error").is_none(),
+        "owner's own run/retry failed: {retry:?}"
+    );
+    let new_run_id = retry["result"]["runId"].as_str().unwrap().to_string();
+    assert_ne!(
+        new_run_id, run_id_str,
+        "retry must create a distinct RunId"
+    );
 }
