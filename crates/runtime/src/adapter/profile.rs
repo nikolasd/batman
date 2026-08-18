@@ -324,9 +324,9 @@ impl WorkerProfile {
     /// A deterministic `sha256:<hex>` fingerprint over this profile's
     /// content -- everything except `id`, so two registrations of
     /// identical content share one fingerprint but always mint distinct
-    /// ids. `serde_json::Value`'s default map (this workspace enables no
-    /// `preserve_order` feature) orders object keys lexicographically, so
-    /// this is stable regardless of source field order. Content is
+    /// ids. This workspace enables `preserve_order` for the conformance
+    /// scrubber, so explicit [`crate::canonical_json::canonicalize_in_place`]
+    /// makes this stable regardless of source field order. Content is
     /// name-only/never-secret by construction (see module docs), so the
     /// fingerprint itself can never encode a secret value.
     #[must_use]
@@ -347,6 +347,7 @@ impl WorkerProfile {
                     .expect("Redactor::sanitize_json always produces valid JSON text"),
             );
         }
+        crate::canonical_json::canonicalize_in_place(&mut canonical);
         let bytes = serde_json::to_vec(&canonical)
             .expect("a canonicalized serde_json::Value always serializes");
         let digest = Sha256::digest(&bytes);
@@ -363,7 +364,9 @@ impl WorkerProfile {
 /// (names only, resolved at spawn time, never stored) instead.
 fn permission_envelope_contains_secret_shape(value: &serde_json::Value) -> bool {
     let redactor = Redactor::new();
-    let raw = serde_json::to_string(value).unwrap_or_default();
+    // Both sides must be canonical so only redaction changes the comparison.
+    let raw = serde_json::to_string(&crate::canonical_json::canonicalize(value))
+        .unwrap_or_default();
     let sanitized = redactor.sanitize_json(value);
     raw != sanitized.as_str()
 }

@@ -512,12 +512,14 @@ impl RuntimePolicy {
         self.rollout_gates.unresolved_gates()
     }
 
-    /// Computes a SHA-256 fingerprint of the merged policy document.
+    /// Computes a SHA-256 fingerprint of the merged policy document over
+    /// canonical bytes, so equal merged policies have the same fingerprint
+    /// regardless of YAML key order.
     #[must_use]
     pub fn compute_fingerprint(merged: &serde_json::Value) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(merged.to_string().as_bytes());
+        hasher.update(crate::canonical_json::canonicalize(merged).to_string().as_bytes());
         hex::encode(hasher.finalize())
     }
 }
