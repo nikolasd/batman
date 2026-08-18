@@ -17,7 +17,7 @@ use serde_json::Value;
 ///
 /// Use this when the caller owns the value and can mutate it directly. This
 /// delegates to `serde_json::Value::sort_all_objects`, which is why
-/// `Cargo.toml` requires `serde_json` 1.0.151 or later.
+/// `Cargo.toml` requires `serde_json` 1.0.129 or later.
 pub fn canonicalize_in_place(value: &mut Value) {
     value.sort_all_objects();
 }
