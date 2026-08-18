@@ -2195,6 +2195,89 @@ async fn reconcile_omp_rejects_mismatched_revision() {
         "mismatched revision must be INVALID_PARAMS: {reconcile:?}"
     );
 }
+
+/// R76: `task/upsert`'s guarded write has no ownership predicate -- it
+/// only enforces revision monotonicity (R74), never that the caller's
+/// `ownerClientInstanceId` matches whoever currently owns the row. A
+/// second OMP-extension client that never reconciled can therefore
+/// present the *stored* revision together with its own instance id and
+/// seize an in-flight task straight out from under its rightful owner,
+/// bypassing `reconcile/omp` entirely -- `task/upsert { taskId,
+/// ownerClientInstanceId: "omp-2", revision: <stored> }`. RED: today this
+/// upsert succeeds and rewrites `ownerClientInstanceId` to "omp-2"; it
+/// must instead be refused with `-32602`, leaving ownership untouched.
+///
+/// The companion assertion proves the legitimate route still works:
+/// after `reconcile/omp` (which itself assigns the new owner under
+/// revision arbitration) an upsert *by the new owner* at the stored
+/// revision succeeds. That half already passes today -- not because
+/// ownership is enforced, but because nothing is enforced -- and it must
+/// keep passing once R76's guard lands.
+#[tokio::test]
+async fn task_upsert_cannot_seize_ownership_from_another_instance() {
+    let harness = Harness::start(|_| {}).await;
+    let mut first_client = omp_client(&harness, "omp-1").await;
+
+    let created = first_client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 7 }),
+        )
+        .await;
+    let task_id = created["result"]["taskId"].as_str().unwrap().to_string();
+
+    // omp-2 never reconciles. It presents the stored revision (not a
+    // higher one) with its own instance id.
+    let mut second_client = omp_client(&harness, "omp-2").await;
+    let seizure = second_client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "taskId": task_id, "ownerClientInstanceId": "omp-2", "revision": 7 }),
+        )
+        .await;
+    assert_eq!(
+        seizure["error"]["code"], -32602,
+        "an upsert by a non-owner presenting the stored revision must be refused: {seizure:?}"
+    );
+
+    let get = first_client
+        .call(3, "task/get", json!({ "taskId": task_id }))
+        .await;
+    assert_eq!(
+        get["result"]["ownerClientInstanceId"], "omp-1",
+        "a refused upsert must not have rewritten ownership: {get:?}"
+    );
+    assert_eq!(get["result"]["revision"], 7);
+
+    // Legitimate path: reconcile first, then the new owner may upsert at
+    // the stored revision.
+    let reconcile = second_client
+        .call(
+            3,
+            "reconcile/omp",
+            json!({ "taskId": task_id, "revision": 7 }),
+        )
+        .await;
+    assert!(
+        reconcile.get("error").is_none(),
+        "reconcile/omp failed: {reconcile:?}"
+    );
+    assert_eq!(reconcile["result"]["newOwnerClientInstanceId"], "omp-2");
+
+    let resumed = second_client
+        .call(
+            4,
+            "task/upsert",
+            json!({ "taskId": task_id, "ownerClientInstanceId": "omp-2", "revision": 7 }),
+        )
+        .await;
+    assert!(
+        resumed.get("error").is_none(),
+        "an upsert by the actual (post-reconcile) owner at the stored revision must succeed: {resumed:?}"
+    );
+}
 #[tokio::test]
 async fn workspace_acquire_returns_lease_for_valid_run() {
     let harness = Harness::start(|c| {
