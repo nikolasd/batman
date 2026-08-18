@@ -66,9 +66,7 @@ impl Scrubber {
         val: Value,
     ) -> Value {
         match val {
-            Value::String(s) => {
-                Value::String(self.rewrite_string(parent_key, grandparent_key, &s))
-            }
+            Value::String(s) => Value::String(self.rewrite_string(parent_key, grandparent_key, &s)),
             Value::Number(n) => self.rewrite_number(parent_key, n),
             Value::Array(arr) => Value::Array(
                 arr.into_iter()
@@ -345,9 +343,7 @@ mod tests {
         let mut scrubber = Scrubber::new("/tmp/capture-123".into());
 
         assert_eq!(
-            scrubber.scrub_line(
-                b"cwd=/tmp/capture-123 token=sk-ABCDEFGHIJKLMNOPQRSTUVWX"
-            ),
+            scrubber.scrub_line(b"cwd=/tmp/capture-123 token=sk-ABCDEFGHIJKLMNOPQRSTUVWX"),
             Some("cwd=/workspace/batman token=[REDACTED:api_key]".into())
         );
         assert_eq!(scrubber.scrub_line(b""), None);
@@ -417,7 +413,9 @@ mod tests {
         ]
         .iter()
         .map(|frame| {
-            let scrubbed = scrubber.scrub_line(frame.as_bytes()).expect("frame must be retained");
+            let scrubbed = scrubber
+                .scrub_line(frame.as_bytes())
+                .expect("frame must be retained");
             let value: Value =
                 serde_json::from_str(&scrubbed).expect("scrubbed frame must be JSON");
             value["session_id"]
@@ -442,7 +440,9 @@ mod tests {
         ]
         .iter()
         .map(|frame| {
-            let scrubbed = scrubber.scrub_line(frame.as_bytes()).expect("frame must be retained");
+            let scrubbed = scrubber
+                .scrub_line(frame.as_bytes())
+                .expect("frame must be retained");
             let value: Value =
                 serde_json::from_str(&scrubbed).expect("scrubbed frame must be JSON");
             value["uuid"]

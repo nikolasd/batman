@@ -513,8 +513,8 @@ mod tests {
                     "manifest target must exist: {}",
                     fixture_path.display()
                 );
-                let existing =
-                    std::fs::read_to_string(&fixture_path).expect("manifest target must be readable");
+                let existing = std::fs::read_to_string(&fixture_path)
+                    .expect("manifest target must be readable");
                 let mut scrubber = Scrubber::new("/workspace/batman".into());
                 let frames: Vec<String> = if entry.fixture.ends_with(".jsonl") {
                     existing
@@ -546,7 +546,9 @@ mod tests {
         let mut discovered_paths = BTreeSet::new();
         for &kind in &kinds {
             let fixture_dir = PathBuf::from(FIXTURES_DIR).join(adapter_fixture_dir(kind));
-            for entry in std::fs::read_dir(&fixture_dir).expect("fixture directory must be readable") {
+            for entry in
+                std::fs::read_dir(&fixture_dir).expect("fixture directory must be readable")
+            {
                 let entry = entry.expect("fixture directory entry must be readable");
                 let file_name = entry.file_name();
                 if file_name.to_string_lossy().starts_with('.') {
@@ -554,7 +556,10 @@ mod tests {
                 }
 
                 assert!(
-                    entry.file_type().expect("fixture type must be readable").is_file(),
+                    entry
+                        .file_type()
+                        .expect("fixture type must be readable")
+                        .is_file(),
                     "fixture directory must contain files: {}",
                     entry.path().display()
                 );
@@ -577,7 +582,6 @@ mod tests {
             discovered_paths, expected_paths,
             "every adapter fixture must be manifest-managed or explicitly excluded"
         );
-
     }
 
     #[test]
@@ -679,17 +683,26 @@ mod tests {
         )
         .expect("single JSON frame must render");
 
-        assert_eq!(rendered, "{\n  \"z\": 1,\n  \"a\": {\n    \"b\": 2\n  }\n}\n");
+        assert_eq!(
+            rendered,
+            "{\n  \"z\": 1,\n  \"a\": {\n    \"b\": 2\n  }\n}\n"
+        );
     }
 
     #[test]
     fn render_json_fixture_rejects_multiple_frames() {
         let result = render_fixture_content(
             "initialize-v1.json",
-            &[r#"{"first":true}"#.to_string(), r#"{"second":true}"#.to_string()],
+            &[
+                r#"{"first":true}"#.to_string(),
+                r#"{"second":true}"#.to_string(),
+            ],
         );
 
-        assert!(result.is_err(), "JSON fixtures must contain exactly one frame");
+        assert!(
+            result.is_err(),
+            "JSON fixtures must contain exactly one frame"
+        );
     }
 
     #[test]
