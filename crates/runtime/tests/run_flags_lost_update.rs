@@ -20,12 +20,21 @@
 //! performs in production, flipping `policy_quarantined`, and then fails,
 //! so `decide`'s subsequent guarded write of `protocol_unhealthy` has
 //! something it must not clobber.
+//!
+//! The first test also subscribes to the service's broadcast channel and
+//! asserts the emitted `RunFlagsChanged` envelope, not just the database
+//! row: `set_run_flag` builds that event from the flags it read and
+//! flipped, so a reorder that constructed the event before applying the
+//! flip would leave the row correct while broadcasting the stale,
+//! pre-change struct -- the replay contract this project exists to
+//! guarantee would then be silently wrong while every other assertion in
+//! this file stayed green.
 
 use std::sync::Arc;
 
 use batman_protocol::{
-    ApprovalId, ApprovalRequest, DecidedBy, ProjectId, Run, RunFlags, RunId, RunState, TaskId,
-    TaskRef, Timestamp, Worker, WorkerId, WorkerProfileRef,
+    ApprovalId, ApprovalRequest, DecidedBy, EventEnvelope, ProjectId, Run, RunFlags, RunId,
+    RunState, RuntimeEvent, TaskId, TaskRef, Timestamp, Worker, WorkerId, WorkerProfileRef,
 };
 use batman_runtime::approval::{ApprovalCallback, ApprovalService, CallbackFuture, DecideOutcome};
 use batman_runtime::db::DatabaseHandle;
@@ -123,15 +132,18 @@ async fn seed_pending_approval(
     (approval_id, run_id, task_id)
 }
 
-/// An [`ApprovalService`] wired to the given callback; the broadcast sender
-/// has no subscribers, which is the production shape for an unattached
-/// console.
+/// An [`ApprovalService`] wired to the given callback and broadcast sender.
+/// Pass `broadcast::channel(64).0` directly for tests that never inspect
+/// the broadcast stream (the production shape for an unattached console);
+/// pass a sender whose receiver you kept via `.subscribe()` for tests that
+/// assert what was broadcast.
 fn service(
     db: Arc<DatabaseHandle>,
     project_id: ProjectId,
     callback: Arc<dyn ApprovalCallback>,
+    events_tx: broadcast::Sender<EventEnvelope>,
 ) -> ApprovalService {
-    ApprovalService::new(db, project_id, callback, broadcast::channel(64).0)
+    ApprovalService::new(db, project_id, callback, events_tx)
 }
 
 /// Reads a run's current flags directly, independent of `ApprovalService`'s
@@ -226,6 +238,7 @@ async fn a_flag_set_during_the_callback_window_survives_a_callback_failure() {
     let project_id = ProjectId::new();
     let (approval_id, run_id, _task_id) = seed_pending_approval(&db, project_id).await;
 
+    let (events_tx, mut events_rx) = broadcast::channel(64);
     let svc = service(
         Arc::clone(&db),
         project_id,
@@ -234,6 +247,7 @@ async fn a_flag_set_during_the_callback_window_survives_a_callback_failure() {
             project_id,
             run_id,
         }),
+        events_tx,
     );
 
     let outcome = svc
@@ -256,6 +270,32 @@ async fn a_flag_set_during_the_callback_window_survives_a_callback_failure() {
         flags.protocol_unhealthy,
         "the callback failure must still mark the run protocol_unhealthy: {flags:?}"
     );
+
+    // The database row is only half the contract: the `RunFlagsChanged`
+    // event decide's callback-failure write broadcasts must carry the same
+    // post-change struct. `set_run_flag` builds that event from the flags
+    // it read and flipped (`repository.rs`) before returning; a reorder
+    // that constructed the event first and applied the flip after would
+    // leave this row correct while broadcasting the stale, pre-change
+    // struct -- and every assertion above would stay green.
+    let mut run_flags_events = Vec::new();
+    while let Ok(envelope) = events_rx.try_recv() {
+        if let RuntimeEvent::RunFlagsEvent { flags, .. } = envelope.event {
+            run_flags_events.push(flags);
+        }
+    }
+    let broadcast_flags = run_flags_events
+        .last()
+        .expect("decide's callback-failure write broadcasts a RunFlagsChanged event");
+    assert!(
+        broadcast_flags.protocol_unhealthy,
+        "the broadcast RunFlagsChanged payload must carry protocol_unhealthy: {broadcast_flags:?}"
+    );
+    assert!(
+        broadcast_flags.policy_quarantined,
+        "the broadcast RunFlagsChanged payload must carry the concurrent writer's \
+         policy_quarantined, not a stale pre-change struct: {broadcast_flags:?}"
+    );
 }
 
 #[tokio::test]
@@ -265,7 +305,12 @@ async fn the_unhealthy_flag_is_applied_when_no_concurrent_mutation_happens() {
     let project_id = ProjectId::new();
     let (approval_id, run_id, _task_id) = seed_pending_approval(&db, project_id).await;
 
-    let svc = service(Arc::clone(&db), project_id, Arc::new(FailingCallback));
+    let svc = service(
+        Arc::clone(&db),
+        project_id,
+        Arc::new(FailingCallback),
+        broadcast::channel(64).0,
+    );
 
     let outcome = svc
         .decide(approval_id, "omp-1", "approve", "ok", DecidedBy::Human)
