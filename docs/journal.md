@@ -3177,6 +3177,97 @@ cited, one layer further down. The pattern now runs five deep: R70's review foun
 found R72 and R73, R72's review found R74, and R73's review found R75. `REVIEW.md` is updated in the
 same pass this Part records to move R73 into resolution history.
 
+## Part XXVI — A guard that overreached: the rebind that couldn't be resumed
+
+R74, registered during Part XXIV's review of R72, was the same check-then-act shape one write
+further down the stack: `task/upsert` and `reconcile/omp` each read `tasks.revision` via one
+`run_domain_op` round trip, compared it to the caller-supplied revision entirely in memory, and
+only then issued a second round trip to write — while neither `upsert_task`'s `ON CONFLICT` arm nor
+`reconcile_ownership`'s `UPDATE` carried a revision predicate of its own. Since R71 and R72 made
+`tasks.owner_client_instance_id` the in-transaction authority `decide_approval` and
+`resolve_policy_violation` now trust, a lost update on *this* write could hand a stale client
+ownership those guarded reads would then treat as legitimate.
+
+`crates/runtime/tests/task_revision_race.rs` (`d745477`, 305 lines) made the interleaving
+deterministic the same way `approval_owner_race.rs` and `violation_owner_race.rs` had: since
+`service::query` is `pub(crate)` and `task_upsert`/`reconcile_omp` are private, the test drives the
+repo/db layers directly, with `tokio::join!(biased; ...)` pinning the actor-FIFO two-round-trips-
+per-caller ordering. Run against the pre-fix tree, `concurrent_upserts_cannot_move_a_revision_backwards`
+failed RED: two callers whose pre-checks both read stored revision 3 both landed their unconditional
+writes, revision 4 last, leaving `(4, "omp-3")` even though revision 5 had already been presented and
+wrongly overwritten. `concurrent_reconciles_with_the_same_revision_admit_exactly_one_rebind` failed
+RED the same way. A third test, `a_stale_upsert_arriving_after_a_newer_one_is_refused_sequentially`,
+already passed and had to keep passing post-fix — it isn't a concurrency test at all, just the
+ordinary sequential case with no caller-side pre-check left to catch it once the fix removed one.
+
+`9a78e74` moved both guards into their writes: `upsert_task`'s `ON CONFLICT` arm gained
+`WHERE excluded.revision >= tasks.revision`, refusing a lower revision inside its own transaction as
+`DomainError::RevisionTooLow`; `reconcile_ownership`'s `UPDATE` gained `AND revision = ?`, refusing a
+mismatch as `DomainError::RevisionMismatch`. Both caller-side pre-checks were deleted. But the fix
+went one step further than the guard required: a successful rebind also *consumed* the presented
+revision, advancing the stored value to `revision + 1` and returning it from the RPC, specifically so
+that two reconciles racing at the same revision would admit exactly one winner — the loser's
+predicate would no longer match. To keep a twice-restarted OMP able to reclaim its own tasks after
+that consumption, the extension side (`index.ts`, `reconcile.ts`, `tasks.ts`) grew a persisted
+"advanced correlation," written to the session log after every successful rebind. (An unrelated
+`b70a197` rustfmt-only pass for R73's flag work landed in between, touching `approval/service.rs`
+and `run_flags_lost_update.rs` — no part of this mechanism.)
+
+The adversarial review this fix demanded of itself returned **NEEDS CHANGES**, and the two errors it
+found were a real functional regression, not a doc defect: **E1**, `task/upsert`'s resume path always
+presents `revision: 0` (`INITIAL_TASK_REVISION`) — once a reconcile had consumed the revision and
+advanced the stored value past 0, every subsequent resume upsert would present a revision the write
+now correctly, and permanently, refused as too low. **E2**, reclaim itself had become single-use:
+idempotent replay depended entirely on the extension's best-effort session-log append landing and
+surviving, with no guard against a lost or never-written entry leaving a client unable to reclaim a
+task it had every right to. The exactly-one-rebind property the consumption existed to buy wasn't
+even necessary — it duplicated a guarantee R71 and R72 already provide one layer up.
+
+`7b70875` kept the `AND revision = ?` guard and dropped the consumption: `reconcile_ownership`'s
+`UPDATE` no longer touches the `revision` column, so reclaim is idempotent again — a repeated or
+retried reconcile at the same revision simply succeeds, last reconciler wins — and the
+exactly-one-*owner* property lives where it actually belongs: a usurped owner is refused not at
+rebind time but at decision time, by the same R71/R72 in-transaction re-read of
+`tasks.owner_client_instance_id` inside `decide_approval`/`resolve_policy_violation`. The RPC's
+`revision` result field and the extension's advanced-correlation machinery were reverted outright,
+not deprecated alongside a replacement — `index.ts`, `reconcile.ts`, and `tasks.ts` went back to
+their pre-`9a78e74` shape. `concurrent_reconciles_with_the_same_revision_admit_exactly_one_rebind`
+was replaced with `a_reconcile_presenting_a_stale_revision_is_refused`, which pins the corrected
+contract directly: a reconcile at a now-stale revision is refused with the actual stored revision
+classified in the same transaction and nothing journaled, a reconcile at the current revision
+rebinds, and a second reconcile presenting that same unconsumed revision *also* rebinds — final state
+`(5, "omp-4")`, `reconcile_event_count() == 2`, one event per admitted rebind. `orchestration_rpc.rs`
+gained `task_upsert_at_the_same_revision_still_succeeds_after_a_reconcile`, the first test to cover
+`task/upsert` after `reconcile/omp` at the RPC boundary at all: upsert at revision 7, reconcile to a
+new owner at 7, `task/get` still reports revision 7, a resume upsert at 7 from the new owner succeeds,
+and an upsert at 6 is refused with `-32602` and the byte-pinned legacy message `"revision 6 is lower
+than stored revision 7"`.
+
+The scoped re-review that followed (`agent://R74Adversary`, range `b70a197..7b70875`) returned
+**PASS WITH WARNINGS**: E1 and E2 both confirmed addressed — a repo-wide grep found
+`advancedCorrelation` gone entirely, and the new RPC test pins exactly the interaction E1 broke. Most
+of the first pass's warnings turned out moot once re-verified against the repaired code (the RPC
+result shape, the event's `revision` field, and the tool description had all reverted to a
+consistent, correct shape along with everything else), but one, **W4**, was a real narration defect
+the repair had introduced: the sequential test's comment called it a "GREEN guard" when the guarded
+*repo-layer* write this file drives was RED even in the pre-fix tree (only the since-deleted
+service-layer pre-check had caught it) — the same false-tense mistake Parts XXIII and XXIV's own
+reviews had already found once each in the sibling owner-race files. `7b70875` corrected it in the
+same commit. That correction, though, left one instance of the identical defect one helper over:
+`reconcile_omp_round_trips`'s doc comment still claimed a successful rebind "consumes the presented
+revision," flatly contradicting both the module header eight lines above it and the test directly
+below it. The review flagged it as **W7**; `d26a9dd` fixed it as its own commit, closing the loop on
+the third occurrence of a defect class this project now recognizes on sight.
+
+The same review also confirmed a residual the first-pass review had already spotted but left
+unregistered: **R76**, `task/upsert` takes no `principal` and threads the caller-supplied
+`ownerClientInstanceId` straight into the guarded write, which predicates only on revision — any
+connected `ompExtension` client can seize another instance's task outright by presenting its stored
+revision, bypassing `reconcile/omp`'s arbitration and the ownership authority R71/R72 built entirely.
+`c336505` registered it the same day. The finding chain now runs two directions from Part XX's
+original review of R70: R70 → R71 → R72 → R74 → R76 down one branch, R73 → R75 down the other.
+`REVIEW.md` is updated in the same pass this Part records to move R74 into resolution history.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
