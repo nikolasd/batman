@@ -510,7 +510,7 @@ mod tests {
                 let existing =
                     std::fs::read_to_string(&fixture_path).expect("manifest target must be readable");
                 let mut scrubber = Scrubber::new("/workspace/batman".into());
-                let frames = if entry.fixture.ends_with(".jsonl") {
+                let frames: Vec<String> = if entry.fixture.ends_with(".jsonl") {
                     existing
                         .lines()
                         .filter(|line| !line.is_empty())
