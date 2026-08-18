@@ -514,16 +514,14 @@ mod tests {
                     existing
                         .lines()
                         .filter(|line| !line.is_empty())
-                        .map(|line| {
-                            scrubber
-                                .scrub_line(line.as_bytes())
-                                .expect("fixture line must remain after scrubbing")
+                        .filter_map(|line| {
+                            scrub_captured_frame(kind, &mut scrubber, line.as_bytes())
                         })
                         .collect()
                 } else if entry.fixture.ends_with(".json") {
-                    vec![scrubber
-                        .scrub_line(existing.as_bytes())
-                        .expect("fixture document must remain after scrubbing")]
+                    scrub_captured_frame(kind, &mut scrubber, existing.as_bytes())
+                        .into_iter()
+                        .collect()
                 } else {
                     panic!("unsupported fixture extension: {}", entry.fixture);
                 };
