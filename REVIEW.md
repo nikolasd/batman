@@ -63,6 +63,16 @@ operate the system correctly.
 
 **Priority:** High — found during R73's adversarial review, 2026-08-18.
 
+#### R76. `task/upsert` accepts a caller-supplied owner with no principal binding, allowing ownership seizure
+
+**Location:** `crates/runtime/src/service/orchestration.rs::task_upsert` (~340-380: no `principal` parameter — contrast `ArtifactList`/`ArtifactFetch` on the same `dispatch` match, which are routed with `principal`; `ownerClientInstanceId` taken from `params` verbatim via `str_field`); `crates/runtime/src/domain/repository.rs::upsert_task`'s guarded `ON CONFLICT` write (`WHERE excluded.revision >= tasks.revision`) carries a revision predicate but no ownership predicate.
+
+**Evidence:** `task_upsert` (`orchestration.rs:351`) is dispatched with only `params`, never `principal` — the caller's own `ownerClientInstanceId` is read straight off the wire (`orchestration.rs:353`) and threaded into `upsert_task` unchanged. `upsert_task`'s write (`repository.rs:378-395`) — the same guarded write R74 made the sole arbiter of revision monotonicity — only conditions the `ON CONFLICT` update on `excluded.revision >= tasks.revision`; it never checks who currently owns the row. Any connected `ompExtension` client can therefore call `task/upsert { taskId, ownerClientInstanceId: "me", revision: <stored> }` for a task it does not own and unconditionally seize it, bypassing `reconcile/omp`'s arbitration entirely and defeating the `tasks.owner_client_instance_id` authority that R71/R72 moved into guarded approval/violation writes — those writes trust the column this one can overwrite for free. Found during R74's adversarial review (`agent://R74Adversary` W6): R74's new doc comment on `upsert_task` (`repository.rs:337-344`) now presents this write as the arbiter of task binding, which makes the missing ownership check easy to miss.
+
+**Fix:** thread the caller's principal into `task_upsert`/`upsert_task` and refuse — inside the same guarded transaction that already classifies `RevisionTooLow` — an upsert of an *existing* task whose stored `owner_client_instance_id` is neither the calling principal nor being rebound via `reconcile_ownership`; creation (no existing row) binds the new owner to the principal. The extension already sends its own session id on every call, so no legitimate caller breaks.
+
+**Priority:** High — found during R74's adversarial review, 2026-08-18.
+
 ### Medium
 
 #### R12. Claude error result subtypes are normalized as usage only
@@ -323,7 +333,7 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
-- **High:** 2 (R74 — new, found during R72's adversarial review; R75 — new, found during R73's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV)
+- **High:** 3 (R74 — new, found during R72's adversarial review; R75 — new, found during R73's adversarial review; R76 — new, found during R74's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
 - **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
