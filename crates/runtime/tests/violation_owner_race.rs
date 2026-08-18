@@ -1,11 +1,10 @@
-//! Regression tests for R72: `ViolationService::decide` checks task
+//! Regression tests for R72: `ViolationService::decide` used to check task
 //! ownership as a caller-side pre-check against a snapshot loaded before
 //! the guarded write, so a `reconcile/omp` ownership rebind landing in the
-//! window between that snapshot and the write leaves a stale owner's
+//! window between that snapshot and the write left a stale owner's
 //! decision with nothing left to refuse it. This is the same shape R71
 //! fixed on the approval path (see `approval_owner_race.rs`'s header for
-//! the full actor-FIFO argument) -- the violation path has not had that
-//! fix applied yet, exactly as `ViolationService`'s own module doc says.
+//! the full actor-FIFO argument).
 //!
 //! Summarized here only as far as this file's construction needs it:
 //! `DatabaseHandle::run_domain_op` sends whole boxed closures to a
@@ -14,13 +13,14 @@
 //! whole closures with each other, in the order their commands were
 //! enqueued.
 //!
-//! `ViolationService::decide` is *two* round trips: a snapshot read (which
-//! includes `tasks.owner_client_instance_id` for the caller-side
-//! ownership pre-check), then, once that pre-check passes synchronously,
-//! `resolve_policy_violation` (the guarded write, which never re-checks
-//! ownership -- see its own doc comment). `DomainRepository::reconcile_ownership`
-//! -- the same method `reconcile/omp` calls -- is *one* round trip: an
-//! unguarded `UPDATE tasks SET owner_client_instance_id = ...`.
+//! Before the fix, `ViolationService::decide` was *two* round trips: a
+//! snapshot read (`policy_violation_snapshot`, which included
+//! `tasks.owner_client_instance_id` for the caller-side ownership
+//! pre-check), then, once that pre-check passed synchronously,
+//! `resolve_policy_violation` (the guarded write, which never re-checked
+//! ownership). `DomainRepository::reconcile_ownership` -- the same method
+//! `reconcile/omp` calls -- is *one* round trip: an unguarded
+//! `UPDATE tasks SET owner_client_instance_id = ...`.
 //!
 //! The first test below drives `svc.decide` (as the *original* owner) and
 //! a direct call to `reconcile_ownership` (rebinding to a *new* owner)
@@ -28,29 +28,42 @@
 //! reproducible interleaving: `biased` polls `decide` before the rebind on
 //! every poll, so `decide`'s snapshot round trip was always enqueued --
 //! and thus processed -- before the rebind's `UPDATE`, and the rebind
-//! always commits before `decide`'s second command (`resolve_policy_violation`)
-//! could possibly be sent (that second `send()` cannot occur before the
-//! snapshot's reply wakes `decide` for another poll, which cannot happen
-//! before the rebind's synchronous first-poll `send()`). Against today's
-//! code, that pinned interleaving is exactly what makes this test fail
-//! RED: the stale owner's caller-side pre-check reads the original owner
-//! and passes, and the unguarded write has no ownership check left to
-//! refuse it with, so the decision is accepted (`Ok(DecideOutcome::Decided)`)
-//! instead of refused.
+//! always committed before `decide`'s second command
+//! (`resolve_policy_violation`) could possibly be sent (that second
+//! `send()` cannot occur before the snapshot's reply wakes `decide` for
+//! another poll, which cannot happen before the rebind's synchronous
+//! first-poll `send()`). Against the pre-fix code, that pinned
+//! interleaving is exactly what made this test fail RED: the stale
+//! owner's caller-side pre-check read the original owner and passed, and
+//! the unguarded write had no ownership check left to refuse it with, so
+//! the decision was accepted (`Ok(DecideOutcome::Decided)`) instead of
+//! refused. That committed RED failure is what pinned the interleaving
+//! above as real and reproducible, not hypothetical.
 //!
-//! The eventual fix mirrors R71: thread the principal into
-//! `resolve_policy_violation`, re-read `tasks.owner_client_instance_id`
-//! inside the same guarded transaction as the `UPDATE`, and refuse a
-//! stale caller with `ViolationError::Forbidden` from inside the write --
-//! deleting the caller-side pre-check this test currently defeats.
+//! Ownership is now arbitrated exclusively inside
+//! `resolve_policy_violation`'s guarded transaction (R72), mirroring
+//! R71's `decide_approval`: the write itself re-reads
+//! `tasks.owner_client_instance_id` and refuses a caller that no longer
+//! owns the task. That makes the `biased` enqueue ordering this file
+//! still uses no longer load-bearing for correctness -- it now exists
+//! only to keep the interleaving deterministic and easy to reason about.
+//! Ownership is arbitrated at write time, so the assertion below holds
+//! under every ordering the rebind and the decide can occur in, not only
+//! the one `biased` pins.
 //!
-//! The second test proves that eventual fix will not over-reject: a
-//! rebind followed, sequentially, by a decide from the *new* owner must
-//! still succeed, with exactly one `PolicyViolationDecided` event. It
-//! asserts only the resolution contract -- not `Run.flags.policyQuarantined`,
-//! which `decide("release")` also clears via a follow-up round trip after
-//! the guarded write commits; that flag is R73's territory, not this
-//! file's.
+//! The second test proves the fix does not over-reject: a rebind followed,
+//! sequentially, by a decide from the *new* owner must still succeed, with
+//! exactly one `PolicyViolationDecided` event. It asserts only the
+//! resolution contract -- not `Run.flags.policyQuarantined`, which
+//! `decide("release")` also clears via a follow-up round trip after the
+//! guarded write commits; that flag is R73's territory, not this file's.
+//!
+//! The third test proves ownership outranks idempotent replay: the guarded
+//! write checks `tasks.owner_client_instance_id` before it checks whether
+//! a resolution is already on record, so a former owner replaying its own,
+//! now-recorded resolution after a rebind is refused with
+//! `ViolationError::Forbidden`, not accepted as
+//! `Ok(DecideOutcome::AlreadyDecided)`.
 
 use std::sync::Arc;
 
@@ -268,8 +281,8 @@ async fn the_new_owner_can_resolve_after_a_rebind() {
     let svc = service(Arc::clone(&db), project_id);
 
     // Rebind sequentially, fully committed before decide is even called --
-    // zero timing dependency -- so this test guards the eventual fix
-    // against over-rejection: a legitimate new owner must still be able to
+    // zero timing dependency -- so this test guards the fix against
+    // over-rejection: a legitimate new owner must still be able to
     // resolve after a rebind.
     rebind_owner(&db, project_id, task_id, "omp-2", 2).await;
 
