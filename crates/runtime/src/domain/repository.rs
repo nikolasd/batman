@@ -116,10 +116,13 @@ pub struct PolicyViolationSnapshot {
 
 /// Names one boolean field on [`RunFlags`], so
 /// [`DomainRepository::set_run_flag`] can arbitrate a single flag change
-/// inside its own guarded transaction instead of taking a whole
-/// caller-computed [`RunFlags`] struct on trust (R73). Internal to this
-/// crate -- the wire shape of `RunFlagsChanged` is unaffected; it still
-/// carries the full [`RunFlags`] struct.
+/// inside its own guarded write instead of taking a whole
+/// caller-computed [`RunFlags`] struct on trust (R73). It is `pub`,
+/// re-exported from `domain` (a `pub mod` of this crate), and integration
+/// tests construct it directly as `batman_runtime::domain::RunFlag` -- it
+/// is not internal to this crate. What is true is narrower: it is not a
+/// protocol type, so the wire shape of `RunFlagsChanged` is unaffected by
+/// it and still carries the full [`RunFlags`] struct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunFlag {
     DegradedControl,
@@ -648,6 +651,19 @@ impl<'c> DomainRepository<'c> {
     /// writing inside this one call removes the gap -- R70-R72's
     /// guarded-write doctrine applied to a flag flip rather than a
     /// decision.
+    ///
+    /// The read above (`self.conn.query_row`) executes on `self.conn`
+    /// *before* [`Self::append_and_apply`] opens its SQL transaction, not
+    /// inside it: the event this method emits carries the post-flip
+    /// [`RunFlags`] struct by value, so that struct must be fully built
+    /// before the closure handed to `append_and_apply` even exists. So the
+    /// thing that actually guards this read against a racing write is not
+    /// a transaction -- it is [`crate::db::DatabaseHandle`]'s single-owner
+    /// actor thread, which runs one `run_domain_op` closure to completion
+    /// before starting the next. That makes this method's read-then-write
+    /// atomic at *closure* granularity, unlike
+    /// [`Self::resolve_policy_violation`], which re-reads from inside its
+    /// already-open `tx` and is guarded at *transaction* granularity.
     ///
     /// # Errors
     /// Returns [`DomainError::NotFound`] if `run_id` does not exist.
