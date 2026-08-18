@@ -33,6 +33,14 @@ pub enum DomainError {
     /// A referenced record was not found.
     #[error("{kind} {id} not found")]
     NotFound { kind: &'static str, id: String },
+    /// A guarded mutation refused to write because `instance_id` does not
+    /// own the task the mutation targets. Checked inside the same guarded
+    /// transaction as the write it protects -- not as a caller-side
+    /// pre-check -- so a `reconcile/omp` ownership rebind landing between a
+    /// caller's snapshot read and the write cannot let a stale owner's
+    /// decision through (R71).
+    #[error("task {task_id} is not owned by {instance_id}")]
+    NotOwner { task_id: String, instance_id: String },
     /// A guarded mutation refused to write because the row already carries a
     /// resolution (or, for an approval, a decision) committed by an earlier
     /// decision. `existing` is the resolution on record, so a service layer
@@ -777,21 +785,30 @@ impl<'c> DomainRepository<'c> {
     /// This is the **only** authority on whether an approval may be decided.
     /// The database actor interleaves whole `run_domain_op` closures, never
     /// a service's sequence of round trips, so any caller-side pre-check is
-    /// advisory only (R70): the `UPDATE` guarded by `decision IS NULL`
-    /// is the guard. The `UPDATE` deliberately precedes the terminal-run
-    /// guard so an already-decided approval reports
-    /// [`DomainError::AlreadyResolved`] even when its run has also settled;
-    /// an `Err` returned here discards the appended event together with the
-    /// rejected write (the transaction rolls back as a whole).
+    /// advisory only (R70, R71): ownership, conflict, and the terminal-run
+    /// state are all re-checked from inside this one guarded transaction,
+    /// never from a snapshot a caller read earlier. `principal_instance_id`
+    /// is checked against `tasks.owner_client_instance_id` first, before the
+    /// `UPDATE` guarded by `decision IS NULL` -- a `reconcile/omp` ownership
+    /// rebind that commits between a caller's snapshot read and this write
+    /// must invalidate the stale caller, and it can only do that if the
+    /// check happens here, not in `ApprovalService::decide`. The `UPDATE`
+    /// deliberately precedes the terminal-run guard so an already-decided
+    /// approval reports [`DomainError::AlreadyResolved`] even when its run
+    /// has also settled; an `Err` returned here discards the appended event
+    /// together with the rejected write (the transaction rolls back as a
+    /// whole).
     ///
     /// # Errors
-    /// Returns [`DomainError::NotFound`] if no such approval exists,
-    /// [`DomainError::AlreadyResolved`] if a decision is already on record,
-    /// or [`DomainError::RunSettled`] if the run has reached a terminal
-    /// state.
+    /// Returns [`DomainError::NotFound`] if no such approval or task exists,
+    /// [`DomainError::NotOwner`] if `principal_instance_id` does not own the
+    /// approval's task, [`DomainError::AlreadyResolved`] if a decision is
+    /// already on record, or [`DomainError::RunSettled`] if the run has
+    /// reached a terminal state.
     pub fn decide_approval(
         &mut self,
         approval_id: batman_protocol::ApprovalId,
+        principal_instance_id: &str,
         decision: &str,
         reason: &str,
         decided_by: batman_protocol::DecidedBy,
@@ -828,9 +845,38 @@ impl<'c> DomainRepository<'c> {
         };
         let decision = decision.to_string();
         let reason = reason.to_string();
+        let principal_instance_id = principal_instance_id.to_string();
         self.append_and_apply(&event, Some(task_id), None, Some(run_id), move |tx| {
             let now = Timestamp::now();
             let _ = reason;
+            // Ownership is arbitrated here, inside the guarded transaction,
+            // not by a caller-side snapshot read: the database actor
+            // interleaves whole `run_domain_op` closures, so a
+            // `reconcile_ownership` rebind can commit between a caller's
+            // snapshot read and this write. Only a re-read from inside this
+            // same transaction can observe that rebind (R71).
+            let owner: Option<String> = tx
+                .query_row(
+                    "SELECT owner_client_instance_id FROM tasks WHERE task_id = ?1",
+                    [task_id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            match owner {
+                Some(owner) if owner == principal_instance_id => {}
+                Some(_) => {
+                    return Err(DomainError::NotOwner {
+                        task_id: task_id.to_string(),
+                        instance_id: principal_instance_id,
+                    });
+                }
+                None => {
+                    return Err(DomainError::NotFound {
+                        kind: "task",
+                        id: task_id.to_string(),
+                    });
+                }
+            }
             let affected = tx.execute(
                 "UPDATE approvals SET decision = ?1, decided_at = ?2, decided_by = ?3
                  WHERE approval_id = ?4 AND decision IS NULL",

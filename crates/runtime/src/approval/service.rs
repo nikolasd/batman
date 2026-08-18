@@ -139,20 +139,26 @@ impl ApprovalService {
     /// callback keeps the decision and marks the run `protocolUnhealthy`
     /// rather than asking again.
     ///
-    /// The only caller-side pre-checks are task ownership and
-    /// `humanRequired`: both read fields a decision write never mutates.
-    /// The rest is decided by
-    /// [`DomainRepository::decide_approval`] inside the same transaction as
-    /// the write: whether a different decision is already on record (a
-    /// losing call is refused with [`ApprovalError::Conflict`]), whether
-    /// this is an idempotent replay
-    /// ([`DecideOutcome::AlreadyDecided`], which re-applies nothing), and
-    /// whether the run has already settled
+    /// `load_snapshot` still runs as a caller-side pre-check for
+    /// `run_id` and `humanRequired`: reads a decision write never mutates
+    /// (approvals never change which run they belong to, and nothing ever
+    /// flips `human_required` after creation), so a snapshot of them can
+    /// never go stale between this call and the guarded write below.
+    /// Ownership is different -- `reconcile/omp` can rebind a task's
+    /// `owner_client_instance_id` at any time via
+    /// [`crate::domain::DomainRepository::reconcile_ownership`], including
+    /// in the window between this call and the guarded write -- so it is
+    /// **not** pre-checked here (R71). It is arbitrated exclusively inside
+    /// [`DomainRepository::decide_approval`]'s guarded transaction, along
+    /// with whether a different decision is already on record (a losing
+    /// call is refused with [`ApprovalError::Conflict`]), whether this is
+    /// an idempotent replay ([`DecideOutcome::AlreadyDecided`], which
+    /// re-applies nothing), and whether the run has already settled
     /// ([`ApprovalError::RunSettled`]). The database actor interleaves
-    /// whole `run_domain_op` round trips, so these cannot be caller-side
-    /// pre-checks (R70): the guarded write is the arbiter, exactly one
-    /// `ApprovalDecided` event is journaled per approval, and only the
-    /// deciding call fires side effects.
+    /// whole `run_domain_op` round trips, so none of these can be
+    /// caller-side pre-checks (R70, R71): the guarded write is the sole
+    /// arbiter, exactly one `ApprovalDecided` event is journaled per
+    /// approval, and only the deciding call fires side effects.
     ///
     /// # Errors
     /// Returns [`ApprovalError::Forbidden`] if `principal_instance_id`
@@ -171,18 +177,12 @@ impl ApprovalService {
     ) -> Result<DecideOutcome, ApprovalError> {
         let snapshot = self.load_snapshot(approval_id).await?;
 
-        if snapshot.owner_client_instance_id != principal_instance_id {
-            return Err(ApprovalError::Forbidden {
-                instance_id: principal_instance_id.to_string(),
-                approval_id,
-            });
-        }
-
         if snapshot.human_required && decided_by != batman_protocol::DecidedBy::Human {
             return Err(ApprovalError::HumanRequired { approval_id });
         }
 
         let project_id = self.project_id;
+        let principal_instance_id_owned = principal_instance_id.to_string();
         let decision_owned = decision.to_string();
         let reason_owned = reason.to_string();
         let decided_by_owned = decided_by;
@@ -192,6 +192,7 @@ impl ApprovalService {
                 let mut repo = DomainRepository::new(conn, project_id);
                 repo.decide_approval(
                     approval_id,
+                    &principal_instance_id_owned,
                     &decision_owned,
                     &reason_owned,
                     decided_by_owned,
@@ -203,6 +204,12 @@ impl ApprovalService {
             // The guarded write is the arbiter: a losing racer never journals
             // an event and never reaches the callback below.
             Ok(value) => value,
+            Err(DomainError::NotOwner { .. }) => {
+                return Err(ApprovalError::Forbidden {
+                    instance_id: principal_instance_id.to_string(),
+                    approval_id,
+                });
+            }
             Err(DomainError::AlreadyResolved { existing, .. }) => {
                 return if existing == decision {
                     Ok(DecideOutcome::AlreadyDecided)
@@ -280,28 +287,26 @@ impl ApprovalService {
             .db
             .run_domain_op(Box::new(move |conn| {
                 conn.query_row(
-                    "SELECT a.run_id, t.owner_client_instance_id,
+                    "SELECT a.run_id,
                             r.flags_degraded_control, r.flags_needs_reconciliation, r.flags_protocol_unhealthy,
                             r.flags_policy_quarantined, r.flags_workspace_dirty, r.flags_children_active,
                             a.human_required
                      FROM approvals a
                      JOIN runs r ON a.run_id = r.run_id
-                     JOIN tasks t ON a.task_id = t.task_id
                      WHERE a.approval_id = ?1",
                     [approval_id.to_string()],
                     |row| {
                         Ok(serde_json::json!({
                             "runId": row.get::<_, String>(0)?,
-                            "ownerClientInstanceId": row.get::<_, String>(1)?,
                             "flags": {
-                                "degradedControl": row.get::<_, i64>(2)? != 0,
-                                "needsReconciliation": row.get::<_, i64>(3)? != 0,
-                                "protocolUnhealthy": row.get::<_, i64>(4)? != 0,
-                                "policyQuarantined": row.get::<_, i64>(5)? != 0,
-                                "workspaceDirty": row.get::<_, i64>(6)? != 0,
-                                "childrenActive": row.get::<_, i64>(7)? != 0,
+                                "degradedControl": row.get::<_, i64>(1)? != 0,
+                                "needsReconciliation": row.get::<_, i64>(2)? != 0,
+                                "protocolUnhealthy": row.get::<_, i64>(3)? != 0,
+                                "policyQuarantined": row.get::<_, i64>(4)? != 0,
+                                "workspaceDirty": row.get::<_, i64>(5)? != 0,
+                                "childrenActive": row.get::<_, i64>(6)? != 0,
                             },
-                            "humanRequired": row.get::<_, i64>(8)? != 0,
+                            "humanRequired": row.get::<_, i64>(7)? != 0,
                         }))
                     },
                 )
@@ -317,10 +322,6 @@ impl ApprovalService {
                     id: "invalid".to_string(),
                 }
             })?,
-            owner_client_instance_id: value["ownerClientInstanceId"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
             run_flags: RunFlags {
                 degraded_control: value["flags"]["degradedControl"].as_bool().unwrap_or(false),
                 needs_reconciliation: value["flags"]["needsReconciliation"]
@@ -342,7 +343,6 @@ impl ApprovalService {
 
 struct ApprovalSnapshot {
     run_id: RunId,
-    owner_client_instance_id: String,
     run_flags: RunFlags,
     human_required: bool,
 }
