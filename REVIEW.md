@@ -11,7 +11,7 @@ TypeScript/workspace, and build/docs/release, split across four parallel reviewe
 findings were corrected in place (R17, R20, R43, R46) where the mechanism had changed since last
 verified.
 
-**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R33, R41, R47-R54, R68-R70) plus the
+**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R33, R41, R44, R47-R54, R68-R70) plus the
 eleven documentation findings that were resolved or already-stale (R19, R21-R28) has been pruned from
 this document. That history — what broke, the fix commit, the test that proved it, and which
 still-open items below exist *because* of that fix — now lives in
@@ -20,7 +20,7 @@ still-open items below exist *because* of that fix — now lives in
 [Part XII](journal.md#part-xii--closing-the-last-critical-a-denylist-blind-to-its-own-vendor) (R49),
 [Part XIII](journal.md#part-xiii--two-leaks-one-lease-releasing-what-a-failed-start-acquired) (R41, R50),
 [Part XIV](journal.md#part-xiv--fixture-modes-broken-promise-a-kill-switch-only-one-caller-ever-asked-about) (R52),
-[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), and [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33).
+[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33), and [Part XXII](journal.md#part-xxii--the-capture-pipeline-that-graded-its-own-homework) (R44).
 This document only tracks what's still broken.
 
 **Baseline, last run 2026-08-12** (during an unrelated state-root rename; results apply to this
@@ -42,18 +42,6 @@ operate the system correctly.
 ## Findings
 
 ### High
-
-#### R44. Conformance fixture-capture pipeline: scrubber calibrated to one fixture, `unchanged` flag computed after the write it's supposed to guard
-
-**Location:** `crates/runtime/src/conformance/scrub.rs:182-245`; `crates/runtime/src/conformance/capture.rs:67-69,151-158`
-
-**Evidence (sub-claim 1 — scrubber over-fit):** `stable_session_id`/`stable_uuid` (`scrub.rs:182-205`) only recognize `claude/initialize.jsonl`'s `11111111-…`/`a0000000-…` placeholder family as already-canonical. The other ~10 committed fixtures use distinct ID families (`claude/subagent.jsonl`, `claude/approval.jsonl`, `claude/result.jsonl` each use a different prefix; codex/copilot/omp-rpc fixtures use raw-looking IDs). The one round-trip test, `scrubbing_scrubbed_fixture_is_identity` (`scrub.rs:227-245`), is hardcoded to `claude/initialize.jsonl` only — no test proves idempotence against any of the other fixtures, meaning a real `batcave capture` run today would rewrite (not reproduce) most of the fixture set.
-
-**Evidence (sub-claim 2 — inverted `unchanged` flag):** `capture.rs:151-158` writes the file (`fs::write`) first, then computes `unchanged` by reading that same just-written file back and comparing it to the content just written — always `true` on a real capture, always `false` on a dry run, regardless of whether the captured content actually matches what was committed before the write. The field's own doc comment (`capture.rs:67-69`) says "before write," which is not what the code does.
-
-**Fix:** calibrate the scrubber against all eleven fixtures' actual ID families, not one; compute `unchanged` by comparing against the pre-write committed content (read the file before `fs::write`, or diff against `git show HEAD:<path>`).
-
-**Priority:** High — the tool that produces every committed conformance fixture is unproven correct beyond the single fixture it was built against.
 
 #### R71. `ApprovalService::decide`'s ownership pre-check races `reconcile/omp`'s task ownership rebind
 
@@ -325,7 +313,7 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
-- **High:** 2 (R44 — carried forward from earlier rounds; R71 — new, found during R70's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI)
+- **High:** 1 (R71 — new, found during R70's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
 - **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
