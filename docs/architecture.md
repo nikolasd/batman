@@ -789,6 +789,7 @@ Generated from [`crates/runtime/src/ipc/mod.rs`](crates/runtime/src/ipc/mod.rs)'
 | Redaction boundary holds | `crates/runtime/tests/redaction_boundary.rs` |
 | Coordination broker | `crates/runtime/tests/coordination.rs` |
 | Approval flow | `crates/runtime/tests/approval.rs` |
+| An approval is decided at most once | `crates/runtime/tests/approval_decide_race.rs` |
 | A policy violation is decided at most once | `crates/runtime/tests/policy_violation.rs` |
 
 Run with a test-runner timeout if you suspect a new mutation has regressed the broadcast invariant — the bug manifests as an infinite hang, not a clean failure.

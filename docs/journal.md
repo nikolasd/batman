@@ -2634,6 +2634,128 @@ R54's fix drops the pre-existing High tier from three to two (R33, R44) on its o
 above immediately reopens it to three by surfacing R70, the identical bug in
 `ApprovalService::decide`.
 
+## Part XX — The same race, one service over: the approval that could be decided twice
+
+`ApprovalService::decide` had the same shape Part XIX just finished fixing in the sibling service,
+down to the round-trip count: one `self.load_snapshot(approval_id).await` round trip, checked in
+memory for ownership, `humanRequired`, a conflicting decision, and a settled run, then a second,
+separate `run_domain_op` round trip that wrote unconditionally. `db/actor.rs`'s single-owner
+thread processes one whole boxed closure at a time off its bounded channel — it serializes
+closures, never a service's sequence of round trips about them — so two concurrent
+`approval/decide` calls for the same `approvalId` could both have their snapshot read
+`decision: None` before either wrote. `decide_approval`'s `UPDATE approvals SET decision = ?1,
+decided_at = ?2, decided_by = ?3 WHERE approval_id = ?4` carried no `decision IS NULL` guard and no
+affected-row check. Both writes would land, both callers would proceed past the write to fire
+their side effects — one call's `self.callback.acknowledge` telling the waiting worker to
+proceed, the other's telling it to stand down — and both would journal an `approvalDecided`
+event for a single decision that was supposed to happen exactly once.
+
+It was not found by inspecting `ApprovalService` on its own; it was found by Part XIX's own
+adversarial review of the policy-violation fix, which asked whether any sibling service carried
+the identical shape and swept the codebase for it. `decide_approval` and
+`resolve_policy_violation` had drifted into structurally identical code — same snapshot-then-write
+split, same unguarded `UPDATE`, same reliance on an in-memory check that was stale the moment a
+second caller's round trip landed between the first caller's read and its write — and the review
+registered the second instance as R70 rather than fixing it in the same pass, the same discipline
+that had produced R54 in the first place.
+
+The fix is identical in mechanism, not just in shape. `decide_approval`'s `append_and_apply`
+closure now runs `UPDATE approvals ... WHERE approval_id = ?4 AND decision IS NULL` and checks the
+affected-row count inside the same transaction: zero means either a decision already exists — read
+back with a second query inside that transaction, so nothing else can have changed it since — or
+the approval never existed. The terminal-run check moved into the same closure too, reading
+`runs.state` from the same transaction and returning `DomainError::RunSettled` if it is already
+terminal. The `UPDATE` is deliberately ordered ahead of that check, so an already-decided approval
+reports `AlreadyResolved` even when its run has separately settled — the same precedence
+`resolve_policy_violation` uses for the identical ordering question, so the two services cannot
+disagree about which fact wins when both are true. Returning `Err` from the closure discards the
+whole transaction, so a refused decision leaves neither the write nor the event it would have
+journaled, and `self.broadcast` — the next line in `ApprovalService::decide` after the guarded
+write's `Ok` — is never reached on that path: a losing racer's transaction never commits and can
+never broadcast. `DomainError::AlreadyResolved` and `RunSettled` needed no new variants; Part
+XIX's generalization (`kind`/`id`/`existing` fields, not policy-violation-specific ones) is reused
+as-is, and `ApprovalService::decide` matches on them directly instead of re-deriving a verdict from
+the stale snapshot. On `AlreadyResolved` with `existing == decision`, `decide` returns
+`DecideOutcome::AlreadyDecided` before `self.broadcast`, before `self.callback.acknowledge`, and
+before the `working`-state transition that follows a fresh decision — an identical replay re-runs
+none of a decision's side effects, only the first caller to actually change the row does.
+`ApprovalSnapshot` no longer carries `decision` or `run_state` — the two fields the guard now
+owns — but still carries `run_id` (the pending `working`-transition target) and `run_flags`
+(read on a failed callback to set `protocolUnhealthy` instead of re-asking). No *decision* write
+mutates `owner_client_instance_id` or `human_required`, so a losing racer's decision cannot
+invalidate either pre-check; ownership itself can still change between the snapshot read and the
+guarded write through the unrelated reconcile path's task-ownership rebind, an interleaving this
+fix does not touch.
+
+`crates/runtime/tests/approval_decide_race.rs` is new, 481 lines, four tests — `decide` had no
+suite of its own that could interleave two calls. `approval.rs`'s existing coverage drives
+`approval/decide` through the RPC harness: one `client.call(...)` awaited to completion before the
+next is issued, which proves ownership, idempotency, settled-run rejection, and callback semantics
+one at a time but can never have two decides in flight against the same approval at once. The new
+file talks to `ApprovalService` directly so two `decide` futures can share one task. The first two
+tests, `concurrent_approve_and_deny_admit_exactly_one_decision` and
+`concurrent_identical_approvals_journal_one_event_and_invoke_the_callback_once`, race two `decide`
+calls with `tokio::join!(biased; ...)` — never `tokio::spawn`, and never plain `join!`, which
+rotates which branch it polls first on every poll of the combined future rather than guaranteeing
+argument order, a mistake an earlier draft of the analogous R54 file made and this file's own doc
+comment corrects. `biased;` pins polling to declaration order on every poll, making the actor's
+enqueue order — and thus which call wins — reproducible; the guarantee the tests actually depend on
+does not need `biased` at all, since both calls share one task and the actor is a strictly FIFO
+single consumer, so their sends can never be simultaneous or unordered from the actor's point of
+view regardless of enqueue order, and the guarded `UPDATE ... WHERE decision IS NULL` always admits
+exactly one writer either way. Every assertion still derives its expectation from whichever call
+actually returned `Ok`, as a second line of defense.
+`deciding_the_same_decision_twice_sequentially_stays_idempotent` proves the same idempotency
+without concurrency, as a control. `deciding_an_approval_whose_run_has_already_settled_is_refused`
+deliberately does not `join!` `decide` against the run-settling transition, even though that would
+look like the more direct test of "the run settles mid-decide": an adversarial review of the
+analogous R54 test found a residual timing gap in that exact shape — `decide`'s first round trip
+could in principle resolve inside a single poll, before the run-settling future is ever touched.
+This test settles the run first, sequentially, with no timing dependency, then calls `decide`, and
+still proves exactly what changed: `ApprovalSnapshot` no longer carries run state, so the guard's
+own live read of `runs.state` inside `decide_approval`'s transaction is the only thing left that
+can refuse it.
+
+Verification ran the targeted suites named by this change — `cargo test --test
+approval_decide_race --test approval --test policy_violation` — 21 tests (4 + 13 + 4), all
+passing, `BATMAN_DISABLE_VENDOR_CLI=1` set throughout, with `approval_decide_race` repeated five
+further times standalone to rule out a flaky interleaving: six consecutive runs in total, 4 of 4
+passing on every run. Falsifiability was checked mechanically, the same way Part XIX checked it:
+with the `decision IS NULL` guard and its affected-row check removed from `decide_approval`,
+`concurrent_approve_and_deny_admit_exactly_one_decision`,
+`concurrent_identical_approvals_journal_one_event_and_invoke_the_callback_once`, and
+`deciding_the_same_decision_twice_sequentially_stays_idempotent` all failed — three tests, a
+stronger falsification than any one alone requires. Guard restored, the terminal-run guard removed
+instead: `deciding_an_approval_whose_run_has_already_settled_is_refused` failed on its own, exactly
+the one test whose contract is that guard. Both restored, `git diff` against the committed tree
+came back empty, and all four tests passed again.
+
+The adversarial review this fix demanded of itself — the same six-question shape Part XIX's own
+review used against `ViolationService` — found no defect in the guarded write path itself; it
+surfaced one residual outside R70's mechanism, the reconcile-vs-decide ownership interleaving
+noted below, left for separate registration rather than fixed in this pass.
+Error classification: `ApprovalError::Conflict` and `RunSettled` both map to `-32602`
+(`error_code::INVALID_PARAMS`) in `service/orchestration.rs`, never `-32603` — the misclassification
+R54's own review was built to catch does not recur here. Pre-check safety: `grep -rn "UPDATE
+approvals" crates/runtime/src` returns exactly the one guarded statement in `decide_approval`, and
+neither `human_required` nor the task's owner is ever written by a *decision*, so a concurrent
+decision cannot invalidate either pre-check by racing it — the grep was scoped to `approvals`;
+`tasks.owner_client_instance_id` is separately mutated by the reconcile path's ownership rebind, a
+real, reachable interleaving between reconcile and decide, but not R70's mechanism and out of this
+fix's scope. Idempotent replay skips side effects:
+traced above — `AlreadyDecided` returns before `broadcast`, before `callback.acknowledge`, and
+before the `working` transition, exactly what `plugin-usage.md`'s decision semantics claim, and no
+caller anywhere depends on the callback firing a second time. Rollback completeness: a losing
+`append_and_apply` closure's `Err` discards its appended event with it, `self.broadcast` sits after
+the guarded write's `Ok` arm and is unreachable from the `Err` arms, so a losing racer emits no
+`approvalDecided` envelope to any subscriber — the "every mutation commits and broadcasts, exactly
+once" invariant holds. Guard ordering: `decide_approval`'s `UPDATE` precedes its terminal-run check,
+matching `resolve_policy_violation`'s identical ordering, so the two services cannot disagree about
+which fact wins when an approval is already decided on an already-settled run. The one known
+neighbor the review deliberately left alone: `decide_approval`'s `let _ = reason;` still discards
+the approval's `reason` field end to end — that is R59, already open in `REVIEW.md`, unrelated to
+this race, and unchanged by this fix.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start

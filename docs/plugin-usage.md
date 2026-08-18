@@ -414,6 +414,14 @@ that decision, not the decision itself:
 failed — the decision still stands), or `"alreadyDecided"` (a no-op repeat of an identical prior
 decision).
 
+An identical repeat of an already-decided approval returns `outcome: "alreadyDecided"` and
+re-applies nothing — no second callback, no second `approvalDecided` event. A *different*
+decision submitted for an already-decided approval is refused with `-32602`, and the first
+decision stands — exactly one decision is ever journaled per approval, even if two clients
+submit concurrently. A *new* decision is refused with `-32602` once the run has reached a
+terminal state, because a settled run is never revived; an identical repeat of a decision already
+on record still returns `"alreadyDecided"`, since the already-decided check is evaluated first.
+
 ### `violation/decide`
 
 Request takes `resolution: "release" | "cancel"` (releases the run from quarantine, or cancels it

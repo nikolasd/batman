@@ -275,3 +275,48 @@ must be the caller's only source of truth about whether the write happened.
 `concurrent_identical_releases_journal_one_event_and_report_already_decided`,
 `deciding_the_same_resolution_twice_sequentially_stays_idempotent`, and
 `releasing_a_violation_whose_run_settles_mid_decide_is_refused`.
+
+### A root-cause lesson attaches to a pattern, not to the service the fix landed in
+
+**Location:** `crates/runtime/src/domain/repository.rs::decide_approval`;
+`crates/runtime/src/approval/service.rs::ApprovalService::decide`
+
+**The bug:** the same check-then-act race as [a check in one database round trip cannot guard a
+write in the next](#a-check-in-one-database-round-trip-cannot-guard-a-write-in-the-next), in the
+approval service. `decide` read one snapshot, checked it in memory for a conflicting decision and
+a settled run, then wrote unconditionally in a second round trip -- `decide_approval`'s `UPDATE
+approvals SET ... WHERE approval_id = ?4` carried no `decision IS NULL` guard, so two concurrent
+`approval/decide` calls for the same approval could both read `decision: None`, both write, both
+journal an `approvalDecided` event, and both invoke the adapter callback: one telling the waiting
+worker to proceed, the other to stand down. `decide_approval` has carried this shape since
+approvals first landed (Part II); the two `decide` methods had simply drifted into structurally
+identical code with identical exposure.
+
+**The fix:** identical in shape to the policy-violation fix -- the guard lives in
+`decide_approval`'s `append_and_apply` closure (`WHERE decision IS NULL`, affected-row check, the
+existing decision read back in the same transaction to separate "already decided" from "never
+existed", the terminal-run check in the same transaction ordered behind the `UPDATE`), a refused
+write rolls back the appended event with it, and the service matches on the guard's verdict
+instead of re-deriving it from the stale snapshot. `ApprovalSnapshot` no longer carries `decision`
+or `run_state` -- the two fields the guard now owns -- but still carries `run_id` (the pending
+`working`-transition target) and `run_flags` (read on a failed callback to set
+`protocolUnhealthy`). Ownership and `humanRequired` remain read fields no *decision* write
+mutates, so a losing racer's decision cannot invalidate either pre-check; ownership itself can
+still change between the snapshot read and the guarded write through the unrelated reconcile
+path's task-ownership rebind, an interleaving R70 does not touch. Part XIX's
+`AlreadyResolved`/`RunSettled` variants, already generalized with `kind`/`id`/`existing` fields,
+are reused as-is.
+
+**The lesson:** the technical rule is the previous entry's. The organizational one is new, and it
+is why this entry exists separately: a fix that closes a root cause in one service is not done
+until every sibling implementing the same shape is swept for it. `decide_approval`'s identical
+exposure outlived the policy-violation fix until that fix's own adversarial review swept the
+sibling and registered R70 -- the second instance was found by the first fix's review, not by the
+pattern.
+
+**Regression tests:** `crates/runtime/tests/approval_decide_race.rs` --
+`concurrent_approve_and_deny_admit_exactly_one_decision`,
+`concurrent_identical_approvals_journal_one_event_and_invoke_the_callback_once`,
+`deciding_the_same_decision_twice_sequentially_stays_idempotent`, and
+`deciding_an_approval_whose_run_has_already_settled_is_refused` -- the approval-side mirror of the
+four `policy_violation.rs` tests named in the previous entry.
