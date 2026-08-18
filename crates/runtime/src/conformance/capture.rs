@@ -418,4 +418,172 @@ mod tests {
             assert!(entry.model.is_some(), "ompRpc entry must have a model");
         }
     }
+
+    #[test]
+    fn manifest_fixtures_are_canonical_capture_output() {
+        let kinds = [
+            AdapterKind::Claude,
+            AdapterKind::Codex,
+            AdapterKind::Copilot,
+            AdapterKind::OmpRpc,
+        ];
+        let mut fixture_count = 0;
+
+        for kind in kinds {
+            for entry in load_manifest(&kind).expect("manifest must load") {
+                fixture_count += 1;
+                let fixture_path = PathBuf::from(FIXTURES_DIR)
+                    .join(adapter_fixture_dir(kind))
+                    .join(&entry.fixture);
+                assert!(
+                    fixture_path.is_file(),
+                    "manifest target must exist: {}",
+                    fixture_path.display()
+                );
+                let existing =
+                    std::fs::read_to_string(&fixture_path).expect("manifest target must be readable");
+                let mut scrubber = Scrubber::new("/workspace/batman".into());
+                let frames = if entry.fixture.ends_with(".jsonl") {
+                    existing
+                        .lines()
+                        .filter(|line| !line.is_empty())
+                        .map(|line| {
+                            scrubber
+                                .scrub_line(line.as_bytes())
+                                .expect("fixture line must remain after scrubbing")
+                        })
+                        .collect()
+                } else if entry.fixture.ends_with(".json") {
+                    vec![scrubber
+                        .scrub_line(existing.as_bytes())
+                        .expect("fixture document must remain after scrubbing")]
+                } else {
+                    panic!("unsupported fixture extension: {}", entry.fixture);
+                };
+                let rendered =
+                    render_fixture_content(&entry.fixture, &frames).expect("fixture must render");
+
+                assert_eq!(
+                    rendered,
+                    existing,
+                    "manifest fixture must be a fixed point: {}",
+                    fixture_path.display()
+                );
+            }
+        }
+
+        assert_eq!(fixture_count, 12, "manifest must own every transcript");
+    }
+
+    #[test]
+    fn persist_fixture_content_returns_true_for_equal_existing_bytes() {
+        let dir = tempfile::tempdir().expect("temp directory must be created");
+        let fixture_path = dir.path().join("fixture.jsonl");
+        std::fs::write(&fixture_path, "canonical\n").expect("fixture must be seeded");
+
+        assert!(
+            persist_fixture_content(&fixture_path, "canonical\n", false)
+                .expect("persistence must succeed")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&fixture_path).expect("fixture must remain readable"),
+            "canonical\n"
+        );
+    }
+
+    #[test]
+    fn persist_fixture_content_replaces_differing_existing_bytes() {
+        let dir = tempfile::tempdir().expect("temp directory must be created");
+        let fixture_path = dir.path().join("fixture.jsonl");
+        std::fs::write(&fixture_path, "old\n").expect("fixture must be seeded");
+
+        assert!(
+            !persist_fixture_content(&fixture_path, "new\n", false)
+                .expect("persistence must succeed")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&fixture_path).expect("fixture must be replaced"),
+            "new\n"
+        );
+    }
+
+    #[test]
+    fn persist_fixture_content_creates_missing_file_as_changed() {
+        let dir = tempfile::tempdir().expect("temp directory must be created");
+        let fixture_path = dir.path().join("nested/fixture.jsonl");
+
+        assert!(
+            !persist_fixture_content(&fixture_path, "new\n", false)
+                .expect("persistence must succeed")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&fixture_path).expect("fixture must be created"),
+            "new\n"
+        );
+    }
+
+    #[test]
+    fn persist_fixture_content_dry_run_reports_equal_without_mutating() {
+        let dir = tempfile::tempdir().expect("temp directory must be created");
+        let fixture_path = dir.path().join("fixture.jsonl");
+        std::fs::write(&fixture_path, "canonical\n").expect("fixture must be seeded");
+
+        assert!(
+            persist_fixture_content(&fixture_path, "canonical\n", true)
+                .expect("dry-run comparison must succeed")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&fixture_path).expect("fixture must remain readable"),
+            "canonical\n"
+        );
+    }
+
+    #[test]
+    fn persist_fixture_content_dry_run_reports_differences_without_mutating() {
+        let dir = tempfile::tempdir().expect("temp directory must be created");
+        let fixture_path = dir.path().join("fixture.jsonl");
+        std::fs::write(&fixture_path, "old\n").expect("fixture must be seeded");
+
+        assert!(
+            !persist_fixture_content(&fixture_path, "new\n", true)
+                .expect("dry-run comparison must succeed")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&fixture_path).expect("fixture must remain readable"),
+            "old\n"
+        );
+    }
+
+    #[test]
+    fn persist_fixture_content_dry_run_reports_missing_without_creating() {
+        let dir = tempfile::tempdir().expect("temp directory must be created");
+        let fixture_path = dir.path().join("nested/fixture.jsonl");
+
+        assert!(
+            !persist_fixture_content(&fixture_path, "new\n", true)
+                .expect("dry-run comparison must succeed")
+        );
+        assert!(!fixture_path.exists(), "dry-run must not create a fixture");
+    }
+
+    #[test]
+    fn render_json_fixture_as_pretty_document_with_trailing_newline() {
+        let rendered = render_fixture_content(
+            "initialize-v1.json",
+            &[r#"{"z":1,"a":{"b":2}}"#.to_string()],
+        )
+        .expect("single JSON frame must render");
+
+        assert_eq!(rendered, "{\n  \"z\": 1,\n  \"a\": {\n    \"b\": 2\n  }\n}\n");
+    }
+
+    #[test]
+    fn render_json_fixture_rejects_multiple_frames() {
+        let result = render_fixture_content(
+            "initialize-v1.json",
+            &[r#"{"first":true}"#.to_string(), r#"{"second":true}"#.to_string()],
+        );
+
+        assert!(result.is_err(), "JSON fixtures must contain exactly one frame");
+    }
 }
