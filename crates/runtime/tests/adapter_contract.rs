@@ -551,7 +551,9 @@ fn a_permission_envelope_with_unsorted_keys_is_not_mistaken_for_a_secret() {
     raw["permissionEnvelope"] = json!({ "zeta": "ok", "alpha": "ok" });
     let profile: WorkerProfile = serde_json::from_value(raw).unwrap();
 
-    assert!(profile.validate(&EffectivePolicy::baseline()).is_ok());
+    profile
+        .validate(&EffectivePolicy::baseline())
+        .expect("an unsorted permission envelope is not secret-shaped");
 }
 
 #[test]

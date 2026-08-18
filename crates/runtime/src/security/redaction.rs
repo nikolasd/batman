@@ -635,21 +635,25 @@ mod tests {
     fn sanitize_json_is_byte_identical_for_two_differently_ordered_equal_objects() {
         let redactor = Redactor::new();
         let first = serde_json::json!({
-            "zebra": { "delta": 2, "charlie": 3 },
+            "alpha": "first key",
             "array": [{ "bravo": true, "alpha": false }],
-            "middle": "value"
+            "middle": "value",
+            "sk-ABCDEFGHIJKLMNOPQRSTUVWX": "redacted key",
+            "zebra": { "delta": 2, "charlie": 3 }
         });
         let second = serde_json::json!({
+            "zebra": { "charlie": 3, "delta": 2 },
+            "sk-ABCDEFGHIJKLMNOPQRSTUVWX": "redacted key",
             "middle": "value",
             "array": [{ "alpha": false, "bravo": true }],
-            "zebra": { "charlie": 3, "delta": 2 }
+            "alpha": "first key"
         });
 
         let first_sanitized = redactor.sanitize_json(&first).as_str().to_string();
         let second_sanitized = redactor.sanitize_json(&second).as_str().to_string();
 
         assert_eq!(first_sanitized, second_sanitized);
-        assert!(first_sanitized.starts_with(r#"{"array":"#));
+        assert!(first_sanitized.starts_with(r#"{"[REDACTED:api_key]":"#));
     }
 
     #[test]

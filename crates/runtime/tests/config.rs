@@ -140,7 +140,12 @@ concurrency:
 
     assert_eq!(first.fingerprint, second.fingerprint);
     assert_eq!(first.fingerprint.len(), 64);
-    assert!(first.fingerprint.chars().all(|character| character.is_ascii_hexdigit()));
+    assert!(
+        first
+            .fingerprint
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    );
 }
 
 #[test]
@@ -156,6 +161,9 @@ display:
   backend: "auto"
 concurrency:
   ceiling: 4
+workspace:
+  copy_max_bytes: 1048576
+  copy_max_files: 1000
 "#,
     )
     .expect("write first org configuration");
@@ -167,6 +175,9 @@ display:
   backend: "auto"
 max_workers: 8
 retention: "90d"
+workspace:
+  copy_max_files: 1000
+  copy_max_bytes: 1048576
 "#,
     )
     .expect("write second org configuration");
