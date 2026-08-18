@@ -421,6 +421,9 @@ decision stands — exactly one decision is ever journaled per approval, even if
 submit concurrently. A *new* decision is refused with `-32602` once the run has reached a
 terminal state, because a settled run is never revived; an identical repeat of a decision already
 on record still returns `"alreadyDecided"`, since the already-decided check is evaluated first.
+Task ownership is checked before any of that, though: a caller that no longer owns the approval's
+task is refused with `-32602` (`Forbidden`), even when replaying a decision already on record —
+ownership outranks idempotent replay.
 
 ### `violation/decide`
 

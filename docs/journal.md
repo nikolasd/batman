@@ -2916,6 +2916,96 @@ tests in `scrub.rs`, and `capture_status_distinguishes_unchanged_rewritten_and_w
 conformance fixture is now proven correct against all eleven of them, not the one it happened to be
 built against.
 
+## Part XXIII — The same guarded write, one interleaving further: the decider that no longer owned the task
+
+Part XX's own adversarial review found this one and, following the same discipline that had
+produced R70 in the first place, registered it rather than fixing it in the same pass:
+`decide_approval`'s guarded transaction (hardened for R70) checked `decision IS NULL` and the
+run's terminal state, but never re-read `tasks.owner_client_instance_id`. `ApprovalService::decide`
+still authorized ownership the old way — a single `load_snapshot` round trip, compared to the
+caller's `principal_instance_id` entirely in memory, before the guarded write was ever reached.
+`reconcile/omp`'s ownership rebind (`DomainRepository::reconcile_ownership`, an unguarded `UPDATE
+tasks SET owner_client_instance_id = ...`) is a separate, single round trip that can commit in the
+window between that snapshot read and `decide_approval`'s write. A caller who owned the task at
+snapshot time, then lost it to a rebind before its write landed, still reached and won the guarded
+write — deciding an approval for a task it no longer owned. R70's guard closed the
+decide-vs-decide race; this is decide-vs-rebind, a different pair of operations racing the same
+guarded write, and it was Part XX's text itself that named the gap: `tasks.owner_client_instance_id`
+"is separately mutated by the reconcile path's ownership rebind, a real, reachable interleaving
+between reconcile and decide, but not R70's mechanism and out of this fix's scope."
+
+`crates/runtime/tests/approval_owner_race.rs` (03ac6e2, 351 lines) made that interleaving
+deterministic the same way `approval_decide_race.rs` made R70's: `tokio::join!(biased; ...)`
+against the single-owner DB actor's strictly FIFO command processing. `decide` is two round trips
+(`load_snapshot`, then `decide_approval`); the rebind is one. `biased` polling `decide` first on
+every poll guarantees `load_snapshot`'s command is enqueued — and thus processed — before the
+rebind's `UPDATE`, and guarantees the rebind commits before `decide`'s second command can possibly
+be sent, since that send cannot happen before `load_snapshot`'s reply wakes `decide` for another
+poll, which cannot happen before the rebind's own synchronous first-poll send. Run against the
+pre-fix code, `a_stale_owner_that_passed_the_pre_check_is_refused_by_the_guarded_write` failed RED
+exactly as designed: `decide` returned `Ok(Decided)` for a caller the rebind had already dispossessed,
+because the caller-side pre-check read the original owner and passed, and the unguarded write had no
+ownership check left to refuse it with. A second test, `the_new_owner_can_decide_after_a_rebind`,
+guarded the eventual fix against over-rejection — a legitimate new owner, deciding sequentially
+after the rebind, must still succeed — and passed unmodified throughout, since nothing about a
+correct decide-after-rebind was ever broken.
+
+`31cb763` moved ownership out of the caller-side pre-check and into the guarded transaction itself,
+mirroring R70's own move of the conflict and terminal-run checks one commit earlier: inside
+`append_and_apply`'s closure, before the `UPDATE approvals ... WHERE decision IS NULL` guard,
+`decide_approval` now re-reads `tasks.owner_client_instance_id` for the task the approval belongs
+to and compares it against a newly threaded `principal_instance_id` parameter. A mismatch returns
+the new `DomainError::NotOwner { task_id, instance_id }`; a missing task row returns the existing
+`DomainError::NotFound { kind: "task", .. }`. `ApprovalService::decide` deleted its caller-side
+ownership check entirely and instead maps `DomainError::NotOwner` to the `ApprovalError::Forbidden`
+variant the deleted pre-check used to return directly — the error a caller sees is unchanged, only
+where it's decided moves. `run_id` and `human_required` stay caller-side pre-checks from the
+snapshot, since a decision write never mutates either field, so neither can go stale in the window
+this fix closes. With ownership no longer part of `ApprovalSnapshot`'s job, the now-unused
+`owner_client_instance_id` field and the `JOIN tasks` that populated it were dropped from the
+snapshot and its query.
+
+Because the ownership check runs before the decision `UPDATE`, not after, it outranks idempotent
+replay: a former owner replaying its own identical decision after losing ownership gets
+`ApprovalError::Forbidden`, not `alreadyDecided` — the caller-side ownership fact wins over the
+row's decision history, the same precedence Part XX gave the decision-vs-terminal-run ordering
+question. An unauthorized decide still costs a rolled-back write transaction, not a free rejection,
+but that costs nothing durable: `events.sequence` is a plain `INTEGER PRIMARY KEY`, not
+`AUTOINCREMENT`, so a transaction that returns `Err` from inside `append_and_apply` burns no
+sequence number and leaves no gap in the journal. Verification ran the RED test against the fix and
+the R70 suite together — `approval_owner_race` (2 tests) plus `approval_decide_race` (4 tests),
+6 of 6 passing — confirming the new ownership arbitration didn't disturb the decision-vs-decision
+guard it now shares a transaction with.
+
+The adversarial review this fix demanded of itself found two real defects, both fixed in follow-up
+commits rather than folded into the mechanism commit. First: `DomainError::NotOwner` fell through
+to `From<DomainError> for ServiceError`'s catch-all `internal(...)` arm for any call site that
+converts a raw `DomainError` without going through `ApprovalError` first — one such call site away
+from a stale-owner rejection surfacing as `-32603` instead of a caller error, the exact
+misclassification class R54's review was built to catch. `dd7804d` added the explicit
+`NotOwner` → `error_code::INVALID_PARAMS` arm alongside the sibling `NotFound`/`AlreadyResolved`/
+`RunSettled` arms. Second: the test file's own module doc, and `violation.rs`'s cross-reference to
+it, had gone stale mid-review — both still narrated the race in the present tense, as still open,
+and `violation.rs` claimed `ViolationService::decide` shared `ApprovalService::decide`'s
+caller-side ownership pattern, which this fix had just made false for the approval side.
+`b68324b` rewrote `approval_owner_race.rs`'s header as resolved-contract narration (the pinned
+`biased` interleaving is no longer load-bearing for correctness, only for reproducibility, now that
+the guarded write arbitrates ownership under every interleaving, not just the one `biased` pins),
+renamed its first test to `a_stale_owner_is_refused_by_the_guarded_write_after_a_rebind`, corrected
+`approval_decide_race.rs`'s header to note only `humanRequired` remains a caller-side pre-check
+post-R71, and corrected `violation.rs`'s doc comment to say ownership checking has diverged: the
+violation side still pre-checks it caller-side, unchanged, while the approval side now arbitrates
+it inside the guarded write.
+
+The same review surfaced two more residuals outside this fix's mechanism, registered rather than
+fixed in this pass — the same discipline that produced R71 itself out of Part XX's review of R70:
+**R72**, the identical reconcile-vs-decide race one service over, in `ViolationService::decide` and
+`resolve_policy_violation`, which never adopted R71's guarded re-read; and **R73**, a lost update on
+`RunFlags` across `ApprovalService::decide`'s awaited vendor callback — `set_run_flags` is a blind
+whole-struct write with no compare-and-swap, so a `policy_quarantined` flag set concurrently by
+`ViolationService::apply_action` during that await can be silently reverted by the callback-failure
+branch's stale copy. Both are open in `REVIEW.md` as of 2026-08-18.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
