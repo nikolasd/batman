@@ -116,10 +116,11 @@ async fn seed_task(
     .expect("seed task");
 }
 
-/// Mirrors `OrchestrationService::task_upsert`'s post-R74 shape: one
+/// Mirrors `OrchestrationService::task_upsert`'s post-R74/R76 shape: one
 /// guarded write round trip via [`DomainRepository::upsert_task`], whose
-/// `ON CONFLICT` arm refuses a lower revision inside its own transaction.
-/// No caller-side pre-check remains.
+/// `ON CONFLICT` arm refuses a lower revision (R74) or a mismatched
+/// owner (R76) inside its own transaction. No caller-side pre-check
+/// remains.
 async fn task_upsert_round_trips(
     db: &DatabaseHandle,
     project_id: ProjectId,
@@ -187,13 +188,15 @@ async fn reconcile_event_count(db: &DatabaseHandle) -> i64 {
 /// A lower revision must never land after -- and thus overwrite -- a
 /// higher one, even when both writes were enqueued while revision 3 was
 /// still stored. Seeds revision 3 (owner `omp-1`); two concurrent
-/// `task/upsert`-shaped calls present revision 5 (owner `omp-2`, declared
-/// first) and revision 4 (owner `omp-3`, declared second). Written RED
-/// against the pre-R74 shape, where both callers' pre-checks read stored
-/// revision 3 and both unconditional writes landed, revision 4 last --
-/// final state was `(4, "omp-3")`. Post-fix the guard inside the write
-/// refuses the lower revision once revision 5 is stored, under every
-/// ordering.
+/// `task/upsert`-shaped calls from the same owner present revision 5
+/// (declared first) and revision 4 (declared second) -- same owner on
+/// both sides so this file's revision-monotonicity subject is isolated
+/// from R76's ownership guard, which would otherwise refuse both
+/// contenders outright. Written RED against the pre-R74 shape, where
+/// both callers' pre-checks read stored revision 3 and both unconditional
+/// writes landed, revision 4 last -- final state was `(4, "omp-1")`.
+/// Post-fix the guard inside the write refuses the lower revision once
+/// revision 5 is stored, under every ordering.
 #[tokio::test]
 async fn concurrent_upserts_cannot_move_a_revision_backwards() {
     let (_state_dir, db) = open_db().await;
@@ -203,8 +206,8 @@ async fn concurrent_upserts_cannot_move_a_revision_backwards() {
 
     let (higher, lower) = tokio::join!(
         biased;
-        task_upsert_round_trips(&db, project_id, task_id, "omp-2", 5),
-        task_upsert_round_trips(&db, project_id, task_id, "omp-3", 4),
+        task_upsert_round_trips(&db, project_id, task_id, "omp-1", 5),
+        task_upsert_round_trips(&db, project_id, task_id, "omp-1", 4),
     );
 
     assert!(
@@ -221,30 +224,32 @@ async fn concurrent_upserts_cannot_move_a_revision_backwards() {
     let (final_revision, final_owner) = stored_task(&db, task_id).await.expect("task exists");
     assert_eq!(
         (final_revision, final_owner.as_str()),
-        (5, "omp-2"),
+        (5, "omp-1"),
         "the higher revision must win regardless of write order; a guarded write must refuse \
          the lower revision's write once it observes revision 5 is already stored"
     );
 }
 
 /// A reconcile whose presented revision is stale *at write time* must be
-/// refused. Seeds revision 3 (owner `omp-1`); an upsert advances the task
-/// to revision 5 (owner `omp-2`); a reconcile still presenting revision 3
-/// must then be refused by the `AND revision = ?` predicate, classified
-/// in-transaction with the actual stored revision -- pre-R74 the
-/// unguarded `UPDATE` would have rebound (and moved the revision back to
-/// 3) regardless. A reconcile presenting the current revision 5 then
-/// succeeds, and the stored revision is NOT consumed by the rebind:
-/// reclaim stays idempotent -- a repeat reconcile at 5 also succeeds
-/// (last reconciler wins; a usurped owner is refused at decision time by
-/// the R71/R72 in-tx ownership arbitration instead).
+/// refused. Seeds revision 3 (owner `omp-1`); an upsert from the same
+/// owner advances the task to revision 5 -- same owner as the seed so
+/// this setup step is unaffected by R76's ownership guard, which is out
+/// of scope for this reconcile-revision test; a reconcile still
+/// presenting revision 3 must then be refused by the `AND revision = ?`
+/// predicate, classified in-transaction with the actual stored revision
+/// -- pre-R74 the unguarded `UPDATE` would have rebound (and moved the
+/// revision back to 3) regardless. A reconcile presenting the current
+/// revision 5 then succeeds, and the stored revision is NOT consumed by
+/// the rebind: reclaim stays idempotent -- a repeat reconcile at 5 also
+/// succeeds (last reconciler wins; a usurped owner is refused at decision
+/// time by the R71/R72 in-tx ownership arbitration instead).
 #[tokio::test]
 async fn a_reconcile_presenting_a_stale_revision_is_refused() {
     let (_state_dir, db) = open_db().await;
     let project_id = ProjectId::new();
     let task_id = TaskId::new();
     seed_task(&db, project_id, task_id, "omp-1", 3).await;
-    task_upsert_round_trips(&db, project_id, task_id, "omp-2", 5)
+    task_upsert_round_trips(&db, project_id, task_id, "omp-1", 5)
         .await
         .expect("revision 5 must land");
 
@@ -258,7 +263,7 @@ async fn a_reconcile_presenting_a_stale_revision_is_refused() {
     let (revision, owner) = stored_task(&db, task_id).await.expect("task exists");
     assert_eq!(
         (revision, owner.as_str()),
-        (5, "omp-2"),
+        (5, "omp-1"),
         "a refused reconcile must change nothing"
     );
     assert_eq!(
@@ -291,7 +296,9 @@ async fn a_reconcile_presenting_a_stale_revision_is_refused() {
 /// concurrency at all: pre-R74 the repo-layer write this file drives
 /// accepted it unconditionally (only the since-deleted service-layer
 /// pre-check refused it), so this was RED here too. Post-fix the guarded
-/// write alone must refuse it.
+/// write alone must refuse it. Both upserts present the same owner as
+/// the seed -- same owner on both sides so this revision-sequencing
+/// subject is isolated from R76's ownership guard.
 #[tokio::test]
 async fn a_stale_upsert_arriving_after_a_newer_one_is_refused_sequentially() {
     let (_state_dir, db) = open_db().await;
@@ -299,16 +306,16 @@ async fn a_stale_upsert_arriving_after_a_newer_one_is_refused_sequentially() {
     let task_id = TaskId::new();
     seed_task(&db, project_id, task_id, "omp-1", 1).await;
 
-    task_upsert_round_trips(&db, project_id, task_id, "omp-2", 5)
+    task_upsert_round_trips(&db, project_id, task_id, "omp-1", 5)
         .await
         .expect("revision 5 must be accepted");
 
-    let stale = task_upsert_round_trips(&db, project_id, task_id, "omp-3", 4).await;
+    let stale = task_upsert_round_trips(&db, project_id, task_id, "omp-1", 4).await;
 
     assert!(
         stale.is_err(),
         "a strictly sequential stale revision must stay refused: {stale:?}"
     );
     let (final_revision, final_owner) = stored_task(&db, task_id).await.expect("task exists");
-    assert_eq!((final_revision, final_owner.as_str()), (5, "omp-2"));
+    assert_eq!((final_revision, final_owner.as_str()), (5, "omp-1"));
 }

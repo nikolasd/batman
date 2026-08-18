@@ -301,8 +301,8 @@ impl OrchestrationService {
 
     /// Dispatches one already role-authorized orchestration method.
     /// `principal` is consulted for ownership checks (`reconcile/omp`,
-    /// future approval ownership); role admission itself already happened
-    /// in the connection layer's method table.
+    /// `task/upsert`, future approval ownership); role admission itself
+    /// already happened in the connection layer's method table.
     pub async fn dispatch(
         &self,
         method: BatmanMethod,
@@ -310,7 +310,7 @@ impl OrchestrationService {
         params: &Value,
     ) -> Result<Value, ServiceError> {
         match method {
-            BatmanMethod::TaskUpsert => self.task_upsert(params).await,
+            BatmanMethod::TaskUpsert => self.task_upsert(principal, params).await,
             BatmanMethod::TaskGet => self.task_get(params).await,
             BatmanMethod::WorkerCreate => self.worker_create(params).await,
             BatmanMethod::WorkerList => self.worker_list().await,
@@ -348,14 +348,31 @@ impl OrchestrationService {
 
     // ------------------------------------------------------------- task
 
-    async fn task_upsert(&self, params: &Value) -> Result<Value, ServiceError> {
+    /// `ownerClientInstanceId` must equal the connected `principal`'s own
+    /// instance id -- this is param validation against the identity the
+    /// connection layer already authenticated, not the R76 ownership
+    /// guard: the legitimate extension always presents its own session
+    /// id, so no caller behavior changes. Revision monotonicity and,
+    /// for an existing task, ownership of the row itself are both
+    /// arbitrated inside `upsert_task`'s own guarded write (R74/R76): a
+    /// caller-side pre-check read in a separate round trip could be
+    /// interleaved with another write to this task.
+    async fn task_upsert(
+        &self,
+        principal: &ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
         let task_id = parse_or_new_task_id(params.get("taskId"))?;
         let owner = str_field(params, "ownerClientInstanceId")?;
+        if owner != principal.instance_id {
+            return Err(ServiceError::invalid_params(format!(
+                "ownerClientInstanceId {owner} must match the connected instance {} -- \
+                 task/upsert cannot bind a task to another instance; reconcile/omp rebinds \
+                 ownership",
+                principal.instance_id
+            )));
+        }
         let revision = u64_field(params, "revision")?;
-
-        // Revision monotonicity is arbitrated inside `upsert_task`'s own
-        // guarded write (R74): a caller-side pre-check read in a separate
-        // round trip could be interleaved with another write to this task.
 
         let task_ref = TaskRef {
             owner_client_instance_id: owner,
