@@ -43,11 +43,24 @@
 //! side effects (R54, R72). Releasing quarantine on an
 //! already-terminal/cancelled run is refused in that same transaction; it
 //! must never be revived.
+//!
+//! `apply_action`'s idempotency check and `decide`'s release-time
+//! un-quarantine are both arbitrated inside guarded writes rather than
+//! caller-held snapshots (R75), the same doctrine applied to ownership
+//! above: [`crate::domain::repository::DomainRepository::record_policy_violation`]
+//! re-reads `Run.flags.policyQuarantined` and run state immediately
+//! before the same call's journal commit -- not a separate, earlier
+//! `run_domain_op` round trip a concurrent release could land in --  and
+//! reports whether the run was already actioned; and
+//! [`crate::domain::repository::DomainRepository::release_quarantine`]
+//! refuses to clear the flag if a *different* violation on the run is
+//! still unresolved, so a release targeting one violation can never
+//! silently un-quarantine a run for another, still-open one.
 
 use std::sync::Arc;
 
 use batman_protocol::{
-    EventEnvelope, PolicyViolationId, ProjectId, RunFlags, RunId, RunState, TaskId, WorkerId,
+    EventEnvelope, PolicyViolationId, ProjectId, RunId, RunState, TaskId, WorkerId,
 };
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
@@ -146,79 +159,40 @@ impl ViolationService {
         }
     }
 
-    /// Loads a run's current `state`, full `flags`, and the
-    /// `policy_fingerprint` it was authorized under, for the idempotency
-    /// check in [`ViolationService::record_nested_worker`] /
-    /// [`ViolationService::record_cost_ceiling`] and to make the journaled
-    /// violation auditable against a specific merged policy. No longer used
-    /// to read-modify-write a flag: [`ViolationService::set_quarantined`]
-    /// arbitrates its own flag write in-tx via
-    /// [`DomainRepository::set_run_flag`] instead (R73).
+    /// Loads a run's `policy_fingerprint` -- the merged policy it was
+    /// authorized under -- to make the journaled violation auditable
+    /// against a specific policy.
+    ///
+    /// No longer also reads `state`/`flags`: the idempotency check that
+    /// used to live here (`already_actioned = flags.policy_quarantined ||
+    /// state.is_terminal()`, read one whole `run_domain_op` round trip
+    /// before the violation was journaled) is now arbitrated inside
+    /// [`DomainRepository::record_policy_violation`]'s own call, re-read
+    /// immediately before that same commit rather than a round trip
+    /// earlier -- a stale value here could no longer be trusted once a
+    /// concurrent `decide("release")` could commit in the gap (R75).
     ///
     /// The fingerprint is `None` for runs created before migration 6; it is
     /// journaled as an empty string rather than a fabricated value.
-    async fn load_run_state_and_flags(
-        &self,
-        run_id: RunId,
-    ) -> Result<(RunState, RunFlags, String), ViolationError> {
+    async fn load_policy_fingerprint(&self, run_id: RunId) -> Result<String, ViolationError> {
         let value = self
             .db
             .run_domain_op(Box::new(move |conn| {
-                conn.query_row(
-                    "SELECT state, flags_degraded_control, flags_needs_reconciliation,
-                            flags_protocol_unhealthy, flags_policy_quarantined,
-                            flags_workspace_dirty, flags_children_active,
-                            policy_fingerprint
-                     FROM runs WHERE run_id = ?1",
-                    [run_id.to_string()],
-                    |row| {
-                        Ok(json!({
-                            "state": row.get::<_, String>(0)?,
-                            "flags": {
-                                "degradedControl": row.get::<_, i64>(1)? != 0,
-                                "needsReconciliation": row.get::<_, i64>(2)? != 0,
-                                "protocolUnhealthy": row.get::<_, i64>(3)? != 0,
-                                "policyQuarantined": row.get::<_, i64>(4)? != 0,
-                                "workspaceDirty": row.get::<_, i64>(5)? != 0,
-                                "childrenActive": row.get::<_, i64>(6)? != 0,
-                            },
-                            "policyFingerprint": row.get::<_, Option<String>>(7)?,
-                        }))
-                    },
-                )
-                .map_err(|_| DomainError::NotFound {
-                    kind: "run",
-                    id: run_id.to_string(),
-                })
+                let fingerprint: Option<String> = conn
+                    .query_row(
+                        "SELECT policy_fingerprint FROM runs WHERE run_id = ?1",
+                        [run_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .map_err(|_| DomainError::NotFound {
+                        kind: "run",
+                        id: run_id.to_string(),
+                    })?;
+                Ok(json!(fingerprint))
             }))
             .await
             .map_err(ViolationError::Domain)?;
-        let state =
-            RunState::try_from(value["state"].as_str().unwrap_or_default()).map_err(|_| {
-                ViolationError::Domain(DomainError::NotFound {
-                    kind: "run-state",
-                    id: value["state"].to_string(),
-                })
-            })?;
-        let flags = RunFlags {
-            degraded_control: value["flags"]["degradedControl"].as_bool().unwrap_or(false),
-            needs_reconciliation: value["flags"]["needsReconciliation"]
-                .as_bool()
-                .unwrap_or(false),
-            protocol_unhealthy: value["flags"]["protocolUnhealthy"]
-                .as_bool()
-                .unwrap_or(false),
-            policy_quarantined: value["flags"]["policyQuarantined"]
-                .as_bool()
-                .unwrap_or(false),
-            workspace_dirty: value["flags"]["workspaceDirty"].as_bool().unwrap_or(false),
-            children_active: value["flags"]["childrenActive"].as_bool().unwrap_or(false),
-        };
-        let policy_fingerprint = value["policyFingerprint"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
-        Ok((state, flags, policy_fingerprint))
+        Ok(value.as_str().unwrap_or_default().to_string())
     }
 
     /// Called by [`crate::adapter::event_sink::DomainAdapterEventSink`]
@@ -230,6 +204,10 @@ impl ViolationService {
     /// `PolicyViolationRecorded` -- so OMP sees every subsequent
     /// unexpected child -- but does not re-apply the quarantine flag,
     /// create a second cancellation intent, or call `cancel_run` again.
+    /// That `already_actioned` judgment comes back from
+    /// [`DomainRepository::record_policy_violation`] itself, read inside
+    /// the same call as the journal commit (R75), not from a caller-side
+    /// snapshot taken a round trip earlier.
     ///
     /// Named rather than overloaded so the cost-ceiling sibling
     /// [`ViolationService::record_cost_ceiling`] can never be mistaken for it.
@@ -245,8 +223,7 @@ impl ViolationService {
         vendor_parent_ref: &str,
         observed_event_sequence: u64,
     ) -> Result<(), ViolationError> {
-        let (state, flags, policy_fingerprint) = self.load_run_state_and_flags(run_id).await?;
-        let already_actioned = flags.policy_quarantined || state.is_terminal();
+        let policy_fingerprint = self.load_policy_fingerprint(run_id).await?;
 
         let violation_id = PolicyViolationId::new();
         let project_id = self.project_id;
@@ -269,10 +246,19 @@ impl ViolationService {
                     Some(&vendor_parent_ref_owned),
                     &action_str,
                 )
-                .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+                .map(|outcome| {
+                    embed_envelope(
+                        json!({
+                            "sequence": outcome.committed.sequence,
+                            "alreadyActioned": outcome.already_actioned,
+                        }),
+                        &outcome.committed.envelope,
+                    )
+                })
             }))
             .await
             .map_err(ViolationError::Domain)?;
+        let already_actioned = result["alreadyActioned"].as_bool().unwrap_or(false);
         self.broadcast(&mut result);
 
         self.apply_action(
@@ -305,8 +291,7 @@ impl ViolationService {
         worker_id: WorkerId,
         observed_event_sequence: u64,
     ) -> Result<(), ViolationError> {
-        let (state, flags, policy_fingerprint) = self.load_run_state_and_flags(run_id).await?;
-        let already_actioned = flags.policy_quarantined || state.is_terminal();
+        let policy_fingerprint = self.load_policy_fingerprint(run_id).await?;
 
         let violation_id = PolicyViolationId::new();
         let project_id = self.project_id;
@@ -327,10 +312,19 @@ impl ViolationService {
                     None,
                     &action_str,
                 )
-                .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+                .map(|outcome| {
+                    embed_envelope(
+                        json!({
+                            "sequence": outcome.committed.sequence,
+                            "alreadyActioned": outcome.already_actioned,
+                        }),
+                        &outcome.committed.envelope,
+                    )
+                })
             }))
             .await
             .map_err(ViolationError::Domain)?;
+        let already_actioned = result["alreadyActioned"].as_bool().unwrap_or(false);
         self.broadcast(&mut result);
 
         self.apply_action(run_id, worker_id, already_actioned, None, None)
@@ -358,7 +352,7 @@ impl ViolationService {
 
         match self.action {
             NestedViolationAction::Quarantine => {
-                self.set_quarantined(run_id, true).await?;
+                self.quarantine(run_id).await?;
             }
             NestedViolationAction::Cancel => {
                 self.create_cancellation_intent(
@@ -371,7 +365,7 @@ impl ViolationService {
                 self.cancel_and_transition(run_id).await?;
             }
             NestedViolationAction::QuarantineAndCancel => {
-                self.set_quarantined(run_id, true).await?;
+                self.quarantine(run_id).await?;
                 self.create_cancellation_intent(
                     run_id,
                     worker_id,
@@ -386,24 +380,26 @@ impl ViolationService {
         Ok(())
     }
 
-    /// Sets `flags.policy_quarantined = quarantined` via
+    /// Sets `flags.policy_quarantined = true` via
     /// [`DomainRepository::set_run_flag`], which reads the run's current
     /// flags, flips this one, and writes it back all inside its own guarded
     /// call -- no caller-held snapshot is read-modified-written across an
     /// `await`, so a concurrent mutation of a *different* flag on the same
     /// run (e.g. `ApprovalService::decide`'s callback-failure path setting
     /// `protocolUnhealthy`) cannot be silently reverted by this call (R73).
-    async fn set_quarantined(
-        &self,
-        run_id: RunId,
-        quarantined: bool,
-    ) -> Result<(), ViolationError> {
+    ///
+    /// Always sets the flag `true`: the one call that used to clear it,
+    /// `decide`'s release path, now calls
+    /// [`ViolationService::release_quarantine`] instead, which can refuse
+    /// to clear the flag (R75) -- a decision this method has no reason to
+    /// make.
+    async fn quarantine(&self, run_id: RunId) -> Result<(), ViolationError> {
         let project_id = self.project_id;
         let mut result = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.set_run_flag(run_id, RunFlag::PolicyQuarantined, quarantined)
+                repo.set_run_flag(run_id, RunFlag::PolicyQuarantined, true)
                     .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
@@ -512,6 +508,13 @@ impl ViolationService {
     /// arbiter, exactly one `PolicyViolationDecided` event is journaled per
     /// violation, and only the deciding call fires side effects.
     ///
+    /// A `"release"` that wins this arbitration still may not clear
+    /// `flags.policyQuarantined`: [`ViolationService::release_quarantine`]
+    /// refuses to if a *different* policy violation on the run is still
+    /// unresolved (R75), so `DecideOutcome::Decided` here means the
+    /// resolution was recorded, not that the run necessarily left
+    /// quarantine.
+    ///
     /// # Errors
     /// Returns [`ViolationError::Forbidden`] if `principal_instance_id`
     /// does not own the task, [`ViolationError::Conflict`] if a different
@@ -597,11 +600,42 @@ impl ViolationService {
         self.broadcast(&mut result);
 
         if resolution == "release" {
-            self.set_quarantined(run_id, false).await?;
+            self.release_quarantine(run_id).await?;
         } else {
             self.cancel_and_transition(run_id).await?;
         }
 
         Ok(DecideOutcome::Decided)
+    }
+
+    /// Clears `flags.policy_quarantined` after a `"release"` decision, via
+    /// [`DomainRepository::release_quarantine`] -- which refuses to clear
+    /// the flag if a *different* policy violation on this run is still
+    /// unresolved, so a release targeting one violation can never silently
+    /// un-quarantine a run for another, still-open one (R75). Called only
+    /// after [`Self::decide`]'s [`DomainRepository::resolve_policy_violation`]
+    /// commit has already resolved the violation being released, so that
+    /// row is never the one this method's own unresolved-count sees.
+    ///
+    /// A no-op (no write, no broadcast) if the flag was already clear or
+    /// another violation remains open -- unlike the pre-R75
+    /// `set_quarantined(run_id, false)` this replaced, a release is no
+    /// longer guaranteed to change the flag it targets.
+    async fn release_quarantine(&self, run_id: RunId) -> Result<(), ViolationError> {
+        let project_id = self.project_id;
+        let mut result = self
+            .db
+            .run_domain_op(Box::new(move |conn| {
+                let mut repo = DomainRepository::new(conn, project_id);
+                repo.release_quarantine(run_id).map(|maybe_committed| {
+                    maybe_committed
+                        .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+                        .unwrap_or_else(|| json!({}))
+                })
+            }))
+            .await
+            .map_err(ViolationError::Domain)?;
+        self.broadcast(&mut result);
+        Ok(())
     }
 }

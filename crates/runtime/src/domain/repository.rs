@@ -100,6 +100,22 @@ pub struct Committed {
     pub envelope: EventEnvelope,
 }
 
+/// The result of [`DomainRepository::record_policy_violation`]: the
+/// journal commit, plus whether the run was already actioned --
+/// quarantined or already terminal -- immediately *before* this
+/// violation's commit. That flag is read inside the same atomic
+/// `run_domain_op` closure as the journal write itself, not a separate,
+/// earlier round trip (R75): [`crate::policy::ViolationService::apply_action`]
+/// uses it in place of a caller-held snapshot to decide whether to
+/// (re)apply the configured [`crate::config::NestedViolationAction`], so a
+/// concurrent `decide("release")` committing between an earlier snapshot
+/// read and this journal write can no longer leave that decision stale.
+#[derive(Debug, Clone)]
+pub struct PolicyViolationRecordOutcome {
+    pub committed: Committed,
+    pub already_actioned: bool,
+}
+
 /// A policy violation's correlating ids -- `run_id`, `task_id`, and
 /// `worker_id` -- for [`crate::policy::ViolationService`] to thread
 /// through to [`DomainRepository::resolve_policy_violation`] and its
@@ -334,14 +350,27 @@ impl<'c> DomainRepository<'c> {
         Ok(Committed { sequence, envelope })
     }
 
-    /// Upserts an OMP-owned task. Idempotent for an identical revision. The
-    /// monotonicity guard lives inside the write itself: the `ON CONFLICT`
-    /// arm only applies when the presented revision is not lower than the
-    /// stored one, and a refused write is classified in the same
-    /// transaction as [`DomainError::RevisionTooLow`] (R74) -- a caller-side
-    /// pre-check read in a separate `run_domain_op` round trip could be
-    /// interleaved with another write to the same task. Emits a
-    /// `TaskCreated`/`TaskUpdated` event.
+    /// Upserts an OMP-owned task. Idempotent for an identical revision.
+    /// Both guards live inside the write itself: the `ON CONFLICT` arm
+    /// applies only when the presented revision is not lower than the
+    /// stored one (R74) AND the presented owner matches the task's
+    /// current owner -- an existing task may only be re-upserted by its
+    /// current owner; transferring ownership goes through
+    /// `reconcile/omp`, never through `task/upsert` (R76), so a second
+    /// OMP-extension client cannot seize a task it never reconciled by
+    /// presenting the stored revision with its own instance id. A refused
+    /// write is classified inside the same transaction -- nothing else
+    /// can have changed the row since the `ON CONFLICT` arm declined: a
+    /// stored revision higher than the one presented is
+    /// [`DomainError::RevisionTooLow`]; otherwise (the revision would have
+    /// been accepted) the presented owner does not match the stored one,
+    /// [`DomainError::NotOwner`]. A caller-side pre-check read in a
+    /// separate `run_domain_op` round trip could be interleaved with
+    /// another write to the same task, so both checks must be
+    /// re-evaluated from inside this transaction, not from a snapshot
+    /// taken before it opened. Creating a task (no existing row) binds
+    /// ownership to the presented id unconditionally -- there is no prior
+    /// owner to protect. Emits a `TaskCreated`/`TaskUpdated` event.
     pub fn upsert_task(
         &mut self,
         task_id: batman_protocol::TaskId,
@@ -384,7 +413,8 @@ impl<'c> DomainRepository<'c> {
                    owner_client_instance_id = excluded.owner_client_instance_id,
                    revision = excluded.revision,
                    updated_at = excluded.updated_at
-                 WHERE excluded.revision >= tasks.revision",
+                 WHERE excluded.revision >= tasks.revision
+                   AND excluded.owner_client_instance_id = tasks.owner_client_instance_id",
                 rusqlite::params![
                     task_id.to_string(),
                     project.to_string(),
@@ -394,18 +424,31 @@ impl<'c> DomainRepository<'c> {
                 ],
             )?;
             if affected == 0 {
-                // The conflict arm declined: a higher revision is already
-                // stored. Classify inside the same transaction; nothing else
-                // can have changed the row since.
-                let stored: u64 = tx.query_row(
-                    "SELECT revision FROM tasks WHERE task_id = ?1",
+                // The conflict arm declined: classify inside the same
+                // transaction, since nothing else can have changed the row
+                // since. A stored revision higher than the one presented
+                // wins regardless of ownership (an owner is entitled to
+                // know its own upsert is stale); otherwise the presented
+                // owner does not match the current one.
+                let (stored_revision, stored_owner): (u64, String) = tx.query_row(
+                    "SELECT revision, owner_client_instance_id FROM tasks WHERE task_id = ?1",
                     [task_id.to_string()],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )?;
-                return Err(DomainError::RevisionTooLow {
+                if revision < stored_revision {
+                    return Err(DomainError::RevisionTooLow {
+                        task_id: task_id.to_string(),
+                        presented: revision,
+                        stored: stored_revision,
+                    });
+                }
+                debug_assert_ne!(
+                    owner, stored_owner,
+                    "the ON CONFLICT arm only declines a non-lower revision when the owner predicate failed"
+                );
+                return Err(DomainError::NotOwner {
                     task_id: task_id.to_string(),
-                    presented: revision,
-                    stored,
+                    instance_id: owner,
                 });
             }
             Ok(())
@@ -637,49 +680,21 @@ impl<'c> DomainRepository<'c> {
         )
     }
 
-    /// Reads the run's current flags, flips exactly `flag` to `value`, and
-    /// writes the whole row back -- all inside this one call, with nothing
-    /// else able to observe or mutate the row in between -- then emits a
-    /// `RunFlagsChanged` event carrying the resulting full [`RunFlags`]
-    /// struct (the event's wire shape is unchanged).
-    ///
-    /// This replaced a `set_run_flags(run_id, &RunFlags)` that took the
-    /// whole struct from the caller. Every real caller only ever wanted to
-    /// flip one flag, having read the "current" struct from an earlier,
-    /// separate `run_domain_op` round trip -- a snapshot that could go
-    /// stale if anything else mutated a *different* flag on the same run
-    /// while the caller was, say, awaiting a vendor callback.
-    /// [`crate::db::DatabaseHandle`]'s actor interleaves whole
-    /// `run_domain_op` closures, never a caller's async steps, so that
-    /// snapshot-then-write-back shape could silently revert a concurrent
-    /// flag change: a lost update neither side detects (R73). Reading and
-    /// writing inside this one call removes the gap -- R70-R72's
-    /// guarded-write doctrine applied to a flag flip rather than a
-    /// decision.
-    ///
-    /// The read above (`self.conn.query_row`) executes on `self.conn`
-    /// *before* [`Self::append_and_apply`] opens its SQL transaction, not
-    /// inside it: the event this method emits carries the post-flip
-    /// [`RunFlags`] struct by value, so that struct must be fully built
-    /// before the closure handed to `append_and_apply` even exists. So the
-    /// thing that actually guards this read against a racing write is not
-    /// a transaction -- it is [`crate::db::DatabaseHandle`]'s single-owner
-    /// actor thread, which runs one `run_domain_op` closure to completion
-    /// before starting the next. That makes this method's read-then-write
-    /// atomic at *closure* granularity, unlike
-    /// [`Self::resolve_policy_violation`], which re-reads from inside its
-    /// already-open `tx` and is guarded at *transaction* granularity.
+    /// Reads the run's current flags row, immediately before whatever
+    /// guarded write is about to build a new [`RunFlags`] value from it --
+    /// on `self.conn`, *before* [`Self::append_and_apply`] opens its SQL
+    /// transaction, not inside it. Shared by [`Self::set_run_flag`] and
+    /// [`Self::release_quarantine`] so both flag-mutating entry points
+    /// read from the identical query. See [`Self::set_run_flag`]'s doc
+    /// comment for why a plain, pre-transaction read is still atomic with
+    /// respect to concurrent writers (R73): [`crate::db::DatabaseHandle`]'s
+    /// single-owner actor thread, not a transaction, is what closes the
+    /// gap.
     ///
     /// # Errors
     /// Returns [`DomainError::NotFound`] if `run_id` does not exist.
-    pub fn set_run_flag(
-        &mut self,
-        run_id: batman_protocol::RunId,
-        flag: RunFlag,
-        value: bool,
-    ) -> Result<Committed, DomainError> {
-        let mut flags = self
-            .conn
+    fn read_run_flags(&self, run_id: batman_protocol::RunId) -> Result<RunFlags, DomainError> {
+        self.conn
             .query_row(
                 "SELECT flags_degraded_control, flags_needs_reconciliation, flags_protocol_unhealthy,
                         flags_policy_quarantined, flags_workspace_dirty, flags_children_active
@@ -699,9 +714,20 @@ impl<'c> DomainRepository<'c> {
             .map_err(|_| DomainError::NotFound {
                 kind: "run",
                 id: run_id.to_string(),
-            })?;
-        flag.apply(&mut flags, value);
+            })
+    }
 
+    /// Writes `flags` verbatim to `run_id`'s row and journals the matching
+    /// `RunFlagsChanged` event. Shared by [`Self::set_run_flag`] and
+    /// [`Self::release_quarantine`] so both build their commit from the
+    /// exact same `UPDATE`/event pair -- one guarded-write path for every
+    /// mutation of `runs.flags_*`, preserving R73's sole-writer property
+    /// even as R75 adds a second caller.
+    fn write_run_flags(
+        &mut self,
+        run_id: batman_protocol::RunId,
+        flags: RunFlags,
+    ) -> Result<Committed, DomainError> {
         let event = RuntimeEvent::RunFlagsEvent {
             run_id,
             flags: flags.clone(),
@@ -725,6 +751,104 @@ impl<'c> DomainRepository<'c> {
             )?;
             Ok(())
         })
+    }
+
+    /// Reads the run's current flags, flips exactly `flag` to `value`, and
+    /// writes the whole row back -- all inside this one call, with nothing
+    /// else able to observe or mutate the row in between -- then emits a
+    /// `RunFlagsChanged` event carrying the resulting full [`RunFlags`]
+    /// struct (the event's wire shape is unchanged).
+    ///
+    /// This replaced a `set_run_flags(run_id, &RunFlags)` that took the
+    /// whole struct from the caller. Every real caller only ever wanted to
+    /// flip one flag, having read the "current" struct from an earlier,
+    /// separate `run_domain_op` round trip -- a snapshot that could go
+    /// stale if anything else mutated a *different* flag on the same run
+    /// while the caller was, say, awaiting a vendor callback.
+    /// [`crate::db::DatabaseHandle`]'s actor interleaves whole
+    /// `run_domain_op` closures, never a caller's async steps, so that
+    /// snapshot-then-write-back shape could silently revert a concurrent
+    /// flag change: a lost update neither side detects (R73). Reading and
+    /// writing inside this one call removes the gap -- R70-R72's
+    /// guarded-write doctrine applied to a flag flip rather than a
+    /// decision.
+    ///
+    /// The read ([`Self::read_run_flags`]) executes on `self.conn`
+    /// *before* [`Self::append_and_apply`] opens its SQL transaction, not
+    /// inside it: the event this method emits carries the post-flip
+    /// [`RunFlags`] struct by value, so that struct must be fully built
+    /// before the closure handed to `append_and_apply` even exists. So the
+    /// thing that actually guards this read against a racing write is not
+    /// a transaction -- it is [`crate::db::DatabaseHandle`]'s single-owner
+    /// actor thread, which runs one `run_domain_op` closure to completion
+    /// before starting the next. That makes this method's read-then-write
+    /// atomic at *closure* granularity, unlike
+    /// [`Self::resolve_policy_violation`], which re-reads from inside its
+    /// already-open `tx` and is guarded at *transaction* granularity.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::NotFound`] if `run_id` does not exist.
+    pub fn set_run_flag(
+        &mut self,
+        run_id: batman_protocol::RunId,
+        flag: RunFlag,
+        value: bool,
+    ) -> Result<Committed, DomainError> {
+        let mut flags = self.read_run_flags(run_id)?;
+        flag.apply(&mut flags, value);
+        self.write_run_flags(run_id, flags)
+    }
+
+    /// Clears `Run.flags.policyQuarantined`, but only if no *other* policy
+    /// violation against this run is still unresolved. Called by
+    /// [`crate::policy::ViolationService::decide`]'s `"release"` path,
+    /// after [`Self::resolve_policy_violation`] has already committed the
+    /// resolution being released -- so the `policy_violations` count below
+    /// never counts that violation, only a *different*, still-open one.
+    ///
+    /// This is the fix for the second half of R75: `decide`'s release used
+    /// to call an unconditional [`Self::set_run_flag`]`(run_id,
+    /// PolicyQuarantined, false)` as its own, independent commit. A fresh
+    /// violation recorded on this run (by
+    /// [`Self::record_policy_violation`]/[`crate::policy::ViolationService::apply_action`])
+    /// in the gap between the release's `resolve_policy_violation` commit
+    /// and that unconditional clear got its quarantine silently reverted
+    /// by a release that targeted an entirely different, unrelated
+    /// violation. Both reads here ([`Self::read_run_flags`], then the
+    /// `policy_violations` count) and the write they gate run on
+    /// `self.conn`/inside this one call, before [`Self::append_and_apply`]
+    /// opens its transaction -- the same closure-granularity boundary
+    /// [`Self::set_run_flag`] uses (R73): [`crate::db::DatabaseHandle`]'s
+    /// single-owner actor thread runs one whole `run_domain_op` closure to
+    /// completion before starting the next, so a fresh violation's own
+    /// [`Self::record_policy_violation`] commit and this method's
+    /// unresolved-count read can never interleave with each other --
+    /// whichever one commits first is the one the other observes.
+    ///
+    /// Returns `Ok(None)` with no write and no event if the flag is
+    /// already clear or another violation is still unresolved; `Ok(Some(_))`
+    /// with the commit if the flag was cleared.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::NotFound`] if `run_id` does not exist.
+    pub fn release_quarantine(
+        &mut self,
+        run_id: batman_protocol::RunId,
+    ) -> Result<Option<Committed>, DomainError> {
+        let mut flags = self.read_run_flags(run_id)?;
+        if !flags.policy_quarantined {
+            return Ok(None);
+        }
+        let other_unresolved: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM policy_violations WHERE run_id = ?1 AND resolution IS NULL",
+            [run_id.to_string()],
+            |row| row.get(0),
+        )?;
+        if other_unresolved > 0 {
+            return Ok(None);
+        }
+        flags.policy_quarantined = false;
+        self.write_run_flags(run_id, flags).map(Some)
     }
 
     /// Records a message in `recorded` delivery state (record-before-send).
@@ -1073,10 +1197,30 @@ impl<'c> DomainRepository<'c> {
     }
 
     /// Records a mid-run policy violation: inserts the [`policy_violations`]
-    /// row and appends a `PolicyViolationRecorded` event. Does not touch
-    /// `Run.flags` -- callers apply the quarantine flag via
-    /// [`DomainRepository::set_run_flag`] as a separate commit, so existing
-    /// `RunFlagsChanged` consumers see it without new code.
+    /// row and appends a `PolicyViolationRecorded` event, then reports
+    /// whether the run was already actioned (quarantined or terminal)
+    /// *before* this commit. Does not itself touch `Run.flags` -- callers
+    /// apply the quarantine flag via [`DomainRepository::set_run_flag`] as
+    /// a separate commit, so existing `RunFlagsChanged` consumers see it
+    /// without new code.
+    ///
+    /// The `already_actioned` read (`self.conn.query_row`, immediately
+    /// below) executes *before* [`Self::append_and_apply`] opens its SQL
+    /// transaction, not inside it -- the same closure-granularity pattern
+    /// [`Self::set_run_flag`] uses (R73), for the identical reason: this
+    /// method's event is built from plain parameters, not from the read
+    /// result, so nothing forces the read into the transaction, but
+    /// nothing needs to. What guards it is not a transaction but
+    /// [`crate::db::DatabaseHandle`]'s single-owner actor thread, which
+    /// runs one whole `run_domain_op` closure to completion before
+    /// starting the next: no concurrent `decide("release")` call can
+    /// commit its [`Self::resolve_policy_violation`] or its quarantine
+    /// clear in between this read and the `INSERT` a few lines below,
+    /// because both live inside this one closure. Before this fix, that
+    /// read was a separate, earlier `run_domain_op` round trip
+    /// (`ViolationService::load_run_state_and_flags`), one full command
+    /// apart from the write that mattered -- exactly the gap a concurrent
+    /// release's quarantine-clear could land in and go unnoticed (R75).
     ///
     /// `code` is the machine-readable violation code (`nested_worker_denied`
     /// or `cost_ceiling_exceeded`). `vendor_child_id`/`vendor_parent_ref` are
@@ -1098,7 +1242,25 @@ impl<'c> DomainRepository<'c> {
         vendor_child_id: Option<&str>,
         vendor_parent_ref: Option<&str>,
         action: &str,
-    ) -> Result<Committed, DomainError> {
+    ) -> Result<PolicyViolationRecordOutcome, DomainError> {
+        let (quarantined, state): (i64, String) = self
+            .conn
+            .query_row(
+                "SELECT flags_policy_quarantined, state FROM runs WHERE run_id = ?1",
+                [run_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|_| DomainError::NotFound {
+                kind: "run",
+                id: run_id.to_string(),
+            })?;
+        let parsed_state =
+            RunState::try_from(state.as_str()).map_err(|_| DomainError::NotFound {
+                kind: "run-state",
+                id: state.clone(),
+            })?;
+        let already_actioned = quarantined != 0 || parsed_state.is_terminal();
+
         let event = RuntimeEvent::PolicyViolationRecorded {
             kind: RuntimeEventKind::PolicyViolationRecorded {
                 violation_id,
@@ -1116,7 +1278,7 @@ impl<'c> DomainRepository<'c> {
         let vendor_child_id = vendor_child_id.map(str::to_string);
         let vendor_parent_ref = vendor_parent_ref.map(str::to_string);
         let action = action.to_string();
-        self.append_and_apply(
+        let committed = self.append_and_apply(
             &event,
             Some(task_id),
             Some(worker_id),
@@ -1140,7 +1302,11 @@ impl<'c> DomainRepository<'c> {
                 )?;
                 Ok(())
             },
-        )
+        )?;
+        Ok(PolicyViolationRecordOutcome {
+            committed,
+            already_actioned,
+        })
     }
 
     /// Looks up a policy violation's `run_id`/`task_id`/`worker_id`, for
@@ -1179,6 +1345,7 @@ impl<'c> DomainRepository<'c> {
     /// `resolution`/`resolved_by` and appends a `PolicyViolationDecided`
     /// event. Does not touch `Run.flags` or run state -- callers apply
     /// those via [`DomainRepository::set_run_flag`]/
+    /// [`DomainRepository::release_quarantine`]/
     /// [`DomainRepository::transition_run`] as separate commits.
     ///
     /// This is the **only** authority on whether a violation may be
