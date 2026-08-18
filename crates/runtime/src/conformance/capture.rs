@@ -548,6 +548,11 @@ mod tests {
             let fixture_dir = PathBuf::from(FIXTURES_DIR).join(adapter_fixture_dir(kind));
             for entry in std::fs::read_dir(&fixture_dir).expect("fixture directory must be readable") {
                 let entry = entry.expect("fixture directory entry must be readable");
+                let file_name = entry.file_name();
+                if file_name.to_string_lossy().starts_with('.') {
+                    continue;
+                }
+
                 assert!(
                     entry.file_type().expect("fixture type must be readable").is_file(),
                     "fixture directory must contain files: {}",
@@ -556,7 +561,7 @@ mod tests {
                 discovered_paths.insert(format!(
                     "{}/{}",
                     adapter_fixture_dir(kind),
-                    entry.file_name().to_string_lossy()
+                    file_name.to_string_lossy()
                 ));
             }
         }
