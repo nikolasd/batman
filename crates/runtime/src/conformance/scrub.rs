@@ -409,4 +409,58 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn prefixed_ids_are_renumbered_by_encounter_order() {
+        let mut scrubber = Scrubber::new("/workspace/batman".into());
+        let session_ids: Vec<String> = [
+            r#"{"session_id":"11111111-1111-4111-8111-111111111111"}"#,
+            r#"{"session_id":"11111111-1111-4111-8111-111111111111"}"#,
+            r#"{"session_id":"11111111-1111-4111-8111-222222222222"}"#,
+        ]
+        .iter()
+        .map(|frame| {
+            let scrubbed = scrubber.scrub_line(frame.as_bytes()).expect("frame must be retained");
+            let value: Value =
+                serde_json::from_str(&scrubbed).expect("scrubbed frame must be JSON");
+            value["session_id"]
+                .as_str()
+                .expect("session id must remain a string")
+                .to_owned()
+        })
+        .collect();
+        assert_eq!(
+            session_ids,
+            vec![
+                "11111111-1111-4111-8111-000000000001".to_string(),
+                "11111111-1111-4111-8111-000000000001".to_string(),
+                "11111111-1111-4111-8111-000000000002".to_string(),
+            ]
+        );
+
+        let uuids: Vec<String> = [
+            r#"{"uuid":"a0000000-0000-4000-8000-999999999999"}"#,
+            r#"{"uuid":"a0000000-0000-4000-8000-999999999999"}"#,
+            r#"{"uuid":"a0000000-0000-4000-8000-888888888888"}"#,
+        ]
+        .iter()
+        .map(|frame| {
+            let scrubbed = scrubber.scrub_line(frame.as_bytes()).expect("frame must be retained");
+            let value: Value =
+                serde_json::from_str(&scrubbed).expect("scrubbed frame must be JSON");
+            value["uuid"]
+                .as_str()
+                .expect("UUID must remain a string")
+                .to_owned()
+        })
+        .collect();
+        assert_eq!(
+            uuids,
+            vec![
+                "a0000000-0000-4000-8000-000000000001".to_string(),
+                "a0000000-0000-4000-8000-000000000001".to_string(),
+                "a0000000-0000-4000-8000-000000000002".to_string(),
+            ]
+        );
+    }
 }

@@ -456,6 +456,7 @@ impl AdapterEventSink for DiscardingSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn adapter_fixture_dir_maps_correctly() {
@@ -487,18 +488,23 @@ mod tests {
     }
 
     #[test]
-    fn manifest_fixtures_are_canonical_capture_output() {
+    fn manifest_fixtures_are_scrub_render_fixed_points() {
         let kinds = [
             AdapterKind::Claude,
             AdapterKind::Codex,
             AdapterKind::Copilot,
             AdapterKind::OmpRpc,
         ];
-        let mut fixture_count = 0;
+        let mut manifest_paths = BTreeSet::new();
 
-        for kind in kinds {
+        for &kind in &kinds {
             for entry in load_manifest(&kind).expect("manifest must load") {
-                fixture_count += 1;
+                let qualified_fixture = format!("{}/{}", adapter_fixture_dir(kind), entry.fixture);
+                assert!(
+                    manifest_paths.insert(qualified_fixture),
+                    "manifest must not list a fixture more than once"
+                );
+
                 let fixture_path = PathBuf::from(FIXTURES_DIR)
                     .join(adapter_fixture_dir(kind))
                     .join(&entry.fixture);
@@ -537,11 +543,36 @@ mod tests {
             }
         }
 
+        let mut discovered_paths = BTreeSet::new();
+        for &kind in &kinds {
+            let fixture_dir = PathBuf::from(FIXTURES_DIR).join(adapter_fixture_dir(kind));
+            for entry in std::fs::read_dir(&fixture_dir).expect("fixture directory must be readable") {
+                let entry = entry.expect("fixture directory entry must be readable");
+                assert!(
+                    entry.file_type().expect("fixture type must be readable").is_file(),
+                    "fixture directory must contain files: {}",
+                    entry.path().display()
+                );
+                discovered_paths.insert(format!(
+                    "{}/{}",
+                    adapter_fixture_dir(kind),
+                    entry.file_name().to_string_lossy()
+                ));
+            }
+        }
+
+        let expected_paths = manifest_paths
+            .union(&BTreeSet::from([
+                "codex/schema-version.json".to_string(),
+                "claude/result.jsonl".to_string(),
+            ]))
+            .cloned()
+            .collect::<BTreeSet<_>>();
         assert_eq!(
-            fixture_count,
-            11,
-            "manifest must own exactly 11 capture-managed fixtures"
+            discovered_paths, expected_paths,
+            "every adapter fixture must be manifest-managed or explicitly excluded"
         );
+
     }
 
     #[test]
