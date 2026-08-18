@@ -79,6 +79,10 @@ impl From<DomainError> for ServiceError {
                 code: error_code::INVALID_PARAMS,
                 message: format!("run {run_id} has already settled"),
             },
+            DomainError::NotOwner { task_id, instance_id } => Self {
+                code: error_code::INVALID_PARAMS,
+                message: format!("task {task_id} is not owned by {instance_id}"),
+            },
             other => Self::internal(other.to_string()),
         }
     }
