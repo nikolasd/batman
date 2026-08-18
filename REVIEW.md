@@ -11,7 +11,7 @@ TypeScript/workspace, and build/docs/release, split across four parallel reviewe
 findings were corrected in place (R17, R20, R43, R46) where the mechanism had changed since last
 verified.
 
-**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R33, R41, R44, R47-R54, R68-R71) plus the
+**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R33, R41, R44, R47-R54, R68-R72) plus the
 eleven documentation findings that were resolved or already-stale (R19, R21-R28) has been pruned from
 this document. That history — what broke, the fix commit, the test that proved it, and which
 still-open items below exist *because* of that fix — now lives in
@@ -20,7 +20,7 @@ still-open items below exist *because* of that fix — now lives in
 [Part XII](journal.md#part-xii--closing-the-last-critical-a-denylist-blind-to-its-own-vendor) (R49),
 [Part XIII](journal.md#part-xiii--two-leaks-one-lease-releasing-what-a-failed-start-acquired) (R41, R50),
 [Part XIV](journal.md#part-xiv--fixture-modes-broken-promise-a-kill-switch-only-one-caller-ever-asked-about) (R52),
-[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33), [Part XXII](journal.md#part-xxii--the-capture-pipeline-that-graded-its-own-homework) (R44), and [Part XXIII](journal.md#part-xxiii--the-same-guarded-write-one-interleaving-further-the-decider-that-no-longer-owned-the-task) (R71).
+[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33), [Part XXII](journal.md#part-xxii--the-capture-pipeline-that-graded-its-own-homework) (R44), [Part XXIII](journal.md#part-xxiii--the-same-guarded-write-one-interleaving-further-the-decider-that-no-longer-owned-the-task) (R71), and [Part XXIV](journal.md#part-xxiv--the-same-guarded-write-one-service-over-the-violation-that-no-longer-had-an-owner) (R72).
 This document only tracks what's still broken.
 
 **Baseline, last run 2026-08-12** (during an unrelated state-root rename; results apply to this
@@ -42,16 +42,6 @@ operate the system correctly.
 ## Findings
 
 ### High
-
-#### R72. `ViolationService::decide`'s ownership pre-check races `reconcile/omp`'s task ownership rebind
-
-**Location:** `crates/runtime/src/policy/violation.rs:533-556` (`ViolationService::decide`'s snapshot read and in-memory ownership compare); `crates/runtime/src/domain/repository.rs:1061-1139` (`resolve_policy_violation`'s guarded write, which never re-reads `tasks.owner_client_instance_id`); `crates/runtime/src/domain/repository.rs:1171` (`UPDATE tasks SET owner_client_instance_id ...`, the `reconcile/omp` ownership rebind)
-
-**Evidence:** `decide` (`violation.rs:533-546`) reads a snapshot of `tasks.owner_client_instance_id` once via `policy_violation_snapshot`, then (`violation.rs:548-556`) compares it to the caller's `principal_instance_id` entirely in memory, before ever reaching the guarded domain write. `resolve_policy_violation`'s transaction (`repository.rs:1061-1139`) guards only `resolution IS NULL` (the `UPDATE policy_violations ... WHERE ... AND resolution IS NULL` at `repository.rs:1090-1093`) and the run's terminal state — it never re-reads `tasks.owner_client_instance_id`. Between the snapshot read and that write, `reconcile/omp` can rebind the task to a new owner via the same unguarded `UPDATE tasks SET owner_client_instance_id = ?1, revision = ?2, updated_at = ?3 WHERE task_id = ?4` (`repository.rs:1171`) that R71 cites for the approval path, and commit. The old owner, having already passed the stale pre-check, still reaches and wins the guarded write — deciding a violation for a task it no longer owns. Identical mechanism to R71, one service over.
-
-**Fix:** mirror R71's fix — thread `principal_instance_id` into `resolve_policy_violation`, re-read `tasks.owner_client_instance_id` inside the same guarded transaction before the `UPDATE policy_violations` write and reject on mismatch, map the resulting `DomainError::NotOwner` to `ViolationError::Forbidden`, and delete the caller-side pre-check (`violation.rs:548-556`) once the in-transaction check subsumes it.
-
-**Priority:** High — same severity class as R70/R71: a real, reachable race that lets a caller decide a policy violation for a task it no longer owns; found during R71's adversarial review, 2026-08-18; not fixed as part of R71 since it is a distinct call path (`ViolationService::decide`, not `ApprovalService::decide`).
 
 #### R73. `ApprovalService::decide` reverts concurrent run-flag mutations across the vendor callback await
 
@@ -333,7 +323,7 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
-- **High:** 3 (R72, R73 — new, found during R71's adversarial review; R74 — new, found during R72's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII)
+- **High:** 2 (R73 — new, found during R71's adversarial review; R74 — new, found during R72's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
 - **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
