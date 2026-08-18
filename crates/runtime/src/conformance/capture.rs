@@ -280,6 +280,7 @@ async fn capture_one(
 
     // Collect frames until the turn settles or the deadline elapses.
     let raw_frames = collect_frames(tap_rx).await;
+    adapter.dispose().await.ok();
     // Scrub the frames.
     let cwd = scratch
         .to_str()
