@@ -347,6 +347,11 @@ impl<'c> DomainRepository<'c> {
         task_id: batman_protocol::TaskId,
         task_ref: &TaskRef,
     ) -> Result<Committed, DomainError> {
+        // Read for the event kind only. This runs before `append_and_apply`
+        // opens its transaction because the event must be fully built first;
+        // it is safe because the database actor executes whole
+        // `run_domain_op` closures serially, so nothing can create or delete
+        // the row between this read and the guarded write below.
         let existed: bool = self
             .conn
             .query_row(
@@ -1315,13 +1320,16 @@ impl<'c> DomainRepository<'c> {
 
     /// Rebinds a task's owning OMP client instance during reconciliation.
     /// The revision match is enforced by the write itself (`AND revision =
-    /// ?`), and a successful rebind consumes the presented revision by
-    /// advancing the stored one to `revision + 1`: two concurrent
-    /// reconciles presenting the same revision admit exactly one rebind --
-    /// the loser's predicate no longer matches and is classified in the
-    /// same transaction as [`DomainError::RevisionMismatch`] (R74). Emits a
-    /// `ReconcileOwnershipChanged` event carrying old/new owner ids and the
-    /// presented (consumed) revision.
+    /// ?`): a reconcile whose presented revision is stale at write time --
+    /// e.g. an upsert advanced the task after the caller read its
+    /// correlation -- is refused, classified in the same transaction as
+    /// [`DomainError::RevisionMismatch`] (R74). The stored revision is NOT
+    /// consumed: reclaim stays idempotent (a retried or repeated reconcile
+    /// presenting the same revision succeeds, last reconciler wins), and a
+    /// usurped owner is still refused at decision time by the in-tx
+    /// ownership arbitration in `decide_approval`/`resolve_policy_violation`
+    /// (R71/R72). Emits a `ReconcileOwnershipChanged` event carrying
+    /// old/new owner ids and the (unchanged) stored revision.
     pub fn reconcile_ownership(
         &mut self,
         task_id: batman_protocol::TaskId,
@@ -1355,14 +1363,17 @@ impl<'c> DomainRepository<'c> {
         self.append_and_apply(&event, Some(task_id), None, None, move |tx| {
             let now = Timestamp::now();
             let affected = tx.execute(
-                "UPDATE tasks SET owner_client_instance_id = ?1, revision = ?2 + 1, updated_at = ?3
+                "UPDATE tasks SET owner_client_instance_id = ?1, updated_at = ?3
                  WHERE task_id = ?4 AND revision = ?2",
                 rusqlite::params![new_owner, revision, now.as_str(), task_id.to_string()],
             )?;
             if affected == 0 {
                 // The guarded update declined: the stored revision moved
-                // since the caller's snapshot (or the task vanished).
-                // Classify inside the same transaction.
+                // since the caller read its correlation (or the task
+                // vanished -- kept as defense in depth even though the
+                // old-owner read above already NotFounds a missing task
+                // within this same serially-executed closure). Classify
+                // inside the same transaction.
                 let stored: Option<u64> = tx
                     .query_row(
                         "SELECT revision FROM tasks WHERE task_id = ?1",

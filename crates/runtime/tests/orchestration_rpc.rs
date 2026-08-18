@@ -2099,6 +2099,75 @@ async fn reconcile_omp_rebinds_task_ownership_on_matching_revision() {
     assert_eq!(get["result"]["ownerClientInstanceId"], "omp-2");
 }
 
+/// The resume path survives a rebind (R74): a rebind matches the stored
+/// revision but does not consume it, so a later `task/upsert` presenting
+/// the same revision -- how the extension re-registers a task after a
+/// restart -- still succeeds, while a lower revision stays refused by the
+/// guarded write.
+#[tokio::test]
+async fn task_upsert_at_the_same_revision_still_succeeds_after_a_reconcile() {
+    let harness = Harness::start(|_| {}).await;
+    let mut first_client = omp_client(&harness, "omp-1").await;
+
+    let created = first_client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 7 }),
+        )
+        .await;
+    let task_id = created["result"]["taskId"].as_str().unwrap().to_string();
+
+    let mut second_client = omp_client(&harness, "omp-2").await;
+    let reconcile = second_client
+        .call(
+            2,
+            "reconcile/omp",
+            json!({ "taskId": task_id, "revision": 7 }),
+        )
+        .await;
+    assert!(
+        reconcile.get("error").is_none(),
+        "reconcile/omp failed: {reconcile:?}"
+    );
+
+    let get = second_client
+        .call(3, "task/get", json!({ "taskId": task_id }))
+        .await;
+    assert_eq!(
+        get["result"]["revision"], 7,
+        "a rebind must not consume the stored revision: {get:?}"
+    );
+
+    let resumed = second_client
+        .call(
+            4,
+            "task/upsert",
+            json!({ "taskId": task_id, "ownerClientInstanceId": "omp-2", "revision": 7 }),
+        )
+        .await;
+    assert!(
+        resumed.get("error").is_none(),
+        "resuming at the same revision after a reconcile must succeed: {resumed:?}"
+    );
+
+    let stale = second_client
+        .call(
+            5,
+            "task/upsert",
+            json!({ "taskId": task_id, "ownerClientInstanceId": "omp-2", "revision": 6 }),
+        )
+        .await;
+    assert_eq!(
+        stale["error"]["code"], -32602,
+        "a lower revision must stay refused by the guarded write: {stale:?}"
+    );
+    assert_eq!(
+        stale["error"]["message"], "revision 6 is lower than stored revision 7",
+        "the legacy message text is the pinned contract: {stale:?}"
+    );
+}
+
 #[tokio::test]
 async fn reconcile_omp_rejects_mismatched_revision() {
     let harness = Harness::start(|_| {}).await;

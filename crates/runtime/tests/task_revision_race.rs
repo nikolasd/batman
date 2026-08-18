@@ -24,23 +24,23 @@
 //! both reads observed the same stale stored revision and both pre-checks
 //! passed -- and then both writes landed, unconditionally. A lower
 //! revision landing after a higher one moved the stored revision
-//! backwards and silently rebound the owner to a stale client; two
-//! concurrent reconciles presenting the same revision both rebound
-//! instead of exactly one winning. The first two tests below observed
-//! exactly those outcomes RED against that shape.
+//! backwards and silently rebound the owner to a stale client, and a
+//! reconcile whose revision was stale at write time rebound (and moved
+//! the revision back) regardless. The first test below observed exactly
+//! that RED against that shape.
 //!
 //! The R74 fix moved both guards into the writes themselves:
 //! `upsert_task`'s `ON CONFLICT` arm only applies when the presented
 //! revision is not lower than the stored one, and
-//! `reconcile_ownership`'s `UPDATE ... AND revision = ?` consumes the
-//! presented revision on success (stored becomes `revision + 1`), each
+//! `reconcile_ownership`'s `UPDATE` carries `AND revision = ?`, each
 //! refusal classified inside the same transaction
 //! ([`DomainError::RevisionTooLow`] / [`DomainError::RevisionMismatch`]).
-//! The caller-side pre-checks were deleted, so the contract now holds
-//! under every ordering, not only the one `join!(biased; ...)` pins for
-//! reproducibility. Test 3 is the sequential guard: a stale upsert
-//! arriving strictly *after* a newer one must stay refused through the
-//! guarded write alone.
+//! The stored revision is deliberately NOT consumed by a rebind: reclaim
+//! stays idempotent across retries and restarts (last reconciler wins),
+//! and a usurped owner is refused at decision time by the R71/R72 in-tx
+//! ownership arbitration instead. The caller-side pre-checks were
+//! deleted, so the contract holds under every ordering, not only the one
+//! `join!(biased; ...)` pins for reproducibility.
 //!
 //! (`service::query` is `pub(crate)` and `task_upsert`/`reconcile_omp`
 //! are private methods on `OrchestrationService`, so this file drives the
@@ -227,44 +227,71 @@ async fn concurrent_upserts_cannot_move_a_revision_backwards() {
     );
 }
 
-/// Two concurrent `reconcile/omp`-shaped calls presenting the same
-/// revision must admit exactly one rebind, not both. Seeds revision 3
-/// (owner `omp-1`); two concurrent reconciles from `omp-2` and `omp-3`
-/// both present revision 3. Written RED against the pre-R74 shape, where
-/// both pre-checks matched and both unconditional writes landed (two
-/// successes, two `ReconcileEvent`s). Post-fix the winner's guarded write
-/// consumes revision 3 (stored becomes 4), so the loser's `AND revision =
-/// ?` predicate no longer matches and it is refused in-transaction.
+/// A reconcile whose presented revision is stale *at write time* must be
+/// refused. Seeds revision 3 (owner `omp-1`); an upsert advances the task
+/// to revision 5 (owner `omp-2`); a reconcile still presenting revision 3
+/// must then be refused by the `AND revision = ?` predicate, classified
+/// in-transaction with the actual stored revision -- pre-R74 the
+/// unguarded `UPDATE` would have rebound (and moved the revision back to
+/// 3) regardless. A reconcile presenting the current revision 5 then
+/// succeeds, and the stored revision is NOT consumed by the rebind:
+/// reclaim stays idempotent -- a repeat reconcile at 5 also succeeds
+/// (last reconciler wins; a usurped owner is refused at decision time by
+/// the R71/R72 in-tx ownership arbitration instead).
 #[tokio::test]
-async fn concurrent_reconciles_with_the_same_revision_admit_exactly_one_rebind() {
+async fn a_reconcile_presenting_a_stale_revision_is_refused() {
     let (_state_dir, db) = open_db().await;
     let project_id = ProjectId::new();
     let task_id = TaskId::new();
     seed_task(&db, project_id, task_id, "omp-1", 3).await;
+    task_upsert_round_trips(&db, project_id, task_id, "omp-2", 5)
+        .await
+        .expect("revision 5 must land");
 
-    let (first, second) = tokio::join!(
-        biased;
-        reconcile_omp_round_trips(&db, project_id, task_id, "omp-2", 3),
-        reconcile_omp_round_trips(&db, project_id, task_id, "omp-3", 3),
+    let stale = reconcile_omp_round_trips(&db, project_id, task_id, "omp-3", 3)
+        .await
+        .expect_err("a reconcile presenting revision 3 must be refused once 5 is stored");
+    assert!(
+        stale.contains("does not match stored revision 5"),
+        "the refusal must classify the actual stored revision in the same transaction: {stale}"
     );
-
-    let successes = [&first, &second].into_iter().filter(|r| r.is_ok()).count();
+    let (revision, owner) = stored_task(&db, task_id).await.expect("task exists");
     assert_eq!(
-        successes, 1,
-        "exactly one concurrent reconcile presenting the same revision must be admitted, \
-         the other refused: first={first:?} second={second:?}"
+        (revision, owner.as_str()),
+        (5, "omp-2"),
+        "a refused reconcile must change nothing"
     );
     assert_eq!(
         reconcile_event_count(&db).await,
-        1,
-        "exactly one ReconcileEvent must be journaled, not one per accepted write"
+        0,
+        "a refused reconcile must journal nothing"
+    );
+
+    reconcile_omp_round_trips(&db, project_id, task_id, "omp-3", 5)
+        .await
+        .expect("a reconcile presenting the stored revision must rebind");
+    reconcile_omp_round_trips(&db, project_id, task_id, "omp-4", 5)
+        .await
+        .expect("reclaim is idempotent: the rebind does not consume the stored revision");
+
+    let (revision, owner) = stored_task(&db, task_id).await.expect("task exists");
+    assert_eq!(
+        (revision, owner.as_str()),
+        (5, "omp-4"),
+        "the last reconciler wins and the stored revision is unchanged"
+    );
+    assert_eq!(
+        reconcile_event_count(&db).await,
+        2,
+        "each admitted rebind journals one event"
     );
 }
 
-/// GREEN guard: a stale revision arriving strictly *after* a newer one,
-/// with no concurrency at all, was refused by the pre-R74 in-memory
-/// pre-check and must stay refused now that the check lives inside the
-/// guarded write.
+/// A stale revision arriving strictly *after* a newer one, with no
+/// concurrency at all: pre-R74 the repo-layer write this file drives
+/// accepted it unconditionally (only the since-deleted service-layer
+/// pre-check refused it), so this was RED here too. Post-fix the guarded
+/// write alone must refuse it.
 #[tokio::test]
 async fn a_stale_upsert_arriving_after_a_newer_one_is_refused_sequentially() {
     let (_state_dir, db) = open_db().await;

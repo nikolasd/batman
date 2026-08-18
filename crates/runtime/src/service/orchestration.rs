@@ -1845,10 +1845,9 @@ impl OrchestrationService {
 
     /// Rebinds a task from a disconnected OMP client instance to the
     /// connected `principal`, only when task ID and monotonic OMP revision
-    /// match -- enforced by the guarded write itself, which consumes the
-    /// presented revision (stored becomes `revision + 1`, returned in the
-    /// result) so contending reconciles admit exactly one winner (R74);
-    /// journals the old/new owner IDs.
+    /// match -- enforced inside the guarded write itself (R74); journals
+    /// the old/new owner IDs. The stored revision is not changed, so
+    /// reclaim stays idempotent across retries and restarts.
     async fn reconcile_omp(
         &self,
         principal: &ClientPrincipal,
@@ -1858,9 +1857,8 @@ impl OrchestrationService {
         let revision = u64_field(params, "revision")?;
 
         // The revision match is arbitrated inside `reconcile_ownership`'s
-        // guarded write (R74), which also consumes the presented revision by
-        // advancing the stored one -- so of two concurrent reconciles
-        // presenting the same revision, exactly one rebinds.
+        // guarded write (R74): a caller-side pre-check read in a separate
+        // round trip could be interleaved with a write to the same task.
 
         let new_owner = principal.instance_id.clone();
         let project_id = self.project_id;
@@ -1878,7 +1876,6 @@ impl OrchestrationService {
         Ok(json!({
             "taskId": task_id.to_string(),
             "newOwnerClientInstanceId": principal.instance_id,
-            "revision": revision + 1,
             "sequence": sequence["sequence"],
         }))
     }
