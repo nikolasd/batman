@@ -362,27 +362,24 @@ mod tests {
         }
     }
 
-    /// Correlation ids are preserved, session ids are rewritten.
+    /// Session and correlation identities are canonicalized without losing references.
     #[test]
-    fn preserves_correlation_ids() {
+    fn preserves_correlation_relationships() {
         let mut scrubber = Scrubber::new("/tmp/capture-123".into());
-        let input = r#"{"session_id":"real-session-uuid","message":{"id":"msg_01ABC","content":[{"type":"tool_use","id":"toolu_01READ","name":"Read"}]}}"#;
+        let input = r#"{"session_id":"real-session-uuid","message":{"id":"msg_01ABC","content":[{"type":"tool_use","id":"toolu_01READ","name":"Read"}]},"messageId":"msg_01ABC","toolCallId":"toolu_01READ","id":7,"semanticId":"chapter-7"}"#;
         let scrubbed = scrubber.scrub_line(input.as_bytes()).expect("must parse");
-        let obj: Value = serde_json::from_str(&scrubbed).expect("scrubbed must be valid JSON");
-        let obj = obj.as_object().expect("must be object");
+        let value: Value = serde_json::from_str(&scrubbed).expect("scrubbed must be valid JSON");
 
-        // Session id was rewritten (first unique session gets seq=1)
         assert_eq!(
-            obj.get("session_id").unwrap().as_str().unwrap(),
+            value["session_id"],
             "11111111-1111-4111-8111-000000000001"
         );
-
-        // Correlation ids preserved
-        let msg = obj.get("message").unwrap().as_object().unwrap();
-        assert_eq!(msg.get("id").unwrap().as_str().unwrap(), "msg_01ABC");
-        let content = msg.get("content").unwrap().as_array().unwrap();
-        let tool = content[0].as_object().unwrap();
-        assert_eq!(tool.get("id").unwrap().as_str().unwrap(), "toolu_01READ");
+        assert_eq!(value["message"]["id"], "msg-000000000001");
+        assert_eq!(value["messageId"], "msg-000000000001");
+        assert_eq!(value["message"]["content"][0]["id"], "tool-000000000001");
+        assert_eq!(value["toolCallId"], "tool-000000000001");
+        assert_eq!(value["id"], 7);
+        assert_eq!(value["semanticId"], "chapter-7");
     }
 
     /// Cwd paths are rewritten.
