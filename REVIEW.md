@@ -20,7 +20,7 @@ still-open items below exist *because* of that fix — now lives in
 [Part XII](journal.md#part-xii--closing-the-last-critical-a-denylist-blind-to-its-own-vendor) (R49),
 [Part XIII](journal.md#part-xiii--two-leaks-one-lease-releasing-what-a-failed-start-acquired) (R41, R50),
 [Part XIV](journal.md#part-xiv--fixture-modes-broken-promise-a-kill-switch-only-one-caller-ever-asked-about) (R52),
-[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVIII](journal.md#part-xviii-one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), and [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54).
+[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVIII](journal.md#part-xviii-one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), and [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70).
 This document only tracks what's still broken.
 
 **Baseline, last run 2026-08-12** (during an unrelated state-root rename; results apply to this
@@ -65,15 +65,15 @@ operate the system correctly.
 
 **Priority:** High — the tool that produces every committed conformance fixture is unproven correct beyond the single fixture it was built against.
 
-#### R70. `ApprovalService::decide` has the same check-then-act race R54 fixed in `ViolationService::decide`
+#### R71. `ApprovalService::decide`'s ownership pre-check races `reconcile/omp`'s task ownership rebind
 
-**Location:** `crates/runtime/src/approval/service.rs:170-176,184-188,268-310`; `crates/runtime/src/domain/repository.rs:761-809` (`decide_approval`)
+**Location:** `crates/runtime/src/approval/service.rs:172-179` (`ApprovalService::decide`'s ownership check); `crates/runtime/src/domain/repository.rs:1124` (`UPDATE tasks SET owner_client_instance_id ...`, the `reconcile/omp` ownership rebind); `crates/runtime/src/domain/repository.rs:792-883` (`decide_approval`'s guarded write, which never re-checks the task's current owner)
 
-**Evidence:** structurally identical to pre-fix `ViolationService::decide` (R54, resolved — see `docs/journal.md` Part XIX): one snapshot round trip (`service.rs:268-310`, selecting `a.decision` and `r.state`), an in-memory conflict check, an in-memory terminal-run check, then `decide_approval`'s unconditional `UPDATE approvals SET decision = ?1, decided_at = ?2, decided_by = ?3 WHERE approval_id = ?4` (`repository.rs:803-806`) with no `decision IS NULL` guard and no affected-row check. Two concurrent `approval/decide` calls for the same `approvalId` (e.g. a UI double-submit) can both read `decision: None`, both write, and both invoke the adapter callback — the exact double-application R54 closed for policy violations, unfixed here.
+**Evidence:** `decide` (`service.rs:172-179`) reads a snapshot once, then compares `snapshot.owner_client_instance_id` to the caller's `principal_instance_id` entirely in memory, before ever reaching the guarded domain write. `decide_approval`'s transaction (`repository.rs:792-883`, hardened for R70) guards only `decision IS NULL` and the run's terminal state — it never re-reads `tasks.owner_client_instance_id`. Between the snapshot read and that write, `reconcile/omp` can rebind the task to a new owner via the unguarded `UPDATE tasks SET owner_client_instance_id = ?1, revision = ?2, updated_at = ?3 WHERE task_id = ?4` (`repository.rs:1124`) and commit. The old owner, having already passed the stale pre-check, still reaches and wins the guarded write — deciding an approval for a task it no longer owns. This is distinct from R70's decision-row race (two callers racing the same decision): here exactly one decider races a *rebind*, not another decider. Noted but deliberately left unfixed by R70's own adversarial review (`docs/journal.md` Part XX: "`tasks.owner_client_instance_id` is separately mutated by the reconcile path's ownership rebind, a real, reachable interleaving between reconcile and decide, but not R70's mechanism and out of this fix's scope").
 
-**Fix:** apply the same pattern R54 established: move the guard into `decide_approval`'s `append_and_apply` closure (`WHERE decision IS NULL`, affected-row check, classify a zero-row result as an existing decision vs. a vanished approval), move the terminal-run check inside the same transaction, and add matching `DomainError`/`ApprovalError` variants. Add concurrent regression tests mirroring `crates/runtime/tests/policy_violation.rs`.
+**Fix:** move ownership authorization into `decide_approval`'s guarded transaction instead of trusting the pre-check snapshot — either re-read `tasks.owner_client_instance_id` inside the same transaction that performs the `UPDATE approvals` and reject on mismatch, or thread the caller's `principal_instance_id` into `decide_approval` and add it as a `WHERE` condition (joined against `tasks`) so a rebind that lands before the write invalidates it. Add a deterministic regression test that interleaves a `reconcile/omp` ownership rebind between the snapshot read and the guarded write and asserts the stale owner's `decide` is refused, mirroring `approval_decide_race.rs`'s `join!(biased; ...)` pattern.
 
-**Priority:** High — a real, reachable race with contradictory side effects, identical in kind and severity to R54 (found during R54's adversarial review, 2026-08-17; not fixed as part of that change since it is a distinct service, out of R54's stated scope).
+**Priority:** High — a real, reachable race that lets a caller decide an approval for a task it no longer owns, violating the owner-only decision contract; same severity class as R70/R54 (found during R70's adversarial review, 2026-08-18; not fixed as part of that change since it is a distinct interleaving — reconcile vs. decide, not decide vs. decide — outside R70's stated mechanism).
 
 ### Medium
 
@@ -183,7 +183,7 @@ Both read `batcave audit export --repo /path/to/repo --state-dir ~/.batman/state
 
 #### R59. Approval `reason` is accepted end-to-end then silently discarded — never persisted
 
-**Location:** `crates/runtime/src/domain/repository.rs:798-808` (`decide_approval`)
+**Location:** `crates/runtime/src/domain/repository.rs:833` (`decide_approval`)
 
 `let _ = reason;` inside the closure — the parameter is threaded from the RPC boundary through the service layer and then thrown away. No `approvals` column and no `RuntimeEvent::ApprovalEvent` field carries it. Permanent, silent audit-trail data loss on every approval decision that supplies a rationale.
 
@@ -335,7 +335,7 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
-- **High:** 3 (R33, R44 — carried forward from earlier rounds; R70 — new, found during R54's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX)
+- **High:** 3 (R33, R44 — carried forward from earlier rounds; R71 — new, found during R70's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
 - **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
