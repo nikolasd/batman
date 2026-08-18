@@ -3088,6 +3088,95 @@ fix's adversarial review has found the same check-then-act-across-two-round-trip
 down — R70's review found R71, R71's review found R72 and R73, and R72's review found R74.
 `REVIEW.md` is updated in the same pass this Part records to move R72 into resolution history.
 
+## Part XXV — Not a conflict either side detects: the flag write that clobbered its neighbor
+
+`ApprovalService::decide`'s callback-failure branch (`service.rs:248-267`) read
+`snapshot.run_flags` once, inside `load_snapshot`, before the decision write and before awaiting
+`self.callback.acknowledge` — then, on a callback failure, set only `flags.protocol_unhealthy =
+true` on that now-stale in-memory copy and wrote the *entire* six-field struct back via
+`set_run_flags(run_id, &RunFlags)`, a blind whole-struct `UPDATE` with no compare-and-swap and no
+in-transaction re-read. Any other flag mutated on the same run during the awaited callback window —
+most plausibly `policy_quarantined`, set by a concurrent `ViolationService::apply_action` — was
+silently reverted to whatever value the pre-callback snapshot happened to hold. `ViolationService`'s
+own `set_quarantined` had the identical shape one layer over: read a flags snapshot in one round
+trip, mutate it in memory, write the whole struct back in a second. Neither side detects the loss;
+it is not a conflict either write refuses, just a value that quietly reverts.
+
+`crates/runtime/tests/run_flags_lost_update.rs` (4c51026) made the interleaving deterministic
+without the `biased`-`join!` machinery Parts XX/XXIII/XXIV needed for their ownership races, because
+the concurrent mutation here doesn't need to race anything — it can simply run *inside* the callback
+`decide` is already blocked on. `QuarantineDuringCallback::acknowledge` performs
+`ViolationService::set_quarantined`'s exact read-modify-write shape (read flags, flip
+`policy_quarantined`, write the whole struct back) and then fails, guaranteeing the competing write
+lands strictly between `decide`'s pre-callback snapshot read and its post-failure write-back. Run
+against the pre-fix tree, `a_flag_set_during_the_callback_window_survives_a_callback_failure` failed
+RED exactly as designed: `policy_quarantined` came back `false` even though `protocol_unhealthy` was
+correctly `true`. A second test, `the_unhealthy_flag_is_applied_when_no_concurrent_mutation_happens`,
+pinned the ordinary case — a plain failing callback with nothing else mutating the run — so the
+eventual fix couldn't overcorrect by dropping the `protocol_unhealthy` write it exists to make.
+
+`a2c07c2` closed both call sites at once with a single new primitive: `RunFlag`, a closed six-variant
+enum naming one boolean field on `RunFlags`, and `DomainRepository::set_run_flag(run_id, RunFlag,
+bool)`, which reads the run's *current* row, flips exactly one flag via a total match with no `_`
+arm, and writes the whole row back — all inside one call, with nothing else able to observe or
+mutate the row in between. The `RuntimeEvent::RunFlagsEvent` it journals carries the post-flip
+struct it just built, not the caller's stale copy, so the wire shape is unchanged — still the full
+`RunFlags`, not a delta — but its contents can no longer be wrong. `set_run_flags`, the whole-struct
+API, was deleted outright rather than kept alongside the guarded one: a repo-wide grep found no
+legitimate caller left, only the two lost-update-shaped ones this fix migrated and two test seeders
+that needed the same guarded call instead of reaching around the domain layer with raw SQL. Exactly
+one function in the workspace now writes the `flags_*` columns — a sole-writer property strictly
+easier to defend than the pre-fix scatter. `ApprovalSnapshot` lost its `run_flags` field entirely and
+`load_snapshot` dropped the `JOIN runs` and six flag columns that populated it, rather than leaving
+either as unused dead weight.
+
+`set_run_flag`'s read runs on `self.conn`, *before* `append_and_apply` opens its SQL transaction —
+not inside it, unlike `resolve_policy_violation`'s in-tx re-read from Part XIX. It has to: the event
+`set_run_flag` journals carries the post-flip `RunFlags` struct by value, and `append_and_apply`
+takes a fully-built `RuntimeEvent` as an argument, so that struct must exist before the closure
+handed to it does. What actually closes the gap between this read and its write is not a
+transaction, then — it's `DatabaseHandle`'s single-owner actor thread, which runs one
+`run_domain_op` closure to completion before starting the next. That makes `set_run_flag` atomic at
+*closure* granularity, a stronger boundary than `resolve_policy_violation`'s transaction granularity
+but a different one, and the first version of the doc comment describing it didn't say so — it
+invoked "R70-R72's guarded-write doctrine" without naming which boundary was doing the guarding, or
+that append_and_apply's own signature is why the read couldn't move inside the tx even if a future
+reader wanted it to. The adversarial review this fix demanded of itself (`agent://R73Adversary`,
+PASS WITH WARNINGS) caught exactly that gap as W1, plus a second doc defect as S1 — `RunFlag`'s
+comment called it "internal to this crate" when it's `pub`, re-exported from `domain`, and
+constructed directly by integration tests as `batman_runtime::domain::RunFlag`; the true, narrower
+claim is only that it isn't a protocol type, so `RunFlagsChanged`'s wire shape is unaffected by it.
+`778b644` rewrote both: the doc block now names the actual serializer and the structural constraint
+forcing the read before the transaction, and `RunFlag`'s comment states the narrower, true claim.
+
+The review's third warning, W3, found a real coverage gap rather than a doc one: nothing anywhere
+asserted the `RunFlagsChanged` *event* `set_run_flag` emits, only the database row its `UPDATE`
+leaves behind — and reordering the event's construction ahead of `flag.apply` would leave that row
+correct while broadcasting the pre-change struct, with every existing assertion staying green. The
+replay contract is exactly the thing this project exists to guarantee, and this was the one mutation
+whose event content is computed rather than passed in by a caller. `e5b03bf` closed it: the
+callback-window test now takes an explicit broadcast sender, keeps its own receiver, and after
+`decide` completes, asserts the received `RunFlagsChanged` envelope carries both
+`protocol_unhealthy: true` and `policy_quarantined: true` — pinning the broadcast payload, not just
+the row. Verified by a temporary falsifiability mutation rather than a revert (reverting `a2c07c2`
+wouldn't even compile, since the test file imports the post-fix `RunFlag` API): reordering
+`set_run_flag`'s event construction ahead of `flag.apply` made only the new broadcast assertion fail
+(`protocol_unhealthy: false` in the envelope), while both database-row assertions and the sibling
+test stayed green; reverted, `git diff` on `repository.rs` came back empty and both tests passed.
+
+The same review surfaced one more residual outside this fix's mechanism, registered rather than
+fixed in this pass: **R75**, quarantine state still decided from a caller-side snapshot read one
+round trip before the write that acts on it — `record_nested_worker`/`record_cost_ceiling` read
+`already_actioned = flags.policy_quarantined || state.is_terminal()` before `record_policy_violation`
+commits, and `apply_action` trusts that stale read to short-circuit; `decide`'s release path commits
+`resolve_policy_violation` and `set_quarantined(run_id, false)` as two *separate* commits, so a new
+violation quarantining the run in between is immediately un-quarantined by the release's second
+commit. Both interleavings end with a journaled, unresolved violation on a run whose
+`policy_quarantined` is false — the exact silently-un-quarantining harm R73's own priority line
+cited, one layer further down. The pattern now runs five deep: R70's review found R71, R71's review
+found R72 and R73, R72's review found R74, and R73's review found R75. `REVIEW.md` is updated in the
+same pass this Part records to move R73 into resolution history.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start

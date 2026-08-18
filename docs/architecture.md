@@ -795,6 +795,7 @@ Generated from [`crates/runtime/src/ipc/mod.rs`](crates/runtime/src/ipc/mod.rs)'
 | An approval is decided only by the task's current owner | `crates/runtime/tests/approval_owner_race.rs` |
 | A policy violation is decided only by the task's current owner | `crates/runtime/tests/violation_owner_race.rs` |
 | A policy violation is decided at most once | `crates/runtime/tests/policy_violation.rs` |
+| A concurrent flag write survives decide's callback-failure write-back | `crates/runtime/tests/run_flags_lost_update.rs` |
 | Sanitized JSON bytes are key-order independent | `crates/runtime/src/security/redaction.rs` (inline tests) |
 | Profile and policy fingerprints are key-order independent | `crates/runtime/tests/config.rs`, `crates/runtime/tests/adapter_contract.rs` |
 | Every capture-managed fixture is a scrub/render fixed point | `manifest_fixtures_are_scrub_render_fixed_points` |
