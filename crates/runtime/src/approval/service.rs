@@ -293,7 +293,10 @@ impl ApprovalService {
                         }))
                     },
                 )
-                .map_err(|_| DomainError::NotFound { kind: "approval", id: approval_id.to_string() })
+                .map_err(|_| DomainError::NotFound {
+                    kind: "approval",
+                    id: approval_id.to_string(),
+                })
             }))
             .await
             .map_err(ApprovalError::Domain)?;

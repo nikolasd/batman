@@ -27,9 +27,7 @@ use batman_protocol::{
     ApprovalId, ApprovalRequest, DecidedBy, ProjectId, Run, RunFlags, RunId, RunState, TaskId,
     TaskRef, Timestamp, Worker, WorkerId, WorkerProfileRef,
 };
-use batman_runtime::approval::{
-    ApprovalCallback, ApprovalService, CallbackFuture, DecideOutcome,
-};
+use batman_runtime::approval::{ApprovalCallback, ApprovalService, CallbackFuture, DecideOutcome};
 use batman_runtime::db::DatabaseHandle;
 use batman_runtime::domain::{DomainRepository, RunFlag};
 use serde_json::json;
@@ -283,9 +281,24 @@ async fn the_unhealthy_flag_is_applied_when_no_concurrent_mutation_happens() {
         flags.protocol_unhealthy,
         "a failing callback must mark the run protocol_unhealthy: {flags:?}"
     );
-    assert!(!flags.degraded_control, "no other flag should change: {flags:?}");
-    assert!(!flags.needs_reconciliation, "no other flag should change: {flags:?}");
-    assert!(!flags.policy_quarantined, "no other flag should change: {flags:?}");
-    assert!(!flags.workspace_dirty, "no other flag should change: {flags:?}");
-    assert!(!flags.children_active, "no other flag should change: {flags:?}");
+    assert!(
+        !flags.degraded_control,
+        "no other flag should change: {flags:?}"
+    );
+    assert!(
+        !flags.needs_reconciliation,
+        "no other flag should change: {flags:?}"
+    );
+    assert!(
+        !flags.policy_quarantined,
+        "no other flag should change: {flags:?}"
+    );
+    assert!(
+        !flags.workspace_dirty,
+        "no other flag should change: {flags:?}"
+    );
+    assert!(
+        !flags.children_active,
+        "no other flag should change: {flags:?}"
+    );
 }
