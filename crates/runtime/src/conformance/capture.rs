@@ -13,7 +13,7 @@ use crate::conformance::{
 use crate::supervisor::install_frame_tap;
 use batman_protocol::{RunId, TaskId, WorkerId};
 use serde_yaml_ng as serde_yaml;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -166,8 +166,12 @@ pub async fn capture_adapter(
     Ok(CaptureOutcome { written, report })
 }
 
-/// Renders scrubbed frames into the bytes expected by a fixture.
+/// Renders scrubbed frames into the bytes expected by a supported fixture.
 fn render_fixture_content(fixture: &str, frames: &[String]) -> Result<String, String> {
+    if fixture.ends_with(".jsonl") {
+        return Ok(format!("{}\n", frames.join("\n")));
+    }
+
     if fixture.ends_with(".json") {
         let [frame] = frames else {
             return Err(format!(
@@ -176,19 +180,44 @@ fn render_fixture_content(fixture: &str, frames: &[String]) -> Result<String, St
                 frames.len()
             ));
         };
-        let value: serde_json::Value = serde_json::from_str(frame)
-            .map_err(|e| format!("failed to parse JSON fixture {}: {}", fixture, e))?;
+        let value: serde_json::Value = serde_json::from_str(frame).map_err(|e| {
+            format!(
+                "failed to parse JSON fixture {} from frame {:?}: {}",
+                fixture,
+                frame_preview(frame),
+                e
+            )
+        })?;
         return serde_json::to_string_pretty(&value)
             .map(|rendered| format!("{}\n", rendered))
             .map_err(|e| format!("failed to render JSON fixture {}: {}", fixture, e));
     }
 
-    Ok(format!("{}\n", frames.join("\n")))
+    Err(format!("unsupported fixture extension: {}", fixture))
+}
+
+/// Limits fixture-frame text included in a capture error.
+fn frame_preview(frame: &str) -> String {
+    const MAX_CHARS: usize = 80;
+
+    let mut chars = frame.chars();
+    let preview: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{}…", preview)
+    } else {
+        preview
+    }
 }
 
 /// Compares rendered content to the existing target before optionally replacing it.
 fn persist_fixture_content(path: &Path, content: &str, dry_run: bool) -> Result<bool, String> {
-    let unchanged = std::fs::read(path).is_ok_and(|existing| existing == content.as_bytes());
+    let unchanged = match std::fs::read(path) {
+        Ok(existing) => existing == content.as_bytes(),
+        Err(error) if error.kind() == ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(format!("failed to read {}: {}", path.display(), error));
+        }
+    };
 
     if !dry_run {
         if let Some(parent) = path.parent() {
@@ -246,7 +275,7 @@ async fn capture_one(
     let mut scrubber = Scrubber::new(cwd);
     let mut scrubbed = Vec::new();
     for frame in raw_frames {
-        if let Some(line) = scrubber.scrub_line(&frame) {
+        if let Some(line) = scrub_captured_frame(*kind, &mut scrubber, &frame) {
             scrubbed.push(line);
         }
     }
@@ -259,6 +288,20 @@ async fn capture_one(
     }
 
     Ok(scrubbed)
+}
+
+/// Applies the adapter's fixture-reader policy to one captured frame.
+fn scrub_captured_frame(
+    kind: AdapterKind,
+    scrubber: &mut Scrubber,
+    frame: &[u8],
+) -> Option<String> {
+    let is_json = serde_json::from_slice::<serde_json::Value>(frame).is_ok();
+    if is_json || matches!(kind, AdapterKind::Claude | AdapterKind::OmpRpc) {
+        scrubber.scrub_line(frame)
+    } else {
+        None
+    }
 }
 
 /// Collects frames from the tap until the turn settles (10s gap) or

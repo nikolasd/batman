@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 /// Rewrites captured vendor frames into committed-fixture form:
 /// secrets removed, then every nondeterministic value replaced by a
@@ -38,13 +38,13 @@ impl Scrubber {
         }
     }
 
-    /// Scrubs one captured frame. Empty and invalid UTF-8 lines are dropped;
-    /// non-empty non-JSON UTF-8 lines are redacted and retained for
-    /// malformed-frame coverage.
+    /// Scrubs one captured frame. Empty lines and invalid UTF-8 input are
+    /// defensively dropped; valid UTF-8 non-JSON text is retained after path
+    /// and secret rewriting so the capture path can apply its reader policy.
     pub fn scrub_line(&mut self, line: &[u8]) -> Option<String> {
         match serde_json::from_slice(line) {
             Ok(value) => {
-                let scrubbed = self.walk(Value::Object(Map::new()), value);
+                let scrubbed = self.walk(None, None, value);
                 Some(serde_json::to_string(&scrubbed).expect("scrubbed value is serializable"))
             }
             Err(_) => {
@@ -52,71 +52,107 @@ impl Scrubber {
                     return None;
                 }
                 let text = std::str::from_utf8(line).ok()?;
-                Some(self.rewrite_string(Value::Null, text))
+                Some(self.rewrite_unstructured_line(text))
             }
         }
     }
 
-    /// Recursively walks `val`, rewriting nondeterministic values.
-    /// `parent_key` is the key this value is stored under (used for
-    /// context-aware rewriting of ambiguous keys like `id`).
-    fn walk(&mut self, parent_key: Value, val: Value) -> Value {
+    /// Recursively walks `val`, rewriting nondeterministic values. Both key
+    /// contexts distinguish correlation `id` fields from `thread.id` and
+    /// `turn.id` session identities.
+    fn walk(
+        &mut self,
+        parent_key: Option<&str>,
+        grandparent_key: Option<&str>,
+        val: Value,
+    ) -> Value {
         match val {
-            Value::String(s) => Value::String(self.rewrite_string(parent_key, &s)),
-            Value::Number(n) => self.rewrite_number(parent_key, n),
-            Value::Array(arr) => {
-                Value::Array(arr.into_iter().map(|v| self.walk(Value::Null, v)).collect())
+            Value::String(s) => {
+                Value::String(self.rewrite_string(parent_key, grandparent_key, &s))
             }
+            Value::Number(n) => self.rewrite_number(parent_key, n),
+            Value::Array(arr) => Value::Array(
+                arr.into_iter()
+                    .map(|value| self.walk(parent_key, grandparent_key, value))
+                    .collect(),
+            ),
             Value::Object(obj) => Value::Object(
                 obj.into_iter()
-                    .map(|(k, v)| {
-                        let pk = Value::String(k.clone());
-                        (k, self.walk(pk, v))
+                    .map(|(key, value)| {
+                        let rewritten = self.walk(Some(&key), parent_key, value);
+                        (key, rewritten)
                     })
                     .collect(),
             ),
-            v => v,
+            value => value,
         }
     }
 
-    fn rewrite_string(&mut self, parent_key: Value, s: &str) -> String {
-        // Check for session-related keys first (parent-aware)
-        if let Some(k) = parent_key.as_str() {
-            if Self::is_session_key(k) {
+    fn rewrite_string(
+        &mut self,
+        parent_key: Option<&str>,
+        grandparent_key: Option<&str>,
+        s: &str,
+    ) -> String {
+        if let Some(key) = parent_key {
+            if Self::is_session_key(key)
+                || (key == "id" && Self::is_session_context(grandparent_key))
+            {
                 return self.stable_session_id(s);
             }
-            if Self::is_timestamp_key(k) {
+            if key == "sessionFile" {
+                if let Some(rewritten) = self.rewrite_session_file(s) {
+                    return rewritten;
+                }
+            }
+            if Self::is_timestamp_key(key) {
                 return "2026-01-01T00:00:00Z".to_string();
             }
-            if Self::is_cost_key(k) {
+            if Self::is_cost_key(key) {
                 return "0.0142".to_string();
             }
-            // `uuid` key always gets a stable placeholder
-            if k == "uuid" {
+            if key == "uuid" {
                 return self.stable_uuid(s);
-            }
-            // `id` under `thread` or `turn` is a session identity;
-            // everywhere else it is a correlation id to preserve.
-            if k == "id" && Self::is_session_context(&parent_key) {
-                return self.stable_session_id(s);
             }
         }
 
-        // Check for RFC 3339 timestamp anywhere in the string value
+        // Check for RFC 3339 timestamp anywhere in a structured string value.
         if Self::looks_like_rfc3339(s) {
             return "2026-01-01T00:00:00Z".to_string();
         }
 
-        // Rewrite cwd paths
-        let out = s.replace(&self.cwd, "/workspace/batman");
-        // Always apply secret redaction as the final pass, even when
-        // cwd was rewritten, so a path string that also contains a
-        // secret-shaped value gets sanitized.
-        self.redactor.redact_text(&out)
+        self.rewrite_unstructured_line(s)
     }
 
-    fn rewrite_number(&self, parent_key: Value, n: serde_json::Number) -> Value {
-        if let Some(k) = parent_key.as_str() {
+    /// Rewrites a raw non-JSON line without applying structured-value rules.
+    fn rewrite_unstructured_line(&self, text: &str) -> String {
+        let cwd_rewritten = text.replace(&self.cwd, "/workspace/batman");
+        self.redactor.redact_text(&cwd_rewritten)
+    }
+
+    /// Replaces the session identity encoded in a `.omp/sessions/*.jsonl` path.
+    fn rewrite_session_file(&mut self, value: &str) -> Option<String> {
+        const PREFIX: &str = ".omp/sessions/";
+        const SUFFIX: &str = ".jsonl";
+
+        let prefix_start = value.find(PREFIX)?;
+        let id_start = prefix_start + PREFIX.len();
+        let id_end = id_start + value[id_start..].find(SUFFIX)?;
+        if id_start == id_end {
+            return None;
+        }
+
+        let stable_id = self.stable_session_id(&value[id_start..id_end]);
+        Some(format!(
+            "{}{}{}",
+            &value[..id_start],
+            stable_id,
+            &value[id_end..]
+        ))
+    }
+
+    fn rewrite_number(&self, parent_key: Option<&str>, n: serde_json::Number) -> Value {
+        if let Some(k) = parent_key {
             if Self::is_timestamp_key(k) {
                 // Numeric timestamps (ms since epoch) → stable ms value
                 // for 2026-01-01T00:00:00Z
@@ -147,26 +183,18 @@ impl Scrubber {
         Value::Number(n)
     }
 
-    /// Key names whose values are session/thread identities to rewrite.
-    fn is_session_key(k: &str) -> bool {
+    /// Key names whose values are session identities to rewrite.
+    fn is_session_key(key: &str) -> bool {
         matches!(
-            k,
-            "session_id"
-                | "sessionId"
-                | "threadId"
-                | "conversationId"
-                | "thread" // nested: thread.id
-                | "turn" // nested: turn.id
+            key,
+            "session_id" | "sessionId" | "threadId" | "turnId" | "conversationId"
         )
     }
 
-    /// Whether the parent key signals a session-identity context where
-    /// a child `id` field should be rewritten (rather than preserved as
-    /// a correlation id).
-    fn is_session_context(pk: &Value) -> bool {
-        pk.as_str()
-            .map(|k| matches!(k, "thread" | "turn"))
-            .unwrap_or(false)
+    /// Whether the containing object identifies a session, rather than a
+    /// correlation id.
+    fn is_session_context(grandparent_key: Option<&str>) -> bool {
+        matches!(grandparent_key, Some("thread" | "turn"))
     }
 
     /// Key names whose values are timestamps.
