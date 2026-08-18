@@ -17,13 +17,12 @@ use serde_json::Value;
 pub struct Scrubber {
     redactor: crate::security::redaction::Redactor,
     cwd: String,
-    /// Maps each unique session-id input to a distinct stable UUID so
-    /// multiple sessions within one capture each get a consistent
-    /// placeholder.
+    /// Maps each unique session-id input to a distinct canonical UUID so
+    /// repeated session identities remain correlated within one capture.
     session_ids: HashMap<String, String>,
-    /// Monotonically increasing counter for generating stable `uuid`
-    /// values.
-    uuid_seq: u32,
+    /// Maps each unique raw `uuid` input to a canonical UUID so repeated
+    /// values remain correlated within one capture.
+    uuid_ids: HashMap<String, String>,
 }
 
 impl Scrubber {
@@ -34,7 +33,7 @@ impl Scrubber {
             redactor: crate::security::redaction::Redactor::default(),
             cwd,
             session_ids: HashMap::new(),
-            uuid_seq: 1,
+            uuid_ids: HashMap::new(),
         }
     }
 
@@ -218,29 +217,28 @@ impl Scrubber {
         matches!(k, "total_cost_usd" | "costUSD" | "cost")
     }
 
+    /// Returns the canonical session ID for this capture's encounter order.
     fn stable_session_id(&mut self, input: &str) -> String {
-        // If the value is already in our stable format, return unchanged
-        // so re-scrubbing a committed fixture is a no-op.
-        if input.starts_with("11111111-1111-4111-8111-") {
-            return input.to_string();
-        }
         if let Some(existing) = self.session_ids.get(input) {
             return existing.clone();
         }
+
         let seq = self.session_ids.len() + 1;
         let value = format!("11111111-1111-4111-8111-{seq:012}");
         self.session_ids.insert(input.to_string(), value.clone());
         value
     }
 
+    /// Returns the canonical UUID for this capture's encounter order.
     fn stable_uuid(&mut self, input: &str) -> String {
-        // If already in stable format, return unchanged.
-        if input.starts_with("a0000000-0000-4000-8000-") {
-            return input.to_string();
+        if let Some(existing) = self.uuid_ids.get(input) {
+            return existing.clone();
         }
-        let seq = self.uuid_seq;
-        self.uuid_seq += 1;
-        format!("a0000000-0000-4000-8000-{seq:012}")
+
+        let seq = self.uuid_ids.len() + 1;
+        let value = format!("a0000000-0000-4000-8000-{seq:012}");
+        self.uuid_ids.insert(input.to_string(), value.clone());
+        value
     }
 
     fn looks_like_rfc3339(s: &str) -> bool {
@@ -256,12 +254,11 @@ impl Scrubber {
 mod tests {
     use super::*;
 
-    /// Scrubbing an already-scrubbed fixture is a no-op.
+    /// Re-scrubbing the canonical initialization fixture is a fixed point.
     ///
-    /// The committed `initialize.jsonl` is already in canonical form, so
-    /// running it through the scrubber with a matching `cwd` must produce
-    /// byte-identical output. This is the single strongest check that
-    /// capture will not churn committed fixtures.
+    /// The fixture's current encounter order produces byte-identical output
+    /// with a matching `cwd`. This only proves re-scrub fixed-point behavior;
+    /// capture fixture migration establishes fresh-capture no-churn behavior.
     #[test]
     fn scrubbing_scrubbed_fixture_is_identity() {
         let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
