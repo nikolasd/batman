@@ -11,7 +11,7 @@ TypeScript/workspace, and build/docs/release, split across four parallel reviewe
 findings were corrected in place (R17, R20, R43, R46) where the mechanism had changed since last
 verified.
 
-**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R41, R47, R48, R49, R50, R51, R52) plus the
+**Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R33, R41, R47-R54, R68-R70) plus the
 eleven documentation findings that were resolved or already-stale (R19, R21-R28) has been pruned from
 this document. That history — what broke, the fix commit, the test that proved it, and which
 still-open items below exist *because* of that fix — now lives in
@@ -20,7 +20,7 @@ still-open items below exist *because* of that fix — now lives in
 [Part XII](journal.md#part-xii--closing-the-last-critical-a-denylist-blind-to-its-own-vendor) (R49),
 [Part XIII](journal.md#part-xiii--two-leaks-one-lease-releasing-what-a-failed-start-acquired) (R41, R50),
 [Part XIV](journal.md#part-xiv--fixture-modes-broken-promise-a-kill-switch-only-one-caller-ever-asked-about) (R52),
-[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVIII](journal.md#part-xviii-one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), and [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70).
+[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), and [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33).
 This document only tracks what's still broken.
 
 **Baseline, last run 2026-08-12** (during an unrelated state-root rename; results apply to this
@@ -42,16 +42,6 @@ operate the system correctly.
 ## Findings
 
 ### High
-
-#### R33. `serde_json/preserve_order` breaks fingerprint determinism and two documented invariants
-
-**Location:** `Cargo.toml:22`; `crates/runtime/src/adapter/profile.rs:325-329,359-369`; `crates/runtime/src/config/merge.rs:517-522`; `crates/runtime/src/security/redaction.rs:262-265,471-481`
-
-**Evidence:** `preserve_order` is enabled workspace-wide, flipping key ordering from `BTreeMap` to insertion-order (`IndexMap`) semantics. `profile.rs:325-329` and `redaction.rs:262-265` still carry doc comments asserting the workspace does *not* enable this feature and that `sanitize_json`/`fingerprint()` are key-order-independent — false as written. `RuntimePolicy::compute_fingerprint()` (`merge.rs:517-522`) hashes `merged.to_string()`, where `merged` is order-dependent on each config layer's own document order, so no fingerprint an older binary computed can be reproduced. The determinism test (`redaction.rs:471-481`) was weakened to a tautology — it only asserts `sanitize_json(&v) == sanitize_json(&v)` against one value, not order-independence across two differently-ordered but equal inputs. (The specific false-rejection mechanism this finding originally flagged in `permission_envelope_contains_secret_shape` was re-checked and does not independently reproduce: both comparison sides walk the same source map in the same order, so they don't currently diverge — that sub-claim stays out.)
-
-**Fix:** canonicalize `redact_json_value`'s Object arm to a key-sorted map, restoring both `sanitize_json` determinism and `fingerprint()`'s content-addressing property. Restore a real order-independence test (two structurally-equal, differently-ordered inputs producing the same fingerprint).
-
-**Priority:** High — breaks two documented invariants and a real content-addressing property, even though the originally-flagged security regression doesn't independently reproduce.
 
 #### R44. Conformance fixture-capture pipeline: scrubber calibrated to one fixture, `unchanged` flag computed after the write it's supposed to guard
 
@@ -335,7 +325,7 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
-- **High:** 3 (R33, R44 — carried forward from earlier rounds; R71 — new, found during R70's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX)
+- **High:** 2 (R44 — carried forward from earlier rounds; R71 — new, found during R70's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI)
 - **Medium:** 17 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new)
 - **Low:** 19 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
