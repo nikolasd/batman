@@ -2242,6 +2242,58 @@ async fn task_upsert_cannot_seize_ownership_from_another_instance() {
         "an upsert by a non-owner presenting the stored revision must be refused: {seizure:?}"
     );
 
+    // Higher revision + non-owner: the variant that also clears R74's
+    // `>=` guard, so the owner clause alone must refuse it.
+    let seizure_higher = second_client
+        .call(
+            6,
+            "task/upsert",
+            json!({ "taskId": task_id, "ownerClientInstanceId": "omp-2", "revision": 8 }),
+        )
+        .await;
+    assert_eq!(
+        seizure_higher["error"]["code"], -32602,
+        "a higher-revision upsert by a non-owner must be refused by the owner clause: {seizure_higher:?}"
+    );
+    assert_eq!(
+        seizure_higher["error"]["message"],
+        format!("task {task_id} is not owned by omp-2"),
+        "the refusal must classify ownership, not revision: {seizure_higher:?}"
+    );
+
+    // Lower revision + non-owner: RevisionTooLow wins the classification
+    // (deliberate precedence -- an owner-agnostic staleness report keeps
+    // R74's byte-pinned message stable).
+    let seizure_lower = second_client
+        .call(
+            7,
+            "task/upsert",
+            json!({ "taskId": task_id, "ownerClientInstanceId": "omp-2", "revision": 6 }),
+        )
+        .await;
+    assert_eq!(
+        seizure_lower["error"]["message"], "revision 6 is lower than stored revision 7",
+        "a stale non-owner upsert reports staleness first: {seizure_lower:?}"
+    );
+
+    // Param validation: an owner id that differs from the connected
+    // principal is refused before the guarded write is ever reached.
+    let spoofed = second_client
+        .call(
+            8,
+            "task/upsert",
+            json!({ "taskId": task_id, "ownerClientInstanceId": "omp-9", "revision": 7 }),
+        )
+        .await;
+    assert_eq!(spoofed["error"]["code"], -32602, "{spoofed:?}");
+    assert!(
+        spoofed["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("must match the connected instance"),
+        "presenting someone else's owner id is param-invalid: {spoofed:?}"
+    );
+
     let get = first_client
         .call(3, "task/get", json!({ "taskId": task_id }))
         .await;

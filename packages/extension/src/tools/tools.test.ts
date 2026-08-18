@@ -34,9 +34,15 @@ function createFakeApi(): { api: ExtensionAPI; tools: Map<string, FakeToolDefini
   return { api: api as unknown as ExtensionAPI, tools };
 }
 
+// The daemon binds `task/upsert`'s `ownerClientInstanceId` to the connected
+// principal (R76), and production wires `sessionId -> instanceId ->
+// ownerClientInstanceId` through one value (runtime.ts:262, tasks.ts) --
+// mirror that chain here or every upsert is refused with -32602.
+const FAKE_SESSION_ID = "test-session-id-12345";
+
 function fakeExtensionContext(cwd: string): ExtensionContext {
   const sessionManager = {
-    getSessionId: () => "test-session-id-12345",
+    getSessionId: () => FAKE_SESSION_ID,
   };
   return {
     cwd,
@@ -214,7 +220,7 @@ async function connectedClient(): Promise<BatmanClient> {
     client: { name: "@nikolasd/batman", version: "0.1.0" },
     supported: { min: { major: 1, minor: 0 }, max: { major: 1, minor: 0 } },
     repository: { canonicalPath: repoDir, vcsRoot: repoDir },
-    auth: { role: "ompExtension", instanceId: "omp-tools-test", agentDirectory: repoDir },
+    auth: { role: "ompExtension", instanceId: FAKE_SESSION_ID, agentDirectory: repoDir },
     capabilities: { eventReplay: true, maxFrameBytes: 1024 * 1024 },
     lastSequence: null,
   });
