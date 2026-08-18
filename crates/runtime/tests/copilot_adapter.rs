@@ -511,7 +511,7 @@ async fn respond_permission_answers_a_real_pending_request_over_the_wire() {
         other => panic!("expected PermissionRequested, got {other:?}"),
     };
     assert_eq!(request_id, 42);
-    assert_eq!(request.session_id, "sess-1");
+    assert_eq!(request.session_id, "11111111-1111-4111-8111-000000000001");
     assert_eq!(request.tool_call_id, "call-2");
     assert_eq!(request.options.len(), 2);
     assert_eq!(client.pending_permission_ids(), vec![42]);

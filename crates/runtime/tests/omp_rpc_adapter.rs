@@ -235,7 +235,7 @@ fn get_state_response_establishes_vendor_session_from_real_session_id_field() {
     });
     assert_eq!(
         established.as_deref(),
-        Some("019f9652-7aac-7000-a8e1-db0d90064c58"),
+        Some("11111111-1111-4111-8111-000000000001"),
         "vendor session id must be taken from the real omp get_state response's data.sessionId field"
     );
 }

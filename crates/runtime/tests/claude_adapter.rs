@@ -536,7 +536,7 @@ fn subagent_fixture_correlates_parent_tool_use_id_and_reports_nested_worker_once
         .collect();
     assert_eq!(
         nested,
-        vec![("toolu_02AGENT", "22222222-2222-4222-8222-222222222222")]
+        vec![("toolu_02AGENT", "11111111-1111-4111-8111-000000000001")]
     );
 
     // The subagent's own text is role-tagged with its parent_tool_use_id

@@ -31,7 +31,9 @@
         "_meta": {
           "terminal-auth": {
             "command": "/opt/homebrew/bin/copilot",
-            "args": ["login"],
+            "args": [
+              "login"
+            ],
             "label": "Copilot Login"
           }
         }
