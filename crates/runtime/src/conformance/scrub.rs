@@ -619,4 +619,20 @@ mod tests {
             "11111111-1111-4111-8111-000000000001"
         );
     }
+
+    #[test]
+    fn correlation_prefixes_are_only_normalized_in_id_fields() {
+        let mut scrubber = Scrubber::new("/workspace/batman".into());
+        let scrubbed = scrubber
+            .scrub_line(
+                br#"{"subtype":"hook_started","type":"item_started","text":"msg-not-an-id","hook_id":"hook-real"}"#,
+            )
+            .expect("frame must be retained");
+        let value: Value = serde_json::from_str(&scrubbed).expect("scrubbed frame must be JSON");
+
+        assert_eq!(value["subtype"], "hook_started");
+        assert_eq!(value["type"], "item_started");
+        assert_eq!(value["text"], "msg-not-an-id");
+        assert_eq!(value["hook_id"], "hook-000000000001");
+    }
 }
