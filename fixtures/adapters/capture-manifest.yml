@@ -2,9 +2,10 @@
 # invocation that reproduces it. Editing a prompt here is how you adapt
 # capture to a CLI whose behavior changed.
 #
-# codex/schema-version.json is generated elsewhere by
-# `codex app-server generate-json-schema` and has a live checker
-# (verify_against_installed_binary).
+# codex/schema-version.json is intentionally absent from this manifest.
+# `crates/runtime/src/adapter/codex/schema.rs` owns its generation and live
+# check through `codex app-server generate-json-schema` and
+# `verify_against_installed_binary`.
 #
 # claude/result.jsonl is intentionally synthetic: it covers the
 # error_max_turns/long-run edge case that a successful prompt cannot reproduce,
