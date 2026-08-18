@@ -73,18 +73,18 @@ pub struct Committed {
     pub envelope: EventEnvelope,
 }
 
-/// A policy violation's correlating ids and its owning task's
-/// `owner_client_instance_id` -- everything
-/// [`crate::policy::ViolationService`] needs to enforce ownership before
-/// deciding. It is deliberately minimal: whether a decision may commit at
-/// all is decided inside [`DomainRepository::resolve_policy_violation`]
-/// (R54), not by any field read here.
+/// A policy violation's correlating ids -- `run_id`, `task_id`, and
+/// `worker_id` -- for [`crate::policy::ViolationService`] to thread
+/// through to [`DomainRepository::resolve_policy_violation`] and its
+/// follow-up commits. It carries no ownership or resolution state:
+/// whether a decision may commit at all -- including ownership (R72) --
+/// is decided inside [`DomainRepository::resolve_policy_violation`], not
+/// by any field read here.
 #[derive(Debug, Clone)]
 pub struct PolicyViolationSnapshot {
     pub run_id: String,
     pub task_id: String,
     pub worker_id: String,
-    pub owner_client_instance_id: String,
 }
 
 /// Embeds `envelope` into `value` under a reserved key so it survives the
@@ -1000,12 +1000,12 @@ impl<'c> DomainRepository<'c> {
         )
     }
 
-    /// Looks up a policy violation's `run_id`/`task_id`/`worker_id` and the
-    /// owning task's `owner_client_instance_id`, for
-    /// [`crate::policy::ViolationService`] to enforce ownership before
-    /// deciding. It does not carry `resolution` or the run's state: gating
-    /// on those happens inside
-    /// [`DomainRepository::resolve_policy_violation`] (R54), where it
+    /// Looks up a policy violation's `run_id`/`task_id`/`worker_id`, for
+    /// [`crate::policy::ViolationService`] to thread through to
+    /// [`DomainRepository::resolve_policy_violation`] and its follow-up
+    /// commits. It does not carry ownership, `resolution`, or the run's
+    /// state: gating on those -- including ownership (R72) -- happens
+    /// inside [`DomainRepository::resolve_policy_violation`], where it
     /// cannot race the write.
     ///
     /// # Errors
@@ -1016,18 +1016,13 @@ impl<'c> DomainRepository<'c> {
     ) -> Result<PolicyViolationSnapshot, DomainError> {
         self.conn
             .query_row(
-                "SELECT v.run_id, v.task_id, v.worker_id,
-                        t.owner_client_instance_id
-                 FROM policy_violations v
-                 JOIN tasks t ON v.task_id = t.task_id
-                 WHERE v.violation_id = ?1",
+                "SELECT run_id, task_id, worker_id FROM policy_violations WHERE violation_id = ?1",
                 [violation_id.to_string()],
                 |row| {
                     Ok(PolicyViolationSnapshot {
                         run_id: row.get::<_, String>(0)?,
                         task_id: row.get::<_, String>(1)?,
                         worker_id: row.get::<_, String>(2)?,
-                        owner_client_instance_id: row.get::<_, String>(3)?,
                     })
                 },
             )
@@ -1043,27 +1038,39 @@ impl<'c> DomainRepository<'c> {
     /// those via [`DomainRepository::set_run_flags`]/
     /// [`DomainRepository::transition_run`] as separate commits.
     ///
-    /// This is the **only** authority on whether a violation may be resolved.
-    /// The database actor interleaves whole `run_domain_op` closures, never
-    /// a service's sequence of round trips, so any caller-side pre-check is
-    /// advisory only (R54): the `UPDATE` guarded by `resolution IS NULL`
-    /// is the guard. The `UPDATE` deliberately precedes the terminal-run
-    /// guard so an already-decided violation reports
-    /// [`DomainError::AlreadyResolved`] even when its run has also settled;
-    /// an `Err` returned here discards the appended event together with the
-    /// rejected write (the transaction rolls back as a whole).
+    /// This is the **only** authority on whether a violation may be
+    /// resolved. The database actor interleaves whole `run_domain_op`
+    /// closures, never a service's sequence of round trips, so any
+    /// caller-side pre-check is advisory only (R54, R72): ownership,
+    /// conflict, and the terminal-run state are all re-checked from inside
+    /// this one guarded transaction, never from a snapshot a caller read
+    /// earlier. `principal_instance_id` is checked against
+    /// `tasks.owner_client_instance_id` first, before the `UPDATE` guarded
+    /// by `resolution IS NULL` -- a `reconcile/omp` ownership rebind that
+    /// commits between a caller's snapshot read and this write must
+    /// invalidate the stale caller, and it can only do that if the check
+    /// happens here, not in `ViolationService::decide` (mirrors R71's
+    /// `decide_approval`). The `UPDATE` deliberately precedes the
+    /// terminal-run guard so an already-decided violation reports
+    /// [`DomainError::AlreadyResolved`] even when its run has also
+    /// settled; an `Err` returned here discards the appended event
+    /// together with the rejected write (the transaction rolls back as a
+    /// whole).
     ///
     /// # Errors
-    /// Returns [`DomainError::NotFound`] if no such violation exists,
-    /// [`DomainError::AlreadyResolved`] if a resolution is already on
-    /// record, or [`DomainError::RunSettled`] if `resolution` is
-    /// `"release"` and the run has reached a terminal state.
+    /// Returns [`DomainError::NotFound`] if no such violation or task
+    /// exists, [`DomainError::NotOwner`] if `principal_instance_id` does
+    /// not own the violation's task, [`DomainError::AlreadyResolved`] if a
+    /// resolution is already on record, or [`DomainError::RunSettled`] if
+    /// `resolution` is `"release"` and the run has reached a terminal
+    /// state.
     pub fn resolve_policy_violation(
         &mut self,
         violation_id: PolicyViolationId,
         run_id: RunId,
         task_id: TaskId,
         worker_id: WorkerId,
+        principal_instance_id: &str,
         resolution: &str,
         resolved_by: &str,
     ) -> Result<Committed, DomainError> {
@@ -1079,6 +1086,7 @@ impl<'c> DomainRepository<'c> {
         };
         let resolution = resolution.to_string();
         let resolved_by = resolved_by.to_string();
+        let principal_instance_id = principal_instance_id.to_string();
         self.append_and_apply(
             &event,
             Some(task_id),
@@ -1086,6 +1094,35 @@ impl<'c> DomainRepository<'c> {
             Some(run_id),
             move |tx| {
                 let now = Timestamp::now();
+                // Ownership is arbitrated here, inside the guarded
+                // transaction, not by a caller-side snapshot read: the
+                // database actor interleaves whole `run_domain_op`
+                // closures, so a `reconcile_ownership` rebind can commit
+                // between a caller's snapshot read and this write. Only a
+                // re-read from inside this same transaction can observe
+                // that rebind (R72, mirroring R71's `decide_approval`).
+                let owner: Option<String> = tx
+                    .query_row(
+                        "SELECT owner_client_instance_id FROM tasks WHERE task_id = ?1",
+                        [task_id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                match owner {
+                    Some(owner) if owner == principal_instance_id => {}
+                    Some(_) => {
+                        return Err(DomainError::NotOwner {
+                            task_id: task_id.to_string(),
+                            instance_id: principal_instance_id,
+                        });
+                    }
+                    None => {
+                        return Err(DomainError::NotFound {
+                            kind: "task",
+                            id: task_id.to_string(),
+                        });
+                    }
+                }
                 let affected = tx.execute(
                     "UPDATE policy_violations SET resolution = ?1, resolved_by = ?2, resolved_at = ?3
                      WHERE violation_id = ?4 AND resolution IS NULL",

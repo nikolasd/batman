@@ -26,23 +26,21 @@
 //!
 //! [`ViolationService::decide`] resolves a violation via
 //! `policy/violation/decide`, restricted to the violation's task's
-//! `owner_client_instance_id` (the owning `ompExtension` client), checked
-//! caller-side against a snapshot read before the guarded write. That is
-//! no longer the same pattern [`crate::approval::ApprovalService::decide`]
-//! uses: the approval side used to pre-check ownership caller-side the
-//! same way, but now arbitrates it exclusively inside the guarded
+//! `owner_client_instance_id` (the owning `ompExtension` client). That
+//! ownership check is arbitrated exclusively inside the guarded
 //! transaction in
-//! [`crate::domain::repository::DomainRepository::decide_approval`] (R71),
-//! because a `reconcile/omp` ownership rebind landing in the window
-//! between a caller-side snapshot read and the write could otherwise slip
-//! past a pre-check and leave a stale owner's decision unrefused. The
-//! violation side has not had that fix applied and still relies on the
-//! caller-side ownership pre-check the approval side used to share with
-//! it. Whether a decision may commit at all -- conflict, idempotent
-//! replay, settled run -- is enforced inside the guarded write in
-//! [`crate::domain::repository::DomainRepository::resolve_policy_violation`],
-//! so two concurrent `decide` calls cannot both journal a decision or both
-//! fire side effects (R54). Releasing quarantine on an
+//! [`crate::domain::repository::DomainRepository::resolve_policy_violation`]
+//! (R72), the same pattern
+//! [`crate::approval::ApprovalService::decide`] uses in
+//! [`crate::domain::repository::DomainRepository::decide_approval`] (R71):
+//! a `reconcile/omp` ownership rebind landing in the window between a
+//! caller-side snapshot read and the write could otherwise slip past a
+//! pre-check and leave a stale owner's decision unrefused, so neither
+//! service pre-checks ownership caller-side any longer. Whether a
+//! decision may commit at all -- ownership, conflict, idempotent replay,
+//! settled run -- is enforced inside that same guarded write, so two
+//! concurrent `decide` calls cannot both journal a decision or both fire
+//! side effects (R54, R72). Releasing quarantine on an
 //! already-terminal/cancelled run is refused in that same transaction; it
 //! must never be revived.
 
@@ -496,19 +494,23 @@ impl ViolationService {
     /// `policy/violation/decide`: resolves `violation_id` as `resolution`
     /// (`"release"` or `"cancel"`).
     ///
-    /// The only caller-side pre-check is ownership: `principal_instance_id`
-    /// must own the violation's task. The rest is decided by
-    /// [`DomainRepository::resolve_policy_violation`] inside the same
-    /// transaction as the write: whether a different resolution is already
-    /// on record (a losing call is refused with
+    /// Ownership is not pre-checked here: `reconcile/omp` can rebind a
+    /// task's `owner_client_instance_id` at any time via
+    /// [`DomainRepository::reconcile_ownership`], including in the window
+    /// between this call and the guarded write, so it is arbitrated
+    /// exclusively inside [`DomainRepository::resolve_policy_violation`]'s
+    /// guarded transaction (R72, mirroring
+    /// [`crate::approval::ApprovalService::decide`]'s R71 fix). The rest is
+    /// decided by that same transaction: whether a different resolution is
+    /// already on record (a losing call is refused with
     /// [`ViolationError::Conflict`]), whether this is an idempotent replay
     /// ([`DecideOutcome::AlreadyDecided`], which re-applies nothing), and
     /// -- for `"release"` -- whether the run has already settled
     /// ([`ViolationError::RunSettled`]). The database actor interleaves
-    /// whole `run_domain_op` round trips, so these cannot be caller-side
-    /// pre-checks (R54): the guarded write is the arbiter, exactly one
-    /// `PolicyViolationDecided` event is journaled per violation, and only
-    /// the deciding call fires side effects.
+    /// whole `run_domain_op` round trips, so none of these can be
+    /// caller-side pre-checks (R54, R72): the guarded write is the sole
+    /// arbiter, exactly one `PolicyViolationDecided` event is journaled per
+    /// violation, and only the deciding call fires side effects.
     ///
     /// # Errors
     /// Returns [`ViolationError::Forbidden`] if `principal_instance_id`
@@ -539,22 +541,10 @@ impl ViolationService {
                     "runId": s.run_id,
                     "taskId": s.task_id,
                     "workerId": s.worker_id,
-                    "ownerClientInstanceId": s.owner_client_instance_id,
                 }))
             }))
             .await
             .map_err(|_| ViolationError::NotFound { violation_id })?;
-
-        let owner = snapshot["ownerClientInstanceId"]
-            .as_str()
-            .unwrap_or_default();
-        if owner != principal_instance_id {
-            return Err(ViolationError::Forbidden {
-                instance_id: principal_instance_id.to_string(),
-                violation_id,
-            });
-        }
-
         let run_id = RunId::parse(snapshot["runId"].as_str().unwrap_or_default())
             .map_err(|_| ViolationError::NotFound { violation_id })?;
         let task_id = TaskId::parse(snapshot["taskId"].as_str().unwrap_or_default())
@@ -562,6 +552,7 @@ impl ViolationService {
         let worker_id = WorkerId::parse(snapshot["workerId"].as_str().unwrap_or_default())
             .map_err(|_| ViolationError::NotFound { violation_id })?;
 
+        let principal_instance_id_owned = principal_instance_id.to_string();
         let resolved_by = principal_instance_id.to_string();
         let resolution_owned = resolution.to_string();
         let mut result = match self
@@ -573,6 +564,7 @@ impl ViolationService {
                     run_id,
                     task_id,
                     worker_id,
+                    &principal_instance_id_owned,
                     &resolution_owned,
                     &resolved_by,
                 )
@@ -583,6 +575,12 @@ impl ViolationService {
             Ok(value) => value,
             // The guarded write is the arbiter: a losing racer never journals
             // an event and never reaches the side effects below.
+            Err(DomainError::NotOwner { .. }) => {
+                return Err(ViolationError::Forbidden {
+                    instance_id: principal_instance_id.to_string(),
+                    violation_id,
+                });
+            }
             Err(DomainError::AlreadyResolved { existing, .. }) => {
                 return if existing == resolution {
                     Ok(DecideOutcome::AlreadyDecided)
