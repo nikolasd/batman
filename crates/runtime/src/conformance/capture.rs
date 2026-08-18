@@ -537,7 +537,11 @@ mod tests {
             }
         }
 
-        assert_eq!(fixture_count, 12, "manifest must own every transcript");
+        assert_eq!(
+            fixture_count,
+            11,
+            "manifest must own exactly 11 capture-managed fixtures"
+        );
     }
 
     #[test]
