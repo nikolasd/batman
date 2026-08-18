@@ -610,4 +610,65 @@ mod tests {
 
         assert!(result.is_err(), "JSON fixtures must contain exactly one frame");
     }
+
+    #[test]
+    fn scrub_captured_frame_applies_each_adapter_reader_policy() {
+        let raw = b"cwd=/tmp/capture-123 token=sk-ABCDEFGHIJKLMNOPQRSTUVWX";
+
+        let mut omp_rpc_scrubber = Scrubber::new("/tmp/capture-123".into());
+        assert_eq!(
+            scrub_captured_frame(AdapterKind::OmpRpc, &mut omp_rpc_scrubber, raw),
+            Some("cwd=/workspace/batman token=[REDACTED:api_key]".into())
+        );
+
+        let mut claude_scrubber = Scrubber::new("/tmp/capture-123".into());
+        assert_eq!(
+            scrub_captured_frame(AdapterKind::Claude, &mut claude_scrubber, b"vendor banner"),
+            Some("vendor banner".into())
+        );
+
+        let mut codex_scrubber = Scrubber::new("/tmp/capture-123".into());
+        assert_eq!(
+            scrub_captured_frame(AdapterKind::Codex, &mut codex_scrubber, raw),
+            None
+        );
+
+        let mut copilot_scrubber = Scrubber::new("/tmp/capture-123".into());
+        assert_eq!(
+            scrub_captured_frame(AdapterKind::Copilot, &mut copilot_scrubber, raw),
+            None
+        );
+    }
+
+    #[test]
+    fn render_fixture_content_rejects_unsupported_extensions() {
+        let error = render_fixture_content("capture.txt", &["frame".into()])
+            .expect_err("unsupported fixture extension must fail");
+
+        assert!(error.contains("capture.txt"));
+    }
+
+    #[test]
+    fn render_json_fixture_invalid_frame_error_names_fixture_and_bounds_preview() {
+        let frame = format!("not-json-{}-tail", "x".repeat(1024));
+        let error = render_fixture_content("broken.json", &[frame.clone()])
+            .expect_err("invalid JSON fixture frame must fail");
+
+        assert!(error.contains("broken.json"));
+        assert!(error.contains("not-json-"));
+        assert!(!error.contains("-tail"));
+        assert!(
+            error.len() < frame.len(),
+            "error preview must be bounded instead of repeating the full frame"
+        );
+    }
+
+    #[test]
+    fn persist_fixture_content_dry_run_errors_for_a_directory_target() {
+        let dir = tempfile::tempdir().expect("temp directory must be created");
+        let error = persist_fixture_content(dir.path(), "new\n", true)
+            .expect_err("dry-run must surface unreadable targets");
+
+        assert!(error.contains(&dir.path().display().to_string()));
+    }
 }

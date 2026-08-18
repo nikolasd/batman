@@ -327,4 +327,58 @@ mod tests {
         );
         assert_eq!(scrubber.scrub_line(b""), None);
     }
+
+    #[test]
+    fn nested_thread_id_and_thread_id_share_one_stable_session_identity() {
+        let mut scrubber = Scrubber::new("/workspace/batman".into());
+        let scrubbed = scrubber
+            .scrub_line(br#"{"thread":{"id":"thread-actual"},"threadId":"thread-actual"}"#)
+            .expect("frame must be retained");
+        let value: Value = serde_json::from_str(&scrubbed).expect("scrubbed frame must be JSON");
+        let expected = "11111111-1111-4111-8111-000000000001";
+
+        assert_eq!(value["thread"]["id"], expected);
+        assert_eq!(value["threadId"], expected);
+    }
+
+    #[test]
+    fn nested_turn_id_and_turn_id_share_one_stable_session_identity() {
+        let mut scrubber = Scrubber::new("/workspace/batman".into());
+        let scrubbed = scrubber
+            .scrub_line(br#"{"turn":{"id":"turn-actual"},"turnId":"turn-actual"}"#)
+            .expect("frame must be retained");
+        let value: Value = serde_json::from_str(&scrubbed).expect("scrubbed frame must be JSON");
+        let expected = "11111111-1111-4111-8111-000000000001";
+
+        assert_eq!(value["turn"]["id"], expected);
+        assert_eq!(value["turnId"], expected);
+    }
+
+    #[test]
+    fn session_file_and_session_id_share_one_stable_identity_in_any_key_order() {
+        let session_id = "019f9652-7aac-7000-a8e1-db0d90064c58";
+        let expected = "11111111-1111-4111-8111-000000000001";
+
+        for input in [
+            format!(
+                r#"{{"sessionFile":".omp/sessions/{session_id}.jsonl","sessionId":"{session_id}"}}"#
+            ),
+            format!(
+                r#"{{"sessionId":"{session_id}","sessionFile":".omp/sessions/{session_id}.jsonl"}}"#
+            ),
+        ] {
+            let mut scrubber = Scrubber::new("/workspace/batman".into());
+            let scrubbed = scrubber
+                .scrub_line(input.as_bytes())
+                .expect("frame must be retained");
+            let value: Value =
+                serde_json::from_str(&scrubbed).expect("scrubbed frame must be JSON");
+
+            assert_eq!(value["sessionId"], expected);
+            assert_eq!(
+                value["sessionFile"],
+                format!(".omp/sessions/{expected}.jsonl")
+            );
+        }
+    }
 }
