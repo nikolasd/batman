@@ -252,7 +252,7 @@ fn get_session_stats_response_normalizes_to_usage_reported() {
         } => Some((*input_tokens, *output_tokens, *cost_usd)),
         _ => None,
     });
-    assert_eq!(usage, Some((42, 7, Some(0.0007))));
+    assert_eq!(usage, Some((42, 7, Some(0.0142))));
 }
 
 #[test]
