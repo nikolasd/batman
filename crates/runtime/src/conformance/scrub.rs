@@ -236,7 +236,13 @@ impl Scrubber {
             },
             _ => None,
         };
-        explicit.or_else(|| Self::correlation_family_from_prefix(value))
+        explicit.or_else(|| {
+            if key == "id" {
+                Self::correlation_family_from_prefix(value)
+            } else {
+                None
+            }
+        })
     }
 
     /// Identifies correlation families already encoded in raw value prefixes.
@@ -258,6 +264,7 @@ impl Scrubber {
             None
         }
     }
+
     /// Key names whose values are timestamps.
     fn is_timestamp_key(k: &str) -> bool {
         matches!(
