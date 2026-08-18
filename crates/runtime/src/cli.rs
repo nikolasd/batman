@@ -925,3 +925,15 @@ fn fail(err: &dyn std::fmt::Display) -> ExitCode {
     eprintln!("{err}");
     ExitCode::FAILURE
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_status_distinguishes_unchanged_rewritten_and_would_rewrite() {
+        assert_eq!(capture_status(true, false), "unchanged");
+        assert_eq!(capture_status(false, false), "rewritten");
+        assert_eq!(capture_status(false, true), "would rewrite");
+    }
+}

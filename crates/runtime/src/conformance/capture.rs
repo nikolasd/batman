@@ -718,7 +718,7 @@ mod tests {
         let mut claude_scrubber = Scrubber::new("/tmp/capture-123".into());
         assert_eq!(
             scrub_captured_frame(AdapterKind::Claude, &mut claude_scrubber, b"vendor banner"),
-            Some("vendor banner".into())
+            None
         );
 
         let mut codex_scrubber = Scrubber::new("/tmp/capture-123".into());

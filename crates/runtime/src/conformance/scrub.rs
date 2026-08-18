@@ -460,4 +460,85 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn correlation_ids_are_renumbered_by_family_and_encounter_order() {
+        let mut scrubber = Scrubber::new("/workspace/batman".into());
+        let first = scrubber
+            .scrub_line(
+                br#"{"message":{"id":"msg-first"},"messageId":"msg-first","tool_use":{"id":"toolu-first"},"parent_tool_use_id":"toolu-first","tool_use_id":"toolu-first","callId":"toolu-first","toolCallId":"toolu-first","hook_id":"hook-first","item":{"id":"item-first"},"itemId":"item-first","agentId":"agent-first"}"#,
+            )
+            .expect("frame must be retained");
+        let first: Value = serde_json::from_str(&first).expect("scrubbed frame must be JSON");
+        let second = scrubber
+            .scrub_line(
+                br#"{"message":{"id":"msg-second"},"tool_use":{"id":"toolu-second"},"hook_id":"hook-second","item":{"id":"item-second"},"agentId":"agent-second"}"#,
+            )
+            .expect("frame must be retained");
+        let second: Value = serde_json::from_str(&second).expect("scrubbed frame must be JSON");
+
+        assert_eq!(first["message"]["id"], "msg-000000000001");
+        assert_eq!(first["messageId"], "msg-000000000001");
+        for key in [
+            "id",
+            "parent_tool_use_id",
+            "tool_use_id",
+            "callId",
+            "toolCallId",
+        ] {
+            let value = if key == "id" {
+                &first["tool_use"][key]
+            } else {
+                &first[key]
+            };
+            assert_eq!(value, "tool-000000000001", "{key} must share the tool family");
+        }
+        assert_eq!(first["hook_id"], "hook-000000000001");
+        assert_eq!(first["item"]["id"], "item-000000000001");
+        assert_eq!(first["itemId"], "item-000000000001");
+        assert_eq!(first["agentId"], "agent-000000000001");
+
+        assert_eq!(second["message"]["id"], "msg-000000000002");
+        assert_eq!(second["tool_use"]["id"], "tool-000000000002");
+        assert_eq!(second["hook_id"], "hook-000000000002");
+        assert_eq!(second["item"]["id"], "item-000000000002");
+        assert_eq!(second["agentId"], "agent-000000000002");
+    }
+
+    #[test]
+    fn absolute_session_file_rewrites_its_id_path_and_secret() {
+        let mut scrubber = Scrubber::new("/tmp/capture-123".into());
+        let scrubbed = scrubber
+            .scrub_line(
+                br#"{"sessionId":"session-actual","sessionFile":"/tmp/capture-123/.omp/sessions/session-actual.jsonl","token":"sk-ABCDEFGHIJKLMNOPQRSTUVWX"}"#,
+            )
+            .expect("frame must be retained");
+        let value: Value = serde_json::from_str(&scrubbed).expect("scrubbed frame must be JSON");
+        let expected = "11111111-1111-4111-8111-000000000001";
+
+        assert_eq!(value["sessionId"], expected);
+        assert_eq!(
+            value["sessionFile"],
+            format!("/workspace/batman/.omp/sessions/{expected}.jsonl")
+        );
+        assert_eq!(value["token"], "[REDACTED:api_key]");
+    }
+
+    #[test]
+    fn normalizes_command_paths_without_misclassifying_prose_or_nested_turns() {
+        let mut scrubber = Scrubber::new("/workspace/batman".into());
+        let scrubbed = scrubber
+            .scrub_line(
+                br#"{"command":"/opt/homebrew/bin/copilot","prose":"meetingTendsAtZ","thread":{"turns":[{"id":"turn-actual"}]}}"#,
+            )
+            .expect("frame must be retained");
+        let value: Value = serde_json::from_str(&scrubbed).expect("scrubbed frame must be JSON");
+
+        assert_eq!(value["command"], "/usr/local/bin/copilot");
+        assert_eq!(value["prose"], "meetingTendsAtZ");
+        assert_eq!(
+            value["thread"]["turns"][0]["id"],
+            "11111111-1111-4111-8111-000000000001"
+        );
+    }
 }
