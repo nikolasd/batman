@@ -325,10 +325,12 @@ impl WorkerProfile {
     /// content -- everything except `id`, so two registrations of
     /// identical content share one fingerprint but always mint distinct
     /// ids. This workspace enables `preserve_order` for the conformance
-    /// scrubber, so explicit [`crate::canonical_json::canonicalize_in_place`]
-    /// makes this stable regardless of source field order. Content is
-    /// name-only/never-secret by construction (see module docs), so the
-    /// fingerprint itself can never encode a secret value.
+    /// scrubber. The current field order is fixed by the struct declaration
+    /// plus the canonical sanitized `permissionEnvelope`; the final
+    /// [`crate::canonical_json::canonicalize_in_place`] is defense in depth
+    /// for future free-form fields. Content is name-only/never-secret by
+    /// construction (see module docs), so the fingerprint itself can never
+    /// encode a secret value.
     #[must_use]
     pub fn fingerprint(&self) -> String {
         let redactor = Redactor::new();

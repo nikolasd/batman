@@ -337,7 +337,11 @@ impl Redactor {
             ),
             serde_json::Value::Object(map) => {
                 let mut redacted = serde_json::Map::with_capacity(map.len());
-                for (key, val) in map {
+                let mut entries: Vec<_> = map.iter().collect();
+                entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+                // Sorting source keys makes last-wins collision resolution
+                // independent of insertion order.
+                for (key, val) in entries {
                     let redacted_key = self.redact_visible_text(key);
                     redacted.insert(redacted_key, self.redact_json_value(val));
                 }
