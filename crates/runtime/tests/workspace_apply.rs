@@ -516,3 +516,88 @@ async fn workspace_inspect_captures_real_evidence() {
     let list = store.list(None).await;
     assert!(!list.artifacts.is_empty(), "should have stored artifacts");
 }
+
+/// R36: the isolation tests above hand-seed `run_id` on their input
+/// fixtures; nothing proved the real producers stamp it. Reverting the
+/// production stamping (`inspect.rs`/`apply.rs`) to `run_id: None` left
+/// the whole suite green -- proven by doing exactly that scratch revert
+/// while writing these tests and watching them fail. These drive the
+/// real `WorkspaceInspector` and `WorkspaceApplier` end-to-end and read
+/// the persisted artifact rows back.
+#[tokio::test]
+async fn inspector_stamps_the_producing_run_id_on_its_patch_artifact() {
+    let repo = create_fixture_repo();
+    let store = ArtifactStore::new();
+    let run_id = RunId::new();
+
+    std::fs::write(repo.join("file1.txt"), "dirty content\n").unwrap();
+    let inspector =
+        WorkspaceInspector::with_store(repo.clone(), std::sync::Arc::new(store.clone()), run_id);
+    let result = inspector
+        .inspect(&batman_protocol::InspectRequest {
+            lease_id: "lease-r36".to_string(),
+        })
+        .await
+        .unwrap();
+
+    let stored = store.fetch(&result.patch_artifact_id).await.unwrap();
+    assert_eq!(
+        stored.run_id.as_deref(),
+        Some(run_id.to_string().as_str()),
+        "the persisted patch artifact must carry the producing run's id"
+    );
+}
+
+#[tokio::test]
+async fn applier_stamps_the_producing_run_id_on_its_conflict_artifact() {
+    let repo = create_fixture_repo();
+    let store = ArtifactStore::new();
+    let run_id = RunId::new();
+    let head = head_of(&repo);
+
+    // A patch that cannot apply: it edits content the tree does not have.
+    let conflicting_patch = b"diff --git a/file1.txt b/file1.txt\n\
+index 0000000..1111111 100644\n\
+--- a/file1.txt\n\
++++ b/file1.txt\n\
+@@ -1 +1 @@\n\
+-content that was never there\n\
++replacement\n"
+        .to_vec();
+    let artifact_id = ArtifactId::new();
+    let artifact = Artifact {
+        artifact_id,
+        kind: ArtifactKind::Patch,
+        sha256: digest(&conflicting_patch),
+        byte_length: conflicting_patch.len() as u64,
+        media_type: "application/x-git-diff".to_string(),
+        storage_path: "patches/conflict.patch".to_string(),
+        run_id: None,
+    };
+    store.store(artifact, conflicting_patch).await.unwrap();
+
+    let applier =
+        WorkspaceApplier::from_store(repo.clone(), std::sync::Arc::new(store.clone()), run_id);
+    let result = applier
+        .apply(&ApplyRequest {
+            lease_id: "lease-r36".to_string(),
+            strategy: ApplyStrategy::ApplyPatch,
+            artifact_id,
+            expected_target_revision: head,
+            approval_correlation_id: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(!result.success);
+    let conflict_id = result
+        .conflict_artifact_id
+        .expect("a conflict must record a report artifact");
+    let stored = store.fetch(&conflict_id).await.unwrap();
+    assert_eq!(stored.kind, ArtifactKind::ConflictReport);
+    assert_eq!(
+        stored.run_id.as_deref(),
+        Some(run_id.to_string().as_str()),
+        "the persisted conflict artifact must carry the producing run's id"
+    );
+}
