@@ -830,7 +830,13 @@ impl OrchestrationService {
             });
         let display = Some(self.display.resolve(&display_preference));
 
-        // Cross-project rejection: the task must exist in this project.
+        // The task must exist. `task_get_op` selects by task id alone,
+        // with no project-id predicate -- and neither does any of the
+        // owner-arbitration queries this fix adds below (S2). That is
+        // correct, not merely convenient: each runtime process owns
+        // exactly one project's database, so "task id" and "task id in
+        // this project" already coincide; there is no cross-project
+        // rejection to perform here.
         self.db
             .run_domain_op(query::task_get_op(task_id))
             .await

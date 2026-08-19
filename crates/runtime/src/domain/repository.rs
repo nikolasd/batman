@@ -649,19 +649,42 @@ impl<'c> DomainRepository<'c> {
         )
     }
 
-    /// Transitions a run to a new state, validating the edge first. Emits the
-    /// matching `Run*` event and updates the projection. An illegal edge
-    /// appends nothing.
+    /// Transitions a run to a new state, authorizing the caller before
+    /// validating the edge. Emits the matching `Run*` event and updates
+    /// the projection. A refusal on either ground appends nothing.
     ///
-    /// `principal_instance_id` arbitrates ownership the same way
-    /// [`Self::submit_run`] does, re-read from `tasks` inside this guarded
-    /// write, immediately before the mutating `UPDATE` (R77). `None` for
-    /// every internal caller -- adapter-driven lifecycle transitions,
-    /// approval/violation resolution returning a run to `working`, crash
-    /// recovery, and test seeding all transition a run on the runtime's
-    /// own authority, with no connected caller to arbitrate against. Only
-    /// `run/cancel`'s handler, the one client-facing caller, passes
-    /// `Some`.
+    /// Authorization precedes validity: a non-owning caller sees
+    /// [`DomainError::NotOwner`], never `ILLEGAL_TRANSITION`, regardless
+    /// of whether the edge it asked for would otherwise be legal (R77).
+    /// This is the opposite precedence from [`Self::upsert_task`]'s
+    /// revision-before-ownership check (R76): there, the only way to
+    /// present a stale revision is to already be the task's actual
+    /// owner racing itself, so disclosing staleness first tells a
+    /// legitimate caller something it is entitled to know. Here the
+    /// caller is, by construction, not yet known to have any standing
+    /// over the run at all, so it must clear ownership before this
+    /// method will say anything about the run's current state --
+    /// matching [`Self::submit_run`] and [`Self::record_message`], which
+    /// have no pre-write validity check for ownership to outrank.
+    ///
+    /// `principal_instance_id` is checked twice for this precedence:
+    /// once as a plain `self.conn` read, immediately before
+    /// [`check_transition`], so a non-owner's illegal-edge attempt still
+    /// classifies as `NotOwner`; and again -- the authoritative,
+    /// race-safe check -- re-read from `tasks` inside this guarded
+    /// write, immediately before the mutating `UPDATE` (R77). Only the
+    /// second read runs inside the `run_domain_op` closure the database
+    /// actor executes as one indivisible unit, so only it can observe a
+    /// concurrent `reconcile/omp` rebind that commits between the first
+    /// read and this write; a race between the two reads can only ever
+    /// make the first one agree or disagree with the second, never let
+    /// a mutation through without the second read's independent
+    /// approval. `None` for every internal caller -- adapter-driven
+    /// lifecycle transitions, approval/violation resolution returning a
+    /// run to `working`, crash recovery, and test seeding all transition
+    /// a run on the runtime's own authority, with no connected caller to
+    /// arbitrate against. Only `run/cancel`'s handler, the one
+    /// client-facing caller, passes `Some`.
     ///
     /// # Errors
     /// Returns [`DomainError::NotOwner`] if `principal_instance_id` is
@@ -686,17 +709,50 @@ impl<'c> DomainRepository<'c> {
                 id: run_id.to_string(),
             })?;
 
+        let task_id =
+            batman_protocol::TaskId::parse(&task_id_str).map_err(|_| DomainError::NotFound {
+                kind: "task",
+                id: task_id_str.clone(),
+            })?;
+
+        // Authorization precedes validity (R77) -- see the doc comment
+        // above. This is a plain snapshot read, not inside the
+        // closure-granular boundary `run_domain_op` gives the guarded
+        // write below; the race-safe re-check that actually protects
+        // the mutation still happens there, immediately before the
+        // `UPDATE`.
+        if let Some(principal_instance_id) = principal_instance_id {
+            let owner: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT owner_client_instance_id FROM tasks WHERE task_id = ?1",
+                    [task_id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            match owner {
+                Some(owner) if owner == principal_instance_id => {}
+                Some(_) => {
+                    return Err(DomainError::NotOwner {
+                        task_id: task_id.to_string(),
+                        instance_id: principal_instance_id.to_string(),
+                    });
+                }
+                None => {
+                    return Err(DomainError::NotFound {
+                        kind: "task",
+                        id: task_id.to_string(),
+                    });
+                }
+            }
+        }
+
         let from = RunState::try_from(from_str.as_str()).map_err(|_| DomainError::NotFound {
             kind: "run-state",
             id: from_str.clone(),
         })?;
         check_transition(&run_id.to_string(), &from, to)?;
 
-        let task_id =
-            batman_protocol::TaskId::parse(&task_id_str).map_err(|_| DomainError::NotFound {
-                kind: "task",
-                id: task_id_str.clone(),
-            })?;
         let worker_id = batman_protocol::WorkerId::parse(&worker_id_str).map_err(|_| {
             DomainError::NotFound {
                 kind: "worker",
@@ -1783,13 +1839,25 @@ impl<'c> DomainRepository<'c> {
     /// Records OMP's decision on a prior child-worker request and returns
     /// the parent run to `working`. Acceptance carries the OMP-created
     /// child ids; denial carries a reason. The runtime owns both
-    /// transitions after the correlated decision commits.
+    /// transitions after the correlated decision commits. A refusal on
+    /// either ground appends nothing.
     ///
-    /// `principal_instance_id` arbitrates ownership of the parent run's
-    /// task, re-read from `tasks` inside this guarded write immediately
-    /// before the mutating `UPDATE` (R77), the same way [`Self::submit_run`]
-    /// and [`Self::transition_run`] do. `None` is not used by any current
-    /// caller: `coordination/child/decide` is `ompExtension`-only
+    /// Authorization precedes validity, the same way and for the same
+    /// reason as [`Self::transition_run`] (R77): a non-owning caller sees
+    /// [`DomainError::NotOwner`], never `ILLEGAL_TRANSITION`, regardless
+    /// of whether the parent run happens to be in a state that could
+    /// legally return to `working`. `principal_instance_id` is checked
+    /// twice for this precedence: once as a plain `self.conn` read,
+    /// immediately before [`check_transition`]; and again -- the
+    /// authoritative, race-safe check -- re-read from `tasks` inside
+    /// this guarded write immediately before the mutating `UPDATE`, the
+    /// same way [`Self::submit_run`] and [`Self::transition_run`] do.
+    /// Only the second read runs inside the `run_domain_op` closure the
+    /// database actor executes as one indivisible unit, so only it can
+    /// observe a concurrent `reconcile/omp` rebind; the first read
+    /// exists solely to fix the error-code precedence for the ordinary
+    /// case. `None` is not used by any current caller:
+    /// `coordination/child/decide` is `ompExtension`-only
     /// (`crate::ipc::ClientPrincipal::allowed_methods`), so every call
     /// site has a principal to arbitrate against.
     ///
@@ -1819,6 +1887,44 @@ impl<'c> DomainRepository<'c> {
                 kind: "run",
                 id: parent_run_id.to_string(),
             })?;
+
+        let task_id = TaskId::parse(&task_id_str).map_err(|_| DomainError::NotFound {
+            kind: "task",
+            id: task_id_str.clone(),
+        })?;
+
+        // Authorization precedes validity (R77) -- see the doc comment
+        // above. This is a plain snapshot read, not inside the
+        // closure-granular boundary `run_domain_op` gives the guarded
+        // write below; the race-safe re-check that actually protects
+        // the mutation still happens there, immediately before the
+        // `UPDATE`.
+        if let Some(principal_instance_id) = principal_instance_id {
+            let owner: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT owner_client_instance_id FROM tasks WHERE task_id = ?1",
+                    [task_id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            match owner {
+                Some(owner) if owner == principal_instance_id => {}
+                Some(_) => {
+                    return Err(DomainError::NotOwner {
+                        task_id: task_id.to_string(),
+                        instance_id: principal_instance_id.to_string(),
+                    });
+                }
+                None => {
+                    return Err(DomainError::NotFound {
+                        kind: "task",
+                        id: task_id.to_string(),
+                    });
+                }
+            }
+        }
+
         let from = RunState::try_from(from_str.as_str()).map_err(|_| DomainError::NotFound {
             kind: "run-state",
             id: from_str.clone(),
@@ -1826,10 +1932,6 @@ impl<'c> DomainRepository<'c> {
         let working = RunState::try_from("working").expect("working is valid");
         check_transition(&parent_run_id.to_string(), &from, &working)?;
 
-        let task_id = TaskId::parse(&task_id_str).map_err(|_| DomainError::NotFound {
-            kind: "task",
-            id: task_id_str.clone(),
-        })?;
         let worker_id = WorkerId::parse(&worker_id_str).map_err(|_| DomainError::NotFound {
             kind: "worker",
             id: worker_id_str.clone(),
