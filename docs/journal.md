@@ -3976,6 +3976,47 @@ serde's canonical deserialization (S-3). W-3 became **R92**: decision provenance
 `decided_by` and the new `reason` — is persisted and journaled but `approval/list` returns
 neither, the same read-surface class R80 registered for policy violations.
 
+## Part XXXVIII — Seven kinds of dishonest error, classified honestly
+
+Batch 7 was error hygiene: seven independent findings, each a place where the runtime told a
+caller (or an operator, or itself) something untrue about a failure. `45f227f` (R66) made
+`DatabaseHandle::shutdown` join the actor thread even after an abnormal death — the old
+`rx.await.map_err(...)?` short-circuited past the join, leaking the `JoinHandle` and losing the
+panic; a regression test now panics the actor with a poisoned domain op and proves shutdown
+still reaps it. `a0ed385` (R14) removed the redactor's fail-open fallback: a sink whose org
+security patterns do not compile can no longer exist, because invariant 4 says content is
+redacted before it becomes durable — unreachable today (startup validates and refuses), but one
+config-reload away from journaling text the org's rules were meant to remove. `c463d21` (R13)
+gave `RunDriver::cancel_run` a typed success — `CancelOutcome::NoRunningAdapter` is a clean
+outcome, not an error string indistinguishable from a failed kill — and a genuine kill failure
+after a policy cancellation now raises `flags.degradedControl` through the same guarded
+`set_run_flag` write quarantine uses, so `run/get` and the monitor see "the control plane could
+not act on this run" instead of only the log. `fad8dc5`/`ecdc580` closed the lease-layer trio:
+an unknown `leaseId` is the caller's `-32602` (R84), `active_for_run` propagates real database
+errors instead of reading them as "no lease" (R62 — no fault-injection seam exists, so the
+defense is the type change plus the review's trace of both callers, stated plainly here), and
+`LeaseError::Conflict`'s doc stopped promising a same-run guard `acquire` never had (R63 — doc
+fixed, not code: a run holding a read-only view alongside an isolated write worktree is
+legitimate by design). R35 reordered `artifact/fetch`: authorization now runs against metadata
+only, before content is read and hashed, closing the latency oracle between "exists but not
+yours" and "does not exist".
+
+`agent://ReviewBatch7` returned one Error and six Warnings — and the Error was the batch's own
+lesson applied to itself: the comment justifying R84's fix claimed the unknown-lease refusal
+"matches the ownership refusal", while ten lines below the ownership arm still surfaced
+`task <id> is not owned by <instance>` — a complete existence oracle by message text instead of
+error code, plus a free task-id leak. `5d7bec2` hoisted one refusal string over every
+caller-distinguishable failure of `require_lease_owner` and made both `workspace/get` tests
+assert the two messages byte-identical — the assertion is what makes the comment true. The
+warnings closed in the same commit: the actor-panic regression test (W1), `run/get` no longer
+re-collapsing the very error R62 just made propagate (W2 — the fix's own defect class, one
+door over), `AlreadyReleased` post-gate reclassified as the caller's error (W4), the `Conflict`
+doc naming its exact raising arm (W5), and a post-authorization digest mismatch reported as the
+internal fault it is rather than an ownership refusal that would hide on-disk tampering from
+the artifact's own owner (W6). W3 became **R93**: `run/cancel` still reports unqualified
+success after what is now an unambiguous kill failure — the same ten-line treatment, one door
+over, registered rather than folded in.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
