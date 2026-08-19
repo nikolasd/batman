@@ -3698,6 +3698,59 @@ owner case, and the first successful child-accept -- without changing production
 Part records; with it gone, **High: 0** for the first time since this doctrine started finding
 successors to close.
 
+## Part XXXI — The map corrects itself: six documentation lies and one new Medium
+
+The close-out pass opened with the batch that costs nothing to run and everything to skip: making
+the project's description of itself true before touching code. `63ef990` fixed the loudest lie
+first — `README.md:7` still claimed delivery "as an external npm package (`@nikolasd/batman`),"
+a sentence ADR 0022 had invalidated when the leaf packages died: nothing is published to npm at
+all; the extension git-clones through the OMP marketplace and `batcave` arrives as a SHA-256
+verified GitHub Release asset. `75bc183` committed the matching mechanical residue — `bun.lock`
+still carried all four `@nikolasd/batman-*` leaf workspace entries and an extension version of
+0.1.0 against a real 0.4.0. The rest of the batch was the same class at smaller scale: the
+`audit export` example in both quick-reference files pointed `--state-dir` at `~/.batman/state`,
+a directory containing no `runtime.db`, so the documented command silently produced an empty
+export (`3295453`, R58); every operator document invoked a bare `batcave` that nothing ever puts
+on `PATH` (`c628306`, R20); `CONTRIBUTING.md` demonstrated `cargo test --features` against a
+workspace with zero `[features]` tables (`1c5d0c7`, R31); the extension entry point's header
+enumerated six of eleven registered tools (`d81f3f5`, R32); and `batman_artifact`'s model-facing
+description claimed task scoping the handlers never implemented — the real filter is session
+ownership through `owned_run_ids_op`, with `taskId` only narrowing within it (`edf629d`, R43).
+
+R46 closed by deletion, and its recorded evidence deserves a correction here, because the review
+(`agent://ReviewBatch0`) caught the batch about to transcribe a stale claim into permanent
+history. REVIEW.md's R46 text said the fixture-mode baseline records `"ompRpc": []` — that was
+true when written on 2026-08-12 and false six days later, after R44's fix re-recorded the whole
+baseline under `BATMAN_DISABLE_VENDOR_CLI=1` with five ompRpc entries. The deletion of
+`docs/manual-testing.md`'s `ompRpc/approval` exception row (`878d99e`) is still correct on three
+independent grounds: `approval` is absent from `expectedFailures.ompRpc`, so the release gate at
+`cli.rs:796` would already fail on an approval regression the row claimed to expect; the
+capability is genuinely implemented (`extension_ui_request_to_pending_approval`, exercised by the
+real approval scenario in `omp_rpc/conformance.rs`); and the exception table describes the
+switch-unset run — a different scope from the baseline file's switch-set recording, so "the
+baseline says zero" was never the right comparison in the first place.
+
+The sweep also registered one genuinely new finding rather than fixing it out of order:
+**R87** (`998c14d`). `Shared::active_runs` is documented as "a placeholder at foundation scope
+(always `0`), but wired into the idle decision so a live run suppresses shutdown" — and nothing
+ever increments it, so `batcave status` reports zero active runs forever and the idle timer can
+self-terminate a detached daemon mid-run. It lands in Batch 8 with R82, whose shutdown
+arbitration is worthless against a counter that is always zero. The review's sweep added a
+pointer worth keeping: `PolicyEvaluator::active_runs` already exists as an honestly-maintained
+counter (incremented on authorization, decremented on release, defended by six tests), so the fix
+should wire the IPC layer to that rather than invent a third bookkeeping path.
+
+`agent://ReviewBatch0` returned one Error and three Warnings, all closed in place the same day
+(`084230e`): the Error is the R46 evidence correction recorded above; the Warnings were R20's own
+defect class one door over (`docs/getting-started.md` — the developer manual, fifteen bare
+`batcave` invocations and the only quick-reference file with no `OMP_BATMAN_BINARY` mention),
+`artifacts.ts`'s module header still asserting the exact claim R43 removed 26 lines above the
+corrected description string, and the entry-point header (fixed for R32) still omitting the three
+non-orchestration registrations. Baseline for the pass, re-measured before any change: 813 Rust
+tests passing across 57 suites with the one environment-specific Copilot failure (local CLI
+1.0.80 not yet in `COPILOT_KNOWN_CLI_VERSIONS` — it now fails rather than skips, same cause as
+recorded on 2026-08-19), and 139 TS tests passing.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
