@@ -4,7 +4,7 @@
 
 BATMAN is an [Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi) extension backed by a durable, repository-scoped local daemon. OMP stays the brain — task intake, scheduling, worker selection, approvals, merge decisions, synthesis. BATMAN is the hands: it supervises worker processes, speaks harness adapter protocols, persists a durable event journal, recovers after crashes, and feeds display backends.
 
-Everything is delivered as an external npm package (`@nikolasd/batman`) plus a Rust daemon binary (`batcave`) — no OMP fork, no private APIs.
+Everything is delivered through the OMP marketplace (extension + skills, git-cloned from this repository) plus a `batcave` daemon binary downloaded on demand as a verified GitHub Release asset — no OMP fork, no private APIs, no npm publication.
 
 ## Why BATMAN?
 
