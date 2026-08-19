@@ -20,7 +20,7 @@ still-open items below exist *because* of that fix — now lives in
 [Part XII](journal.md#part-xii--closing-the-last-critical-a-denylist-blind-to-its-own-vendor) (R49),
 [Part XIII](journal.md#part-xiii--two-leaks-one-lease-releasing-what-a-failed-start-acquired) (R41, R50),
 [Part XIV](journal.md#part-xiv--fixture-modes-broken-promise-a-kill-switch-only-one-caller-ever-asked-about) (R52),
-[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33), [Part XXII](journal.md#part-xxii--the-capture-pipeline-that-graded-its-own-homework) (R44), [Part XXIII](journal.md#part-xxiii--the-same-guarded-write-one-interleaving-further-the-decider-that-no-longer-owned-the-task) (R71), [Part XXIV](journal.md#part-xxiv--the-same-guarded-write-one-service-over-the-violation-that-no-longer-had-an-owner) (R72), [Part XXV](journal.md#part-xxv--not-a-conflict-either-side-detects-the-flag-write-that-clobbered-its-neighbor) (R73), [Part XXVI](journal.md#part-xxvi--a-guard-that-overreached-the-rebind-that-couldnt-be-resumed) (R74), [Part XXVII](journal.md#part-xxvii--whoever-committed-first-the-ownership-guard-that-arrived-in-someone-elses-commit) (R76), [Part XXVIII](journal.md#part-xxviii--two-clocks-one-flag-the-quarantine-race-that-closed-into-three-more-findings) (R75), [Part XXIX](journal.md#part-xxix--six-doors-one-owner-the-run-lifecycle-gets-the-same-lock-as-task-upsert) (R77), [Part XXX](journal.md#part-xxx--four-gates-one-helper-the-chain-that-stops-here) (R81), and [Part XXXI](journal.md#part-xxxi--the-map-corrects-itself-six-documentation-lies-and-one-new-medium) (R20, R31, R32, R43, R46, R58).
+[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33), [Part XXII](journal.md#part-xxii--the-capture-pipeline-that-graded-its-own-homework) (R44), [Part XXIII](journal.md#part-xxiii--the-same-guarded-write-one-interleaving-further-the-decider-that-no-longer-owned-the-task) (R71), [Part XXIV](journal.md#part-xxiv--the-same-guarded-write-one-service-over-the-violation-that-no-longer-had-an-owner) (R72), [Part XXV](journal.md#part-xxv--not-a-conflict-either-side-detects-the-flag-write-that-clobbered-its-neighbor) (R73), [Part XXVI](journal.md#part-xxvi--a-guard-that-overreached-the-rebind-that-couldnt-be-resumed) (R74), [Part XXVII](journal.md#part-xxvii--whoever-committed-first-the-ownership-guard-that-arrived-in-someone-elses-commit) (R76), [Part XXVIII](journal.md#part-xxviii--two-clocks-one-flag-the-quarantine-race-that-closed-into-three-more-findings) (R75), [Part XXIX](journal.md#part-xxix--six-doors-one-owner-the-run-lifecycle-gets-the-same-lock-as-task-upsert) (R77), [Part XXX](journal.md#part-xxx--four-gates-one-helper-the-chain-that-stops-here) (R81), [Part XXXI](journal.md#part-xxxi--the-map-corrects-itself-six-documentation-lies-and-one-new-medium) (R20, R31, R32, R43, R46, R58), [Part XXXII](journal.md#part-xxxii--strict-true-was-a-decoration-wiring-the-compiler-gate) (R30, R37, R45, R61), [Part XXXIII](journal.md#part-xxxiii--tool-contracts-that-lied-about-themselves) (R15, R16, R18, R29, R39, R40, R56), and [Part XXXIV](journal.md#part-xxxiv--the-generator-that-only-generates-what-its-told) (R17, R60, R64).
 This document only tracks what's still broken.
 
 **Baseline, last run 2026-08-19** (after the R44/R70-R77/R81 closure pass; results apply to this
@@ -67,18 +67,6 @@ A failed cancellation (including `RegistryError::NoRunningAdapter`, which is not
 
 `DomainAdapterEventSink::new` falls back to `Redactor::new()` (built-in patterns only) via `unwrap_or_else` if org regex compilation fails, rather than propagating. Confirmed unreachable today — `lifecycle.rs` validates `policy.org_security_patterns` once at startup and fails closed, and the one call site (`registry.rs:480`) only ever receives that pre-validated policy — but the trap remains in source and would silently activate the moment any future path (config reload, an alternate constructor) feeds it unvalidated patterns.
 
-#### R15. `batman_task.description` is silently discarded
-
-**Location:** `packages/extension/src/tools/tasks.ts:20-47`; `crates/runtime/src/service/orchestration.rs:300-330`
-
-The tool schema advertises `description`, but `task/upsert`'s RPC payload never includes it, and the Rust handler has no field to receive it — `runs.ts:15` documents the workaround (pass task text into `batman_run.prompt` instead).
-
-#### R16. Violation resolution schema accepts prose the runtime rejects
-
-**Location:** `packages/extension/src/tools/violations.ts:20`; `crates/runtime/src/policy/violation.rs:491-495`
-
-Tool schema is an unconstrained `pi.zod.string()`; runtime accepts only the literal strings `"release"`/`"cancel"`. Use a closed Zod enum.
-
 #### R34. `decided_by` persisted as a JSON-quoted string, not a bare token
 
 **Location:** `crates/runtime/src/domain/repository.rs:805`
@@ -97,23 +85,11 @@ Tool schema is an unconstrained `pi.zod.string()`; runtime accepts only the lite
 
 Every isolation test hand-seeds `run_id` on its input fixture rather than asserting the value the real `WorkspaceApplier`/`WorkspaceInspector` actually stamps on production. Reverting the real stamping code to `run_id: None` leaves the whole suite green — R10's fix would silently regress with no failing test.
 
-#### R37. `model.test.ts` fails to typecheck against the required `decidedBy` field (confirmed by a real compile)
-
-**Location:** `packages/extension/src/monitor/model.test.ts:77,240,247`
-
-A scoped `tsc --noEmit` run reproduces three real errors: `decidedBy` missing at lines 240/247 (required, not optional, on the generated `RuntimeEvent` union), and an unrelated `pendingApprovalCount` property that doesn't exist on `MonitorState` at line 77. All three ship uncaught because no compiler gate runs anywhere (R45).
-
 #### R42. `ProtocolHealthChanged` detail interpolates the normalized string, not the raw stop reason
 
 **Location:** `crates/runtime/src/adapter/copilot/normalize.rs:153-199`
 
 The unknown-reason arm does `format!("unknownStopReason: {other}")` where `other` is the already-lowercased, `_`/`-`-stripped match binding — not the original `stop_reason` parameter, which remains correctly used two lines later in a different message. Interpolate `stop_reason` instead.
-
-#### R45. No TypeScript compiler gate anywhere in CI or local scripts
-
-**Location:** root `package.json` scripts; `packages/extension/package.json` scripts
-
-Neither script list, nor any GitHub Actions workflow, invokes `tsc`. `tsconfig.json` declares `strict: true` and the generated protocol package is the authoritative wire contract, but nothing proves a single TypeScript consumer still compiles against it — the direct cause of R37, R61, and the `pendingApprovalCount` error above shipping uncaught. Note when fixing: the root `tsconfig.json`'s `"module": "Bundler"` is rejected by the currently-pinned `typescript` version for a standalone `tsc --noEmit` invocation — a scoped override config was needed to even run the check manually; resolve that as part of wiring the gate in.
 
 #### R55. Nearly every orchestration RPC result is never Ajv-validated, contradicting the codebase's documented validation invariant
 
@@ -124,16 +100,6 @@ Neither script list, nor any GitHub Actions workflow, invokes `tsc`. `tsconfig.j
 **Fix:** define real protocol types for each RPC method's result and generate/wire per-method validators, or at minimum validate structurally against a hand-written schema per method.
 
 **Priority:** Medium-High — systemic, currently masked only by daemon and extension coming from the same trusted build; a malformed result (missing `path`, truncated `contentBase64`) would reach tool logic completely unchecked.
-
-#### R56. `/batman-status` never triggers a widget render — the monitor stays invisible until a run event fires
-
-**Location:** `packages/extension/src/monitor/controller.ts:100-146`; `packages/extension/src/index.ts:65-84`
-
-**Evidence:** `/batman`'s command handler calls `connect(cmdCtx)` then unconditionally `refresh(cmdCtx)` (`controller.ts:143-144`). `session_start` (`controller.ts:130-132`) calls only `connect(extCtx)`, which registers `refresh` as the *future* event callback (`controller.ts:121`) but never calls it immediately — so if no runs are active, no events fire, and no render occurs. `/batman-status` (`index.ts:65-84`) is a fully separate `registerCommand` from `registerMonitor` (`index.ts:84`) with zero interaction with the monitor controller, `refresh`, or `setWidget` at all.
-
-**Fix:** call `refresh(extCtx)` once immediately after a successful `connect()` in the `session_start` handler, so the widget renders on startup (showing "No BATMAN runs yet." if empty) rather than only after the first event.
-
-**Priority:** Medium — a real, user-visible completeness gap: a healthy runtime after `/batman-status` gives no indication the monitor exists until something happens to trigger it.
 
 #### R57. Copilot's CLI-version verification gate is silently bypassed when the vendor omits `agentInfo.version`
 
@@ -152,14 +118,6 @@ Neither script list, nor any GitHub Actions workflow, invokes `tsc`. `tsconfig.j
 `let _ = reason;` inside the closure — the parameter is threaded from the RPC boundary through the service layer and then thrown away. No `approvals` column and no `RuntimeEvent::ApprovalEvent` field carries it. Permanent, silent audit-trail data loss on every approval decision that supplies a rationale.
 
 **Fix:** add a `reason` column to `approvals` and persist it, or drop the parameter from the RPC contract if it's genuinely never meant to be kept.
-
-#### R60. `Artifact`/`ArtifactKind` and related types have zero generated TypeScript bindings — not merely omitted from the barrel
-
-**Location:** `crates/xtask/src/main.rs:197-235` (`export_bindings`'s explicit type list); `crates/protocol/src/artifact.rs:11-20`
-
-Unlike `LeaseMode`/`IsolationKind`/`ApplyStrategy`/`WorkspaceEvent` (pulled in transitively because `RuntimeEvent`'s `WorkspaceEvent` variant references them), nothing in the explicitly-exported type set ever references `Artifact`/`ArtifactKind`, so `bun run generate` never produces bindings for them at all — confirmed clean (`generate --check` passes; this is the generator's intended steady state, not drift). `artifacts.ts`'s hand-rolled `pi.zod.enum([...])` for artifact kinds has no generated source of truth to diff against, at all — a future `ArtifactKind` variant added in Rust would silently compile, silently pass `generate --check`, and the TS tool schema would simply never learn about it. Narrower and worse than R17's barrel-omission pattern, since even the "regenerate and hand-diff" mitigation R17 implies doesn't apply here.
-
-**Fix:** add `Artifact`, `ArtifactKind`, and the artifact request/result types to `export_bindings`'s explicit list (or a type that references them) so they generate.
 
 #### R78. Quarantine RPC gates are advisory pre-checks outside the writes they guard
 
@@ -211,53 +169,11 @@ Unlike `LeaseMode`/`IsolationKind`/`ApplyStrategy`/`WorkspaceEvent` (pulled in t
 
 ### Low
 
-#### R17. Generated TypeScript exports and hand-written enums can drift
-
-**Location:** `packages/protocol-ts/src/index.ts` (barrel); `crates/xtask/src/main.rs:206-247`; `packages/extension/src/tools/workspaces.ts:18,20-21,23`
-
-The barrel exports 35 types; `generated/` currently has 48 files. Confirmed still missing from the barrel: `ApplyStrategy`, `DecidedBy`, `DisplayBackend`, `DisplayConfig`, `DisplayPlacement`, `DisplayStatus`, `IsolationKind`, `LeaseMode`, `PolicyViolationId`, `RunFlags`, `RuntimeEventKind`, `WorkspaceEvent`. `workspaces.ts` hand-writes `pi.zod.enum([...])` literal copies of `LeaseMode`/`IsolationKind`/`ApplyStrategy` with no import tying them together — confirmed still byte-for-byte matching their generated definitions today, but nothing would catch a future drift. (`ArtifactKind` is no longer part of this finding — see R60, a strictly worse variant of the same root problem for that specific type.)
-
-#### R18. Detached runtime spawn has no `error` listener
-
-**Location:** `packages/extension/src/runtime.ts:108-113`
-
-`spawn(binary.path, ..., { detached: true, stdio: "ignore" })` followed by `child.unref()` — no `.on("error", ...)` attached, so an async spawn failure (`EAGAIN`/`EMFILE`) is silently lost.
-
-#### R29. `workspaceMode` is an open string
-
-**Location:** `packages/extension/src/tools/runs.ts:18`; `crates/runtime/src/service/orchestration.rs:648-656`
-
-Runtime rejects an unknown value safely via `and_then(Value::as_str)`; a closed Zod enum on the tool side would avoid the round trip.
-
-#### R30. Local Bun scripts omit tests CI runs
-
-**Location:** root `package.json:10,13`; `.github/workflows/ci.yml:81-82`
-
-`test`/`check` both run `bun test packages`, scoped only to `packages/`. CI's `test` job runs bare `bun test` with no path restriction, which additionally picks up `tests/conformance/assert-report.test.ts` — a contributor running local scripts doesn't exercise what CI does.
-
 #### R38. `install_frame_tap` exported on the crate's public API surface
 
 **Location:** `crates/runtime/src/supervisor/mod.rs:14-16`
 
 `pub use output::{..., install_frame_tap};` re-exports a raw-content capture bypass beyond the crate boundary; a comment states production never installs one, but nothing prevents an external caller in the same binary from doing so. Narrow to `pub(crate)` unless a cross-crate consumer is intended.
-
-#### R39. `session_shutdown` doesn't clear `subscribedClient`, breaking future monitor reconnects
-
-**Location:** `packages/extension/src/monitor/controller.ts:148-150`
-
-The repair path pairs `controller.stop()` with `subscribedClient = undefined`; the `session_shutdown` handler calls only `controller.stop()`. After shutdown the client is unsubscribed but not marked closed, so a later `connect()` early-returns into a permanently dead monitor.
-
-#### R40. `reconnect.test.ts` passes a `revision` param the tool schema doesn't define
-
-**Location:** `packages/extension/src/reconnect.test.ts:129,137`; `packages/extension/src/tools/tasks.ts:23-27`
-
-`batman_task`'s Zod schema has only `op`, `description`, `taskId` — no `revision`. The test still proves what it's named for; the field is just dead weight that could mislead a future reader. Remove it from the test's tool-call arguments.
-
-#### R61. `shared.ts` references the unimported type `ExtensionContext`
-
-**Location:** `packages/extension/src/tools/shared.ts:8-14`
-
-`OrchestrationToolContext`'s `getClient(extCtx: ExtensionContext)` uses a type never imported in the file. A scoped `tsc --noEmit` confirms: `error TS2304: Cannot find name 'ExtensionContext'`. Ships silently today because `bun build` transpiles without type-checking and no `tsc` gate exists (R45) — every orchestration tool file implements against this interface, so it's load-bearing, not incidental.
 
 #### R62. `LeaseService::active_for_run` silently converts genuine database errors into "no active lease"
 
@@ -270,12 +186,6 @@ The repair path pairs `controller.stop()` with `subscribedClient = undefined`; t
 **Location:** `crates/runtime/src/workspace/lease.rs:14-17` vs. `:78-169` (`acquire`)
 
 The doc comment describes `Conflict` as firing when one run requests a second workspace; the actual code only keys off isolation/mode conflicts against any run's active shared-write lease, never `run_id`. A single run can acquire unbounded concurrent `GitWorktree`/`Copy` leases for itself with no guard. No live-exploit evidence given the current single caller (OMP) — primarily a doc/code mismatch.
-
-#### R64. `marketplace.json`'s version has no automated coherence check
-
-**Location:** `.claude-plugin/marketplace.json`; `crates/xtask/src/main.rs:448-484` (`check_version_coherence`)
-
-`CONTRIBUTING.md` requires `marketplace.json`'s two version fields to match `packages/extension/package.json` as a manual pre-tag checklist item, but `check_version_coherence` (run by `generate --check` and CI) only checks the two `Cargo.toml`s against `package.json` — `marketplace.json` is never mentioned in any tooling (confirmed via repo-wide grep). A maintainer can bump the extension version, pass all of CI, and tag/release with a stale `marketplace.json` undetected.
 
 #### R65. `RateLimiter`'s per-sender map grows unboundedly
 
@@ -374,6 +284,6 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
 - **High:** 0 — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII), R77 resolved 2026-08-19 (see docs/journal.md Part XXIX), R81 resolved 2026-08-19 (see docs/journal.md Part XXX)
-- **Medium:** 21 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R57, R59, R60 — new; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review; R87 — new, found during the 2026-08-19 close-out sweep; R58 resolved 2026-08-19, see docs/journal.md Part XXXI)
-- **Low:** 20 (R17, R18, R29, R30, R38, R39, R40 — carried forward; R61-R67 — new; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R20, R31, R32, R43, R46 resolved 2026-08-19, see docs/journal.md Part XXXI)
+- **Medium:** 15 (R12, R13, R14, R34, R35, R36, R42 — carried forward; R55-R57, R59 — new; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review; R87 — new, found during the 2026-08-19 close-out sweep; R15, R16, R37, R45, R56, R58, R60 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXIV)
+- **Low:** 12 (R38, R62, R63, R65, R66, R67 — carried forward/new 2026-08-12; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R17, R18, R20, R29, R30, R31, R32, R39, R40, R43, R46, R61, R64 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXIV)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
