@@ -166,3 +166,31 @@ async fn acknowledged_operation_is_excluded_from_incomplete_operations() {
 
     handle.shutdown().await.unwrap();
 }
+
+/// R66: shutting down after the actor thread died abnormally must still
+/// join (reap) the thread and report the actor unavailable -- the old
+/// `rx.await.map_err(...)?` short-circuited past the join, leaking the
+/// JoinHandle and losing the panic.
+#[tokio::test]
+async fn shutdown_after_an_actor_panic_still_joins_and_reports_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("runtime.db");
+    let handle = DatabaseHandle::start(db_path).await.unwrap();
+
+    // Kill the actor with a panicking domain op.
+    let result = handle
+        .run_domain_op(Box::new(|_conn| panic!("deliberate test panic")))
+        .await;
+    assert!(result.is_err(), "a panicking op must not report success");
+
+    // The old code short-circuited out of shutdown() here without joining.
+    // The new code must return the error AND have reaped the thread --
+    // observable as a clean, non-hanging return.
+    let shutdown = tokio::time::timeout(std::time::Duration::from_secs(5), handle.shutdown())
+        .await
+        .expect("shutdown must not hang while joining a dead actor");
+    assert!(
+        shutdown.is_err(),
+        "shutdown after an actor panic must report the actor unavailable"
+    );
+}

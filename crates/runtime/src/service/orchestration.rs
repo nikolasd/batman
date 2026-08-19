@@ -924,8 +924,14 @@ impl OrchestrationService {
             .await
             .map_err(ServiceError::from)?;
 
-        // Append workspace info if an active lease exists for this run
-        if let Ok(Some(info)) = self.lease_service.active_for_run(run_id) {
+        // Append workspace info if an active lease exists for this run.
+        // A lease-DB failure propagates (R62 review W2): collapsing it to
+        // "no workspace" would silently hide a real workspace from callers.
+        if let Some(info) = self
+            .lease_service
+            .active_for_run(run_id)
+            .map_err(|e| ServiceError::internal(e.to_string()))?
+        {
             result["workspacePath"] = json!(info.path);
             result["workspaceMode"] = json!(match info.isolation_kind {
                 IsolationKind::Shared => "shared",
@@ -1426,14 +1432,16 @@ impl OrchestrationService {
         principal: &ClientPrincipal,
         lease_id: String,
     ) -> Result<batman_protocol::WorkspaceInfo, ServiceError> {
+        // One refusal string for every caller-distinguishable failure of
+        // this gate: unknown leaseId, unowned lease, and a lease whose run
+        // row is missing all answer identically, so neither the error code
+        // (R84) nor the message text is an existence oracle -- and the
+        // ownership arm cannot leak the owning task/instance ids to a
+        // caller that was just told it does not own the lease.
+        const LEASE_REFUSAL: &str = "leaseId is not a lease on a run you own";
         let lease = self.lease_service.get(lease_id).map_err(|e| match e {
-            // An unknown leaseId is a caller error (-32602), exactly like
-            // an unowned one -- reporting it as -32603 was both a
-            // misclassification and a lease-existence oracle (R84). The
-            // message matches the ownership refusal so the two cases stay
-            // indistinguishable to a non-owner.
             crate::workspace::LeaseError::NotFound { .. } => {
-                ServiceError::invalid_params("leaseId is not a lease on a run you own")
+                ServiceError::invalid_params(LEASE_REFUSAL)
             }
             other => ServiceError::internal(other.to_string()),
         })?;
@@ -1443,7 +1451,13 @@ impl OrchestrationService {
                 principal.instance_id.clone(),
             ))
             .await
-            .map_err(ServiceError::from)?;
+            .map_err(|e| match e {
+                crate::domain::DomainError::NotOwner { .. }
+                | crate::domain::DomainError::NotFound { .. } => {
+                    ServiceError::invalid_params(LEASE_REFUSAL)
+                }
+                other => ServiceError::from(other),
+            })?;
         Ok(lease)
     }
 
@@ -1497,7 +1511,16 @@ impl OrchestrationService {
             .await?;
         self.lease_service
             .release(request.lease_id.clone())
-            .map_err(|e| ServiceError::internal(e.to_string()))?;
+            .map_err(|e| match e {
+                // Releasing an already-released lease is the caller's
+                // error (a racing double-release), not an internal fault --
+                // abandon_lease treats the same condition as benign
+                // (R84 review W4).
+                crate::workspace::LeaseError::AlreadyReleased { .. } => {
+                    ServiceError::invalid_params(e.to_string())
+                }
+                other => ServiceError::internal(other.to_string()),
+            })?;
 
         // Tear the materialized directory down. The lease is already
         // released, so a teardown failure is an operator problem (a leaked
@@ -1805,11 +1828,15 @@ impl OrchestrationService {
             return Err(refusal());
         }
 
+        // Post-authorization, the caller is a proven owner and the id is
+        // known, so a failure here (digest mismatch on read -- on-disk
+        // tampering) is an internal fault worth naming, never the
+        // ownership refusal (R35 review W6).
         let result = self
             .artifact_store
             .fetch_chunked(&artifact_id, offset, length)
             .await
-            .map_err(|_| refusal())?;
+            .map_err(|e| ServiceError::internal(format!("artifact content read failed: {e}")))?;
 
         // Canonical `ArtifactFetchResult` serialization; byte-identical to
         // the previous hand-rolled shape (R55).

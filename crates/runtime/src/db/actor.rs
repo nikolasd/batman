@@ -305,9 +305,14 @@ impl DatabaseHandle {
             .expect("db actor worker mutex is never poisoned")
             .take();
         if let Some(worker) = worker {
-            let joined = tokio::task::spawn_blocking(move || worker.join()).await;
-            if let Ok(Err(panic)) = joined {
-                tracing::error!(?panic, "database actor thread panicked before shutdown");
+            match tokio::task::spawn_blocking(move || worker.join()).await {
+                Ok(Err(panic)) => {
+                    tracing::error!(?panic, "database actor thread panicked before shutdown");
+                }
+                Err(join_err) => {
+                    tracing::warn!(error = %join_err, "joining the database actor thread was itself cancelled");
+                }
+                Ok(Ok(())) => {}
             }
         }
 

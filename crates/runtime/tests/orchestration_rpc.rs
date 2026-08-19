@@ -3960,6 +3960,13 @@ async fn workspace_get_against_another_instances_lease_is_refused() {
         get.get("result").is_none(),
         "a refused get must not disclose the lease's path/mode/state: {get:?}"
     );
+    // The refusal message must be byte-identical to the unknown-lease
+    // refusal (see the test below), so message text is not an existence
+    // oracle and never leaks the owning task/instance ids (R84 review E1).
+    assert_eq!(
+        get["error"]["message"], "leaseId is not a lease on a run you own",
+        "{get:?}"
+    );
 }
 
 /// R84: an unknown `leaseId` must be the same caller error (`-32602`) as
@@ -3984,6 +3991,13 @@ async fn workspace_get_with_an_unknown_lease_id_is_invalid_params_not_internal()
     assert_eq!(
         get["error"]["code"], -32602,
         "an unknown leaseId is a caller error, not an internal one: {get:?}"
+    );
+    // Byte-identical to the unowned-lease refusal above: neither the code
+    // nor the message distinguishes "exists but not yours" from "does not
+    // exist" (R84 review E1).
+    assert_eq!(
+        get["error"]["message"], "leaseId is not a lease on a run you own",
+        "{get:?}"
     );
 }
 
@@ -4225,7 +4239,7 @@ async fn workspace_apply_against_another_instances_lease_is_refused() {
     })
     .await;
     let mut owner = omp_client(&harness, "omp-1").await;
-    let (task_id, _worker_id, run_id) = submit_run_with_driver(&mut owner, "omp-1").await;
+    let (_task_id, _worker_id, run_id) = submit_run_with_driver(&mut owner, "omp-1").await;
 
     let acquire = owner
         .call(
@@ -4264,9 +4278,10 @@ async fn workspace_apply_against_another_instances_lease_is_refused() {
          resolution: {apply:?}"
     );
     assert_eq!(
-        apply["error"]["message"],
-        format!("task {task_id} is not owned by omp-2"),
-        "the refusal must classify ownership, not artifact-not-found: {apply:?}"
+        apply["error"]["message"], "leaseId is not a lease on a run you own",
+        "the refusal must be the uniform lease refusal (R84 review E1) -- an ownership \
+         refusal that named the owning task would leak it, and artifact-not-found would \
+         prove artifact resolution ran before the gate: {apply:?}"
     );
 
     let replay = owner

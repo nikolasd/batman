@@ -21,11 +21,14 @@ pub enum LeaseError {
     Db(String),
     #[error("lease not found: {lease_id}")]
     NotFound { lease_id: String },
-    /// The requested lease contends with an existing active lease for the
-    /// same materialization (isolation/mode conflict against any run's
-    /// active lease -- there is deliberately no same-run guard: a single
-    /// run may hold multiple concurrent leases, e.g. a read-only view
-    /// alongside an isolated write worktree, by design).
+    /// A read-only shared request was refused because a shared **write**
+    /// lease is blocking (any lease still `allocating`, `active`, or
+    /// `cleanupFailed` without a `released_at`). This is the only arm that
+    /// raises `Conflict`; a contending shared *write* request gets
+    /// [`LeaseError::IsolationRequired`] instead. There is deliberately no
+    /// same-run guard: a single run may hold multiple concurrent leases,
+    /// e.g. a read-only view alongside an isolated write worktree, by
+    /// design.
     #[error("conflict: another lease exists for this project")]
     Conflict,
     /// A *shared* write lease was refused because another shared lease is
