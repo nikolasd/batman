@@ -679,9 +679,7 @@ fn result_fixture_error_arm_reports_usage_and_an_explicit_terminal_failure() {
         other => panic!("expected ProtocolHealthChanged, got {other:?}"),
     }
     assert!(
-        !payloads
-            .iter()
-            .any(|p| matches!(p, MessageFinal { .. })),
+        !payloads.iter().any(|p| matches!(p, MessageFinal { .. })),
         "an error arm has no final message"
     );
 }
