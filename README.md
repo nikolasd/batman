@@ -53,7 +53,7 @@ Once installed, [`docs/plugin-usage.md`](docs/plugin-usage.md) is the user manua
 command the extension registers, and the recommended flow for running a task through it.
 
 **To uninstall:**
-```bash
+```
 /marketplace uninstall batman@batman
 ```
 
@@ -106,10 +106,11 @@ This project is licensed under the [MIT License](LICENSE). See the LICENSE file 
 
 ## Known Limitations
 
-This is a pre-1.0 project. What follows is what genuinely remains, verified against the current
-codebase — see [`REVIEW.md`](REVIEW.md) for the full prioritized list. Every adapter is installed and
-authenticated here, and live conformance is run against all four (reports under `release/`), so
-none of these is a "requires a vendor CLI" caveat.
+This is a pre-1.0 project. The review backlog is empty ([`REVIEW.md`](REVIEW.md) tracks one
+unreproduced test-flake watch item); what remains below are environment and protocol walls,
+verified against the current codebase. Every adapter is installed and authenticated here, and live
+conformance is run against all four (reports under `release/`), so none of these is a "requires a
+vendor CLI" caveat.
 
 - **ACP v1 has no durable session handle, so Copilot cannot resume across processes.** A session
   that completed a real turn answers `session/load` with `Resource not found`, which fails
@@ -117,10 +118,9 @@ none of these is a "requires a vendor CLI" caveat.
 - **ACP v1 exposes no subagent-observation variant**, so Copilot's vendor-side delegation cannot be
   normalized to `NestedWorkerObserved`. Pending a newer ACP version.
 - **Codex's turn-dependent scenarios are unprovable on an out-of-credit account.** `initialize` and
-  `thread/start` succeed; the turn is refused server-side with `usageLimitExceeded`. The adapter now
+  `thread/start` succeed; the turn is refused server-side with `usageLimitExceeded`. The adapter
   reports that reason verbatim instead of timing out. Refilling the workspace makes five scenarios
   provable with no code change.
-- **Operator docs are only partially split.** `docs/installation.md`, `configuration.md`,
-  `security.md`, and `recovery.md` do not exist as standalone files yet.
 
-These are tracked in [`REVIEW.md`](REVIEW.md) — the single source of truth for implementation gaps, verified against the current codebase and prioritized by severity.
+Consciously deferred features, each with a decision trigger, live in
+[`docs/future-features.md`](docs/future-features.md).
