@@ -388,7 +388,7 @@ async fn watch_settlement(
 fn build_placeholder_adapter() -> Arc<dyn Adapter> {
     Arc::new(super::OmpRpcAdapter::new(
         WorkerProfile {
-            id: super::ProfileId::new(),
+            id: crate::adapter::ProfileId::new(),
             adapter: "ompRpc".to_string(),
             model: String::new(),
             permission_envelope: serde_json::json!({}),
@@ -811,6 +811,119 @@ mod settlement_tests {
             running.lock().get(&run_id).is_some(),
             "adapter should still be in the map"
         );
+        db.shutdown().await.expect("shutdown database");
+    }
+
+    /// R67: the full settlement chain, not its halves. A synthetic
+    /// `ProcessExited` emitted through a real [`SettlementSink`] must fire
+    /// the receiver [`watch_settlement`] holds, and settling through a
+    /// real ceiling-1 [`crate::policy::PolicyEvaluator`] -- the production
+    /// `AdapterAuthorization` -- must free the booked slot so the next
+    /// `authorize()` clears the ceiling. Breaking either handoff
+    /// (`SettlementSink` not firing on exit, or `watch_settlement` not
+    /// releasing through the trait object) fails this test.
+    #[tokio::test]
+    async fn a_process_exited_through_the_settlement_sink_frees_the_policy_ceiling() {
+        use super::super::event_sink::{AdapterEvent, AdapterEventPayload};
+
+        struct StubSink;
+        impl AdapterEventSink for StubSink {
+            fn emit(&self, _event: AdapterEvent) -> crate::adapter::AdapterFuture<'_, u64> {
+                Box::pin(async { Ok(0) })
+            }
+        }
+
+        let policy = crate::config::RuntimePolicy {
+            merged: serde_json::json!({}),
+            fingerprint: "test".to_string(),
+            display_backend: "auto".to_string(),
+            retention: "30d".to_string(),
+            max_workers: 4,
+            concurrency_ceiling: 1,
+            allowed_models: vec![],
+            allowed_adapters: vec![],
+            cost_ceiling_per_run_usd: None,
+            org_security_patterns: vec![],
+            rollout_gates: crate::config::RolloutGates {
+                vendor_terms_accepted: true,
+                retention_configured: true,
+                model_allowlist_set: true,
+                concurrency_explicit: true,
+                native_discovery_reviewed: true,
+                ornith_identity_set: true,
+                nested_violation_action: crate::config::NestedViolationAction::QuarantineAndCancel,
+                allow_development_binary_override: false,
+            },
+            copy_max_bytes: crate::workspace::DEFAULT_COPY_MAX_BYTES,
+            copy_max_files: crate::workspace::DEFAULT_COPY_MAX_FILES,
+            required_capabilities: vec![],
+            cost_ceiling_daily_usd: None,
+        };
+        let evaluator = Arc::new(crate::policy::PolicyEvaluator::new(policy));
+        let authorization: Arc<dyn AdapterAuthorization> = Arc::clone(&evaluator) as _;
+
+        let profile = WorkerProfile {
+            id: crate::adapter::ProfileId::new(),
+            adapter: "ompRpc".to_string(),
+            model: String::new(),
+            permission_envelope: serde_json::Value::Object(serde_json::Map::new()),
+            startup_options: StartupOptions::OmpRpc(Default::default()),
+            environment_allowlist: Vec::new(),
+            source: "test".to_string(),
+        };
+        let capabilities = crate::adapter::omp_rpc::OmpRpcAdapter::declared_capabilities();
+
+        // Book the one slot, then prove the ceiling is exhausted.
+        authorization
+            .authorize(&profile, &capabilities, None)
+            .expect("the first slot is within the ceiling of 1");
+        let denied = authorization
+            .authorize(&profile, &capabilities, None)
+            .expect_err("the second authorize must exhaust the ceiling of 1");
+        assert!(
+            denied.contains("concurrency ceiling"),
+            "unexpected denial: {denied}"
+        );
+
+        // Settle via the REAL chain: ProcessExited -> SettlementSink ->
+        // watch_settlement -> AdapterAuthorization::release.
+        let (db, _dir) = harness().await;
+        let project_id = ProjectId::new();
+        let run_id = RunId::new();
+        let running = Arc::new(Mutex::new(HashMap::new()));
+        running.lock().insert(run_id, build_placeholder_adapter());
+
+        let (sink, settled) = SettlementSink::wrap(Arc::new(StubSink));
+        sink.emit(AdapterEvent {
+            run_id,
+            task_id: TaskId::new(),
+            worker_id: WorkerId::new(),
+            payload: AdapterEventPayload::ProcessExited {
+                exit_code: Some(0),
+                signal: None,
+            },
+        })
+        .await
+        .expect("emit exit");
+
+        watch_settlement(
+            settled,
+            Arc::clone(&running),
+            Arc::clone(&authorization),
+            None,
+            Arc::clone(&db),
+            project_id,
+            run_id,
+        )
+        .await;
+
+        assert!(
+            running.lock().get(&run_id).is_none(),
+            "the settled adapter must be evicted"
+        );
+        authorization
+            .authorize(&profile, &capabilities, None)
+            .expect("the settled slot must be free again (R67)");
         db.shutdown().await.expect("shutdown database");
     }
 }
