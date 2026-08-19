@@ -4399,6 +4399,62 @@ async fn workspace_release_against_another_instances_lease_is_refused() {
     );
 }
 
+/// RED (R89): the request side speaks the closed vocabulary
+/// shared|isolated|copy, but the response side collapses `copy` to
+/// `"isolated"` in both `run/submit`'s echo and `run/get`'s lease
+/// projection. A caller submitting `workspaceMode: "copy"` must read
+/// back `"copy"` from both.
+#[tokio::test]
+async fn a_copy_workspace_echoes_copy_not_isolated() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    init_real_git_repo(&harness.owned_dir);
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let task = client
+        .call(
+            2,
+            "task/upsert",
+            json!({ "ownerClientInstanceId": "omp-1", "revision": 1 }),
+        )
+        .await;
+    let task_id = task["result"]["taskId"].as_str().unwrap().to_string();
+    let worker = client
+        .call(
+            3,
+            "worker/create",
+            json!({ "fingerprint": "sha256:f", "adapter": "fake", "model": "m" }),
+        )
+        .await;
+    let worker_id = worker["result"]["workerId"].as_str().unwrap().to_string();
+
+    let submit = client
+        .call(
+            4,
+            "run/submit",
+            json!({ "taskId": task_id, "workerId": worker_id, "workspaceMode": "copy" }),
+        )
+        .await;
+    assert!(
+        submit.get("error").is_none(),
+        "copy submit against a real git repo must succeed: {submit:?}"
+    );
+    assert_eq!(
+        submit["result"]["workspaceMode"], "copy",
+        "run/submit must echo the mode the caller asked for, not collapse \
+         copy to isolated: {submit:?}"
+    );
+    let run_id = submit["result"]["runId"].as_str().unwrap().to_string();
+
+    let get = client.call(5, "run/get", json!({ "runId": run_id })).await;
+    assert_eq!(
+        get["result"]["workspaceMode"], "copy",
+        "run/get must project the lease's real isolation kind: {get:?}"
+    );
+}
+
 /// GREEN guard for R81: the owner using its own lease must still
 /// succeed once ownership arbitration is threaded into
 /// `workspace_get`, `workspace_inspect`, and `workspace_release` -- a
