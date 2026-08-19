@@ -1,6 +1,8 @@
 .superpowers/
 # OMP agent configuration (per-repo, machine-local) — never committed.
 .omp/
+# Personal open-items backlog — local working doc, never committed.
+REVIEW.md
 node_modules/
 target/
 dist/
