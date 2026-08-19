@@ -11007,7 +11007,7 @@ function registerViolationTool(pi, ctx) {
   pi.registerTool({
     name: BATMAN_VIOLATION_TOOL_NAME,
     label: "BATMAN Violation",
-    description: "Use to resolve a policy violation that quarantined a run -- for example a worker that spawned a nested child when policy forbids it. Pass the violationId from the violation event and a resolution describing the decision. The deciding identity is taken from your session automatically. Until a violation is decided, the quarantined run makes no further progress.",
+    description: `Use to resolve a policy violation that quarantined a run -- for example a worker that spawned a nested child when policy forbids it. Pass the violationId from the violation event and a resolution describing the decision. The deciding identity is taken from your session automatically. A "release" only lifts quarantine if this was the last unresolved violation on the run -- check the result's quarantineCleared field (true/false/absent) to tell whether it did; if false, a different violation is still open and must be found via the event stream or the /batman monitor. Until every violation on a run is decided, the run makes no further progress.`,
     parameters: params,
     approval: "exec",
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
