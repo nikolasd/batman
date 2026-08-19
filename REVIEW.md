@@ -53,6 +53,16 @@ operate the system correctly.
 
 **Priority:** High — found during R76's adversarial review, 2026-08-18.
 
+#### R81. Workspace lease operations other than acquire have no ownership arbitration
+
+**Location:** `crates/runtime/src/service/orchestration.rs::workspace_get` (~1403), `::workspace_release` (~1421), `::workspace_inspect` (~1476), `::workspace_apply` (~1533) — routed via `dispatch` (~346-349) with `params` only, no principal; contrast `workspace_acquire` (~1300), gated by `query::run_owner_op` as of R77's fix.
+
+**Evidence:** all four take `(&self, params: &Value)` and resolve their target purely from a caller-supplied `leaseId` via `lease_service.get` — no check ties the lease's `run_id` to the caller's `instance_id`. The `leaseId` needed is not secret: it's disclosed by the un-gated `run/get`'s `workspacePath` field and by `events/replay`'s `LeaseAcquired` payloads, both reachable without owning the run. A non-owning `ompExtension` client can therefore `workspace/release` another instance's lease (releasing it, invoking `materializer().teardown` on their worktree, journaling `LeaseReleased` — ~1443-1474), `workspace/inspect` it (materializing a patch artifact and returning `commitIds`, `dirtyFileCount`, `baseRevision`/`currentRevision` in the RPC result — ~1517-1530), or `workspace/apply` an artifact into it (~1543-1560). Found during R77's adversarial review (`ReviewR77`, N1), 2026-08-19: "the four ungated siblings... same defect class R77 closed, one method over."
+
+**Fix:** thread the principal into all four and arbitrate against the lease's run's task using the existing `query::run_owner_op`, placed immediately after `lease_service.get` and before any teardown/materialization/apply. Same documented, bounded cross-DB residual as `workspace/acquire` — a rebind racing the check is not observed — and the same doc treatment.
+
+**Priority:** High — found during R77's adversarial review, 2026-08-19.
+
 ### Medium
 
 #### R12. Claude error result subtypes are normalized as usage only
@@ -181,7 +191,7 @@ Unlike `LeaseMode`/`IsolationKind`/`ApplyStrategy`/`WorkspaceEvent` (pulled in t
 
 **Evidence:** both gates read the run's `policy_quarantined` flag in their own `run_domain_op` round trip, then the caller acts on that stale read in a later, separate round trip. A quarantine committing between the gate read and the gated operation admits one in-flight mutation past a run that is, by the time it lands, already quarantined. `message/send`'s check is foldable into `record_message`'s own transaction; the `workspace/apply`/`workspace/inspect` and `coordination/publishArtifact` paths gate a non-SQL operation (a working-tree mutation, or a broker-side artifact publish) with no write to fold the check into, so they need a different mechanism than the guarded-write doctrine used elsewhere. Carved out of R75's fix rather than fixed there — R75's own registered `ensure_not_quarantined` location is unchanged by that fix (see its journal Part). Found during R75's adversarial review, 2026-08-18.
 
-**Fix:** fold the `message/send` gate into `record_message`'s transaction; design a lease- or applier-level gate for the workspace and broker paths that closes the same window without a SQL write to guard.
+**Fix:** fold the `message/send` gate into `record_message`'s transaction, ordered so the fold runs *after* R77's owner re-read — a non-owner must not be able to distinguish a quarantined run from a non-quarantined one via the error code; design a lease- or applier-level gate for the workspace and broker paths that closes the same window without a SQL write to guard.
 
 **Priority:** Medium — bounded to one racing operation per gate; the quarantine still holds for everything after it lands.
 
@@ -343,7 +353,7 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 *(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
-- **High:** 1 (R77 — new, found during R76's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII)
+- **High:** 2 (R77 — new, found during R76's adversarial review; R81 — new, found during R77's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII)
 - **Medium:** 19 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new; R78, R79 — new, found during R75's adversarial review)
 - **Low:** 20 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new; R80 — new, found during R75's adversarial review)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
