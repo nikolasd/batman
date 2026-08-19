@@ -9773,6 +9773,9 @@ async function ensureRuntime(options) {
     stdio: "ignore",
     env: { ...process.env, BATMAN_BINARY_SOURCE: binary.source }
   });
+  child.on("error", (err) => {
+    console.error(`batman runtime: failed to spawn ${binary.path}: ${err instanceof Error ? err.message : String(err)}`);
+  });
   child.unref();
   const client = await connectWithBackoff(socketPath, options.repository, options.sessionId);
   return { client, childStarted: true };
@@ -10909,7 +10912,7 @@ function registerRunTool(pi, ctx) {
     prompt: pi.zod.string().optional().describe("Required for submit and retry: the instruction the worker executes. BATMAN stores no task text, so the task's description must be passed here."),
     taskId: pi.zod.string().optional().describe("Required for submit: the task to execute. Optional filter for list."),
     workerId: pi.zod.string().optional().describe("Required for submit and retry: the worker to execute with."),
-    workspaceMode: pi.zod.string().optional().describe("Optional workspace mode for submit and retry: 'shared' (the repository itself, the default), 'isolated' (a per-run git worktree), or 'copy' (a per-run copy of the repository). Any other value is rejected."),
+    workspaceMode: pi.zod.enum(["shared", "isolated", "copy"]).optional().describe("Optional workspace mode for submit and retry: 'shared' (the repository itself, the default), 'isolated' (a per-run git worktree), or 'copy' (a per-run copy of the repository)."),
     priority: pi.zod.number().int().optional().describe("Optional priority for submit."),
     runId: pi.zod.string().optional().describe("Required for get and cancel: the run id."),
     priorRunId: pi.zod.string().optional().describe("Required for retry: the terminal run id to retry.")
@@ -10955,13 +10958,12 @@ var INITIAL_TASK_REVISION = 0;
 function registerTaskTool(pi, ctx) {
   const params = pi.zod.object({
     op: pi.zod.enum(["upsert", "get"]).describe("Which task operation to perform."),
-    description: pi.zod.string().optional().describe("What the task should do (natural language description)."),
     taskId: pi.zod.string().optional().describe("Optional for upsert: reuse an existing task ID (for resume); auto-generated if omitted. Required for get.")
   });
   pi.registerTool({
     name: BATMAN_TASK_TOOL_NAME,
     label: "BATMAN Task",
-    description: "Use when you need to create a persistent, cross-session unit of work that will be executed by an external AI harness (Claude, Codex, Copilot, or OMP-RPC) -- not OMP's native in-process task subagent. Use op: 'upsert' to create or update a task, or op: 'get' to read one back. Persists across session disconnects (stored in SQLite journal), executes via external harness processes, and can be retried, cancelled, or reconciled after failure. Auto-generates a task ID and uses your OMP session as owner. After creating, select a worker with batman_worker { op: 'list' } and submit execution with batman_run { op: 'submit', taskId, workerId, prompt }.",
+    description: "Use when you need to create a persistent, cross-session unit of work that will be executed by an external AI harness (Claude, Codex, Copilot, or OMP-RPC) -- not OMP's native in-process task subagent. Use op: 'upsert' to create or update a task, or op: 'get' to read one back. BATMAN stores no task text: the task graph and its descriptions live in OMP, and the instruction a worker executes is passed to batman_run as prompt. Persists across session disconnects (stored in SQLite journal), executes via external harness processes, and can be retried, cancelled, or reconciled after failure. Auto-generates a task ID and uses your OMP session as owner. After creating, select a worker with batman_worker { op: 'list' } and submit execution with batman_run { op: 'submit', taskId, workerId, prompt }.",
     parameters: params,
     approval: (args) => typeof args === "object" && args !== null && ("op" in args) && args.op === "get" ? "read" : "write",
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
@@ -11002,7 +11004,7 @@ function registerViolationTool(pi, ctx) {
   const params = pi.zod.object({
     op: pi.zod.enum(["decide"]).describe("Which violation operation to perform."),
     violationId: pi.zod.string().describe("The recorded violation to decide."),
-    resolution: pi.zod.string().describe("How the violation is resolved, e.g. release the quarantined run or cancel it.")
+    resolution: pi.zod.enum(["release", "cancel"]).describe("How the violation is resolved: 'release' resumes the quarantined run (if this was its last unresolved violation), 'cancel' ends the run outright.")
   });
   pi.registerTool({
     name: BATMAN_VIOLATION_TOOL_NAME,
@@ -11467,6 +11469,9 @@ function registerMonitor(pi, ctx) {
   }
   pi.on("session_start", async (_event, extCtx) => {
     await connect(extCtx);
+    if (subscribedClient !== undefined) {
+      refresh(extCtx);
+    }
   });
   pi.registerCommand(MONITOR_COMMAND_NAME, {
     description: "Opens or refreshes the embedded BATMAN worker monitor. `/batman status <runId>` shows full details.",
@@ -11483,6 +11488,7 @@ function registerMonitor(pi, ctx) {
   });
   pi.on("session_shutdown", async () => {
     controller.stop();
+    subscribedClient = undefined;
   });
 }
 
