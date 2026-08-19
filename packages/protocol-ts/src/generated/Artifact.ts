@@ -5,7 +5,7 @@ import type { ArtifactKind } from "./ArtifactKind";
 /**
  * Metadata for a stored artifact.
  */
-export type Artifact = { artifactId: ArtifactId, kind: ArtifactKind, sha256: string, byteLength: bigint, mediaType: string, 
+export type Artifact = { artifactId: ArtifactId, kind: ArtifactKind, sha256: string, byteLength: number, mediaType: string, 
 /**
  * The relative storage path under the artifacts directory.
  */

@@ -56,7 +56,7 @@ export interface MonitorRow {
   readonly lastEventAt: string;
   /** The highest event sequence applied to this row; guards against a
    *  stale, out-of-order redelivery regressing the row. */
-  readonly lastAppliedSequence: bigint;
+  readonly lastAppliedSequence: number;
 }
 
 /** The monitor's full replayable state. */
@@ -64,11 +64,11 @@ export interface MonitorState {
   readonly rows: Readonly<Record<string, MonitorRow>>;
   /** The highest sequence number observed across every row, for resuming
    *  a subscription from the right point after a reconnect. */
-  readonly lastSequence: bigint;
+  readonly lastSequence: number;
 }
 
 /** The initial, empty monitor state. */
-export const EMPTY_MONITOR_STATE: MonitorState = { rows: {}, lastSequence: 0n };
+export const EMPTY_MONITOR_STATE: MonitorState = { rows: {}, lastSequence: 0 };
 
 /**
  * Applies one durable event envelope to `state`, returning the next state.
@@ -263,7 +263,7 @@ function eventPatch(envelope: EventEnvelope): EventPatch | undefined {
       };
     }
     case "adapterUsageEvent": {
-      // `inputTokens`/`outputTokens` are `bigint`: interpolated directly,
+      // `inputTokens`/`outputTokens` are plain JSON numbers (R90):
       // never handed to a numeric formatter, which would throw.
       const { inputTokens, outputTokens, costUsd } = event.payload;
       const cost = costUsd === null || costUsd === undefined ? "" : ` ($${costUsd})`;

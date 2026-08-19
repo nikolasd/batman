@@ -3,4 +3,4 @@
 /**
  * A JSON-RPC request identifier, either a number or a string.
  */
-export type RequestId = bigint | string;
+export type RequestId = number | string;

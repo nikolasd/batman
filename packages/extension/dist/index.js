@@ -11542,7 +11542,7 @@ var EMPTY_FLAGS = {
   workspaceDirty: false,
   childrenActive: false
 };
-var EMPTY_MONITOR_STATE = { rows: {}, lastSequence: 0n };
+var EMPTY_MONITOR_STATE = { rows: {}, lastSequence: 0 };
 function reduceEvent(state, envelope) {
   const lastSequence = envelope.sequence > state.lastSequence ? envelope.sequence : state.lastSequence;
   const patch = eventPatch(envelope);

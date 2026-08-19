@@ -418,7 +418,6 @@
             "runtime/status",
             "events/subscribe",
             "events/replay",
-            "runtime/shutdown",
             "task/upsert",
             "task/get",
             "worker/create",
@@ -456,6 +455,11 @@
             "artifact/fetch",
             "policy/violation/decide"
           ]
+        },
+        {
+          "description": "Gracefully stops the daemon. Arbitrated (R82): refused with\n`-32602` while any run is live or another connection is being\nserved, unless `params.force == true` (the deliberate, logged\noperator escape hatch). The out-of-band `batcave stop`/SIGTERM\npath is deliberately unarbitrated.",
+          "type": "string",
+          "const": "runtime/shutdown"
         },
         {
           "description": "Lists a project's recorded policy violations with their decision\nstate, so an operator can find which violation still holds a\nquarantine without diffing the raw event stream (R80).",

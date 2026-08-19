@@ -5,4 +5,4 @@ import type { ArtifactId } from "./ArtifactId";
  * Evidence captured by `inspect`: a binary-safe patch, commit list, and
  * dirty/untracked state summary.
  */
-export type InspectResult = { leaseId: string, patchArtifactId: ArtifactId, commitCount: bigint, commitIds: Array<string>, dirtyFileCount: bigint, untrackedFileCount: bigint, baseRevision: string, currentRevision: string | null, };
+export type InspectResult = { leaseId: string, patchArtifactId: ArtifactId, commitCount: number, commitIds: Array<string>, dirtyFileCount: number, untrackedFileCount: number, baseRevision: string, currentRevision: string | null, };

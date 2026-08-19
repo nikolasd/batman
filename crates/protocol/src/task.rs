@@ -21,5 +21,6 @@ pub struct TaskRef {
     /// The OMP client instance ID that owns this task.
     pub owner_client_instance_id: String,
     /// The monotonic OMP revision of the task.
+    #[ts(type = "number")]
     pub revision: u64,
 }

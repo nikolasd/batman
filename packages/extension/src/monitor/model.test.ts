@@ -8,7 +8,7 @@ let sequenceCounter = 0;
 function envelope(overrides: Partial<EventEnvelope> & { event: EventEnvelope["event"] }): EventEnvelope {
   sequenceCounter += 1;
   return {
-    sequence: overrides.sequence ?? BigInt(sequenceCounter),
+    sequence: overrides.sequence ?? sequenceCounter,
     timestamp: overrides.timestamp ?? "2026-01-01T00:00:00Z",
     projectId: "018f0000-0000-7000-8000-000000000000",
     taskId: overrides.taskId ?? null,
@@ -26,7 +26,7 @@ function runEvent(runId: string, taskId: string, workerId: string, state: string
     runId,
     taskId,
     workerId,
-    sequence: sequence !== undefined ? BigInt(sequence) : undefined,
+    sequence,
     event: {
       type: "runEvent",
       payload: { kind: "runWorking", runId, taskId, workerId, state },
@@ -36,7 +36,7 @@ function runEvent(runId: string, taskId: string, workerId: string, state: string
 
 test("starts from empty state", () => {
   expect(EMPTY_MONITOR_STATE.rows).toEqual({});
-  expect(EMPTY_MONITOR_STATE.lastSequence).toBe(0n);
+  expect(EMPTY_MONITOR_STATE.lastSequence).toBe(0);
 });
 
 test("a runEvent creates a row with task/worker/state", () => {
@@ -54,7 +54,7 @@ test("a runEvent creates a row with task/worker/state", () => {
 // child events, which fall back to `envelope.runId`), and none of them
 // touches the pending-approval count.
 
-test("an adapterUsageEvent reports token counts, and its bigints survive interpolation", () => {
+test("an adapterUsageEvent reports token counts, and they interpolate as plain numbers", () => {
   const state = reduceEvent(
     EMPTY_MONITOR_STATE,
     envelope({
@@ -64,8 +64,8 @@ test("an adapterUsageEvent reports token counts, and its bigints survive interpo
           runId: "run-1",
           taskId: "task-1",
           workerId: "worker-1",
-          inputTokens: 1234n,
-          outputTokens: 56n,
+          inputTokens: 1234,
+          outputTokens: 56,
           costUsd: null,
         },
       },
@@ -87,8 +87,8 @@ test("an adapterUsageEvent appends cost only when the vendor reported one", () =
           runId: "run-1",
           taskId: "task-1",
           workerId: "worker-1",
-          inputTokens: 10n,
-          outputTokens: 2n,
+          inputTokens: 10,
+          outputTokens: 2,
           costUsd: 0.0042,
         },
       },
@@ -178,11 +178,11 @@ test("a stale, out-of-order event for a run is a no-op and does not regress its 
 
 test("lastSequence advances even for events that produce no row patch", () => {
   const diagnostic = envelope({
-    sequence: 7n,
+    sequence: 7,
     event: { type: "diagnostic", payload: { level: "info", code: "x", message: "hello" } },
   });
   const state = reduceEvent(EMPTY_MONITOR_STATE, diagnostic);
-  expect(state.lastSequence).toBe(7n);
+  expect(state.lastSequence).toBe(7);
   expect(state.rows).toEqual({});
 });
 
@@ -288,7 +288,7 @@ test("a policyViolationRecorded event appears in openViolations and a decided on
           policyViolationRecorded: {
             violation_id: "violation-1",
             code: "nested_worker_denied",
-            observed_event_sequence: 5n,
+            observed_event_sequence: 5,
             policy_fingerprint: "sha256:abc",
             vendor_child_id: "child-1",
             vendor_parent_ref: "parent-1",

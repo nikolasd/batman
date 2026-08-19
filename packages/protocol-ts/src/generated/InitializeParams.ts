@@ -8,4 +8,4 @@ import type { VersionRange } from "./VersionRange";
 /**
  * Parameters for the `initialize` request.
  */
-export type InitializeParams = { client: ClientInfo, supported: VersionRange, repository: RepositoryIdentity, auth: ClientAuth, capabilities: ClientCapabilities, lastSequence: bigint | null, };
+export type InitializeParams = { client: ClientInfo, supported: VersionRange, repository: RepositoryIdentity, auth: ClientAuth, capabilities: ClientCapabilities, lastSequence: number | null, };

@@ -11,4 +11,4 @@ import type { WorkerId } from "./WorkerId";
  * The envelope wrapping every durable runtime event, carrying its sequence
  * number and routing metadata.
  */
-export type EventEnvelope = { sequence: bigint, timestamp: Timestamp, projectId: ProjectId, taskId: TaskId | null, workerId: WorkerId | null, runId: RunId | null, parentWorkerId: WorkerId | null, source: EventSource, event: RuntimeEvent, vendorEventRef: string | null, };
+export type EventEnvelope = { sequence: number, timestamp: Timestamp, projectId: ProjectId, taskId: TaskId | null, workerId: WorkerId | null, runId: RunId | null, parentWorkerId: WorkerId | null, source: EventSource, event: RuntimeEvent, vendorEventRef: string | null, };

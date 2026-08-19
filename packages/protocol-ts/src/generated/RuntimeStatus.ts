@@ -37,7 +37,7 @@ protocolHealthy: boolean,
 /**
  * Seconds the runtime has been up since it started serving.
  */
-uptimeSeconds: bigint, 
+uptimeSeconds: number, 
 /**
  * Where the running binary was loaded from.
  */

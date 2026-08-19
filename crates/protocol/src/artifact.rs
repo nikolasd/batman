@@ -27,6 +27,7 @@ pub struct Artifact {
     pub artifact_id: ArtifactId,
     pub kind: ArtifactKind,
     pub sha256: String,
+    #[ts(type = "number")]
     pub byte_length: u64,
     pub media_type: String,
     /// The relative storage path under the artifacts directory.
@@ -61,7 +62,9 @@ pub struct ArtifactListResult {
 #[ts(export)]
 pub struct ArtifactFetchRequest {
     pub artifact_id: ArtifactId,
+    #[ts(type = "number")]
     pub offset: u64,
+    #[ts(type = "number")]
     pub length: u64,
 }
 
@@ -74,6 +77,7 @@ pub struct ArtifactFetchResult {
     /// Base64-encoded chunk of artifact bytes; callers decode explicitly.
     /// Capped at 256 KiB per call.
     pub content_base64: String,
+    #[ts(type = "number | null")]
     pub next_offset: Option<u64>,
     pub complete: bool,
 }

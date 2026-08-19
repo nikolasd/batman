@@ -9,4 +9,4 @@ import type { RuntimeInfo } from "./RuntimeInfo";
 /**
  * Result of a successful `initialize` request.
  */
-export type InitializeResult = { runtime: RuntimeInfo, negotiated: ProtocolVersion, projectId: ProjectId, principal: ClientPrincipalSummary, allowedMethods: Array<BatmanMethod>, capabilities: RuntimeCapabilities, nextSequence: bigint, };
+export type InitializeResult = { runtime: RuntimeInfo, negotiated: ProtocolVersion, projectId: ProjectId, principal: ClientPrincipalSummary, allowedMethods: Array<BatmanMethod>, capabilities: RuntimeCapabilities, nextSequence: number, };

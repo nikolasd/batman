@@ -24,7 +24,7 @@ function row(overrides: Partial<MonitorRow>): MonitorRow {
     openViolations: {},
     firstSeenAt: "2026-01-01T00:00:00Z",
     lastEventAt: "2026-01-01T00:00:00Z",
-    lastAppliedSequence: 1n,
+    lastAppliedSequence: 1,
     ...overrides,
   };
 }
@@ -34,7 +34,7 @@ function stateOf(rows: readonly MonitorRow[]): MonitorState {
   for (const r of rows) {
     byId[r.runId] = r;
   }
-  return { rows: byId, lastSequence: 1n };
+  return { rows: byId, lastSequence: 1 };
 }
 
 function fakeTheme(): Theme {
@@ -156,13 +156,13 @@ test("renderRowDetails names the decision surface for a run with children active
 });
 
 test("renderWidgetBox embeds the accent-colored header in the top border", () => {
-  const lines = renderWidgetBox({ rows: {}, lastSequence: 0n }, fakeTheme());
+  const lines = renderWidgetBox({ rows: {}, lastSequence: 0 }, fakeTheme());
   expect(lines[0]).toContain("╭─");
   expect(lines[0]).toContain(`[accent]${renderWidgetHeader()}[/accent]`);
 });
 
 test("renderWidgetBox wraps the empty-state line in the border, uncolored", () => {
-  const lines = renderWidgetBox({ rows: {}, lastSequence: 0n }, fakeTheme());
+  const lines = renderWidgetBox({ rows: {}, lastSequence: 0 }, fakeTheme());
   expect(lines).toHaveLength(3); // top border, empty-state line, bottom border
   expect(lines[1]).toContain("[text]No BATMAN runs yet.[/text]");
   expect(lines[1].startsWith("[border]│[/border]")).toBe(true);
@@ -250,7 +250,7 @@ test("renderWidgetBox stays equal-width by code points for the empty state, wher
     fg: (_color: ThemeColor, text: string) => text,
   } as unknown as Theme;
 
-  const lines = renderWidgetBox({ rows: {}, lastSequence: 0n }, plainTheme);
+  const lines = renderWidgetBox({ rows: {}, lastSequence: 0 }, plainTheme);
 
   const codePointLength = (text: string): number => Array.from(text).length;
   const widths = new Set(lines.map((line) => codePointLength(line)));

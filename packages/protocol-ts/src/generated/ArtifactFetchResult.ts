@@ -9,4 +9,4 @@ export type ArtifactFetchResult = { artifact: Artifact,
  * Base64-encoded chunk of artifact bytes; callers decode explicitly.
  * Capped at 256 KiB per call.
  */
-contentBase64: string, nextOffset: bigint | null, complete: boolean, };
+contentBase64: string, nextOffset: number | null, complete: boolean, };

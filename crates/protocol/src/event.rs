@@ -325,6 +325,7 @@ pub enum RuntimeEventKind {
         code: String,
         /// The sequence of the event that triggered this violation, so an
         /// operator can correlate the violation to its cause.
+        #[ts(type = "number")]
         observed_event_sequence: u64,
         /// The SHA-256 fingerprint of the `RuntimePolicy` this run was
         /// authorized under, so the violation is auditable against a
@@ -370,6 +371,7 @@ pub enum RuntimeEvent {
         kind: RuntimeEventKind,
         task_id: TaskId,
         owner_client_instance_id: String,
+        #[ts(type = "number")]
         revision: u64,
     },
     /// A worker was created via `worker/create`.
@@ -428,6 +430,7 @@ pub enum RuntimeEvent {
         task_id: TaskId,
         old_owner_client_instance_id: String,
         new_owner_client_instance_id: String,
+        #[ts(type = "number")]
         revision: u64,
     },
     /// A supervised adapter process started or exited.
@@ -479,7 +482,9 @@ pub enum RuntimeEvent {
         run_id: RunId,
         task_id: TaskId,
         worker_id: WorkerId,
+        #[ts(type = "number")]
         input_tokens: u64,
+        #[ts(type = "number")]
         output_tokens: u64,
         cost_usd: Option<f64>,
     },
@@ -556,6 +561,7 @@ pub enum RuntimeEvent {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export)]
 pub struct EventEnvelope {
+    #[ts(type = "number")]
     pub sequence: u64,
     pub timestamp: Timestamp,
     pub project_id: ProjectId,

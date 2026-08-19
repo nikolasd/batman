@@ -7,4 +7,4 @@ import type { ArtifactId } from "./ArtifactId";
  * Returns a bounded byte/text chunk plus the next offset; callers
  * iterate explicitly for larger artifacts. Capped at 256 KiB per call.
  */
-export type ArtifactFetchRequest = { artifactId: ArtifactId, offset: bigint, length: bigint, };
+export type ArtifactFetchRequest = { artifactId: ArtifactId, offset: number, length: number, };

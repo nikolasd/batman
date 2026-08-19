@@ -84,6 +84,7 @@ pub struct InitializeParams {
     pub repository: RepositoryIdentity,
     pub auth: ClientAuth,
     pub capabilities: ClientCapabilities,
+    #[ts(type = "number | null")]
     pub last_sequence: Option<u64>,
 }
 
@@ -165,6 +166,7 @@ pub struct RuntimeStatus {
     /// range (a self-check that always holds for a live, negotiated session).
     pub protocol_healthy: bool,
     /// Seconds the runtime has been up since it started serving.
+    #[ts(type = "number")]
     pub uptime_seconds: u64,
     /// Where the running binary was loaded from.
     pub binary_source: BinarySource,
@@ -181,6 +183,7 @@ pub struct InitializeResult {
     pub principal: ClientPrincipalSummary,
     pub allowed_methods: Vec<BatmanMethod>,
     pub capabilities: RuntimeCapabilities,
+    #[ts(type = "number")]
     pub next_sequence: u64,
 }
 
@@ -218,7 +221,7 @@ pub const JSONRPC_VERSION: &str = "2.0";
 #[serde(untagged)]
 #[ts(export)]
 pub enum RequestId {
-    Number(i64),
+    Number(#[ts(type = "number")] i64),
     String(String),
 }
 

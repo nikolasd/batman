@@ -68,6 +68,7 @@ pub struct WorkspaceLease {
     pub acquired_at: String,
     pub released_at: Option<String>,
     /// Monotonically increasing sequence number assigned at acquisition.
+    #[ts(type = "number")]
     pub acquisition_sequence: u64,
 }
 
@@ -111,9 +112,12 @@ pub struct InspectRequest {
 pub struct InspectResult {
     pub lease_id: String,
     pub patch_artifact_id: ArtifactId,
+    #[ts(type = "number")]
     pub commit_count: u64,
     pub commit_ids: Vec<String>,
+    #[ts(type = "number")]
     pub dirty_file_count: u64,
+    #[ts(type = "number")]
     pub untracked_file_count: u64,
     pub base_revision: String,
     pub current_revision: Option<String>,
@@ -199,14 +203,19 @@ pub enum WorkspaceEvent {
     },
     WorkspaceDirty {
         lease_id: String,
+        #[ts(type = "number")]
         dirty_file_count: u64,
+        #[ts(type = "number")]
         untracked_file_count: u64,
     },
     WorkspaceInspected {
         lease_id: String,
         patch_artifact_id: ArtifactId,
+        #[ts(type = "number")]
         commit_count: u64,
+        #[ts(type = "number")]
         dirty_file_count: u64,
+        #[ts(type = "number")]
         untracked_file_count: u64,
     },
     ApplyStarted {

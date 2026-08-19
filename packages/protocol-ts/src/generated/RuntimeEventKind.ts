@@ -18,7 +18,7 @@ code: string,
  * The sequence of the event that triggered this violation, so an
  * operator can correlate the violation to its cause.
  */
-observed_event_sequence: bigint, 
+observed_event_sequence: number, 
 /**
  * The SHA-256 fingerprint of the `RuntimePolicy` this run was
  * authorized under, so the violation is auditable against a
