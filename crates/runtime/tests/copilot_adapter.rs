@@ -191,6 +191,81 @@ fn a_missing_agent_version_is_unknown_not_implicitly_verified() {
     assert!(!copilot_negotiated_version_verified(Some("0.0.1")));
 }
 
+#[tokio::test]
+async fn ensure_client_refuses_end_to_end_when_the_agent_omits_its_version() {
+    // R57 review W-1: the predicate test above proves the decision function;
+    // this drives `ensure_client` itself (via `resume`) against a fake ACP
+    // agent whose initialize response omits `agentInfo.version`, so
+    // reverting the wiring in `ensure_client` fails here even if the
+    // predicate stays correct. No vendor CLI, no model call.
+    use std::os::unix::fs::PermissionsExt;
+
+    use batman_runtime::adapter::{AdapterEvent, AdapterEventSink, AdapterFuture};
+
+    struct NullSink;
+    impl AdapterEventSink for NullSink {
+        fn emit(&self, _event: AdapterEvent) -> AdapterFuture<'_, u64> {
+            Box::pin(async { Ok(0) })
+        }
+    }
+
+    // Build the fake agent's initialize response from the real fixture,
+    // with `agentInfo.version` stripped.
+    let mut fixture = load_json_fixture("initialize-v1.json");
+    fixture["result"]["agentInfo"]
+        .as_object_mut()
+        .expect("fixture has agentInfo")
+        .remove("version");
+    let response = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": fixture["result"],
+    });
+    let response_line = serde_json::to_string(&response).unwrap();
+
+    // A fake ACP agent: reads the initialize request, answers it with the
+    // version-less response, then waits to be shut down.
+    let dir = tempfile::Builder::new()
+        .prefix("bat-cop-fake-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let program = dir.path().join("fake-copilot");
+    std::fs::write(
+        &program,
+        format!("#!/bin/sh\nread -r req\ncat <<'ACPEOF'\n{response_line}\nACPEOF\nsleep 5\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let adapter = CopilotAdapter::new(
+        program,
+        std::env::temp_dir(),
+        batman_runtime::adapter::CopilotStartupOptions::default(),
+        Vec::new(),
+        batman_protocol::RunId::new(),
+        batman_protocol::TaskId::new(),
+        batman_protocol::WorkerId::new(),
+        None,
+    );
+
+    let error = timeout(
+        Duration::from_secs(10),
+        adapter.resume(
+            batman_runtime::adapter::VendorSessionRef("session-1".to_string()),
+            std::sync::Arc::new(NullSink),
+        ),
+    )
+    .await
+    .expect("resume did not hang")
+    .expect_err("a version-less agent must be refused before any session call");
+    assert_eq!(error.error_code(), AdapterErrorCode::IncompatibleVersion);
+    assert!(
+        error.detail().contains("agentInfo.version"),
+        "the refusal must name the missing-version case: {}",
+        error.detail()
+    );
+}
+
 #[test]
 fn a_response_missing_protocol_version_is_a_protocol_error() {
     let error = parse_initialize_response(&serde_json::json!({}))
