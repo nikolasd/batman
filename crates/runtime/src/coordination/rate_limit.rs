@@ -53,6 +53,16 @@ impl RateLimiter {
         timestamps.push(now);
         Ok(())
     }
+
+    /// The number of senders currently holding a map entry. Test-only:
+    /// exists so the retirement sweep is observable.
+    #[cfg(test)]
+    fn tracked_senders(&self) -> usize {
+        self.sent_at
+            .lock()
+            .expect("rate limiter mutex is never poisoned")
+            .len()
+    }
 }
 
 impl Default for RateLimiter {
@@ -88,6 +98,32 @@ mod tests {
 
         let later = t0 + Duration::from_secs(61);
         assert!(limiter.check(sender, later).is_ok());
+    }
+
+    /// R65: a sender that stops sending must not hold a map entry
+    /// forever. One runtime process serves every run of a repository for
+    /// as long as it stays resident, so per-retired-worker `Vec<Instant>`
+    /// entries are an unbounded leak. Any later check by any other sender
+    /// must sweep entries whose whole window has drained.
+    #[test]
+    fn a_retired_sender_is_forgotten_once_its_window_drains() {
+        let limiter = RateLimiter::new(3);
+        let retired = WorkerId::new();
+        let live = WorkerId::new();
+        let t0 = Instant::now();
+
+        assert!(limiter.check(retired, t0).is_ok());
+        assert_eq!(limiter.tracked_senders(), 1);
+
+        // The retired sender never sends again; a different sender's
+        // check after the window must evict the stale entry.
+        let later = t0 + Duration::from_secs(61);
+        assert!(limiter.check(live, later).is_ok());
+        assert_eq!(
+            limiter.tracked_senders(),
+            1,
+            "the retired sender's drained entry must be swept, not leaked"
+        );
     }
 
     #[test]
