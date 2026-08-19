@@ -173,6 +173,23 @@ test("batman_violation rejects a prose resolution the runtime would refuse (R16)
   expect(schema.safeParse({ op: "decide", violationId: "v-1", resolution: "please release the quarantined run" }).success).toBe(false);
 });
 
+test("batman_message rejects a kind outside the nine coordination kinds (R88)", () => {
+  const { api, tools } = createFakeApi();
+  registerOrchestrationTools(api, {
+    getClient: () => {
+      throw new Error("not exercised in this test");
+    },
+  });
+  const message = tools.get("batman_message");
+  const schema = message?.parameters as zod.ZodObject;
+  expect(schema.safeParse({ op: "send", runId: "r-1", kind: "steer" }).success).toBe(true);
+  expect(schema.safeParse({ op: "send", runId: "r-1", kind: "approvalDecision" }).success).toBe(true);
+  // The runtime rejects anything outside the closed MessageKind enum;
+  // prose must fail at the schema so the model gets a usable error
+  // before any RPC is issued.
+  expect(schema.safeParse({ op: "send", runId: "r-1", kind: "please steer the worker" }).success).toBe(false);
+});
+
 test("batman_run rejects a workspaceMode outside shared/isolated/copy (R29)", () => {
   const { api, tools } = createFakeApi();
   registerOrchestrationTools(api, {

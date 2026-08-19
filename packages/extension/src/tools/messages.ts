@@ -11,7 +11,18 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
 import type { OrchestrationToolContext } from "./shared";
+import type { MessageKind } from "@nikolasd/batman-protocol";
 import { callOrchestration } from "./shared";
+
+// The nine coordination kinds, tied to the generated MessageKind union so
+// either direction of drift breaks `bun run typecheck` instead of burning
+// a model round trip on a runtime refusal (R88).
+const MESSAGE_KINDS = ["assign", "steer", "followUp", "question", "answer", "peerMessage", "approvalDecision", "cancel", "shutdown"] as const satisfies readonly MessageKind[];
+type _MessageKindExhaustive = Exclude<MessageKind, (typeof MESSAGE_KINDS)[number]> extends never ? true : never;
+// The assignment is what makes the check bite: when a variant is added in
+// Rust, the alias resolves to `never` and `true` no longer assigns.
+const _messageKindExhaustive: _MessageKindExhaustive = true;
+void _messageKindExhaustive;
 
 export const BATMAN_MESSAGE_TOOL_NAME = "batman_message";
 
@@ -21,7 +32,7 @@ export function registerMessageTool(pi: ExtensionAPI, ctx: OrchestrationToolCont
     runId: pi.zod.string().describe("The run this message belongs to (required for both send and list)."),
     senderWorkerId: pi.zod.string().optional().describe("Required for send: the sending worker id."),
     taskId: pi.zod.string().optional().describe("Required for send: the task this message relates to."),
-    kind: pi.zod.string().optional().describe("Required for send: one of assign, steer, followUp, question, answer, peerMessage, approvalDecision, cancel, shutdown."),
+    kind: pi.zod.enum(MESSAGE_KINDS).optional().describe("Required for send: the coordination message kind."),
     payload: pi.zod.string().optional().describe("Required for send: the message payload."),
     recipientWorkerId: pi.zod.string().optional().describe("Optional recipient worker id for send."),
     replyTo: pi.zod.string().optional().describe("Optional id of a prior message this replies to."),

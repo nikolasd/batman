@@ -47,6 +47,7 @@ export type * from "./generated/JsonRpcResponse";
 export type * from "./generated/LeaseMode";
 export type * from "./generated/LeaseRequest";
 export type * from "./generated/MessageId";
+export type * from "./generated/MessageKind";
 export type * from "./generated/OperationId";
 export type * from "./generated/PolicyViolationId";
 export type * from "./generated/PolicyViolationListResult";

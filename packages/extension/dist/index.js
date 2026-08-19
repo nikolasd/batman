@@ -7292,7 +7292,6 @@ Serialized as the literal method name string used on the wire.`,
             "runtime/status",
             "events/subscribe",
             "events/replay",
-            "runtime/shutdown",
             "task/upsert",
             "task/get",
             "worker/create",
@@ -7330,6 +7329,11 @@ Serialized as the literal method name string used on the wire.`,
             "artifact/fetch",
             "policy/violation/decide"
           ]
+        },
+        {
+          description: "Gracefully stops the daemon. Arbitrated (R82): refused with\n`-32602` while any run is live or another connection is being\nserved, unless `params.force == true` (the deliberate, logged\noperator escape hatch). The out-of-band `batcave stop`/SIGTERM\npath is deliberately unarbitrated.",
+          type: "string",
+          const: "runtime/shutdown"
         },
         {
           description: `Lists a project's recorded policy violations with their decision
@@ -11209,6 +11213,7 @@ function registerChildTool(pi, ctx) {
 }
 
 // src/tools/messages.ts
+var MESSAGE_KINDS = ["assign", "steer", "followUp", "question", "answer", "peerMessage", "approvalDecision", "cancel", "shutdown"];
 var BATMAN_MESSAGE_TOOL_NAME = "batman_message";
 function registerMessageTool(pi, ctx) {
   const params = pi.zod.object({
@@ -11216,7 +11221,7 @@ function registerMessageTool(pi, ctx) {
     runId: pi.zod.string().describe("The run this message belongs to (required for both send and list)."),
     senderWorkerId: pi.zod.string().optional().describe("Required for send: the sending worker id."),
     taskId: pi.zod.string().optional().describe("Required for send: the task this message relates to."),
-    kind: pi.zod.string().optional().describe("Required for send: one of assign, steer, followUp, question, answer, peerMessage, approvalDecision, cancel, shutdown."),
+    kind: pi.zod.enum(MESSAGE_KINDS).optional().describe("Required for send: the coordination message kind."),
     payload: pi.zod.string().optional().describe("Required for send: the message payload."),
     recipientWorkerId: pi.zod.string().optional().describe("Optional recipient worker id for send."),
     replyTo: pi.zod.string().optional().describe("Optional id of a prior message this replies to.")
