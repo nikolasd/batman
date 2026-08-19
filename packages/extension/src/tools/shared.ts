@@ -5,7 +5,7 @@
 // approve, merge, or infer lifecycle state here -- that authority stays with
 // OMP and the runtime.
 
-import type { AgentToolResult } from "@oh-my-pi/pi-coding-agent";
+import type { AgentToolResult, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import { BatmanClient, JsonRpcRemoteError } from "../client";
 
