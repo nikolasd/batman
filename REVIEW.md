@@ -275,6 +275,14 @@ ts-rs maps Rust `u64` to TypeScript `bigint` while schemars types the same field
 
 **Priority:** Low — found during R55's adversarial review (2026-08-19); static-type trap only, no runtime defect.
 
+#### R91. `ProtocolHealthChanged`'s detail never reaches an operator surface
+
+**Location:** `crates/runtime/src/lifecycle.rs:~725` (status-row mapping collapses the event to the constant string "protocol health changed"); `packages/extension/src/monitor/model.ts` (no `adapterProtocolHealthEvent` handler at all)
+
+R12/R42/R57 all invest in a precise `detail` (the vendor's error subtype, the raw stop reason), and the event reaches the journal and `events/subscribe` — but the `batcave status` row mapping discards the detail for a constant label, and the `/batman` monitor model has no handler for the event kind, so an operator sees neither which run's protocol went unhealthy nor why. Bind and render the detail in the status-row mapping, and teach the monitor model the event. Related open question (no repo evidence either way): whether a Claude `is_error: true` run terminalizes as `succeeded` or `failed` from OMP's perspective — the CLI's exit code for error result arms is not pinned by any test or fixture.
+
+**Priority:** Low — found during R12's adversarial review (2026-08-19); observability residue of a correctly-journaled event.
+
 ## Known Environment Limitations
 
 **Not a bug — requires a gated live run to confirm the positive case. Reconfirmed 2026-08-12; code-side citations still match current source.**
@@ -293,5 +301,5 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
 - **High:** 0 — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII), R77 resolved 2026-08-19 (see docs/journal.md Part XXIX), R81 resolved 2026-08-19 (see docs/journal.md Part XXX)
 - **Medium:** 15 (R12, R13, R14, R34, R35, R36, R42 — carried forward; R55-R57, R59 — new; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review; R87 — new, found during the 2026-08-19 close-out sweep; R15, R16, R37, R45, R56, R58, R60 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXIV)
-- **Low:** 13 (R38, R62, R63, R65, R66, R67 — carried forward/new 2026-08-12; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90 — new, found during R55's adversarial review; R17, R18, R20, R29, R30, R31, R32, R39, R40, R43, R46, R61, R64 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXIV)
+- **Low:** 14 (R38, R62, R63, R65, R66, R67 — carried forward/new 2026-08-12; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90, R91 — new, found during R55/R12's adversarial reviews; R17, R18, R20, R29, R30, R31, R32, R39, R40, R43, R46, R61, R64 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXIV)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
