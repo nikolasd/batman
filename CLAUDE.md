@@ -61,7 +61,7 @@ OMP_BATMAN_BINARY="$PWD/target/debug/batcave" \
 batcave serve --repo /path/to/repo [--org-config ... --repo-config ... --user-config ...]
 batcave status --repo /path/to/repo
 batcave stop --repo /path/to/repo
-batcave audit export --repo /path/to/repo --state-dir ~/.batman/state --output /tmp/audit.jsonl
+batcave audit export --repo "$PWD" --state-dir "$HOME/.omp/batman/repos/<repository-id>" --output /tmp/audit.jsonl
 ```
 
 `BATMAN_DISABLE_VENDOR_CLI=1` skips live vendor CLI calls — set it for any local test run to avoid
