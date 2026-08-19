@@ -300,9 +300,16 @@ impl OrchestrationService {
     }
 
     /// Dispatches one already role-authorized orchestration method.
-    /// `principal` is consulted for ownership checks (`reconcile/omp`,
-    /// `task/upsert`, future approval ownership); role admission itself
-    /// already happened in the connection layer's method table.
+    /// `principal` is consulted for ownership checks: `reconcile/omp`,
+    /// `task/upsert`, `approval/decide`, and every run-lifecycle mutation
+    /// that guards a runs-DB write against another instance's task
+    /// (`run/submit`, `run/retry`, `run/cancel`, `message/send`,
+    /// `coordination/child/decide`, `workspace/acquire` -- R77). Role
+    /// admission itself already happened in the connection layer's method
+    /// table; all six of those methods are `ompExtension`-only
+    /// (`crate::ipc::ClientPrincipal::allowed_methods`), so `principal` is
+    /// always the connected extension instance to arbitrate against, never
+    /// a scoped `workerMcp` caller.
     pub async fn dispatch(
         &self,
         method: BatmanMethod,
@@ -315,12 +322,12 @@ impl OrchestrationService {
             BatmanMethod::WorkerCreate => self.worker_create(params).await,
             BatmanMethod::WorkerList => self.worker_list().await,
             BatmanMethod::WorkerGet => self.worker_get(params).await,
-            BatmanMethod::RunSubmit => self.run_submit(params).await,
+            BatmanMethod::RunSubmit => self.run_submit(principal, params).await,
             BatmanMethod::RunList => self.run_list(params).await,
             BatmanMethod::RunGet => self.run_get(params).await,
-            BatmanMethod::RunRetry => self.run_retry(params).await,
-            BatmanMethod::RunCancel => self.run_cancel(params).await,
-            BatmanMethod::MessageSend => self.message_send(params).await,
+            BatmanMethod::RunRetry => self.run_retry(principal, params).await,
+            BatmanMethod::RunCancel => self.run_cancel(principal, params).await,
+            BatmanMethod::MessageSend => self.message_send(principal, params).await,
             BatmanMethod::MessageList => self.message_list(params).await,
             BatmanMethod::ApprovalList => self.approval_list(params).await,
             BatmanMethod::ApprovalDecide => self.approval_decide(principal, params).await,
@@ -328,12 +335,14 @@ impl OrchestrationService {
             BatmanMethod::CoordinationChildList => {
                 self.coordination_child_list(principal, params).await
             }
-            BatmanMethod::CoordinationChildDecide => self.coordination_child_decide(params).await,
+            BatmanMethod::CoordinationChildDecide => {
+                self.coordination_child_decide(principal, params).await
+            }
             BatmanMethod::ProfileRegister => self.profile_register(params).await,
             BatmanMethod::PolicyViolationDecide => {
                 self.policy_violation_decide(principal, params).await
             }
-            BatmanMethod::WorkspaceAcquire => self.workspace_acquire(params).await,
+            BatmanMethod::WorkspaceAcquire => self.workspace_acquire(principal, params).await,
             BatmanMethod::WorkspaceGet => self.workspace_get(params).await,
             BatmanMethod::WorkspaceRelease => self.workspace_release(params).await,
             BatmanMethod::WorkspaceInspect => self.workspace_inspect(params).await,
@@ -765,7 +774,17 @@ impl OrchestrationService {
         Ok(workspace_path)
     }
 
-    async fn run_submit(&self, params: &Value) -> Result<Value, ServiceError> {
+    /// `principal` arbitrates ownership of `taskId` against
+    /// `submit_run`'s own guarded write (R77) -- never as a caller-side
+    /// pre-check: the database actor interleaves whole `run_domain_op`
+    /// closures, so only a re-read from inside that same transaction can
+    /// observe a `reconcile/omp` rebind landing between this call and the
+    /// write.
+    async fn run_submit(
+        &self,
+        principal: &ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
         let task_id = parse_task_id(params.get("taskId"))?;
         let worker_id = parse_worker_id(params.get("workerId"))?;
         let prompt = params
@@ -833,11 +852,12 @@ impl OrchestrationService {
 
         let project_id = self.project_id;
         let fingerprint = policy.as_ref().map(|p| p.fingerprint.clone());
+        let principal_instance_id = principal.instance_id.clone();
         let mut submit_result = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.submit_run(&run, fingerprint.as_deref())
+                repo.submit_run(&run, fingerprint.as_deref(), Some(&principal_instance_id))
                     .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
@@ -912,7 +932,16 @@ impl OrchestrationService {
     /// routes through the same adapter start path as `run/submit`. When no
     /// driver is available it returns `adapter_unavailable` while preserving
     /// the queued run row, identical to submit's behavior.
-    async fn run_retry(&self, params: &Value) -> Result<Value, ServiceError> {
+    ///
+    /// `principal` arbitrates ownership the same way `run/submit` does
+    /// (R77), against the prior run's own task -- derived from `prior`'s
+    /// row here, never a client-supplied field, so a caller cannot claim a
+    /// task it owns to retry a run under a different, unowned task.
+    async fn run_retry(
+        &self,
+        principal: &ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
         let prior_run_id = parse_run_id(params.get("priorRunId"))?;
         let worker_id = parse_worker_id(params.get("workerId"))?;
 
@@ -972,11 +1001,12 @@ impl OrchestrationService {
         // A retry is a fresh authorization, so it is fingerprinted with the
         // policy in force now -- never with whatever the prior run carried.
         let fingerprint = self.policy.as_ref().map(|p| p.fingerprint.clone());
+        let principal_instance_id = principal.instance_id.clone();
         let mut sequence = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.submit_run(&run, fingerprint.as_deref())
+                repo.submit_run(&run, fingerprint.as_deref(), Some(&principal_instance_id))
                     .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
@@ -1020,15 +1050,23 @@ impl OrchestrationService {
     /// this synchronous domain check succeeds (representing the runtime's
     /// own bookkeeping — a real adapter's acknowledgement is a Worker
     /// Adapters plan concern).
-    async fn run_cancel(&self, params: &Value) -> Result<Value, ServiceError> {
+    ///
+    /// `principal` arbitrates ownership the same way `run/submit` does
+    /// (R77), against `transition_run`'s own guarded write.
+    async fn run_cancel(
+        &self,
+        principal: &ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
         let run_id = parse_run_id(params.get("runId"))?;
         let project_id = self.project_id;
         let to = RunState::try_from("cancelled").expect("cancelled is valid");
+        let principal_instance_id = principal.instance_id.clone();
         let mut result = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.transition_run(run_id, &to)
+                repo.transition_run(run_id, &to, Some(&principal_instance_id))
                     .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
@@ -1243,13 +1281,38 @@ impl OrchestrationService {
         Ok(())
     }
 
-    async fn workspace_acquire(&self, params: &Value) -> Result<Value, ServiceError> {
+    /// Ownership arbitration (R77) happens here, in the handler, as a
+    /// dedicated domain round trip immediately before
+    /// [`crate::workspace::LeaseService::acquire`] -- not inside a
+    /// runs-DB write, because there isn't one to embed it in until
+    /// `record_workspace_event` below: the lease itself lives in
+    /// [`crate::workspace::LeaseService`]'s own database file, a separate
+    /// connection this method's `db.run_domain_op` calls cannot share a
+    /// transaction with. That leaves a residual, bounded window: a
+    /// `reconcile/omp` rebind that commits between this check and
+    /// `lease_service.acquire` below is not observed, so a caller that
+    /// loses ownership in that exact gap can still allocate a lease this
+    /// call returns as `active`. No fabricated cross-database atomicity
+    /// closes that gap -- see [`super::query::run_owner_op`]'s doc comment.
+    /// A caller refused here allocates nothing: `run_owner_op` runs before
+    /// `lease_service.acquire`, so no lease and no workspace event exist
+    /// to unwind.
+    async fn workspace_acquire(
+        &self,
+        principal: &ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
         use batman_protocol::LeaseRequest;
         let request: LeaseRequest = serde_json::from_value(params.clone())
             .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
         let run_id = request.run_id;
         let mode = request.mode;
         let isolation = request.requested_isolation;
+
+        self.db
+            .run_domain_op(query::run_owner_op(run_id, principal.instance_id.clone()))
+            .await
+            .map_err(ServiceError::from)?;
 
         // Phase 1: allocate the lease (state: allocating, path: empty).
         // `IsolationRequired` is caller-correctable -- the request can succeed
@@ -1668,7 +1731,15 @@ impl OrchestrationService {
 
     // ---------------------------------------------------------- message
 
-    async fn message_send(&self, params: &Value) -> Result<Value, ServiceError> {
+    /// `principal` arbitrates ownership the same way `run/submit` does
+    /// (R77), against `record_message`'s own guarded write -- resolved
+    /// there from `runId`'s actual owning run, never from `taskId` as
+    /// presented in `params`.
+    async fn message_send(
+        &self,
+        principal: &ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
         let run_id = parse_run_id(params.get("runId"))?;
         self.ensure_not_quarantined(run_id).await?;
         let sender_worker_id = parse_worker_id(params.get("senderWorkerId"))?;
@@ -1705,11 +1776,12 @@ impl OrchestrationService {
             reply_to,
         };
         let project_id = self.project_id;
+        let principal_instance_id = principal.instance_id.clone();
         let mut sequence = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.record_message(&message)
+                repo.record_message(&message, Some(&principal_instance_id))
                     .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await
@@ -1968,10 +2040,23 @@ impl OrchestrationService {
     /// `coordination/requestChild`. Acceptance supplies the OMP-created
     /// child ids and returns the parent run to `working`; denial records
     /// a reason and also returns the parent to `working`.
-    async fn coordination_child_decide(&self, params: &Value) -> Result<Value, ServiceError> {
+    ///
+    /// `principal` arbitrates ownership the same way `run/submit` does
+    /// (R77), against `decide_child`'s own guarded write. Every caller of
+    /// this method is `ompExtension` (`coordination/child/decide` is not
+    /// in `workerMcp`'s `allowed_methods` -- `coordination/requestChild`
+    /// is the distinct, worker-scoped method that raises the request this
+    /// answers), so `principal.instance_id` is always the connected
+    /// extension instance being arbitrated, never a scoped worker.
+    async fn coordination_child_decide(
+        &self,
+        principal: &ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
         let parent_run_id = parse_run_id(params.get("parentRunId"))?;
         let decision = str_field(params, "decision")?;
         let project_id = self.project_id;
+        let principal_instance_id = principal.instance_id.clone();
 
         match decision.as_str() {
             "accept" => {
@@ -1989,6 +2074,7 @@ impl OrchestrationService {
                             Some(child_worker_id),
                             Some(child_run_id),
                             None,
+                            Some(&principal_instance_id),
                         )
                         .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
                     }))
@@ -2003,8 +2089,16 @@ impl OrchestrationService {
                     .db
                     .run_domain_op(Box::new(move |conn| {
                         let mut repo = DomainRepository::new(conn, project_id);
-                        repo.decide_child(parent_run_id, false, None, None, None, Some(&reason))
-                            .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+                        repo.decide_child(
+                            parent_run_id,
+                            false,
+                            None,
+                            None,
+                            None,
+                            Some(&reason),
+                            Some(&principal_instance_id),
+                        )
+                        .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
                     }))
                     .await
                     .map_err(ServiceError::from)?;
