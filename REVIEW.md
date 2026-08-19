@@ -49,16 +49,6 @@ None open — see the resolution-history paragraph above for what closed and whe
 
 ### Medium
 
-#### R36. No test asserts artifact producers actually stamp `run_id`
-
-**Location:** `crates/runtime/tests/workspace_apply.rs:241,292,357,452,486`; `crates/runtime/src/workspace/apply.rs:105`; `crates/runtime/src/workspace/inspect.rs:77`
-
-Every isolation test hand-seeds `run_id` on its input fixture rather than asserting the value the real `WorkspaceApplier`/`WorkspaceInspector` actually stamps on production. Reverting the real stamping code to `run_id: None` leaves the whole suite green — R10's fix would silently regress with no failing test.
-
-
-
-
-
 
 ### Low
 
@@ -73,16 +63,6 @@ Every isolation test hand-seeds `run_id` on its input fixture rather than assert
 **Location:** `crates/runtime/src/coordination/rate_limit.rs:42-55`
 
 Stale timestamps are pruned, but the `HashMap` key itself (the sender) is never removed on worker/run retirement — unlike `ScopeTokenStore::revoke_for_run`. Slow, unbounded memory growth proportional to total distinct workers ever spawned over a long-running daemon's uptime.
-
-#### R67. No end-to-end integration test proves a Claude or Codex run releases its concurrency slot
-
-**Location:** `crates/runtime/tests/claude_adapter.rs`, `crates/runtime/tests/codex_adapter.rs`, `crates/runtime/tests/adapter_registry.rs`
-
-**Evidence:** R47's fix added component-level tests proving `ProcessExited` emission from the adapter drivers and a mocked `SettlementSink` release, but no integration test drives a full Claude or Codex run through the real adapter registry's completion watcher and asserts the concurrency slot is returned. `adapter_registry.rs`'s existing slot test (`releasing_a_policy_evaluator_slot_frees_the_registry_ceiling`) calls `authorization.release()` directly, bypassing the event stream entirely.
-
-**Fix:** extend the existing `settlement_tests` in `adapter/registry.rs` to assert that a synthetic `ProcessExited` event flows through `SettlementSink` → `watch_settlement` → `PolicyEvaluator::release()` and actually frees the concurrency ceiling, closing the gap between component emission tests and the real registry path.
-
-**Priority:** Low — the implementation fix for R47 is complete and defended by component tests; this is a coverage gap in the integration layer, not a functional defect.
 
 
 #### R85. Project-scoped reads are open by design while `workspace/get` alone is gated
@@ -190,6 +170,6 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
 - **High:** 0 — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII), R77 resolved 2026-08-19 (see docs/journal.md Part XXIX), R81 resolved 2026-08-19 (see docs/journal.md Part XXX)
-- **Medium:** 1 (R36 — carried forward; R12-R16, R34, R35, R37, R42, R45, R55-R60 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII; R78, R79, R82, R87 resolved 2026-08-19, see docs/journal.md Part XXXIX; R83 resolved 2026-08-19, see docs/journal.md Part XL)
-- **Low:** 13 (R38, R65, R67 — carried forward/new 2026-08-12; R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90-R95 — new, found during R55/R12/R34/R13/R78/R67's adversarial reviews; R17, R18, R20, R29-R32, R39, R40, R43, R46, R61-R64, R66, R84 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII; R80 resolved 2026-08-19, see docs/journal.md Part XL)
+- **Medium:** 0 (R36 resolved 2026-08-19, see docs/journal.md Part XLI; R12-R16, R34, R35, R37, R42, R45, R55-R60 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII; R78, R79, R82, R87 resolved 2026-08-19, see docs/journal.md Part XXXIX; R83 resolved 2026-08-19, see docs/journal.md Part XL)
+- **Low:** 11 (R38, R65 — carried forward/new 2026-08-12; R67 resolved 2026-08-19, see docs/journal.md Part XLI; R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90-R95 — new, found during R55/R12/R34/R13/R78/R67's adversarial reviews; R17, R18, R20, R29-R32, R39, R40, R43, R46, R61-R64, R66, R84 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII; R80 resolved 2026-08-19, see docs/journal.md Part XL)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
