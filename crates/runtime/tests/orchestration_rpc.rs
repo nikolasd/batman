@@ -3196,7 +3196,11 @@ async fn event_count(client: &mut Client, id: i64) -> usize {
 /// `waitingPeer` state and `ChildWorkerRequested` journal entry a real
 /// request would, without duplicating a second harness here.
 async fn seed_pending_child_request(harness: &Harness, run_id: RunId, reason: &str) {
-    let db = Arc::new(DatabaseHandle::start(harness.database.clone()).await.unwrap());
+    let db = Arc::new(
+        DatabaseHandle::start(harness.database.clone())
+            .await
+            .unwrap(),
+    );
     let project_id = harness.project_id;
     let reason = reason.to_string();
     db.run_domain_op(Box::new(move |conn| {
@@ -3593,8 +3597,5 @@ async fn owner_can_perform_every_guarded_run_lifecycle_mutation_on_its_own_task(
         "owner's own run/retry failed: {retry:?}"
     );
     let new_run_id = retry["result"]["runId"].as_str().unwrap().to_string();
-    assert_ne!(
-        new_run_id, run_id_str,
-        "retry must create a distinct RunId"
-    );
+    assert_ne!(new_run_id, run_id_str, "retry must create a distinct RunId");
 }
