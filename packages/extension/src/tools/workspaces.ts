@@ -7,9 +7,29 @@
 // lease.
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import type { ApplyStrategy, IsolationKind, LeaseMode } from "@nikolasd/batman-protocol";
 
 import type { OrchestrationToolContext } from "./shared";
 import { callOrchestration } from "./shared";
+
+// Hand-written token lists tied to the generated wire unions (R17):
+// `satisfies` fails the compile when a Rust variant is removed, and the
+// `_Exhaustive` checks fail it when one is added, so drift in either
+// direction breaks `bun run typecheck` instead of silently shipping.
+const LEASE_MODES = ["readOnly", "write"] as const satisfies readonly LeaseMode[];
+const ISOLATION_KINDS = ["shared", "gitWorktree", "copy"] as const satisfies readonly IsolationKind[];
+const APPLY_STRATEGIES = ["applyPatch", "cherryPick"] as const satisfies readonly ApplyStrategy[];
+type _LeaseModeExhaustive = Exclude<LeaseMode, (typeof LEASE_MODES)[number]> extends never ? true : never;
+type _IsolationKindExhaustive = Exclude<IsolationKind, (typeof ISOLATION_KINDS)[number]> extends never ? true : never;
+type _ApplyStrategyExhaustive = Exclude<ApplyStrategy, (typeof APPLY_STRATEGIES)[number]> extends never ? true : never;
+// The assignments are what make the checks bite: when a variant is added in
+// Rust, the alias resolves to `never` and `true` no longer assigns.
+const _leaseModeExhaustive: _LeaseModeExhaustive = true;
+const _isolationKindExhaustive: _IsolationKindExhaustive = true;
+const _applyStrategyExhaustive: _ApplyStrategyExhaustive = true;
+void _leaseModeExhaustive;
+void _isolationKindExhaustive;
+void _applyStrategyExhaustive;
 
 export const BATMAN_WORKSPACE_TOOL_NAME = "batman_workspace";
 
@@ -17,10 +37,10 @@ export function registerWorkspaceTool(pi: ExtensionAPI, ctx: OrchestrationToolCo
   const params = pi.zod.object({
     op: pi.zod.enum(["acquire", "get", "release", "inspect", "apply"]).describe("Which workspace operation to perform."),
     runId: pi.zod.string().optional().describe("Required for acquire: the run this workspace lease belongs to."),
-    mode: pi.zod.enum(["readOnly", "write"]).optional().describe("Required for acquire: readOnly allows sharing with other readers, write requires isolation."),
-    requestedIsolation: pi.zod.enum(["shared", "gitWorktree", "copy"]).optional().describe("Optional for acquire: the isolation strategy to materialize. Defaults to shared. Use gitWorktree or copy when a peer agent will work on the same task concurrently."),
+    mode: pi.zod.enum(LEASE_MODES).optional().describe("Required for acquire: readOnly allows sharing with other readers, write requires isolation."),
+    requestedIsolation: pi.zod.enum(ISOLATION_KINDS).optional().describe("Optional for acquire: the isolation strategy to materialize. Defaults to shared. Use gitWorktree or copy when a peer agent will work on the same task concurrently."),
     leaseId: pi.zod.string().optional().describe("Required for get, release, inspect, and apply: the lease id."),
-    strategy: pi.zod.enum(["applyPatch", "cherryPick"]).optional().describe("Required for apply: applyPatch applies a patch artifact, cherryPick replays commits."),
+    strategy: pi.zod.enum(APPLY_STRATEGIES).optional().describe("Required for apply: applyPatch applies a patch artifact, cherryPick replays commits."),
     artifactId: pi.zod.string().optional().describe("Required for apply: the artifact to apply (from batman_artifact { op: 'list' })."),
     expectedTargetRevision: pi.zod.string().optional().describe("Required for apply: the revision the workspace must currently be at. A mismatch is refused as STALE_REVISION rather than applied to the wrong base."),
     approvalCorrelationId: pi.zod.string().optional().describe("Optional for apply: correlates this application with an approval decision."),
