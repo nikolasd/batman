@@ -20,7 +20,7 @@ export function registerViolationTool(pi: ExtensionAPI, ctx: OrchestrationToolCo
   const params = pi.zod.object({
     op: pi.zod.enum(["decide"]).describe("Which violation operation to perform."),
     violationId: pi.zod.string().describe("The recorded violation to decide."),
-    resolution: pi.zod.string().describe("How the violation is resolved, e.g. release the quarantined run or cancel it."),
+    resolution: pi.zod.enum(["release", "cancel"]).describe("How the violation is resolved: 'release' resumes the quarantined run (if this was its last unresolved violation), 'cancel' ends the run outright."),
   });
 
   pi.registerTool({
