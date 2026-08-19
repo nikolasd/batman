@@ -111,9 +111,10 @@ always intended to reflect OMP's own intent. See `docs/journal.md` Part XXVII an
 resolution history for the full mechanism, including the run-lifecycle gap this fix's own review
 found (R77) -- since closed by threading the same ownership check into `run/submit`, `run/retry`,
 `run/cancel`, `message/send`, `workspace/acquire`, and `coordination/child/decide` (`docs/journal.md`
-Part XXIX). The workspace-lease surface (`workspace/get`/`release`/`inspect`/`apply`, R81) is the
-remaining registered successor, found the same way one review later: ownership gates lease
-*creation* but not yet the rest of that surface.
+Part XXIX). The workspace-lease surface (`workspace/get`/`release`/`inspect`/`apply`, R81) closed
+the same way one review later, gated by the same `run_owner_op` arbitration (`docs/journal.md` Part
+XXX); that review sweep found no further unarbitrated task-scoped mutation, so the remaining
+registered successors from this doctrine (R82-R86) are all Medium or Low, not High.
 
 ## Links
 

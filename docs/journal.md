@@ -3613,6 +3613,91 @@ R70 → R71 → R72 → R74 → R76 → R77 → R81, each one the same guarded-w
 guarded write -- or one sibling of a just-fixed one -- further down the stack than the review before
 it looked.
 
+## Part XXX — Four gates, one helper: the chain that stops here
+
+`753c99b`'s RED integration tests made R81 concrete the same way R77's had one review earlier: run
+the exploit as if it were the happy path, and read the assertions it fails. Its own commit message
+states what each of the three exercised handlers actually did against the pre-fix binary: "today a
+non-owner's release tears down the lease"; "today a non-owner fully inspects another instance's real
+git workspace (patch artifact, commit history)"; and, for apply, that a bogus, never-seeded
+`artifactId` still means "today the handler journals `ApplyStarted` and fails with an
+artifact-not-found message instead of refusing at all" -- proof that artifact resolution, not
+ownership, was the first check apply ever ran. `workspace_get` was deliberately left untested at
+this commit: read-only, and every field it discloses was already reproducible from the pre-existing,
+unrelated ungated `events/replay` stream carrying `LeaseRequested`/`LeaseAcquired` payloads.
+
+`e7195fe` threaded `principal` into all four handlers and ran the same `query::run_owner_op`
+arbitration `workspace_acquire` (R77) already uses, immediately after `lease_service.get` resolves
+the lease and before any mutation -- before release/teardown, before
+`ensure_not_quarantined`/materialization for inspect, and before
+`ensure_not_quarantined`/artifact resolution/`ApplyStarted` for apply. It gated `workspace_get`
+anyway, over its own documented exception, in its own words: "workspace_get is read-only and every
+field it discloses was already reproducible from the pre-existing, ungated events/replay stream, so
+R81RedTests judged it harmless and left it untested. Gated it anyway for a uniform ownership surface
+across all four lease-scoped methods rather than carrying a documented exception a future response
+field could silently invalidate -- the gate is one call to the existing run_owner_op helper." 62/62
+passed, including the three formerly-RED tests and the owner-success guard.
+
+`agent://ReviewR81` returned **PASS WITH WARNINGS** -- zero Errors, the first review in this chain
+to land there. Its residual-window question (**q6**) found the disclosure honest in kind but
+understated in extent: `workspace_release`'s "single gap" claim is literally true, but inspect's and
+apply's docs claimed "the same bounded residual" as acquire/release while each interposes more
+machinery before the mutation it's supposed to be gating -- `ensure_not_quarantined` for inspect,
+that plus the `ApplyStarted` append for apply -- so a rebind racing the check on either of those two
+can leave a journaled event and a real working-tree mutation attributed to a caller that is no
+longer the owner, a consequence the doc text never named.
+
+`cd2b44a` and `2357484` closed all four warnings the same day. `cd2b44a` extracted the four
+byte-identical gate blocks into a private `require_lease_owner` helper, which does two things at
+once: it makes "all four lease-scoped methods are gated identically" a `grep` away instead of an
+eyeball diff across four call sites (closing **W1**'s stale dispatch doc as a side effect -- there
+is now one place, not four, for the doc to be wrong), and it corrects the two residual-window doc
+comments to state inspect's and apply's actual spans instead of borrowing acquire's (closing **W3**).
+`2357484` closed the remaining two by testing what the refactor didn't touch:
+`workspace_get_against_another_instances_lease_is_refused` (**W4**, the one gate the RED suite
+never exercised in either direction) and
+`owner_accepting_a_child_request_journals_the_child_ids_and_returns_the_parent_to_working` -- the
+first test anywhere in the suite to drive `coordination/child/decide`'s accept arm to a real
+acceptance rather than a refusal or a deny, pinning `kind == childWorkerRequested`, all three child
+ids round-tripping, and the parent run returning to `working` (**W2**).
+
+A fourth, unrelated commit rides along in the same window: `8cc0bcd` refactored `decide_child`'s
+accept/deny arms, which had encoded a sum type across four separate `Option` parameters, into a
+single `ChildDecision` enum, because -- in its own words -- that shape "tripped clippy's argument
+ceiling once R77 threaded the principal." `ChildDecision::Accept` binds the child ids; `Deny` carries
+the reason; an acceptance without ids or a denial with them is now unrepresentable at the type level
+rather than by convention. The wire shape of the journaled `ChildEvent` is unchanged, and
+`ReviewR81`'s own **q4** confirmed the two call sites still pass exactly the combinations the old
+four-`Option` signature accepted, byte-identically.
+
+This is the first link in the chain -- R70 → R71 → R72 → R74 → R76 → R77 → R81 -- to close without
+spawning a successor High. `ReviewR81` did not stop at the four handlers it was asked to review: its
+**q7** swept `artifact/list`/`artifact/fetch` (owner-filtered via `owned_run_ids_op`),
+`events/replay` and every other project-scoped read (`task/get`, `worker/list`/`get`,
+`run/list`/`get`, `message/list`, `approval/list`), the `workerMcp` coordination surface
+(scope-token- and same-task-filtered), and `profile/register` (mints its own id server-side, never
+overwrites) for the same unarbitrated-mutation class R70 through R81 kept finding one door over --
+and concluded, on that evidence, "no unarbitrated task-scoped mutation remains." What the sweep did
+surface -- `runtime/shutdown`'s total absence of arbitration, an accepted child request sharing its
+event kind with a mere request, a `leaseId` existence oracle sitting in front of the ownership gate,
+an undocumented asymmetry between the one gated read and the many open ones, and a lease-cleanup
+path with no remedy once its correlation was never persisted -- was registered the same day as
+**R82-R86** (Medium/Low), not fixed in this pass; a sixth, the missing child-accept test, was closed
+in place by `2357484` instead of registered, since it was a test gap rather than a functional
+defect. None of the five registered findings is the same class as R70-R81: each is a genuinely
+different defect (missing arbitration on a different kind of surface, an ambiguous discriminator, a
+misclassified error code, an undocumented policy asymmetry, an unreachable cleanup path) that the
+R70-R81 doctrine's repeated sweep happened to be the thing that finally looked in that direction.
+
+Measured at the fix (`e7195fe`): `cargo test --test orchestration_rpc --test workspace_materialize`
+-- 62/62 passing, including the three formerly-RED R81 tests and the owner-success guard. The polish
+commits added four more tests to the same two suites -- the `workspace_get` refusal, two
+owner-success assertions folded into the existing release test, the apply-reaches-artifact-resolution
+owner case, and the first successful child-accept -- without changing production code beyond what
+`ReviewR81` had already passed. `REVIEW.md` prunes R81 into resolution history in the same pass this
+Part records; with it gone, **High: 0** for the first time since this doctrine started finding
+successors to close.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
