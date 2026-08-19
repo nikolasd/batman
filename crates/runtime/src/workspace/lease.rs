@@ -21,8 +21,11 @@ pub enum LeaseError {
     Db(String),
     #[error("lease not found: {lease_id}")]
     NotFound { lease_id: String },
-    /// A same-run guard: this run already holds a workspace. Isolation cannot
-    /// fix it, because the caller is asking for a second workspace for one run.
+    /// The requested lease contends with an existing active lease for the
+    /// same materialization (isolation/mode conflict against any run's
+    /// active lease -- there is deliberately no same-run guard: a single
+    /// run may hold multiple concurrent leases, e.g. a read-only view
+    /// alongside an isolated write worktree, by design).
     #[error("conflict: another lease exists for this project")]
     Conflict,
     /// A *shared* write lease was refused because another shared lease is
@@ -220,6 +223,10 @@ impl LeaseService {
         let conn =
             rusqlite::Connection::open(&self.db_path).map_err(|e| LeaseError::Db(e.to_string()))?;
 
+        // "No rows" is a real, expected outcome (`None`); every other
+        // rusqlite error (locked/corrupted DB, schema mismatch) must
+        // surface instead of masquerading as "no lease" (R62).
+        use rusqlite::OptionalExtension;
         let result: Option<(String, String, String, String, String, String)> = conn
             .query_row(
                 "SELECT run_id, mode, isolation_kind, path, state, base_revision
@@ -236,7 +243,8 @@ impl LeaseService {
                     ))
                 },
             )
-            .ok();
+            .optional()
+            .map_err(|e| LeaseError::Db(e.to_string()))?;
 
         let _ = conn.close();
 
@@ -332,7 +340,14 @@ impl LeaseService {
             "SELECT run_id, mode, isolation_kind, path, state, base_revision FROM workspace_leases WHERE lease_id = ?1",
             params![&lease_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
-        ).map_err(|e| LeaseError::Db(e.to_string()))?;
+        ).map_err(|e| match e {
+            // An unknown lease id is the typed NotFound, never a generic
+            // Db error -- callers classify NotFound as a caller error (R84).
+            rusqlite::Error::QueryReturnedNoRows => LeaseError::NotFound {
+                lease_id: lease_id.clone(),
+            },
+            other => LeaseError::Db(other.to_string()),
+        })?;
 
         let mode = match mode_str.as_str() {
             "readOnly" => LeaseMode::ReadOnly,
@@ -385,7 +400,12 @@ impl LeaseService {
                 params![&lease_id],
                 |row| row.get(0),
             )
-            .map_err(|e| LeaseError::Db(e.to_string()))?;
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => LeaseError::NotFound {
+                    lease_id: lease_id.clone(),
+                },
+                other => LeaseError::Db(other.to_string()),
+            })?;
 
         if state == "released" {
             return Err(LeaseError::AlreadyReleased { lease_id });
