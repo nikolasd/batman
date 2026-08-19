@@ -15,7 +15,7 @@ export function registerRunTool(pi: ExtensionAPI, ctx: OrchestrationToolContext)
     prompt: pi.zod.string().optional().describe("Required for submit and retry: the instruction the worker executes. BATMAN stores no task text, so the task's description must be passed here."),
     taskId: pi.zod.string().optional().describe("Required for submit: the task to execute. Optional filter for list."),
     workerId: pi.zod.string().optional().describe("Required for submit and retry: the worker to execute with."),
-    workspaceMode: pi.zod.string().optional().describe("Optional workspace mode for submit and retry: 'shared' (the repository itself, the default), 'isolated' (a per-run git worktree), or 'copy' (a per-run copy of the repository). Any other value is rejected."),
+    workspaceMode: pi.zod.enum(["shared", "isolated", "copy"]).optional().describe("Optional workspace mode for submit and retry: 'shared' (the repository itself, the default), 'isolated' (a per-run git worktree), or 'copy' (a per-run copy of the repository)."),
     priority: pi.zod.number().int().optional().describe("Optional priority for submit."),
     runId: pi.zod.string().optional().describe("Required for get and cancel: the run id."),
     priorRunId: pi.zod.string().optional().describe("Required for retry: the terminal run id to retry."),
