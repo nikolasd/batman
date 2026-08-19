@@ -4115,6 +4115,42 @@ proven against the compiled binary, including the journal row and the acknowledg
 review also found R65's class one door over (expired scope-token records, registered and fixed
 as R96 in `db6eee9`) and required ADR-0009's back-reference (`33e5fc3`).
 
+## Part XLIII — Nine findings the reviews themselves had found
+
+Batch 12 emptied the review-found backlog, R88 through R96. `e08a0fd` (R88) tied
+`batman_message.kind` to the generated `MessageKind` union — R16's class, one door over, the
+last open-string enum among the tool schemas — with the same `satisfies` + exhaustiveness
+pattern, exporting `MessageKind` through xtask rather than hand-writing it. `1dd19af`/`7dcc805`
+(R89) made `copy` read back as `copy`: the RED test caught `run/submit` echoing `"isolated"`
+verbatim, and after review (S2) all three echoes derive from one helper over the *resolved*
+`IsolationKind`, so a future resolution fallback cannot make the echo lie again. `e086f9c`
+(R90) ended the bigint/number schism: every `u64`/`i64` wire field carries
+`#[ts(type = "number")]`, zero `bigint` remains in the generated bindings, and the monitor
+model dropped its bigint state — the values are sequences, counters, and byte lengths, all far
+below 2^53. `5fe1210` (R91) put `ProtocolHealthChanged`'s detail — the vendor error subtype
+R12/R42/R57 worked to preserve — on both operator surfaces, with the status-row half gaining
+its own unit test after the review noted (W4) it could be reverted green. `d02ae4f` (R92) gave
+approval provenance a read surface: `approval/list` projects `decidedBy` and `reason`
+(present-and-null while pending, a shape the review caught the doc misdescribing, W3).
+`defc38d`/`48f6de2` (R93) made `run/cancel` honest about a genuine kill failure — the same
+journaled, broadcast `degradedControl` treatment R13 gave the policy path. `60d74cd` (R94)
+moved the broker's liveness promise inside the writes it guards: `record_message` re-reads the
+run's state in the same transaction as its INSERT, `request_child` re-runs its transition
+check inside its guarded write, and `message/send`'s deliberate exemption is pinned by a test.
+`61b6a50` (R95) taught the terminal adapter to settle: `cancel` emits one visibly-synthetic
+`ProcessExited` (exit code null, signal "cancelled") through the sink captured at `start`, so a
+cancelled terminal run no longer pins its slot, the idle timer, and unforced shutdown forever —
+and after review (W2), a second cancel is a no-op success, because an `Err` there would read as
+a real kill failure and raise a false `degradedControl`. `db6eee9` (R96) swept expired
+scope-token records in `verify` — and, after review (S1), in `bind` too, so a bind-only
+workload is bounded. The R86 rework (`2a1f715`, Part XLII) was re-reviewed in the same pass:
+all three prior Errors confirmed closed, with one new Warning (W1) — the liveness guard used
+the socket file as its proof, which an unclean crash leaves behind, reinstating R86's
+no-remedy condition for exactly the crash case; `0dab89b` switched it to the advisory-flock
+probe `batcave stop` already trusts and pinned the stale-socket case with its own test.
+One watch item remains: R97, a single unreproduced flake of R79's race test under
+full-workspace load, registered rather than speculatively patched.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
