@@ -4,7 +4,9 @@
 //
 // This list is the complete contents of `src/generated/` (R17): every
 // generated file is re-exported, so a type that exists on the wire is
-// always importable from the barrel.
+// always importable from the barrel. Enforced by `bun run generate --check`
+// (xtask's check_barrel_completeness), which fails CI on any omission.
+export type * from "./generated/ApplyRequest";
 export type * from "./generated/ApplyResult";
 export type * from "./generated/ApplyStrategy";
 export type * from "./generated/ApprovalId";
@@ -34,6 +36,7 @@ export type * from "./generated/EventEnvelope";
 export type * from "./generated/EventSource";
 export type * from "./generated/InitializeParams";
 export type * from "./generated/InitializeResult";
+export type * from "./generated/InspectRequest";
 export type * from "./generated/InspectResult";
 export type * from "./generated/IsolationKind";
 export type * from "./generated/JsonRpcError";
@@ -42,11 +45,13 @@ export type * from "./generated/JsonRpcNotification";
 export type * from "./generated/JsonRpcRequest";
 export type * from "./generated/JsonRpcResponse";
 export type * from "./generated/LeaseMode";
+export type * from "./generated/LeaseRequest";
 export type * from "./generated/MessageId";
 export type * from "./generated/OperationId";
 export type * from "./generated/PolicyViolationId";
 export type * from "./generated/ProjectId";
 export type * from "./generated/ProtocolVersion";
+export type * from "./generated/ReleaseRequest";
 export type * from "./generated/RepositoryIdentity";
 export type * from "./generated/RequestId";
 export type * from "./generated/RunFlags";

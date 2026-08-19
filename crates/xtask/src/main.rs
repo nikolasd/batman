@@ -11,14 +11,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use batman_protocol::{
-    ApplyResult, ApprovalId, Artifact, ArtifactFetchRequest, ArtifactFetchResult, ArtifactId,
-    ArtifactKind, ArtifactListRequest, ArtifactListResult, BatmanMethod, BinarySource, Classified,
-    ClientAuth, ClientCapabilities, ClientInfo, ClientPrincipalSummary, ClientRole, ContentClass,
-    DiagnosticLevel, DisplayBackend, DisplayConfig, DisplayStatus, EventEnvelope, EventSource,
-    InitializeParams, InitializeResult, InspectResult, JsonRpcError, JsonRpcErrorResponse,
-    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, MessageId, OperationId, ProjectId,
-    ProtocolVersion, RepositoryIdentity, RequestId, RunId, RuntimeCapabilities, RuntimeEvent,
-    RuntimeInfo, RuntimeStatus, TaskId, Timestamp, VersionRange, WorkerId,
+    ApplyRequest, ApplyResult, ApprovalId, Artifact, ArtifactFetchRequest, ArtifactFetchResult,
+    ArtifactId, ArtifactKind, ArtifactListRequest, ArtifactListResult, BatmanMethod, BinarySource,
+    Classified, ClientAuth, ClientCapabilities, ClientInfo, ClientPrincipalSummary, ClientRole,
+    ContentClass, DiagnosticLevel, DisplayBackend, DisplayConfig, DisplayStatus, EventEnvelope,
+    EventSource, InitializeParams, InitializeResult, InspectRequest, InspectResult, JsonRpcError,
+    JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, LeaseRequest,
+    MessageId, OperationId, ProjectId, ProtocolVersion, ReleaseRequest, RepositoryIdentity,
+    RequestId, RunId, RuntimeCapabilities, RuntimeEvent, RuntimeInfo, RuntimeStatus, TaskId,
+    Timestamp, VersionRange, WorkerId,
 };
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
@@ -189,10 +190,13 @@ fn render_schema() -> Result<Vec<u8>> {
     batman_protocol::render_schema().context("serializing schema to JSON")
 }
 
-/// Exports every `batman-protocol` wire type's TypeScript binding into
-/// `dir`, alongside all of its dependencies. Idempotent and order
-/// independent: `ts-rs` merges declarations into their target files sorted
-/// by type name regardless of call order.
+/// Exports TypeScript bindings for the explicit allowlist of wire types
+/// below, alongside all of their transitive dependencies. This list — not
+/// `#[ts(export)]` — decides what is generated: a type carrying the derive
+/// but absent from this list (and unreferenced by anything in it) emits
+/// nothing (R60's root cause). Idempotent and order independent: `ts-rs`
+/// merges declarations into their target files sorted by type name
+/// regardless of call order.
 fn export_bindings(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
 
@@ -252,6 +256,10 @@ fn export_bindings(dir: &Path) -> Result<()> {
         ArtifactFetchResult,
         InspectResult,
         ApplyResult,
+        LeaseRequest,
+        InspectRequest,
+        ApplyRequest,
+        ReleaseRequest,
     );
 
     Ok(())
@@ -336,6 +344,33 @@ fn compare_dirs(fresh_dir: &Path, committed_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Verifies the protocol-ts barrel (`src/index.ts`) re-exports every
+/// generated binding. R17 made "every generated file is re-exported" the
+/// barrel's contract; this turns that convention into a build failure,
+/// so a type that exists on the wire is always importable from the barrel.
+fn check_barrel_completeness(root: &Path, generated_dir: &Path) -> Result<()> {
+    let barrel_path = root.join("packages/protocol-ts/src/index.ts");
+    let barrel = fs::read_to_string(&barrel_path)
+        .with_context(|| format!("reading {}", barrel_path.display()))?;
+    let mut missing = Vec::new();
+    for name in sorted_ts_file_names(generated_dir)? {
+        let type_name = name.trim_end_matches(".ts");
+        let expected = format!("export type * from \"./generated/{type_name}\";");
+        if !barrel.contains(&expected) {
+            missing.push(type_name.to_string());
+        }
+    }
+    if !missing.is_empty() {
+        bail!(
+            "barrel drift: {} is missing re-exports for generated bindings {:?}; \
+             add `export type * from \"./generated/<Name>\";` for each",
+            barrel_path.display(),
+            missing,
+        );
+    }
+    Ok(())
+}
+
 fn run_generate(check: bool) -> Result<()> {
     let root = workspace_root();
     let schema_path = root.join("packages/protocol-ts/schema/batman.schema.json");
@@ -355,6 +390,7 @@ fn run_generate(check: bool) -> Result<()> {
 
         compare_files(&temp_schema_path, &schema_path, "schema")?;
         compare_dirs(&temp_generated_dir, &generated_dir)?;
+        check_barrel_completeness(&root, &temp_generated_dir)?;
 
         // Verify Rust crate versions match the npm source of truth.
         // If they drift, `batcave --version` (which reports CARGO_PKG_VERSION
@@ -982,5 +1018,73 @@ mod package_tests {
             first, second,
             "packaging the same binary twice must be byte-identical"
         );
+    }
+}
+
+#[cfg(test)]
+mod version_coherence_tests {
+    use super::*;
+
+    /// Builds a fixture root with everything `check_version_coherence`
+    /// reads: the extension package.json (the source of truth), both
+    /// Cargo.tomls, and the marketplace catalog.
+    fn coherence_fixture(
+        extension: &str,
+        runtime: &str,
+        protocol: &str,
+        metadata: &str,
+        plugin: &str,
+    ) -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("creating fixture root");
+        let write = |rel: &str, contents: String| {
+            let path = root.path().join(rel);
+            fs::create_dir_all(path.parent().unwrap()).expect("creating fixture dir");
+            fs::write(&path, contents).expect("writing fixture file");
+        };
+        write(
+            "packages/extension/package.json",
+            format!(r#"{{"name": "@nikolasd/batman", "version": "{extension}"}}"#),
+        );
+        write(
+            "crates/runtime/Cargo.toml",
+            format!("[package]\nname = \"batman-runtime\"\nversion = \"{runtime}\"\n"),
+        );
+        write(
+            "crates/protocol/Cargo.toml",
+            format!("[package]\nname = \"batman-protocol\"\nversion = \"{protocol}\"\n"),
+        );
+        write(
+            ".claude-plugin/marketplace.json",
+            format!(
+                r#"{{"name": "batman", "metadata": {{"version": "{metadata}"}}, "plugins": [{{"name": "batman", "version": "{plugin}"}}]}}"#
+            ),
+        );
+        root
+    }
+
+    #[test]
+    fn coherent_versions_pass() {
+        let root = coherence_fixture("0.4.0", "0.4.0", "0.4.0", "0.4.0", "0.4.0");
+        check_version_coherence(root.path()).expect("all-equal versions must pass");
+    }
+
+    #[test]
+    fn marketplace_metadata_drift_fails_naming_the_file() {
+        let root = coherence_fixture("0.4.0", "0.4.0", "0.4.0", "0.3.0", "0.4.0");
+        let err = check_version_coherence(root.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("marketplace.json"), "error was: {err}");
+        assert!(err.contains("metadata.version"), "error was: {err}");
+    }
+
+    #[test]
+    fn marketplace_plugin_entry_drift_fails_naming_the_entry() {
+        let root = coherence_fixture("0.4.0", "0.4.0", "0.4.0", "0.4.0", "0.3.0");
+        let err = check_version_coherence(root.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("marketplace.json"), "error was: {err}");
+        assert!(err.contains("plugin entry"), "error was: {err}");
     }
 }
