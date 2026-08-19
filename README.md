@@ -108,11 +108,12 @@ This project is licensed under the [MIT License](LICENSE). See the LICENSE file 
 
 ## Known Limitations
 
-This is a pre-1.0 project. The review backlog is empty ([`REVIEW.md`](REVIEW.md) tracks one
-unreproduced test-flake watch item); what remains below are environment and protocol walls,
-verified against the current codebase. Every adapter is installed and authenticated here, and live
-conformance is run against all four (reports under `release/`), so none of these is a "requires a
-vendor CLI" caveat.
+This is a pre-1.0 project. The review backlog is empty — the one open item is an
+unreproduced test-flake watch, tracked in the maintainer's local, gitignored `REVIEW.md`
+(resolution history lives in [`docs/journal.md`](docs/journal.md)). What remains below are
+environment and protocol walls, verified against the current codebase. Every adapter is
+installed and authenticated here, and live conformance is run against all four
+(reports under `release/`), so none of these is a "requires a vendor CLI" caveat.
 
 - **ACP v1 has no durable session handle, so Copilot cannot resume across processes.** A session
   that completed a real turn answers `session/load` with `Resource not found`, which fails

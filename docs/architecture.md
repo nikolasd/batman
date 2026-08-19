@@ -368,7 +368,7 @@ graph TB
 
 #### Configuration and Policy
 - **Config Merge** ([`crates/runtime/src/config/merge.rs`](crates/runtime/src/config/merge.rs)): Layers org/repo/user/per-run YAML with strict unknown-key rejection into an immutable, SHA-256-fingerprinted `RuntimePolicy`; hashed JSON bytes are recursively key-sorted because the fixture-capture scrubber requires `preserve_order`
-- **Policy Evaluator** ([`crates/runtime/src/policy/evaluate.rs`](crates/runtime/src/policy/evaluate.rs)): `PolicyEvaluator` implements `AdapterAuthorization` against a `RuntimePolicy` (model allowlist, concurrency ceiling) — wired into production via `lifecycle::serve()`, same as the real `ScopeTokenVerifier` `workerMcp` credential store (see [REVIEW.md](../REVIEW.md) for remaining gaps)
+- **Policy Evaluator** ([`crates/runtime/src/policy/evaluate.rs`](crates/runtime/src/policy/evaluate.rs)): `PolicyEvaluator` implements `AdapterAuthorization` against a `RuntimePolicy` (model allowlist, concurrency ceiling) — wired into production via `lifecycle::serve()`, same as the real `ScopeTokenVerifier` `workerMcp` credential store (see the maintainer's local, gitignored `REVIEW.md` for remaining gaps; resolution history in [`journal.md`](journal.md))
 
 ## Level 4: Code (C4-4)
 
@@ -715,8 +715,9 @@ sequenceDiagram
 ## Known Deferred Items
 
 Consciously deferred features, each with a decision trigger, live in
-[`future-features.md`](future-features.md). Open defects and watch items live in
-[`REVIEW.md`](../REVIEW.md).
+[`future-features.md`](future-features.md). Open defects and watch items live in the
+maintainer's local, gitignored `REVIEW.md` (not present in a fresh clone); their resolution
+history lives in [`journal.md`](journal.md).
 
 ## Appendix A: Quick Reference
 

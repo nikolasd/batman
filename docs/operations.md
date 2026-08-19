@@ -189,5 +189,7 @@ installing anything.
 - Confirm the vendor CLI itself is installed and authenticated — a conformance failure here is
   usually the vendor CLI, not BATMAN.
 
-For open implementation gaps (as opposed to operational issues), see [`REVIEW.md`](../REVIEW.md) — it's
-the single source of truth for what's genuinely unfinished, verified against the current codebase.
+For open implementation gaps (as opposed to operational issues): the open-items backlog lives in
+the maintainer's local, gitignored `REVIEW.md` (not present in a fresh clone), verified against
+the current codebase. Its resolution history — every fix, with the test that proved it — lives
+in [`journal.md`](journal.md).

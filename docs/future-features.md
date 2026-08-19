@@ -3,8 +3,10 @@
 **Audience & purpose:** maintainers deciding what to build next. A design parking lot for
 consciously deferred features — nice-to-have, not blocking any planned milestone. Each entry
 includes the concrete scenarios that would justify implementation. For genuinely open
-implementation gaps (as opposed to deferred nice-to-haves), see [`REVIEW.md`](../REVIEW.md) instead —
-that document, not this one, is the single source of truth for unfinished work.
+implementation gaps (as opposed to deferred nice-to-haves): the open-items backlog is the
+maintainer's local, gitignored `REVIEW.md` (not present in a fresh clone; its resolution
+history lives in [`journal.md`](journal.md)) — that record, not this one, is the single
+source of truth for unfinished work.
 
 **Status:** All deferred. Revisit when a scenario becomes real.
 
