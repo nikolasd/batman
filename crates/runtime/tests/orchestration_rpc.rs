@@ -91,8 +91,8 @@ impl RunDriver for RecordingRunDriver {
         &self,
         _run_id: RunId,
         _scope: CancelScope,
-    ) -> AdapterFuture<'static, Result<(), String>> {
-        Box::pin(async { Ok(()) })
+    ) -> AdapterFuture<'static, Result<batman_runtime::service::CancelOutcome, String>> {
+        Box::pin(async { Ok(batman_runtime::service::CancelOutcome::Cancelled) })
     }
 }
 
@@ -126,8 +126,8 @@ impl RunDriver for FailingRunDriver {
         &self,
         _run_id: RunId,
         _scope: CancelScope,
-    ) -> AdapterFuture<'static, Result<(), String>> {
-        Box::pin(async { Ok(()) })
+    ) -> AdapterFuture<'static, Result<batman_runtime::service::CancelOutcome, String>> {
+        Box::pin(async { Ok(batman_runtime::service::CancelOutcome::Cancelled) })
     }
 }
 
@@ -201,9 +201,9 @@ impl RunDriver for CancelTrackingRunDriver {
         &self,
         run_id: RunId,
         scope: CancelScope,
-    ) -> AdapterFuture<'static, Result<(), String>> {
+    ) -> AdapterFuture<'static, Result<batman_runtime::service::CancelOutcome, String>> {
         self.cancel_calls.lock().push((run_id, scope));
-        Box::pin(async { Ok(()) })
+        Box::pin(async { Ok(batman_runtime::service::CancelOutcome::Cancelled) })
     }
 }
 
@@ -316,7 +316,8 @@ impl ViolationTriggeringRunDriver {
             true,
             Arc::clone(&ctx.violation_service),
             None,
-        );
+        )
+        .expect("built-in patterns always compile");
         sink.emit(AdapterEvent {
             run_id: ctx.run_id,
             task_id: ctx.task_id,
@@ -343,7 +344,8 @@ impl RunDriver for ViolationTriggeringRunDriver {
                 true,
                 Arc::clone(&ctx.violation_service),
                 None,
-            );
+            )
+            .expect("built-in patterns always compile");
             sink.emit(AdapterEvent {
                 run_id: ctx.run_id,
                 task_id: ctx.task_id,
@@ -377,10 +379,114 @@ impl RunDriver for ViolationTriggeringRunDriver {
         &self,
         run_id: RunId,
         scope: CancelScope,
-    ) -> AdapterFuture<'static, Result<(), String>> {
+    ) -> AdapterFuture<'static, Result<batman_runtime::service::CancelOutcome, String>> {
         self.cancel_calls.lock().push((run_id, scope));
+        Box::pin(async { Ok(batman_runtime::service::CancelOutcome::Cancelled) })
+    }
+}
+
+/// Like [`ViolationTriggeringRunDriver`], but its `cancel_run` outcome is
+/// configurable: `Err` simulates a real kill failure, `Ok(NoRunningAdapter)`
+/// simulates a run whose adapter already exited (R13).
+struct ConfigurableCancelViolationDriver {
+    outcome: Result<batman_runtime::service::CancelOutcome, String>,
+}
+
+impl RunDriver for ConfigurableCancelViolationDriver {
+    fn start(&self, ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
+        Box::pin(async move {
+            let sink = batman_runtime::adapter::DomainAdapterEventSink::new(
+                ctx.db.clone(),
+                ctx.project_id,
+                ctx.events_tx.clone(),
+                vec![],
+                true,
+                Arc::clone(&ctx.violation_service),
+                None,
+            )
+            .expect("built-in patterns always compile");
+            sink.emit(AdapterEvent {
+                run_id: ctx.run_id,
+                task_id: ctx.task_id,
+                worker_id: ctx.worker_id,
+                payload: AdapterEventPayload::NestedWorkerObserved {
+                    vendor_child_id: "child-vendor-1".to_string(),
+                    vendor_parent_ref: "parent-vendor-1".to_string(),
+                },
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    }
+
+    fn send_follow_up(
+        &self,
+        _run_id: RunId,
+        _task_id: TaskId,
+        _worker_id: WorkerId,
+        _prompt: String,
+    ) -> AdapterFuture<'static, Result<(), String>> {
         Box::pin(async { Ok(()) })
     }
+
+    fn running_adapter(&self, _run_id: RunId) -> Option<Arc<dyn Adapter>> {
+        None
+    }
+
+    fn cancel_run(
+        &self,
+        _run_id: RunId,
+        _scope: CancelScope,
+    ) -> AdapterFuture<'static, Result<batman_runtime::service::CancelOutcome, String>> {
+        let outcome = self.outcome.clone();
+        Box::pin(async move { outcome })
+    }
+}
+
+/// R13: a policy cancellation whose adapter kill actually FAILS must not
+/// record a clean success -- the run is journaled `cancelled` (the intent
+/// stands) but `degradedControl` must be raised so `run/get` and the
+/// monitor see that the control plane could not act on this run.
+#[tokio::test]
+async fn a_failed_policy_kill_raises_degraded_control() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(ConfigurableCancelViolationDriver {
+            outcome: Err("kill failed: permission denied".to_string()),
+        }) as Arc<dyn RunDriver>);
+        // Default action is QuarantineAndCancel.
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+    let (_, _, run_id) = submit_run_with_driver(&mut client, "omp-1").await;
+
+    let get = client.call(5, "run/get", json!({ "runId": run_id })).await;
+    assert_eq!(get["result"]["state"], "cancelled", "{get:?}");
+    assert_eq!(
+        get["result"]["flags"]["degradedControl"], true,
+        "a failed kill must raise degradedControl: {get:?}"
+    );
+}
+
+/// R13's counter-case: an absent adapter is a clean outcome, not a kill
+/// failure -- `degradedControl` must stay false.
+#[tokio::test]
+async fn a_policy_cancel_with_no_running_adapter_is_clean() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(ConfigurableCancelViolationDriver {
+            outcome: Ok(batman_runtime::service::CancelOutcome::NoRunningAdapter),
+        }) as Arc<dyn RunDriver>);
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+    let (_, _, run_id) = submit_run_with_driver(&mut client, "omp-1").await;
+
+    let get = client.call(5, "run/get", json!({ "runId": run_id })).await;
+    assert_eq!(get["result"]["state"], "cancelled", "{get:?}");
+    assert_eq!(
+        get["result"]["flags"]["degradedControl"], false,
+        "an absent adapter is not a kill failure: {get:?}"
+    );
 }
 
 /// Submits a task/worker/run with `driver` as the injected `RunDriver`
@@ -650,7 +756,8 @@ impl RunDriver for CostCeilingRunDriver {
                 false,
                 Arc::clone(&ctx.violation_service),
                 Some(1.0),
-            );
+            )
+            .expect("built-in patterns always compile");
             sink.emit(AdapterEvent {
                 run_id: ctx.run_id,
                 task_id: ctx.task_id,
@@ -685,9 +792,9 @@ impl RunDriver for CostCeilingRunDriver {
         &self,
         run_id: RunId,
         scope: CancelScope,
-    ) -> AdapterFuture<'static, Result<(), String>> {
+    ) -> AdapterFuture<'static, Result<batman_runtime::service::CancelOutcome, String>> {
         self.cancel_calls.lock().push((run_id, scope));
-        Box::pin(async { Ok(()) })
+        Box::pin(async { Ok(batman_runtime::service::CancelOutcome::Cancelled) })
     }
 }
 
@@ -1575,7 +1682,7 @@ impl RunDriver for StartCapturingRunDriver {
         &self,
         run_id: RunId,
         scope: CancelScope,
-    ) -> AdapterFuture<'static, Result<(), String>> {
+    ) -> AdapterFuture<'static, Result<batman_runtime::service::CancelOutcome, String>> {
         self.inner.cancel_run(run_id, scope)
     }
 }
@@ -2889,9 +2996,15 @@ impl RunDriver for RealAdapterRunDriver {
         &self,
         _run_id: RunId,
         scope: CancelScope,
-    ) -> AdapterFuture<'static, Result<(), String>> {
+    ) -> AdapterFuture<'static, Result<batman_runtime::service::CancelOutcome, String>> {
         let adapter = Arc::clone(self.adapter.lock().as_ref().unwrap());
-        Box::pin(async move { adapter.cancel(scope).await.map_err(|e| e.to_string()) })
+        Box::pin(async move {
+            adapter
+                .cancel(scope)
+                .await
+                .map(|()| batman_runtime::service::CancelOutcome::Cancelled)
+                .map_err(|e| e.to_string())
+        })
     }
 }
 
@@ -3846,6 +3959,31 @@ async fn workspace_get_against_another_instances_lease_is_refused() {
     assert!(
         get.get("result").is_none(),
         "a refused get must not disclose the lease's path/mode/state: {get:?}"
+    );
+}
+
+/// R84: an unknown `leaseId` must be the same caller error (`-32602`) as
+/// an unowned one -- reporting `-32603` both misclassified the error and
+/// let a caller distinguish "exists but not yours" from "does not exist"
+/// by error code.
+#[tokio::test]
+async fn workspace_get_with_an_unknown_lease_id_is_invalid_params_not_internal() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let get = client
+        .call(
+            2,
+            "workspace/get",
+            json!({ "leaseId": uuid::Uuid::now_v7().to_string() }),
+        )
+        .await;
+    assert_eq!(
+        get["error"]["code"], -32602,
+        "an unknown leaseId is a caller error, not an internal one: {get:?}"
     );
 }
 

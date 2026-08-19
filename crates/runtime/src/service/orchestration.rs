@@ -1426,10 +1426,17 @@ impl OrchestrationService {
         principal: &ClientPrincipal,
         lease_id: String,
     ) -> Result<batman_protocol::WorkspaceInfo, ServiceError> {
-        let lease = self
-            .lease_service
-            .get(lease_id)
-            .map_err(|e| ServiceError::internal(e.to_string()))?;
+        let lease = self.lease_service.get(lease_id).map_err(|e| match e {
+            // An unknown leaseId is a caller error (-32602), exactly like
+            // an unowned one -- reporting it as -32603 was both a
+            // misclassification and a lease-existence oracle (R84). The
+            // message matches the ownership refusal so the two cases stay
+            // indistinguishable to a non-owner.
+            crate::workspace::LeaseError::NotFound { .. } => {
+                ServiceError::invalid_params("leaseId is not a lease on a run you own")
+            }
+            other => ServiceError::internal(other.to_string()),
+        })?;
         self.db
             .run_domain_op(query::run_owner_op(
                 lease.run_id,
@@ -1779,26 +1786,30 @@ impl OrchestrationService {
             })
             .unwrap_or_default();
 
-        let result = self
+        // Authorize on metadata only, BEFORE reading and hashing content:
+        // fetching first left a latency side-channel between "exists but
+        // not yours" and "does not exist" (R35). One refusal message for
+        // unknown, out-of-scope, and unstamped alike -- no oracle.
+        let refusal =
+            || ServiceError::invalid_params("artifactId is not an artifact on a task you own");
+        let metadata = self
             .artifact_store
-            .fetch_chunked(&artifact_id, offset, length)
-            .await;
-        // One error message for both "unknown id" and "out of scope" — no oracle.
-        let Ok(result) = result else {
-            return Err(ServiceError::invalid_params(
-                "artifactId is not an artifact on a task you own",
-            ));
-        };
-        let in_scope = result
-            .artifact
+            .fetch(&artifact_id)
+            .await
+            .map_err(|_| refusal())?;
+        let in_scope = metadata
             .run_id
             .as_deref()
             .is_some_and(|id| scope.iter().any(|s| s == id));
         if !in_scope {
-            return Err(ServiceError::invalid_params(
-                "artifactId is not an artifact on a task you own",
-            ));
+            return Err(refusal());
         }
+
+        let result = self
+            .artifact_store
+            .fetch_chunked(&artifact_id, offset, length)
+            .await
+            .map_err(|_| refusal())?;
 
         // Canonical `ArtifactFetchResult` serialization; byte-identical to
         // the previous hand-rolled shape (R55).
@@ -1942,15 +1953,24 @@ impl OrchestrationService {
             ));
         }
         let reason = str_field(params, "reason")?;
+        // The rationale is an audit fact (R59): an empty one is refused at
+        // the boundary rather than silently persisted as a record that a
+        // rationale exists when none does.
+        if reason.trim().is_empty() {
+            return Err(ServiceError::invalid_params("reason must not be empty"));
+        }
 
-        let decided_by = match params.get("decidedBy").and_then(Value::as_str) {
-            Some("human") => batman_protocol::DecidedBy::Human,
-            Some("model") | None => batman_protocol::DecidedBy::Model,
-            Some(other) => {
-                return Err(ServiceError::invalid_params(format!(
-                    "decidedBy must be \"human\" or \"model\"; got {other:?}"
-                )));
-            }
+        // Deserialize through the canonical serde tokens rather than a
+        // hand-rolled string match, so `DecidedBy`'s rename attributes stay
+        // the single authority (R34 review S-3). Absent defaults to Model.
+        let decided_by = match params.get("decidedBy") {
+            None | Some(Value::Null) => batman_protocol::DecidedBy::Model,
+            Some(value) => serde_json::from_value::<batman_protocol::DecidedBy>(value.clone())
+                .map_err(|_| {
+                    ServiceError::invalid_params(format!(
+                        "decidedBy must be \"human\" or \"model\"; got {value}"
+                    ))
+                })?,
         };
 
         let outcome = self
