@@ -110,6 +110,15 @@ export async function ensureRuntime(options: EnsureRuntimeOptions): Promise<Ensu
     stdio: "ignore",
     env: { ...process.env, BATMAN_BINARY_SOURCE: binary.source },
   });
+  // An async spawn failure (EAGAIN, EMFILE, a binary deleted between
+  // validation and exec) surfaces as an `error` event, not a throw. Without
+  // a listener it becomes an unhandled-error crash; with one it is logged
+  // and the connect backoff below reports the runtime as unreachable. This
+  // file has no logger seam, so console.error is deliberate. Attached
+  // before unref() so the event cannot race the listener registration.
+  child.on("error", (err) => {
+    console.error(`batman runtime: failed to spawn ${binary.path}: ${err instanceof Error ? err.message : String(err)}`);
+  });
   child.unref();
 
   // 4. Retry connecting with bounded exponential backoff. If a different
