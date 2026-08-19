@@ -155,6 +155,37 @@ test("batman_approval requires approvalId, decision, and reason for decide", () 
   expect(Object.keys(shape)).toEqual(["op", "runId", "approvalId", "decision", "reason"]);
 });
 
+test("batman_violation rejects a prose resolution the runtime would refuse (R16)", () => {
+  const { api, tools } = createFakeApi();
+  registerOrchestrationTools(api, {
+    getClient: () => {
+      throw new Error("not exercised in this test");
+    },
+  });
+  const violation = tools.get("batman_violation");
+  const schema = violation?.parameters as zod.ZodObject;
+  expect(schema.safeParse({ op: "decide", violationId: "v-1", resolution: "release" }).success).toBe(true);
+  expect(schema.safeParse({ op: "decide", violationId: "v-1", resolution: "cancel" }).success).toBe(true);
+  // The runtime accepts only "release" and "cancel"; prose must fail at the
+  // schema so the model gets a usable error before any RPC is issued.
+  expect(schema.safeParse({ op: "decide", violationId: "v-1", resolution: "please release the quarantined run" }).success).toBe(false);
+});
+
+test("batman_run rejects a workspaceMode outside shared/isolated/copy (R29)", () => {
+  const { api, tools } = createFakeApi();
+  registerOrchestrationTools(api, {
+    getClient: () => {
+      throw new Error("not exercised in this test");
+    },
+  });
+  const run = tools.get("batman_run");
+  const schema = run?.parameters as zod.ZodObject;
+  for (const mode of ["shared", "isolated", "copy"]) {
+    expect(schema.safeParse({ op: "submit", taskId: "t", workerId: "w", prompt: "p", workspaceMode: mode }).success).toBe(true);
+  }
+  expect(schema.safeParse({ op: "submit", taskId: "t", workerId: "w", prompt: "p", workspaceMode: "worktree" }).success).toBe(false);
+});
+
 // -------------------------------------------------- live-daemon round trip
 
 let daemon: ReturnType<typeof Bun.spawn> | undefined;
