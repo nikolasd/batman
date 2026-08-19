@@ -40,9 +40,6 @@ cargo test --test adapter_contract
 cargo test --test approval
 cargo test --test audit
 # ... (see docs/getting-started.md for full list)
-
-# Run with specific features
-cargo test --features "feature1,feature2"
 ```
 
 ### TypeScript Tests
