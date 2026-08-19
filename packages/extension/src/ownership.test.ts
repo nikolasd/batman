@@ -26,7 +26,7 @@ const BATCAVE = join(REPO_ROOT, "target", "debug", "batcave");
 
 // ---- Daemon lifecycle (self-contained) ----
 
-let daemonProcess: { kill: (s: string) => void; exited: Promise<unknown> } = { kill: () => {}, exited: Promise.resolve(undefined) };
+let daemonProcess: { kill: (s: "SIGTERM") => void; exited: Promise<unknown> } = { kill: () => {}, exited: Promise.resolve(undefined) };
 let stateDir = "";
 let repoDir = "";
 const savedEnv: Record<string, string | undefined> = {};
@@ -202,7 +202,7 @@ function restoreEnvVars(): void {
 
 interface FakeToolDefinition {
   readonly name: string;
-  readonly execute: (toolCallId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext) => Promise<unknown>;
+  readonly execute: (toolCallId: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: ExtensionContext) => Promise<{ isError?: boolean; details?: unknown }>;
 }
 
 interface FakeRegisteredCommand {

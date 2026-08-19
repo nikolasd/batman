@@ -320,7 +320,7 @@ test("batman_approval fails closed when humanRequired and no UI is available", a
 
   const { api, tools } = createFakeApi();
   registerOrchestrationTools(api, {
-    getClient: () => trackingClient as unknown as BatmanClient,
+    getClient: async () => trackingClient as unknown as BatmanClient,
   });
 
   const approvalTool = tools.get("batman_approval");

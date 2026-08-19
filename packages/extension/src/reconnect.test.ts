@@ -20,7 +20,7 @@ const BATCAVE = join(REPO_ROOT, "target", "debug", "batcave");
 
 // ---- Daemon lifecycle (self-contained, restartable) ----
 
-let daemonProcess: { kill: (s: string) => void; exited: Promise<unknown> } = { kill: () => {}, exited: Promise.resolve(undefined) };
+let daemonProcess: { kill: (s: "SIGTERM") => void; exited: Promise<unknown> } = { kill: () => {}, exited: Promise.resolve(undefined) };
 let stateDir = "";
 let repoDir = "";
 
