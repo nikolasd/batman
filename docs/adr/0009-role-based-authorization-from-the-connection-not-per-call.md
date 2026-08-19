@@ -43,6 +43,9 @@ list before routing to any handler. A method outside the caller's table returns
   at a glance against the other roles' lists in the same place.
 * No information leak: a `workerMcp` connection probing for `task/upsert` gets exactly the same
   response as probing for a method that doesn't exist at all.
+* The read/write asymmetry layered on top of this table — project-scoped reads open to any
+  same-user client, ownership gating only mutation — is decided separately in
+  [ADR-0024](0024-project-scoped-reads-are-open-ownership-gates-writes.md).
 * Every later milestone (orchestration, coordination) extended this same table rather than
   inventing a new authorization mechanism — the pattern held for eighteen new methods across three
   role tables without modification.
