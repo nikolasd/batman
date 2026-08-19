@@ -3,16 +3,21 @@ name: Build and Publish Release Assets
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-*'
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag or branch to build (e.g. v0.4.0). Only a v* tag triggers the release job."
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  # Fails fast on a mismatched tag before any build or conformance work.
-  # workflow_dispatch has no tag to check, so it skips the assertion.
+  # Fails fast on a mismatched tag before any build or conformance work. A
+  # workflow_dispatch run can name a tag in its `ref` input -- that case asserts
+  # the same agreement a tag push does; a dispatch on a branch has no tag to match.
   version-gate:
     runs-on: ubuntu-latest
     outputs:
@@ -22,10 +27,13 @@ jobs:
       - id: read
         name: Read the release version and check the tag
         run: |
-          VERSION=$(jq -r .version packages/extension/package.json)
-          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
-            echo "packages/extension/package.json has no version" >&2
-            exit 1
+          # workflow_dispatch has no ref of its own -- it checks out the ref the
+          # dispatcher named. Only assert tag-version agreement when that ref is a
+          # tag; a branch run (e.g. a CI check against main) has no tag to match.
+          REF="${{ inputs.ref }}"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ] && [ -n "$REF" ] && [ "$REF" = "v${VERSION}" ]; then
+            echo "GITHUB_REF_TYPE=tag" >> "$GITHUB_ENV"
+            echo "GITHUB_REF_NAME=v${VERSION}" >> "$GITHUB_ENV"
           fi
           if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
             echo "tag ${GITHUB_REF_NAME} does not match packages/extension/package.json version ${VERSION} (expected v${VERSION})" >&2
