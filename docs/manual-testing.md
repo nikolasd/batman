@@ -430,7 +430,6 @@ rather than papering over with a fabricated pass:
 
 | Adapter | Scenario(s) | Why |
 |---|---|---|
-| `ompRpc` | `approval` | This adapter's `normalize_frame` has no case for the real vendor's `extension_ui_request` frame at all; `ApprovalsCapability::Observable` is declared but not yet actually backed by any observable event. |
 | `codex` | `follow_up`, `cancellation_scope`, `session_resume`, `runtime_restart` | The installed `codex-cli` does not write a thread's rollout file to disk until a turn actually runs — resuming/following up/cancelling a turn on a never-turned thread needs a real (billed) turn, which fixture mode must never make. Live mode (4c) proves all four for real when its gate is set. |
 | `copilot` | `session_resume`, `runtime_restart` | The installed CLI (1.0.75) does not persist a never-prompted session across a process boundary — proving full persistence needs a real turn. |
 | `copilot` | `unexpected_child_observation` | ACP protocol v1 has no `session/update` variant this adapter maps to a nested-worker observation — a genuine, currently-unimplemented gap. |
