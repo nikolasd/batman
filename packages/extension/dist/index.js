@@ -6918,6 +6918,9 @@ var batman_schema_default = {
     },
     applyResult: {
       $ref: "#/$defs/ApplyResult"
+    },
+    workspaceInfo: {
+      $ref: "#/$defs/WorkspaceInfo"
     }
   },
   required: [
@@ -6936,7 +6939,8 @@ var batman_schema_default = {
     "artifactListResult",
     "artifactFetchResult",
     "inspectResult",
-    "applyResult"
+    "applyResult",
+    "workspaceInfo"
   ],
   $defs: {
     InitializeParams: {
@@ -9663,6 +9667,54 @@ Capped at 256 KiB per call.`,
         "leaseId",
         "success"
       ]
+    },
+    WorkspaceInfo: {
+      description: "Information about an active or recently-released lease, returned by `get`.",
+      type: "object",
+      properties: {
+        leaseId: {
+          type: "string"
+        },
+        runId: {
+          $ref: "#/$defs/RunId"
+        },
+        mode: {
+          $ref: "#/$defs/LeaseMode"
+        },
+        isolationKind: {
+          $ref: "#/$defs/IsolationKind"
+        },
+        path: {
+          type: "string"
+        },
+        state: {
+          $ref: "#/$defs/WorkspaceState"
+        },
+        baseRevision: {
+          type: "string"
+        }
+      },
+      additionalProperties: false,
+      required: [
+        "leaseId",
+        "runId",
+        "mode",
+        "isolationKind",
+        "path",
+        "state",
+        "baseRevision"
+      ]
+    },
+    WorkspaceState: {
+      description: "The lifecycle state of a workspace lease.",
+      type: "string",
+      enum: [
+        "allocating",
+        "active",
+        "dirty",
+        "released",
+        "cleanupFailed"
+      ]
     }
   }
 };
@@ -9693,6 +9745,7 @@ var validateArtifactListResult = def("ArtifactListResult");
 var validateArtifactFetchResult = def("ArtifactFetchResult");
 var validateInspectResult = def("InspectResult");
 var validateApplyResult = def("ApplyResult");
+var validateWorkspaceInfo = def("WorkspaceInfo");
 var validateEventEnvelope = def("EventEnvelope");
 var validateJsonRpcResponse = def("JsonRpcResponse");
 var validateJsonRpcErrorResponse = def("JsonRpcErrorResponse");
@@ -9727,7 +9780,8 @@ var RESULT_VALIDATORS = {
   "artifact/list": validateArtifactListResult,
   "artifact/fetch": validateArtifactFetchResult,
   "workspace/inspect": validateInspectResult,
-  "workspace/apply": validateApplyResult
+  "workspace/apply": validateApplyResult,
+  "workspace/get": validateWorkspaceInfo
 };
 
 class JsonRpcRemoteError extends Error {
