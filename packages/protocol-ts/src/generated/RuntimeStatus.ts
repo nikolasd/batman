@@ -22,7 +22,7 @@ protocol: ProtocolVersion,
  */
 projectId: ProjectId, 
 /**
- * Number of active runs. Always `0` at foundation scope.
+ * Number of runs the runtime's adapter registry is actively driving.
  */
 activeRuns: number, 
 /**

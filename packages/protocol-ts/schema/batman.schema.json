@@ -2544,7 +2544,7 @@
           "$ref": "#/$defs/ProjectId"
         },
         "activeRuns": {
-          "description": "Number of active runs. Always `0` at foundation scope.",
+          "description": "Number of runs the runtime's adapter registry is actively driving.",
           "type": "integer",
           "format": "uint32",
           "minimum": 0
