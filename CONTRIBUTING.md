@@ -152,9 +152,9 @@ docs/                     Engineering documentation (start here: docs/getting-st
 Maintainers cut a release by pushing a version tag, not by publishing manually:
 
 ```bash
-# Bump the version in packages/extension/package.json first, and keep
-# .claude-plugin/marketplace.json's metadata.version and its plugin entry's
-# version in lockstep with it (see the release checklist below).
+# Bump the version in packages/extension/package.json first;
+# `bun run generate --check` (CI's generate-check job) enforces that
+# .claude-plugin/marketplace.json stays in lockstep with it.
 git tag v<version>
 git push origin v<version>
 ```
@@ -169,7 +169,7 @@ Pushing a `v*` tag triggers [`.github/workflows/release.yml`](.github/workflows/
 
 **Release checklist, before tagging:**
 - `packages/extension/dist/index.js` is rebuilt (`bun run build`) and the diff is committed — it's the exact file a marketplace-installed plugin loads, and CI's `bundle-check` job rejects a stale one.
-- `.claude-plugin/marketplace.json`'s `metadata.version` and its `batman` plugin entry's `version` match `packages/extension/package.json`'s version.
+- `.claude-plugin/marketplace.json`'s versions are enforced automatically: `bun run generate --check` fails on any drift from `packages/extension/package.json`, so no manual check is needed.
 
 ## Documentation
 
