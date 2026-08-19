@@ -3309,6 +3309,30 @@ async fn run_cancel_against_another_instances_run_is_refused() {
         after, before,
         "a refused cancel must journal nothing: before {before}, after {after}"
     );
+
+    // W3 precedence pin: the owner now genuinely cancels, reaching a
+    // terminal state -- the observable contract of the reordering in
+    // `transition_run` (R77) is that a *non-owner's* cancel of that
+    // terminal run still classifies as `NotOwner` (-32602), not
+    // `ILLEGAL_TRANSITION` (-32100), because authorization is now
+    // checked before `check_transition` runs. Contrast the *owner's*
+    // own second cancel of a settled run
+    // (`run_cancel_on_settled_run_is_illegal_transition`), which is
+    // still -32100: that caller clears ownership, so validity is what's
+    // left to fail.
+    let owner_cancel = owner.call(8, "run/cancel", json!({ "runId": run_id })).await;
+    assert!(
+        owner_cancel.get("error").is_none(),
+        "owner's own cancel must succeed, reaching a terminal state: {owner_cancel:?}"
+    );
+
+    let cancel_terminal = attacker
+        .call(3, "run/cancel", json!({ "runId": run_id }))
+        .await;
+    assert_eq!(
+        cancel_terminal["error"]["code"], -32602,
+        "a non-owner's cancel of an already-terminal run must classify as NotOwner, not ILLEGAL_TRANSITION: {cancel_terminal:?}"
+    );
 }
 
 /// RED: `run_retry` (`dispatch` calls `self.run_retry(params).await`
@@ -3462,6 +3486,19 @@ async fn workspace_acquire_against_another_instances_run_is_refused() {
         workspace_event_kinds_for_run(&replay, &run_id).is_empty(),
         "a refused acquire must not have journaled any workspace event: {replay:?}"
     );
+
+    // W2: the journal assertion above cannot distinguish "checked before
+    // acquiring" from "checked after acquiring, with the leaked lease
+    // never journaled" -- leases live in `LeaseService`'s own DB, not
+    // the runs DB the journal assertion reads. `run/get` reads the lease
+    // DB directly (`lease_service.active_for_run`, orchestration.rs
+    // :924-926), so a leaked lease would show up here even though it
+    // never reached the journal.
+    let get = owner.call(7, "run/get", json!({ "runId": run_id })).await;
+    assert!(
+        get["result"]["workspacePath"].is_null(),
+        "a refused acquire must not have allocated a lease either: {get:?}"
+    );
 }
 
 /// RED: `coordination_child_decide` (`dispatch` calls
@@ -3507,6 +3544,44 @@ async fn coordination_child_decide_against_another_instances_run_is_refused() {
     assert_eq!(
         after, before,
         "a refused decide must journal nothing: before {before}, after {after}"
+    );
+
+    // W1: the deny arm above never exercises the accept arm's ownership
+    // check (`decide_child`'s guarded write, reached via
+    // `coordination_child_decide`'s `"accept"` branch,
+    // orchestration.rs:2078) -- deleting that check alone would leave
+    // this test green without it. An attacker's "accept" with its own,
+    // fabricated child ids must be refused identically to "deny".
+    let accept = attacker
+        .call(
+            3,
+            "coordination/child/decide",
+            json!({
+                "parentRunId": run_id_str,
+                "decision": "accept",
+                "childTaskId": TaskId::new().to_string(),
+                "childWorkerId": WorkerId::new().to_string(),
+                "childRunId": RunId::new().to_string(),
+            }),
+        )
+        .await;
+    assert_eq!(
+        accept["error"]["code"], -32602,
+        "coordination/child/decide accept against another instance's run must be refused: {accept:?}"
+    );
+
+    let get_after_accept = owner
+        .call(9, "run/get", json!({ "runId": run_id_str }))
+        .await;
+    assert_eq!(
+        get_after_accept["result"]["state"], "waitingPeer",
+        "a refused accept must leave the run awaiting its own owner's decision: {get_after_accept:?}"
+    );
+
+    let after_accept = event_count(&mut owner, 10).await;
+    assert_eq!(
+        after_accept, before,
+        "a refused accept must journal nothing: before {before}, after {after_accept}"
     );
 }
 
