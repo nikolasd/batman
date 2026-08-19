@@ -1,5 +1,5 @@
-// `batman_artifact`: lists and fetches artifacts workers published for the
-// current task (patches, commit lists, conflict reports, workspace
+// `batman_artifact`: lists and fetches artifacts published by runs this
+// session owns (patches, commit lists, conflict reports, workspace
 // manifests). Both ops are tier `read` -- neither mutates anything; fetching
 // an artifact only streams bytes the runtime already stored.
 

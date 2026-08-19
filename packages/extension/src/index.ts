@@ -1,8 +1,10 @@
 // The `@nikolasd/batman` OMP extension entry point. Registers `batman_status`
-// (an LLM-callable tool), `/batman-status` (a slash command), and every
-// deterministic orchestration tool (`batman_task`, `batman_worker`,
-// `batman_profile`, `batman_run`, `batman_workspace`, `batman_artifact`,
-// `batman_child`, `batman_violation`, `batman_message`, `batman_approval`,
+// (an LLM-callable tool), `/batman-status` (a slash command),
+// `batman_doctor`/`/batman-doctor`, `batman_runtime_install`/
+// `/batman-runtime-install`, the `/batman` monitor, and every deterministic
+// orchestration tool (`batman_task`, `batman_worker`, `batman_profile`,
+// `batman_run`, `batman_workspace`, `batman_artifact`, `batman_child`,
+// `batman_violation`, `batman_message`, `batman_approval`,
 // `batman_reconcile`). All share the single cached-client path: OMP loading
 // this extension starts or reconnects to the per-repository `batcave` runtime
 // once per session, and every tool reuses that connection.

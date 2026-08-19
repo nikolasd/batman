@@ -128,6 +128,13 @@ All gates must be `true` before production use.
 
 ## Usage
 
+Examples below invoke `batcave` bare. Nothing puts it on your `PATH`: a source build lands at
+`target/debug/batcave` (or `target/release/batcave`), and an installed runtime lives at
+`<state-root>/bin/<version>/batcave` (default `~/.omp/batman/bin/<version>/batcave`, fetched by
+`/batman-runtime-install` and invoked by absolute path from the extension). Alias or symlink it,
+or substitute the full path in every command. To point the extension at your local build, set
+`OMP_BATMAN_BINARY="$PWD/target/debug/batcave"`.
+
 ### Start the Server
 
 `--repo` is required; `--state-dir` should point at the same state root the OMP extension would
