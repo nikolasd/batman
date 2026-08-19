@@ -54,6 +54,9 @@
     },
     "workspaceInfo": {
       "$ref": "#/$defs/WorkspaceInfo"
+    },
+    "policyViolationListResult": {
+      "$ref": "#/$defs/PolicyViolationListResult"
     }
   },
   "required": [
@@ -73,7 +76,8 @@
     "artifactFetchResult",
     "inspectResult",
     "applyResult",
-    "workspaceInfo"
+    "workspaceInfo",
+    "policyViolationListResult"
   ],
   "$defs": {
     "InitializeParams": {
@@ -406,49 +410,58 @@
     },
     "BatmanMethod": {
       "description": "All JSON-RPC methods implemented by the BATMAN runtime, including\norchestration extension methods.\n\nSerialized as the literal method name string used on the wire.",
-      "type": "string",
-      "enum": [
-        "initialize",
-        "runtime/status",
-        "events/subscribe",
-        "events/replay",
-        "runtime/shutdown",
-        "task/upsert",
-        "task/get",
-        "worker/create",
-        "worker/list",
-        "worker/get",
-        "run/submit",
-        "run/list",
-        "run/get",
-        "run/retry",
-        "run/cancel",
-        "message/send",
-        "message/list",
-        "approval/list",
-        "approval/decide",
-        "coordination/child/list",
-        "coordination/child/decide",
-        "coordination/task",
-        "coordination/peers",
-        "coordination/send",
-        "coordination/requestChild",
-        "coordination/publishArtifact",
-        "coordination/reportBlocked",
-        "coordination/askPolicy",
-        "coordination/peerWorkspace",
-        "coordination/artifactList",
-        "coordination/artifactFetch",
-        "reconcile/omp",
-        "profile/register",
-        "workspace/acquire",
-        "workspace/get",
-        "workspace/release",
-        "workspace/inspect",
-        "workspace/apply",
-        "artifact/list",
-        "artifact/fetch",
-        "policy/violation/decide"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "initialize",
+            "runtime/status",
+            "events/subscribe",
+            "events/replay",
+            "runtime/shutdown",
+            "task/upsert",
+            "task/get",
+            "worker/create",
+            "worker/list",
+            "worker/get",
+            "run/submit",
+            "run/list",
+            "run/get",
+            "run/retry",
+            "run/cancel",
+            "message/send",
+            "message/list",
+            "approval/list",
+            "approval/decide",
+            "coordination/child/list",
+            "coordination/child/decide",
+            "coordination/task",
+            "coordination/peers",
+            "coordination/send",
+            "coordination/requestChild",
+            "coordination/publishArtifact",
+            "coordination/reportBlocked",
+            "coordination/askPolicy",
+            "coordination/peerWorkspace",
+            "coordination/artifactList",
+            "coordination/artifactFetch",
+            "reconcile/omp",
+            "profile/register",
+            "workspace/acquire",
+            "workspace/get",
+            "workspace/release",
+            "workspace/inspect",
+            "workspace/apply",
+            "artifact/list",
+            "artifact/fetch",
+            "policy/violation/decide"
+          ]
+        },
+        {
+          "description": "Lists a project's recorded policy violations with their decision\nstate, so an operator can find which violation still holds a\nquarantine without diffing the raw event stream (R80).",
+          "type": "string",
+          "const": "policy/violation/list"
+        }
       ]
     },
     "RuntimeCapabilities": {
@@ -2832,6 +2845,89 @@
         "dirty",
         "released",
         "cleanupFailed"
+      ]
+    },
+    "PolicyViolationListResult": {
+      "description": "Result of `policy/violation/list`.",
+      "type": "object",
+      "properties": {
+        "violations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PolicyViolationSummary"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "violations"
+      ]
+    },
+    "PolicyViolationSummary": {
+      "description": "One recorded policy violation, projected exactly from the\n`policy_violations` table: an undecided row (`resolution` null) on a\nquarantined run is the one holding the quarantine.",
+      "type": "object",
+      "properties": {
+        "violationId": {
+          "$ref": "#/$defs/PolicyViolationId"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "workerId": {
+          "type": "string"
+        },
+        "vendorChildId": {
+          "description": "The vendor-reported child id, when the violation had a vendor\nchild at all (a cost ceiling does not).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vendorParentRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "action": {
+          "description": "The action policy applied when the violation was recorded\n(`quarantine`, `cancel`, `quarantineAndCancel`).",
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "resolvedAt": {
+          "description": "Set once decided via `policy/violation/decide`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolution": {
+          "description": "`\"release\"` or `\"cancel\"` once decided; `None` while open.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolvedBy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "violationId",
+        "runId",
+        "taskId",
+        "workerId",
+        "action",
+        "createdAt"
       ]
     }
   }

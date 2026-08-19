@@ -235,10 +235,10 @@ impl ClientPrincipal {
             CoordinationChildList, CoordinationPeerWorkspace, CoordinationPeers,
             CoordinationPublishArtifact, CoordinationReportBlocked, CoordinationRequestChild,
             CoordinationSend, CoordinationTask, EventsReplay, EventsSubscribe, MessageList,
-            MessageSend, PolicyViolationDecide, ProfileRegister, ReconcileOmp, RunCancel, RunGet,
-            RunList, RunRetry, RunSubmit, RuntimeShutdown, RuntimeStatus, TaskGet, TaskUpsert,
-            WorkerCreate, WorkerGet, WorkerList, WorkspaceAcquire, WorkspaceApply, WorkspaceGet,
-            WorkspaceInspect, WorkspaceRelease,
+            MessageSend, PolicyViolationDecide, PolicyViolationList, ProfileRegister, ReconcileOmp,
+            RunCancel, RunGet, RunList, RunRetry, RunSubmit, RuntimeShutdown, RuntimeStatus,
+            TaskGet, TaskUpsert, WorkerCreate, WorkerGet, WorkerList, WorkspaceAcquire,
+            WorkspaceApply, WorkspaceGet, WorkspaceInspect, WorkspaceRelease,
         };
         match self.role {
             ClientRole::OmpExtension => vec![
@@ -265,6 +265,7 @@ impl ClientPrincipal {
                 ReconcileOmp,
                 ProfileRegister,
                 PolicyViolationDecide,
+                PolicyViolationList,
                 WorkspaceAcquire,
                 WorkspaceGet,
                 WorkspaceRelease,

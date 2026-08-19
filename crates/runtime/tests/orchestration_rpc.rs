@@ -1174,6 +1174,71 @@ async fn second_nested_worker_observed_on_an_already_actioned_run_never_double_c
     assert_eq!(get["result"]["state"], "cancelled");
 }
 
+/// R80: `policy/violation/list` is the discovery surface for which
+/// violation still holds a quarantine -- two recorded violations, one
+/// decided, must both list with their real decision state.
+#[tokio::test]
+async fn policy_violation_list_reports_decision_state_for_every_violation() {
+    let driver = Arc::new(ViolationTriggeringRunDriver::default());
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::clone(&driver) as Arc<dyn RunDriver>);
+        c.nested_violation_action = batman_runtime::config::NestedViolationAction::Quarantine;
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+    let (_, _, run_id) = submit_run_with_driver(&mut client, "omp-1").await;
+
+    // A second violation on the same quarantined run.
+    driver
+        .emit_nested_worker_observed("child-vendor-2", "parent-vendor-2")
+        .await
+        .expect("the second observation journals");
+
+    let list = client
+        .call(5, "policy/violation/list", json!({ "runId": run_id }))
+        .await;
+    assert!(list.get("error").is_none(), "{list:?}");
+    let violations = list["result"]["violations"].as_array().unwrap();
+    assert_eq!(violations.len(), 2, "{violations:?}");
+    assert!(
+        violations.iter().all(|v| v["resolution"].is_null()),
+        "both start undecided: {violations:?}"
+    );
+
+    // Decide one; the list must now show exactly one open.
+    let decided_id = violations[0]["violationId"].as_str().unwrap().to_string();
+    let decide = client
+        .call(
+            6,
+            "policy/violation/decide",
+            json!({ "violationId": decided_id, "resolution": "release" }),
+        )
+        .await;
+    assert_eq!(decide["result"]["outcome"], "decided", "{decide:?}");
+    assert_eq!(
+        decide["result"]["quarantineCleared"], false,
+        "another violation is still open: {decide:?}"
+    );
+
+    let list = client
+        .call(7, "policy/violation/list", json!({ "runId": run_id }))
+        .await;
+    let violations = list["result"]["violations"].as_array().unwrap();
+    let open: Vec<_> = violations
+        .iter()
+        .filter(|v| v["resolution"].is_null())
+        .collect();
+    let decided: Vec<_> = violations
+        .iter()
+        .filter(|v| !v["resolution"].is_null())
+        .collect();
+    assert_eq!(open.len(), 1, "{violations:?}");
+    assert_eq!(decided.len(), 1, "{violations:?}");
+    assert_eq!(decided[0]["violationId"], decided_id.as_str());
+    assert_eq!(decided[0]["resolution"], "release");
+    assert_eq!(decided[0]["resolvedBy"], "omp-1");
+}
+
 /// R79: two CONCURRENT cancelling observations -- both journaled before
 /// either transition commits, so both read `already_actioned = false` --
 /// must both report success. The loser's transition fails because the

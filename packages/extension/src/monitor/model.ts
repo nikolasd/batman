@@ -43,6 +43,10 @@ export interface MonitorRow {
    *  the raw message text, which this layer never sees. */
   readonly latestActivity?: string;
   readonly pendingApprovalCount: number;
+  /** Open (undecided) policy violations on this run, violationId -> code.
+   *  An entry here on a quarantined run is the violation holding the
+   *  quarantine (R80). */
+  readonly openViolations: Readonly<Record<string, string>>;
   /** Set by the controller from `worker/get`; absent until enriched. */
   readonly adapter?: string;
   readonly model?: string;
@@ -91,6 +95,7 @@ export function reduceEvent(state: MonitorState, envelope: EventEnvelope): Monit
     state: "queued",
     flags: EMPTY_FLAGS,
     pendingApprovalCount: 0,
+    openViolations: {},
     firstSeenAt: envelope.timestamp,
     lastEventAt: envelope.timestamp,
     lastAppliedSequence: envelope.sequence,
@@ -104,6 +109,7 @@ export function reduceEvent(state: MonitorState, envelope: EventEnvelope): Monit
     flags: patch.flags ?? base.flags,
     latestActivity: patch.latestActivity ?? base.latestActivity,
     pendingApprovalCount: patch.pendingApprovalCountDelta !== undefined ? Math.max(0, base.pendingApprovalCount + patch.pendingApprovalCountDelta) : base.pendingApprovalCount,
+    openViolations: applyViolationPatch(base.openViolations, patch),
     lastEventAt: envelope.timestamp,
     lastAppliedSequence: envelope.sequence,
   };
@@ -156,6 +162,22 @@ interface EventPatch {
   readonly flags?: MonitorFlags;
   readonly latestActivity?: string;
   readonly pendingApprovalCountDelta?: number;
+  /** A newly recorded, undecided violation: id and code. */
+  readonly addViolation?: { readonly violationId: string; readonly code: string };
+  /** A decided violation to remove from the open set. */
+  readonly removeViolationId?: string;
+}
+
+function applyViolationPatch(open: Readonly<Record<string, string>>, patch: EventPatch): Readonly<Record<string, string>> {
+  if (patch.addViolation !== undefined) {
+    return { ...open, [patch.addViolation.violationId]: patch.addViolation.code };
+  }
+  if (patch.removeViolationId !== undefined && patch.removeViolationId in open) {
+    const next = { ...open };
+    delete next[patch.removeViolationId];
+    return next;
+  }
+  return open;
 }
 
 function eventPatch(envelope: EventEnvelope): EventPatch | undefined {
@@ -213,6 +235,32 @@ function eventPatch(envelope: EventEnvelope): EventPatch | undefined {
       }
       const label = event.payload.kind === "childWorkerRequested" ? "child worker requested" : event.payload.kind === "childWorkerAccepted" ? "child worker accepted" : "child worker request denied";
       return { runId, latestActivity: label };
+    }
+    case "policyViolationRecorded": {
+      const kind = event.payload.kind;
+      if (typeof kind !== "object" || !("policyViolationRecorded" in kind)) {
+        return undefined;
+      }
+      const recorded = kind.policyViolationRecorded;
+      return {
+        runId: event.payload.runId,
+        taskId: event.payload.taskId,
+        workerId: event.payload.workerId,
+        latestActivity: `policy violation: ${recorded.code}`,
+        addViolation: { violationId: recorded.violation_id, code: recorded.code },
+      };
+    }
+    case "policyViolationDecided": {
+      const kind = event.payload.kind;
+      if (typeof kind !== "object" || !("policyViolationDecided" in kind)) {
+        return undefined;
+      }
+      const decided = kind.policyViolationDecided;
+      return {
+        runId: event.payload.runId,
+        latestActivity: `violation decided: ${decided.resolution}`,
+        removeViolationId: decided.violation_id,
+      };
     }
     case "adapterUsageEvent": {
       // `inputTokens`/`outputTokens` are `bigint`: interpolated directly,

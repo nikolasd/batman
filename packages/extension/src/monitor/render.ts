@@ -190,6 +190,13 @@ export function renderRowDetails(row: MonitorRow): string {
   if (row.flags.childrenActive) {
     lines.push("Children: active -- list and decide with batman_child");
   }
+  // An open (undecided) violation on a quarantined run is the one
+  // holding the quarantine (R80): name each so the operator can decide
+  // it with batman_violation instead of diffing the event stream.
+  const openViolations = Object.entries(row.openViolations);
+  if (openViolations.length > 0) {
+    lines.push(`Open violations: ${openViolations.map(([id, code]) => `${code} (${id})`).join(", ")} -- decide with batman_violation`);
+  }
   lines.push(`Pending approvals: ${row.pendingApprovalCount}`);
   if (row.workspaceMode !== undefined) {
     lines.push(`Workspace mode: ${row.workspaceMode}`);

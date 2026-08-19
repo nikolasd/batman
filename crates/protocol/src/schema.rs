@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ApplyResult, ArtifactFetchResult, ArtifactListResult, DisplayBackend, DisplayConfig,
     DisplayStatus, EventEnvelope, InitializeParams, InitializeResult, InspectResult,
-    JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, RuntimeEvent,
-    RuntimeStatus, WorkspaceInfo,
+    JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+    PolicyViolationListResult, RuntimeEvent, RuntimeStatus, WorkspaceInfo,
 };
 
 /// Root schema document referencing every exported request/result/event
@@ -44,6 +44,7 @@ pub struct ProtocolDocument {
     inspect_result: InspectResult,
     apply_result: ApplyResult,
     workspace_info: WorkspaceInfo,
+    policy_violation_list_result: PolicyViolationListResult,
 }
 
 /// Renders the [`ProtocolDocument`] schema as pretty JSON with a trailing

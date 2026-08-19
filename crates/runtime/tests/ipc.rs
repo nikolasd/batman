@@ -563,6 +563,7 @@ async fn omp_extension_receives_all_mutation_methods() {
             "reconcile/omp",
             "profile/register",
             "policy/violation/decide",
+            "policy/violation/list",
             "workspace/acquire",
             "workspace/get",
             "workspace/release",

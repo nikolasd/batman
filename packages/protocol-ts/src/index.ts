@@ -49,6 +49,8 @@ export type * from "./generated/LeaseRequest";
 export type * from "./generated/MessageId";
 export type * from "./generated/OperationId";
 export type * from "./generated/PolicyViolationId";
+export type * from "./generated/PolicyViolationListResult";
+export type * from "./generated/PolicyViolationSummary";
 export type * from "./generated/ProjectId";
 export type * from "./generated/ProtocolVersion";
 export type * from "./generated/ReleaseRequest";

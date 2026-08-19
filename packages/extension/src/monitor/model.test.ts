@@ -273,5 +273,57 @@ test("only the sanitized fields the RuntimeEvent union carries ever reach a row 
   // RuntimeEvent::MessageEvent carries no payload field on the wire).
   expect(row?.latestActivity).toBe("messageSent sent");
   expect(JSON.stringify(row, (_key, value) => (typeof value === "bigint" ? value.toString() : value))).not.toContain("payload");
-  expect(Object.keys(row ?? {}).sort()).toEqual(["runId", "taskId", "workerId", "state", "flags", "latestActivity", "pendingApprovalCount", "firstSeenAt", "lastEventAt", "lastAppliedSequence"].sort());
+  expect(Object.keys(row ?? {}).sort()).toEqual(["runId", "taskId", "workerId", "state", "flags", "latestActivity", "pendingApprovalCount", "openViolations", "firstSeenAt", "lastEventAt", "lastAppliedSequence"].sort());
+});
+
+// ------------------------------------------------- open violation tracking
+
+test("a policyViolationRecorded event appears in openViolations and a decided one removes it (R80)", () => {
+  const recorded = envelope({
+    runId: "run-1",
+    event: {
+      type: "policyViolationRecorded",
+      payload: {
+        kind: {
+          policyViolationRecorded: {
+            violation_id: "violation-1",
+            code: "nested_worker_denied",
+            observed_event_sequence: 5n,
+            policy_fingerprint: "sha256:abc",
+            vendor_child_id: "child-1",
+            vendor_parent_ref: "parent-1",
+            action: "quarantine",
+          },
+        },
+        runId: "run-1",
+        taskId: "task-1",
+        workerId: "worker-1",
+      },
+    },
+  });
+  const afterRecorded = reduceEvents(EMPTY_MONITOR_STATE, [runEvent("run-1", "task-1", "worker-1", "working"), recorded]);
+  expect(afterRecorded.rows["run-1"]?.openViolations).toEqual({ "violation-1": "nested_worker_denied" });
+  expect(afterRecorded.rows["run-1"]?.latestActivity).toBe("policy violation: nested_worker_denied");
+
+  const decided = envelope({
+    runId: "run-1",
+    event: {
+      type: "policyViolationDecided",
+      payload: {
+        kind: {
+          policyViolationDecided: {
+            violation_id: "violation-1",
+            resolution: "release",
+            resolved_by: "omp-1",
+          },
+        },
+        runId: "run-1",
+        taskId: "task-1",
+        workerId: "worker-1",
+      },
+    },
+  });
+  const afterDecided = reduceEvent(afterRecorded, decided);
+  expect(afterDecided.rows["run-1"]?.openViolations).toEqual({});
+  expect(afterDecided.rows["run-1"]?.latestActivity).toBe("violation decided: release");
 });

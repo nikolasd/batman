@@ -121,4 +121,9 @@ pub enum BatmanMethod {
     // Policy: violation resolution
     #[serde(rename = "policy/violation/decide")]
     PolicyViolationDecide,
+    /// Lists a project's recorded policy violations with their decision
+    /// state, so an operator can find which violation still holds a
+    /// quarantine without diffing the raw event stream (R80).
+    #[serde(rename = "policy/violation/list")]
+    PolicyViolationList,
 }

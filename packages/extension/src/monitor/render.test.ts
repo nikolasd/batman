@@ -21,6 +21,7 @@ function row(overrides: Partial<MonitorRow>): MonitorRow {
       childrenActive: false,
     },
     pendingApprovalCount: 0,
+    openViolations: {},
     firstSeenAt: "2026-01-01T00:00:00Z",
     lastEventAt: "2026-01-01T00:00:00Z",
     lastAppliedSequence: 1n,

@@ -19,6 +19,7 @@ mod run;
 mod schema;
 mod task;
 mod version;
+mod violation;
 mod worker;
 mod workspace;
 
@@ -55,6 +56,7 @@ pub use task::TaskRef;
 pub use version::{
     PROTOCOL_VERSION, ProtocolVersion, VersionRange, supported_range_text, supported_versions,
 };
+pub use violation::{PolicyViolationListResult, PolicyViolationSummary};
 pub use worker::{Worker, WorkerProfileRef};
 pub use workspace::{
     ApplyRequest, ApplyResult, ApplyStrategy, InspectRequest, InspectResult, IsolationKind,

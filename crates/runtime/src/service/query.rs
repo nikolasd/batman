@@ -162,6 +162,52 @@ pub fn run_list_op(task_id: Option<TaskId>, project_id: ProjectId) -> DomainClos
     })
 }
 
+/// Lists every recorded policy violation for `project_id`, newest first,
+/// with its decision state -- the discovery surface for "which violation
+/// still holds this run's quarantine" (R80). Project-wide like the other
+/// read ops (`run_list_op`, `approval_list_op`); optionally narrowed to
+/// one run.
+pub fn policy_violation_list_op(run_id: Option<RunId>, project_id: ProjectId) -> DomainClosure {
+    Box::new(move |conn| {
+        let base = "SELECT v.violation_id, v.run_id, v.task_id, v.worker_id,
+                           v.vendor_child_id, v.vendor_parent_ref, v.action, v.created_at,
+                           v.resolved_at, v.resolution, v.resolved_by
+                    FROM policy_violations v
+                    JOIN tasks t ON v.task_id = t.task_id
+                    WHERE t.project_id = ?1";
+        let row_to_json = |row: &rusqlite::Row<'_>| -> rusqlite::Result<Value> {
+            Ok(json!({
+                "violationId": row.get::<_, String>(0)?,
+                "runId": row.get::<_, String>(1)?,
+                "taskId": row.get::<_, String>(2)?,
+                "workerId": row.get::<_, String>(3)?,
+                "vendorChildId": row.get::<_, Option<String>>(4)?,
+                "vendorParentRef": row.get::<_, Option<String>>(5)?,
+                "action": row.get::<_, String>(6)?,
+                "createdAt": row.get::<_, String>(7)?,
+                "resolvedAt": row.get::<_, Option<String>>(8)?,
+                "resolution": row.get::<_, Option<String>>(9)?,
+                "resolvedBy": row.get::<_, Option<String>>(10)?,
+            }))
+        };
+        let rows = if let Some(run_id) = run_id {
+            let sql = format!("{base} AND v.run_id = ?2 ORDER BY v.created_at DESC");
+            let mut stmt = conn.prepare(&sql)?;
+            stmt.query_map(
+                rusqlite::params![project_id.to_string(), run_id.to_string()],
+                row_to_json,
+            )?
+            .collect::<Result<Vec<_>, _>>()?
+        } else {
+            let sql = format!("{base} ORDER BY v.created_at DESC");
+            let mut stmt = conn.prepare(&sql)?;
+            stmt.query_map([project_id.to_string()], row_to_json)?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        Ok(json!({ "violations": rows }))
+    })
+}
+
 fn row_to_run_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
     Ok(json!({
         "runId": row.get::<_, String>(0)?,

@@ -25,8 +25,8 @@ Call `batman_approval { op: "list" }` to see pending approvals. Each approval ha
 
 A policy violation quarantines a run — it makes no further progress until every unresolved violation on it is decided. A run can have more than one open violation at once.
 
-- Call `batman_violation { op: "decide", violationId, resolution }` to decide one violation. The `resolution` describes the decision (e.g. "release the quarantined run" or "cancel it"). A "release" only lifts quarantine if this was the *last* unresolved violation on the run — the result's `quarantineCleared` field (`true`/`false`, absent for `cancel` or an already-decided replay) says whether it did; `false` means a different violation is still open and must be decided too.
-- There is **deliberately no `list` op** for violations. They surface via the event stream and the `/batman` monitor, not a query. If you need to find a violation, check `/batman` or look for violation events in the stream.
+- Call `batman_violation { op: "list" }` (optionally with `runId`) to see every recorded violation and its decision state. An entry with `resolution: null` on a quarantined run is the one holding the quarantine.
+- Call `batman_violation { op: "decide", violationId, resolution }` to decide one violation. The `resolution` is exactly `"release"` (resume the quarantined run) or `"cancel"` (end it). A "release" only lifts quarantine if this was the *last* unresolved violation on the run — the result's `quarantineCleared` field (`true`/`false`, absent for `cancel` or an already-decided replay) says whether it did; `false` means a different violation is still open — find it with `op: "list"`.
 
 ## Child spawn requests
 

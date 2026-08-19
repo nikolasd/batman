@@ -326,6 +326,7 @@ impl OrchestrationService {
             BatmanMethod::PolicyViolationDecide => {
                 self.policy_violation_decide(principal, params).await
             }
+            BatmanMethod::PolicyViolationList => self.policy_violation_list(params).await,
             BatmanMethod::WorkspaceAcquire => self.workspace_acquire(principal, params).await,
             BatmanMethod::WorkspaceGet => self.workspace_get(principal, params).await,
             BatmanMethod::WorkspaceRelease => self.workspace_release(principal, params).await,
@@ -2089,6 +2090,24 @@ impl OrchestrationService {
             response["quarantineCleared"] = json!(cleared);
         }
         Ok(response)
+    }
+
+    /// `policy/violation/list`: the discovery surface for which violation
+    /// still holds a quarantine (R80). Project-wide like the other read
+    /// ops (`run/list`, `approval/list`) -- the documented read-side
+    /// policy; optionally narrowed to one run. An undecided row
+    /// (`resolution` null) on a quarantined run is the holder.
+    async fn policy_violation_list(&self, params: &Value) -> Result<Value, ServiceError> {
+        let run_id = params
+            .get("runId")
+            .and_then(Value::as_str)
+            .map(RunId::parse)
+            .transpose()
+            .map_err(|_| ServiceError::invalid_params("runId is not a valid id"))?;
+        self.db
+            .run_domain_op(query::policy_violation_list_op(run_id, self.project_id))
+            .await
+            .map_err(ServiceError::from)
     }
 
     /// Rebinds a task from a disconnected OMP client instance to the
