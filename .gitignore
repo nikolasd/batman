@@ -1,9 +1,12 @@
 .superpowers/
+# OMP agent configuration (per-repo, machine-local) — never committed.
+.omp/
 node_modules/
 target/
 dist/
 !packages/extension/dist/
 !packages/extension/dist/index.js
+
 .DS_Store
 
 # ts-rs `#[ts(export)]` writes here as a `cargo test` side effect; Task 3's
