@@ -267,6 +267,14 @@ The request side now speaks the closed vocabulary shared|isolated|copy (R29), bu
 
 **Priority:** Low — found during R29's adversarial review (2026-08-19).
 
+#### R90. Generated TS bindings and the JSON Schema disagree on numeric width and Option presence
+
+**Location:** `packages/protocol-ts/src/generated/Artifact.ts` (`byteLength: bigint`, `runId: string | null` required), `ArtifactFetchResult.ts` (`nextOffset: bigint | null`); `packages/protocol-ts/schema/batman.schema.json` (same fields as `{"type":"integer","format":"uint64"}` numbers, `runId` absent from `required`)
+
+ts-rs maps Rust `u64` to TypeScript `bigint` while schemars types the same field as a JSON integer that `JSON.parse` yields as a `number`, and ts-rs emits every `Option<T>` as a required `T | null` property while schemars leaves it out of `required`. No validation failure is possible (the Ajv formats are registered as always-passing and both null-and-absent pass), but `result as ArtifactFetchResult` casts now advertise static types that are wrong at runtime (`typeof byteLength === "number"`). Pre-existing generator convention (`EventEnvelope.sequence`, `RuntimeStatus.uptimeSeconds` were already `bigint`), surfaced now because R55's validators are the first code acting on these defs. Fix shape: `#[ts(type = "number")]` on `u64` wire fields (or a documented bigint reviver), and reconcile the Option-presence asymmetry between the two generators.
+
+**Priority:** Low — found during R55's adversarial review (2026-08-19); static-type trap only, no runtime defect.
+
 ## Known Environment Limitations
 
 **Not a bug — requires a gated live run to confirm the positive case. Reconfirmed 2026-08-12; code-side citations still match current source.**
@@ -285,5 +293,5 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
 - **High:** 0 — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII), R77 resolved 2026-08-19 (see docs/journal.md Part XXIX), R81 resolved 2026-08-19 (see docs/journal.md Part XXX)
 - **Medium:** 15 (R12, R13, R14, R34, R35, R36, R42 — carried forward; R55-R57, R59 — new; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review; R87 — new, found during the 2026-08-19 close-out sweep; R15, R16, R37, R45, R56, R58, R60 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXIV)
-- **Low:** 12 (R38, R62, R63, R65, R66, R67 — carried forward/new 2026-08-12; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R17, R18, R20, R29, R30, R31, R32, R39, R40, R43, R46, R61, R64 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXIV)
+- **Low:** 13 (R38, R62, R63, R65, R66, R67 — carried forward/new 2026-08-12; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90 — new, found during R55's adversarial review; R17, R18, R20, R29, R30, R31, R32, R39, R40, R43, R46, R61, R64 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXIV)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
