@@ -34,24 +34,6 @@ pub fn task_get_op(task_id: TaskId) -> DomainClosure {
     })
 }
 
-/// Reads a run's `policyQuarantined` flag, for the shared quarantine gate
-/// `message/send`/`workspace/apply`/`coordination/publishArtifact` each
-/// apply before mutating.
-pub fn run_flags_op(run_id: RunId) -> DomainClosure {
-    Box::new(move |conn| {
-        conn.query_row(
-            "SELECT flags_policy_quarantined FROM runs WHERE run_id = ?1",
-            [run_id.to_string()],
-            |row| Ok(json!({ "policyQuarantined": row.get::<_, i64>(0)? != 0 })),
-        )
-        .optional()
-        .map_err(DomainError::Sqlite)?
-        .ok_or(DomainError::NotFound {
-            kind: "run",
-            id: run_id.to_string(),
-        })
-    })
-}
 /// Reads a run's current lifecycle state, for the adapter layer's
 /// evidence-driven transitions (`crate::adapter::run_lifecycle`) and the
 /// coordination broker's settled-run gate.
@@ -368,5 +350,60 @@ pub fn run_owner_op(run_id: RunId, expected_instance_id: String) -> DomainClosur
                 id: task_id,
             }),
         }
+    })
+}
+
+/// [`run_owner_op`] plus a policy-quarantine check, in one closure: lease
+/// owner and quarantine flag come from a single consistent snapshot, so
+/// there is no check-to-check window between the ownership gate and the
+/// quarantine gate (R78). The quarantine read deliberately follows the
+/// owner check, so a non-owner cannot probe quarantine state.
+///
+/// # Errors
+/// Everything [`run_owner_op`] returns, plus
+/// [`DomainError::PolicyQuarantined`] when the flag is set.
+pub fn run_owner_not_quarantined_op(run_id: RunId, expected_instance_id: String) -> DomainClosure {
+    Box::new(move |conn| {
+        let (task_id, quarantined): (String, i64) = conn
+            .query_row(
+                "SELECT task_id, flags_policy_quarantined FROM runs WHERE run_id = ?1",
+                [run_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(DomainError::Sqlite)?
+            .ok_or(DomainError::NotFound {
+                kind: "run",
+                id: run_id.to_string(),
+            })?;
+        let owner: Option<String> = conn
+            .query_row(
+                "SELECT owner_client_instance_id FROM tasks WHERE task_id = ?1",
+                [task_id.clone()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(DomainError::Sqlite)?;
+        match owner {
+            Some(owner) if owner == expected_instance_id => {}
+            Some(_) => {
+                return Err(DomainError::NotOwner {
+                    task_id,
+                    instance_id: expected_instance_id,
+                });
+            }
+            None => {
+                return Err(DomainError::NotFound {
+                    kind: "task",
+                    id: task_id,
+                });
+            }
+        }
+        if quarantined != 0 {
+            return Err(DomainError::PolicyQuarantined {
+                run_id: run_id.to_string(),
+            });
+        }
+        Ok(json!({}))
     })
 }

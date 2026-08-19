@@ -49,15 +49,6 @@ impl ServiceError {
             message: msg.into(),
         }
     }
-
-    fn policy_quarantined(run_id: RunId) -> Self {
-        Self {
-            code: error_code::POLICY_QUARANTINED,
-            message: format!(
-                "run {run_id} is quarantined pending policy/violation/decide; messages and workspace apply are blocked"
-            ),
-        }
-    }
 }
 
 impl From<DomainError> for ServiceError {
@@ -97,6 +88,12 @@ impl From<DomainError> for ServiceError {
             } => Self {
                 code: error_code::INVALID_PARAMS,
                 message: format!("revision {presented} does not match stored revision {stored}"),
+            },
+            DomainError::PolicyQuarantined { run_id } => Self {
+                code: error_code::POLICY_QUARANTINED,
+                message: format!(
+                    "run {run_id} is quarantined by an undecided policy violation; decide it via policy/violation/decide"
+                ),
             },
             other => Self::internal(other.to_string()),
         }
@@ -281,23 +278,6 @@ impl OrchestrationService {
         if let Some(envelope) = take_envelope(value) {
             let _ = self.events_tx.send(envelope);
         }
-    }
-
-    /// Rejects `message/send`/`workspace/inspect`/`workspace/apply`
-    /// against a run currently quarantined by
-    /// [`crate::policy::ViolationService`] (Hardening plan Task 1's
-    /// mid-run nested-worker policy violation) -- only lifted via
-    /// `policy/violation/decide`.
-    async fn ensure_not_quarantined(&self, run_id: RunId) -> Result<(), ServiceError> {
-        let flags = self
-            .db
-            .run_domain_op(query::run_flags_op(run_id))
-            .await
-            .map_err(ServiceError::from)?;
-        if flags["policyQuarantined"].as_bool().unwrap_or(false) {
-            return Err(ServiceError::policy_quarantined(run_id));
-        }
-        Ok(())
     }
 
     /// Dispatches one already role-authorized orchestration method.
@@ -1297,6 +1277,30 @@ impl OrchestrationService {
         Ok(())
     }
 
+    /// Like [`Self::emit_workspace_event`], but the append refuses inside
+    /// its own transaction if the run is policy-quarantined (R78): used
+    /// for `workspace/apply`'s `ApplyStarted`, so the journal can never
+    /// record an apply start for a run quarantined at that instant.
+    async fn emit_workspace_event_unless_quarantined(
+        &self,
+        kind: batman_protocol::WorkspaceEvent,
+        run_id: RunId,
+        lease_id: String,
+    ) -> Result<(), ServiceError> {
+        let project_id = self.project_id;
+        let mut result = self
+            .db
+            .run_domain_op(Box::new(move |conn| {
+                let mut repo = DomainRepository::new(conn, project_id);
+                repo.record_workspace_event_unless_quarantined(kind, run_id, lease_id)
+                    .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+            }))
+            .await
+            .map_err(ServiceError::from)?;
+        self.broadcast(&mut result);
+        Ok(())
+    }
+
     /// Ownership arbitration (R77) happens here, in the handler, as a
     /// dedicated domain round trip immediately before
     /// [`crate::workspace::LeaseService::acquire`] -- not inside a
@@ -1431,6 +1435,7 @@ impl OrchestrationService {
         &self,
         principal: &ClientPrincipal,
         lease_id: String,
+        enforce_quarantine: bool,
     ) -> Result<batman_protocol::WorkspaceInfo, ServiceError> {
         // One refusal string for every caller-distinguishable failure of
         // this gate: unknown leaseId, unowned lease, and a lease whose run
@@ -1445,19 +1450,22 @@ impl OrchestrationService {
             }
             other => ServiceError::internal(other.to_string()),
         })?;
-        self.db
-            .run_domain_op(query::run_owner_op(
-                lease.run_id,
-                principal.instance_id.clone(),
-            ))
-            .await
-            .map_err(|e| match e {
-                crate::domain::DomainError::NotOwner { .. }
-                | crate::domain::DomainError::NotFound { .. } => {
-                    ServiceError::invalid_params(LEASE_REFUSAL)
-                }
-                other => ServiceError::from(other),
-            })?;
+        // When asked (inspect/apply), the quarantine flag is read in the
+        // SAME domain op as the owner check, so lease, owner, and flags
+        // come from one consistent snapshot -- there is no window between
+        // the ownership gate and the quarantine gate (R78).
+        let op = if enforce_quarantine {
+            query::run_owner_not_quarantined_op(lease.run_id, principal.instance_id.clone())
+        } else {
+            query::run_owner_op(lease.run_id, principal.instance_id.clone())
+        };
+        self.db.run_domain_op(op).await.map_err(|e| match e {
+            crate::domain::DomainError::NotOwner { .. }
+            | crate::domain::DomainError::NotFound { .. } => {
+                ServiceError::invalid_params(LEASE_REFUSAL)
+            }
+            other => ServiceError::from(other),
+        })?;
         Ok(lease)
     }
 
@@ -1482,7 +1490,7 @@ impl OrchestrationService {
         params: &Value,
     ) -> Result<Value, ServiceError> {
         let lease_id = str_field(params, "leaseId")?;
-        let info = self.require_lease_owner(principal, lease_id).await?;
+        let info = self.require_lease_owner(principal, lease_id, false).await?;
 
         // Canonical `WorkspaceInfo` serialization; byte-identical to the
         // previous hand-rolled shape (R55 review E1).
@@ -1507,7 +1515,7 @@ impl OrchestrationService {
         // Read the lease before releasing it: after release the row is
         // gone, and the event must carry the run it belonged to.
         let lease = self
-            .require_lease_owner(principal, request.lease_id.clone())
+            .require_lease_owner(principal, request.lease_id.clone(), false)
             .await?;
         self.lease_service
             .release(request.lease_id.clone())
@@ -1564,17 +1572,17 @@ impl OrchestrationService {
         }))
     }
 
-    /// [`Self::require_lease_owner`] runs before
-    /// [`Self::ensure_not_quarantined`] or any materialization: a caller
-    /// refused there never reaches a real git workspace it never
+    /// [`Self::require_lease_owner`] runs before any materialization: a
+    /// caller refused there never reaches a real git workspace it never
     /// acquired, and journals nothing (`WorkspaceInspected`,
-    /// `ArtifactPublished`). Its residual window is wider than
-    /// `workspace_release`'s single gap, though: the quarantine gate, the
-    /// git inspection itself, and both journal entries below all sit
-    /// inside it, so a `reconcile/omp` rebind that commits after the gate
-    /// can still let a caller that just lost ownership inspect the
-    /// workspace and have its patch published and journaled under the
-    /// former owner's principal.
+    /// `ArtifactPublished`). The quarantine flag is read in the same
+    /// domain op as the owner check (R78), so there is no gate-to-gate
+    /// window. The ownership residual window is wider than
+    /// `workspace_release`'s single gap, though: the git inspection
+    /// itself and both journal entries below sit inside it, so a
+    /// `reconcile/omp` rebind that commits after the gate can still let a
+    /// caller that just lost ownership inspect the workspace and have its
+    /// patch published and journaled under the former owner's principal.
     async fn workspace_inspect(
         &self,
         principal: &ClientPrincipal,
@@ -1584,9 +1592,8 @@ impl OrchestrationService {
         let request: InspectRequest = serde_json::from_value(params.clone())
             .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
         let lease = self
-            .require_lease_owner(principal, request.lease_id.clone())
+            .require_lease_owner(principal, request.lease_id.clone(), true)
             .await?;
-        self.ensure_not_quarantined(lease.run_id).await?;
 
         let inspector = crate::workspace::WorkspaceInspector::with_store(
             std::path::PathBuf::from(&lease.path),
@@ -1631,14 +1638,18 @@ impl OrchestrationService {
             .map_err(|e| ServiceError::internal(format!("serializing InspectResult: {e}")))
     }
 
-    /// [`Self::require_lease_owner`] runs before
-    /// [`Self::ensure_not_quarantined`], artifact resolution, or the
-    /// `ApplyStarted` journal entry: a caller refused there is refused
-    /// for ownership (`-32602`), not for a not-yet-resolved artifact
-    /// (`-32603`), and journals nothing. Its residual window is wider
-    /// than `workspace_release`'s single gap, though: the quarantine
-    /// gate and the `ApplyStarted` append below both sit inside it,
-    /// before `applier.apply` actually mutates the working tree -- a
+    /// [`Self::require_lease_owner`] runs before artifact resolution or
+    /// the `ApplyStarted` journal entry: a caller refused there is
+    /// refused for ownership (`-32602`), not for a not-yet-resolved
+    /// artifact (`-32603`), and journals nothing. The quarantine flag is
+    /// read in the same domain op as the owner check AND re-checked
+    /// inside the `ApplyStarted` append's own transaction (R78), so the
+    /// journal can never record an apply start for a quarantined run;
+    /// the quarantine residue is exactly the append-to-working-tree gap
+    /// below, which no cross-database transaction closes. The ownership
+    /// residual window remains wider than `workspace_release`'s single
+    /// gap: the `ApplyStarted` append sits inside it, before
+    /// `applier.apply` actually mutates the working tree -- a
     /// `reconcile/omp` rebind that commits after the gate can leave an
     /// `ApplyStarted` event and a real working-tree mutation attributed
     /// to a caller that is no longer the owner.
@@ -1651,16 +1662,21 @@ impl OrchestrationService {
         let request: ApplyRequest = serde_json::from_value(params.clone())
             .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
         let lease = self
-            .require_lease_owner(principal, request.lease_id.clone())
+            .require_lease_owner(principal, request.lease_id.clone(), true)
             .await?;
-        self.ensure_not_quarantined(lease.run_id).await?;
 
         let applier = crate::workspace::WorkspaceApplier::from_store(
             std::path::PathBuf::from(&lease.path),
             self.artifact_store.clone(),
             lease.run_id,
         );
-        self.emit_workspace_event(
+        // Re-checked inside the append's own transaction (R78): a
+        // quarantine landing between the gate above and this append can
+        // never leave an ApplyStarted record for a quarantined run. The
+        // remaining residue is exactly the gap between this append and
+        // applier.apply's working-tree mutation below, which no
+        // cross-database transaction can close.
+        self.emit_workspace_event_unless_quarantined(
             batman_protocol::WorkspaceEvent::ApplyStarted {
                 lease_id: request.lease_id.clone(),
                 strategy: request.strategy,
@@ -1856,7 +1872,6 @@ impl OrchestrationService {
         params: &Value,
     ) -> Result<Value, ServiceError> {
         let run_id = parse_run_id(params.get("runId"))?;
-        self.ensure_not_quarantined(run_id).await?;
         let sender_worker_id = parse_worker_id(params.get("senderWorkerId"))?;
         let task_id = parse_task_id(params.get("taskId"))?;
         let kind = parse_message_kind(params.get("kind"))?;
@@ -1896,7 +1911,11 @@ impl OrchestrationService {
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.record_message(&message, Some(&principal_instance_id))
+                // Quarantine enforced inside record_message's own guarded
+                // transaction, after the owner re-read (R78) -- the old
+                // caller-side ensure_not_quarantined pre-check read a
+                // snapshot a quarantine could land behind.
+                repo.record_message(&message, Some(&principal_instance_id), true)
                     .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await

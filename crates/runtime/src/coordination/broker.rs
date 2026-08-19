@@ -59,9 +59,18 @@ impl CoordinationError {
 
 impl From<crate::domain::DomainError> for CoordinationError {
     fn from(err: crate::domain::DomainError) -> Self {
-        Self {
-            code: error_code::INTERNAL_ERROR,
-            message: err.to_string(),
+        match err {
+            crate::domain::DomainError::PolicyQuarantined { run_id } => Self {
+                code: error_code::POLICY_QUARANTINED,
+                message: format!(
+                    "run {run_id} is quarantined by an undecided policy violation; \
+                     ask OMP to decide it via policy/violation/decide"
+                ),
+            },
+            other => Self {
+                code: error_code::INTERNAL_ERROR,
+                message: other.to_string(),
+            },
         }
     }
 }
@@ -289,7 +298,7 @@ impl CoordinationBroker {
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.record_message(&message, None)
+                repo.record_message(&message, None, false)
                     .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await?;
@@ -607,7 +616,12 @@ impl CoordinationBroker {
                     acknowledged_at: None,
                     reply_to: None,
                 };
-                repo.record_message(&message, None).map(|c| {
+                // In-tx quarantine enforcement (R78): the pre-check above
+                // is only the fast path that keeps a steady-state
+                // quarantined worker from being charged rate budget; a
+                // quarantine landing between that read and this write is
+                // refused here, inside the guarded transaction.
+                repo.record_message(&message, None, true).map(|c| {
                     embed_envelope(
                         json!({ "sequence": c.sequence, "artifactRef": artifact_ref }),
                         &c.envelope,

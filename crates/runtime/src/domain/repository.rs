@@ -83,6 +83,14 @@ pub enum DomainError {
     /// already reached a terminal state.
     #[error("run {run_id} has already settled")]
     RunSettled { run_id: String },
+    /// A guarded mutation refused to write because the run is quarantined
+    /// by an undecided policy violation. Checked inside the same guarded
+    /// transaction as the write it protects -- not as a caller-side
+    /// pre-check round trip the database actor could interleave with a
+    /// quarantine landing on the same run (R78, applying R70-R81's
+    /// doctrine to the quarantine gates).
+    #[error("run {run_id} is quarantined by an undecided policy violation")]
+    PolicyQuarantined { run_id: String },
     /// A serialization step failed.
     #[error("failed to serialize event: {0}")]
     Serialize(#[from] serde_json::Error),
@@ -265,6 +273,43 @@ impl<'c> DomainRepository<'c> {
             None,
             Some(run_id),
             |_| Ok(()),
+        )
+    }
+
+    /// Like [`Self::record_workspace_event`], but refuses inside the same
+    /// append transaction if the run is policy-quarantined (R78). Used for
+    /// `workspace/apply`'s `ApplyStarted` append, so the journal can never
+    /// record an apply start for a run quarantined at that instant -- the
+    /// residue is exactly the append-to-working-tree-mutation gap, which
+    /// no cross-database transaction can close.
+    pub fn record_workspace_event_unless_quarantined(
+        &mut self,
+        kind: batman_protocol::WorkspaceEvent,
+        run_id: batman_protocol::RunId,
+        lease_id: String,
+    ) -> Result<Committed, DomainError> {
+        self.append_and_apply(
+            &RuntimeEvent::WorkspaceEvent {
+                kind,
+                run_id,
+                lease_id,
+            },
+            None,
+            None,
+            Some(run_id),
+            move |tx| {
+                let quarantined: i64 = tx.query_row(
+                    "SELECT flags_policy_quarantined FROM runs WHERE run_id = ?1",
+                    [run_id.to_string()],
+                    |row| row.get(0),
+                )?;
+                if quarantined != 0 {
+                    return Err(DomainError::PolicyQuarantined {
+                        run_id: run_id.to_string(),
+                    });
+                }
+                Ok(())
+            },
         )
     }
 
@@ -1041,10 +1086,18 @@ impl<'c> DomainRepository<'c> {
     /// Returns [`DomainError::NotFound`] if the message's run or task does
     /// not exist, or [`DomainError::NotOwner`] if `principal_instance_id`
     /// is `Some` and does not own the run's task.
+    ///
+    /// When `enforce_quarantine` is set, the write also refuses (inside
+    /// the same guarded transaction, after the owner re-read so a
+    /// non-owner cannot probe quarantine state) if the run is
+    /// policy-quarantined (R78). Callers that must deliver even from a
+    /// quarantined run (`coordination/reportBlocked`, `askPolicy`) pass
+    /// `false`.
     pub fn record_message(
         &mut self,
         message: &RunMessage,
         principal_instance_id: Option<&str>,
+        enforce_quarantine: bool,
     ) -> Result<Committed, DomainError> {
         let event = RuntimeEvent::MessageEvent {
             kind: RuntimeEventKind::MessageRecorded,
@@ -1094,6 +1147,24 @@ impl<'c> DomainRepository<'c> {
                                 id: owning_task_id,
                             });
                         }
+                    }
+                }
+                if enforce_quarantine {
+                    // Read the flag inside this same transaction -- a
+                    // caller-side pre-check reads a snapshot the database
+                    // actor can interleave a quarantine behind (R78).
+                    // Deliberately AFTER the owner re-read above, so a
+                    // non-owner cannot distinguish a quarantined run from
+                    // a healthy one by error code.
+                    let quarantined: i64 = tx.query_row(
+                        "SELECT flags_policy_quarantined FROM runs WHERE run_id = ?1",
+                        [message.run_id.to_string()],
+                        |row| row.get(0),
+                    )?;
+                    if quarantined != 0 {
+                        return Err(DomainError::PolicyQuarantined {
+                            run_id: message.run_id.to_string(),
+                        });
                     }
                 }
                 tx.execute(
