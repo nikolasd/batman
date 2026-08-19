@@ -166,6 +166,32 @@ fn an_unsupported_negotiated_protocol_version_is_refused_as_incompatible() {
 }
 
 #[test]
+fn a_missing_agent_version_is_unknown_not_implicitly_verified() {
+    // R57: `ensure_client`'s doc comment claims the version check is
+    // unconditional, but its old guard (`if let Some(version) = ... &&
+    // !known`) let a vendor response omitting `agentInfo.version` proceed
+    // against a completely unverified CLI. The shared decision function
+    // both `ensure_client` and `probe()` now consult must treat a missing
+    // version exactly like an unknown one.
+    use batman_runtime::adapter::copilot::compatibility::copilot_negotiated_version_verified;
+
+    let mut response = load_json_fixture("initialize-v1.json");
+    response["result"]["agentInfo"]
+        .as_object_mut()
+        .expect("fixture has agentInfo")
+        .remove("version");
+    let negotiated = parse_initialize_response(response.get("result").unwrap())
+        .expect("a response without agentInfo.version still parses");
+    assert_eq!(negotiated.agent_version, None);
+
+    assert!(!copilot_negotiated_version_verified(
+        negotiated.agent_version.as_deref()
+    ));
+    assert!(copilot_negotiated_version_verified(Some("1.0.73")));
+    assert!(!copilot_negotiated_version_verified(Some("0.0.1")));
+}
+
+#[test]
 fn a_response_missing_protocol_version_is_a_protocol_error() {
     let error = parse_initialize_response(&serde_json::json!({}))
         .expect_err("a response missing protocolVersion must fail");
