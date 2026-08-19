@@ -1204,6 +1204,32 @@ async fn policy_violation_list_reports_decision_state_for_every_violation() {
         violations.iter().all(|v| v["resolution"].is_null()),
         "both start undecided: {violations:?}"
     );
+    // Pin the exact wire key set: the query op's hand-built rows must stay
+    // byte-compatible with the canonical PolicyViolationSummary the
+    // extension Ajv-validates against (additionalProperties: false).
+    let mut keys: Vec<&str> = violations[0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "action",
+            "createdAt",
+            "resolution",
+            "resolvedAt",
+            "resolvedBy",
+            "runId",
+            "taskId",
+            "vendorChildId",
+            "vendorParentRef",
+            "violationId",
+            "workerId"
+        ]
+    );
 
     // Decide one; the list must now show exactly one open.
     let decided_id = violations[0]["violationId"].as_str().unwrap().to_string();

@@ -9863,6 +9863,7 @@ var validateArtifactFetchResult = def("ArtifactFetchResult");
 var validateInspectResult = def("InspectResult");
 var validateApplyResult = def("ApplyResult");
 var validateWorkspaceInfo = def("WorkspaceInfo");
+var validatePolicyViolationListResult = def("PolicyViolationListResult");
 var validateEventEnvelope = def("EventEnvelope");
 var validateJsonRpcResponse = def("JsonRpcResponse");
 var validateJsonRpcErrorResponse = def("JsonRpcErrorResponse");
@@ -9898,7 +9899,8 @@ var RESULT_VALIDATORS = {
   "artifact/fetch": validateArtifactFetchResult,
   "workspace/inspect": validateInspectResult,
   "workspace/apply": validateApplyResult,
-  "workspace/get": validateWorkspaceInfo
+  "workspace/get": validateWorkspaceInfo,
+  "policy/violation/list": validatePolicyViolationListResult
 };
 
 class JsonRpcRemoteError extends Error {

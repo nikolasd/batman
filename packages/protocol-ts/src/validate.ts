@@ -60,6 +60,8 @@ export const validateInspectResult = def("InspectResult");
 export const validateApplyResult = def("ApplyResult");
 /** Validates a `workspace/get` result payload. */
 export const validateWorkspaceInfo = def("WorkspaceInfo");
+/** Validates a `policy/violation/list` result payload. */
+export const validatePolicyViolationListResult = def("PolicyViolationListResult");
 /** Validates a single durable event envelope. */
 export const validateEventEnvelope = def("EventEnvelope");
 /** Validates a JSON-RPC success response envelope. */
