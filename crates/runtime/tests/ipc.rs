@@ -71,6 +71,51 @@ impl WorkerCredentialVerifier for FakeVerifier {
     }
 }
 
+/// A [`batman_runtime::service::RunDriver`] stub reporting a fixed live-run
+/// count, for R87/R82 tests: `runtime/status` must report the driver's
+/// count and `runtime/shutdown` must refuse while it is nonzero.
+struct FixedCountDriver {
+    count: usize,
+}
+
+impl batman_runtime::service::RunDriver for FixedCountDriver {
+    fn start(
+        &self,
+        _ctx: batman_runtime::service::RunDriverContext,
+    ) -> batman_runtime::service::AdapterFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn send_follow_up(
+        &self,
+        _run_id: RunId,
+        _task_id: TaskId,
+        _worker_id: WorkerId,
+        _prompt: String,
+    ) -> batman_runtime::service::AdapterFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn running_adapter(&self, _run_id: RunId) -> Option<Arc<dyn batman_runtime::adapter::Adapter>> {
+        None
+    }
+
+    fn cancel_run(
+        &self,
+        _run_id: RunId,
+        _scope: batman_runtime::adapter::CancelScope,
+    ) -> batman_runtime::service::AdapterFuture<
+        'static,
+        Result<batman_runtime::service::CancelOutcome, String>,
+    > {
+        Box::pin(async { Ok(batman_runtime::service::CancelOutcome::NoRunningAdapter) })
+    }
+
+    fn active_run_count(&self) -> usize {
+        self.count
+    }
+}
+
 // --------------------------------------------------------------- harness
 
 struct Harness {
@@ -574,6 +619,127 @@ async fn display_receives_only_status_and_event_methods() {
         .await;
     let hidden = client.recv().await.unwrap();
     assert_eq!(hidden["error"]["code"], error_code::METHOD_NOT_FOUND);
+}
+
+// -------------------------------------------------------------- R87/R82
+
+/// R87: `runtime/status` must report the run driver's live count, never a
+/// hardcoded placeholder.
+#[tokio::test]
+async fn runtime_status_reports_the_drivers_active_run_count() {
+    let harness = Harness::start(|c| {
+        c.credential_reader = matching_reader();
+        c.run_driver = Some(Arc::new(FixedCountDriver { count: 3 }));
+    })
+    .await;
+    let mut client = Client::connect(&harness.socket).await;
+    client
+        .send(&omp_init(
+            harness.owned_dir.to_str().unwrap(),
+            1024 * 1024,
+            (1, 0),
+            (1, 0),
+        ))
+        .await;
+    client.recv().await.unwrap();
+
+    client
+        .send(&request(2, "runtime/status", json!(null)))
+        .await;
+    let status = client.recv().await.unwrap();
+    assert_eq!(
+        status["result"]["activeRuns"], 3,
+        "activeRuns must come from the driver, not a placeholder: {status:?}"
+    );
+}
+
+/// R82: `runtime/shutdown` must refuse while runs are live (the daemon
+/// serves every connected instance), and `force: true` overrides.
+#[tokio::test]
+async fn runtime_shutdown_is_refused_while_runs_are_live_unless_forced() {
+    let harness = Harness::start(|c| {
+        c.credential_reader = matching_reader();
+        c.run_driver = Some(Arc::new(FixedCountDriver { count: 1 }));
+    })
+    .await;
+    let mut client = Client::connect(&harness.socket).await;
+    client
+        .send(&omp_init(
+            harness.owned_dir.to_str().unwrap(),
+            1024 * 1024,
+            (1, 0),
+            (1, 0),
+        ))
+        .await;
+    client.recv().await.unwrap();
+
+    client
+        .send(&request(2, "runtime/shutdown", json!(null)))
+        .await;
+    let refused = client.recv().await.unwrap();
+    assert_eq!(
+        refused["error"]["code"],
+        error_code::INVALID_PARAMS,
+        "shutdown with a live run must be refused: {refused:?}"
+    );
+
+    // The daemon is still serving after the refusal.
+    client
+        .send(&request(3, "runtime/status", json!(null)))
+        .await;
+    let status = client.recv().await.unwrap();
+    assert_eq!(status["result"]["running"], true);
+
+    // The deliberate operator escape hatch stops it.
+    client
+        .send(&request(4, "runtime/shutdown", json!({ "force": true })))
+        .await;
+    let stopped = client.recv().await.unwrap();
+    assert_eq!(stopped["result"]["stopping"], true, "{stopped:?}");
+}
+
+/// R82's second gate: a second live connection also refuses an unforced
+/// shutdown.
+#[tokio::test]
+async fn runtime_shutdown_is_refused_while_another_connection_is_live() {
+    let harness = Harness::start(|c| c.credential_reader = matching_reader()).await;
+    let mut first = Client::connect(&harness.socket).await;
+    first
+        .send(&omp_init(
+            harness.owned_dir.to_str().unwrap(),
+            1024 * 1024,
+            (1, 0),
+            (1, 0),
+        ))
+        .await;
+    first.recv().await.unwrap();
+    let mut second = Client::connect(&harness.socket).await;
+    second
+        .send(&omp_init(
+            harness.owned_dir.to_str().unwrap(),
+            1024 * 1024,
+            (1, 0),
+            (1, 0),
+        ))
+        .await;
+    second.recv().await.unwrap();
+
+    first
+        .send(&request(2, "runtime/shutdown", json!(null)))
+        .await;
+    let refused = first.recv().await.unwrap();
+    assert_eq!(
+        refused["error"]["code"],
+        error_code::INVALID_PARAMS,
+        "shutdown with another live connection must be refused: {refused:?}"
+    );
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("connection"),
+        "the refusal must name what is live: {refused:?}"
+    );
 }
 
 // -------------------------------------------------------------- req 8

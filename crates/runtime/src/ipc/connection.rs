@@ -372,7 +372,11 @@ async fn dispatch(
                 running: true,
                 protocol: negotiated_version,
                 project_id: shared.project_id,
-                active_runs: 0,
+                // The live adapter count from the run driver (R87) -- never
+                // a placeholder: /batman-status and batcave status report
+                // this, and the idle-shutdown decision consumes the same
+                // source.
+                active_runs: shared.active_run_count() as u32,
                 schema_version: SCHEMA_VERSION,
                 protocol_healthy: is_protocol_healthy(negotiated_version),
                 uptime_seconds: shared.started_at.elapsed().as_secs(),
@@ -399,6 +403,37 @@ async fn dispatch(
         }
         BatmanMethod::RuntimeShutdown => {
             // Role-gated to ompExtension (see `ClientPrincipal::allowed_methods`).
+            // Arbitrated (R82): stopping the daemon stops it for every
+            // connected instance, so refuse while other work is live unless
+            // the caller explicitly forces it. `active_connections` includes
+            // this connection, hence `> 1`.
+            let force = message
+                .get("params")
+                .and_then(|p| p.get("force"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let runs = shared.active_run_count();
+            let connections = shared
+                .active_connections
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if !force && (runs > 0 || connections > 1) {
+                return error(
+                    &id,
+                    error_code::INVALID_PARAMS,
+                    &format!(
+                        "refusing shutdown: {runs} active run(s) and {} other live connection(s); \
+                         pass force: true to stop the daemon for every connected instance",
+                        connections.saturating_sub(1)
+                    ),
+                );
+            }
+            if force {
+                tracing::warn!(
+                    active_runs = runs,
+                    other_connections = connections.saturating_sub(1),
+                    "runtime/shutdown forced while work was live"
+                );
+            }
             // Trigger a graceful shutdown of the accept loop; the serve driver
             // then journals the stop record and removes the socket. The
             // success frame is queued to the writer before the loop tears
