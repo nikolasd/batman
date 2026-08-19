@@ -149,7 +149,7 @@ Approval tiers (`read` / `write` / `exec`) gate whether OMP prompts before runni
 | `batman_workspace` | acquire, get, inspect, apply, release | `exec`/`read` | Manage the git worktree/copy a run executes in |
 | `batman_artifact` | list, fetch | `read` | Read patches, commit lists, conflict reports a run published |
 | `batman_child` | list, decide | `read`/`exec` | Approve or deny a worker's request to spawn a nested child |
-| `batman_violation` | decide | `exec` | Resolve a policy violation that quarantined a run |
+| `batman_violation` | list, decide | `read`/`exec` | Find which violation still holds a run's quarantine, and resolve it |
 | `batman_message` | send, list | `write` | Send/read coordination messages between workers in a run |
 | `batman_approval` | list, decide | `exec` (always) | List and decide a worker's escalated approval request |
 | `batman_reconcile` | (single-purpose) | `write` | Rebind task ownership after a dropped/reconnected session |
@@ -480,6 +480,15 @@ the run has already reached a terminal state, because a settled run is never rev
 Task ownership is checked before any of that, though: a caller that no longer owns the violation's
 task is refused with `-32602` (`Forbidden`), even when replaying a resolution already on record --
 ownership outranks idempotent replay.
+
+### `violation/list`
+
+```json
+{ "violations": [ { "violationId": "…", "runId": "…", "taskId": "…", "workerId": "…", "action": "quarantine", "createdAt": "…", "resolvedAt": null, "resolution": null, "resolvedBy": null, "vendorChildId": null, "vendorParentRef": null } ] }
+```
+
+Newest first. An entry with `resolution: null` on a quarantined run is the one still holding
+the quarantine -- decide exactly that `violationId` to lift it.
 
 ### `child/list`
 

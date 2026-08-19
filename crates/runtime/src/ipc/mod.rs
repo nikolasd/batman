@@ -287,6 +287,7 @@ impl ClientPrincipal {
                     MessageList,
                     ApprovalList,
                     CoordinationChildList,
+                    PolicyViolationList,
                 ]
             }
             ClientRole::WorkerMcp => vec![

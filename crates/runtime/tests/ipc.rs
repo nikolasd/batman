@@ -610,7 +610,8 @@ async fn display_receives_only_status_and_event_methods() {
             "run/get",
             "message/list",
             "approval/list",
-            "coordination/child/list"
+            "coordination/child/list",
+            "policy/violation/list"
         ]
     );
 

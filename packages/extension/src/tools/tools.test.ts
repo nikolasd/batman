@@ -115,6 +115,8 @@ test("every op's approval tier matches whether it mutates", () => {
 
   // Deciding a violation releases or cancels a quarantined run.
   expect(tierOf("batman_violation", { op: "decide" })).toBe("exec");
+  // The list branch is a pure read; a constant "exec" regression fails here.
+  expect(tierOf("batman_violation", { op: "list" })).toBe("read");
 
   // `apply` rewrites a real working tree, so it joins acquire/release.
   expect(tierOf("batman_workspace", { op: "apply" })).toBe("exec");
