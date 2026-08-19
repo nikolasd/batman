@@ -10,8 +10,8 @@
     "format:check": "biome format .",
     "format:write": "biome format --write .",
     "typecheck": "tsc --noEmit",
-    "test": "bun test packages && cargo test --workspace",
-    "check": "bun run generate --check && bun run format:check && bun run typecheck && bun run build && bun test packages && cargo test --workspace"
+    "test": "bun test && cargo test --workspace",
+    "check": "bun run generate --check && bun run format:check && bun run typecheck && bun run build && bun test && cargo test --workspace"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.7",
