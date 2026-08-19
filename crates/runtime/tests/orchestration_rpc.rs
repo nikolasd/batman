@@ -3931,12 +3931,13 @@ async fn owner_accepting_a_child_request_journals_the_child_ids_and_returns_the_
         .expect("an accepted decide must journal a childEvent")
         .clone();
     // `seed_pending_child_request` above already journaled one
-    // `childEvent` (the request itself, with no child ids yet) sharing
-    // the same `childWorkerRequested` kind as an accept (N3) -- the
-    // decide's own event is the *second*, later one.
+    // `childEvent` (the request itself, kind `childWorkerRequested`, with
+    // no child ids yet). The accept must journal its OWN kind (R83): a
+    // consumer must never have to infer "accepted" from whether the child
+    // ids happen to be populated.
     assert_eq!(
-        recorded["payload"]["kind"], "childWorkerRequested",
-        "an accept must journal childWorkerRequested, the same kind as the original request: \
+        recorded["payload"]["kind"], "childWorkerAccepted",
+        "an accept must journal childWorkerAccepted, distinguishable from the request: \
          {recorded:?}"
     );
     assert_eq!(recorded["payload"]["childTaskId"], child_task_id);
