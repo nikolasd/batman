@@ -37,16 +37,23 @@ function createFakeApi(): FakeHarness {
 
 interface FakeClient {
   subscribeCalls: number;
+  closed: boolean;
   client: BatmanClient;
 }
 
 function createFakeClient(): FakeClient {
   const fake: FakeClient = {
     subscribeCalls: 0,
+    closed: false,
     client: undefined as unknown as BatmanClient,
   };
   fake.client = {
-    isClosed: false,
+    get isClosed() {
+      return fake.closed;
+    },
+    close() {
+      fake.closed = true;
+    },
     subscribe(_fromSequence: number, _onEvent: unknown) {
       fake.subscribeCalls += 1;
       return () => {};
@@ -118,6 +125,31 @@ test("a session_shutdown followed by a new session_start resubscribes instead of
 
   // The old client object is still open (isClosed === false); only the
   // subscription was torn down. A new session must resubscribe anyway.
+  await handlers.get("session_start")?.(undefined, extCtx);
+  expect(fake.subscribeCalls).toBe(2);
+});
+
+test("a closed client is repaired on the next connect even without the shutdown clear (production's index.ts close path)", async () => {
+  // Production closes the cached client in its own session_shutdown handler
+  // (index.ts), so connect()'s pre-existing repair branch (isClosed check)
+  // fires regardless of R39's clear. This pins that path: even if the
+  // subscribedClient reference survives, a closed client must be dropped
+  // and resubscribed.
+  const { api, handlers } = createFakeApi();
+  const fake = createFakeClient();
+  registerMonitor(api, { getClient: async () => fake.client });
+
+  const widgetCalls: unknown[][] = [];
+  const extCtx = fakeExtensionContext(widgetCalls);
+
+  await handlers.get("session_start")?.(undefined, extCtx);
+  expect(fake.subscribeCalls).toBe(1);
+
+  // No session_shutdown here on purpose: only the client is closed, the
+  // subscribedClient reference is still set, so the repair branch is the
+  // only thing that can save the monitor.
+  fake.client.close();
+
   await handlers.get("session_start")?.(undefined, extCtx);
   expect(fake.subscribeCalls).toBe(2);
 });

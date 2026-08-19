@@ -243,6 +243,36 @@ test("a non-executable OMP_BATMAN_BINARY override fails before spawn", async () 
   ).rejects.toMatchObject({ code: "not-executable" });
 });
 
+test("an async spawn failure is logged by the error listener and surfaces as an unreachable runtime, not a crash (R18)", async () => {
+  const stateDir = newStateDir();
+  const repository = newRepo();
+  // Passes every selectBinary check (absolute, regular, executable) but
+  // fails at exec time: the shebang interpreter does not exist, so spawn
+  // emits an async `error` event instead of throwing.
+  const file = join(mkdtempSync("/tmp/bat-rt-sh-"), "batcave");
+  writeFileSync(file, "#!/nonexistent/interpreter\n");
+  chmodSync(file, 0o755);
+
+  const logged: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    logged.push(args.map(String).join(" "));
+  };
+  try {
+    await expect(
+      ensureRuntime({
+        stateDir,
+        repository,
+        idleSeconds: 30,
+        env: { OMP_BATMAN_BINARY: file },
+      }),
+    ).rejects.toThrow();
+    expect(logged.some((line) => line.includes("failed to spawn"))).toBe(true);
+  } finally {
+    console.error = originalError;
+  }
+}, 20_000);
+
 test("a valid override is selected verbatim, bypassing the package resolver", async () => {
   const stateDir = newStateDir();
   const repository = newRepo();
