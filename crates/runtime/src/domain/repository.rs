@@ -2031,7 +2031,7 @@ impl<'c> DomainRepository<'c> {
                 child_worker_id,
                 child_run_id,
             } => (
-                RuntimeEventKind::ChildWorkerRequested,
+                RuntimeEventKind::ChildWorkerAccepted,
                 Some(child_task_id),
                 Some(child_worker_id),
                 Some(child_run_id),

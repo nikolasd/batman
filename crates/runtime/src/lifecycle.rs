@@ -703,14 +703,16 @@ fn apply_and_render(
         RuntimeEvent::ChildEvent { kind, .. } => (
             None,
             Some(
-                if matches!(
-                    kind,
-                    batman_protocol::RuntimeEventKind::ChildWorkerRequested
-                ) {
-                    "child worker requested".to_string()
-                } else {
-                    "child worker request denied".to_string()
-                },
+                match kind {
+                    batman_protocol::RuntimeEventKind::ChildWorkerRequested => {
+                        "child worker requested"
+                    }
+                    batman_protocol::RuntimeEventKind::ChildWorkerAccepted => {
+                        "child worker accepted"
+                    }
+                    _ => "child worker request denied",
+                }
+                .to_string(),
             ),
         ),
         RuntimeEvent::AdapterMessageEvent { .. } => (None, Some("adapter message".to_string())),

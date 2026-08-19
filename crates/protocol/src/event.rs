@@ -245,6 +245,15 @@ pub enum RuntimeEventKind {
     ApprovalDecided,
     #[serde(rename = "childWorkerRequested")]
     ChildWorkerRequested,
+    /// OMP accepted a pending child-worker request, binding the created
+    /// child task/worker/run ids. Distinct from
+    /// [`Self::ChildWorkerRequested`] so a consumer never has to infer
+    /// "accepted" from whether the child ids happen to be populated
+    /// (R83). Additive and forward-safe; a pre-R83 binary replaying a
+    /// post-R83 journal fails on the unknown variant, the same
+    /// forward-only property as every event-kind addition.
+    #[serde(rename = "childWorkerAccepted")]
+    ChildWorkerAccepted,
     #[serde(rename = "childWorkerRequestDenied")]
     ChildWorkerRequestDenied,
     #[serde(rename = "reconcileOwnershipChanged")]

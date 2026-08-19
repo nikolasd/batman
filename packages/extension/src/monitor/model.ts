@@ -211,7 +211,7 @@ function eventPatch(envelope: EventEnvelope): EventPatch | undefined {
       if (runId === null || runId === undefined) {
         return undefined;
       }
-      const label = event.payload.kind === "childWorkerRequested" ? "child worker requested" : "child worker request denied";
+      const label = event.payload.kind === "childWorkerRequested" ? "child worker requested" : event.payload.kind === "childWorkerAccepted" ? "child worker accepted" : "child worker request denied";
       return { runId, latestActivity: label };
     }
     case "adapterUsageEvent": {

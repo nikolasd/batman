@@ -1609,6 +1609,11 @@
           ]
         },
         {
+          "description": "OMP accepted a pending child-worker request, binding the created\nchild task/worker/run ids. Distinct from\n[`Self::ChildWorkerRequested`] so a consumer never has to infer\n\"accepted\" from whether the child ids happen to be populated\n(R83). Additive and forward-safe; a pre-R83 binary replaying a\npost-R83 journal fails on the unknown variant, the same\nforward-only property as every event-kind addition.",
+          "type": "string",
+          "const": "childWorkerAccepted"
+        },
+        {
           "description": "A worker adapter's supervised process started.",
           "type": "string",
           "const": "adapterProcessStarted"
