@@ -3868,6 +3868,76 @@ was aspirational, not descriptive — the generator has always been an allowlist
 belief is precisely how R60 lived this long. The `MonitorFlags`-mirrors-`RunFlags` suggestion is
 left for Batch 9, which touches the monitor model anyway.
 
+## Part XXXV — Making invariant 2 true instead of aspirational
+
+`client.ts`'s header and invariant 2 both claimed every inbound daemon message was Ajv-validated
+before reaching caller code. The envelope half was true; the result half validated exactly one
+method (`runtime/status`) because `JsonRpcResponse.result`'s generated schema is the JSON-Schema
+`true` node — every other orchestration result reached tool logic unchecked (R55). The fix
+(`fe331a8` RED, `b51f953`) declined to type all 25 results — the six pass-through reads would
+have dragged the domain-query row shapes with them, and the tool layer never destructures
+results — and instead did three things: the four handlers that were hand-duplicating canonical
+protocol types (`workspace/inspect`, `workspace/apply`, `artifact/list`, `artifact/fetch`) now
+serialize `InspectResult`/`ApplyResult`/`ArtifactListResult`/`ArtifactFetchResult` directly,
+byte-identically (verified field-for-field against the pre-image, nulls included); `request()`
+consults a `RESULT_VALIDATORS` map and Ajv-validates those methods' results; and every
+validator-less method's result must at least be a JSON object, so a `null`/scalar/array can
+never reach tool logic. The invariant's wording in `CONTRIBUTING.md`, `AGENTS.md`, `CLAUDE.md`,
+and the header itself now states exactly that split.
+
+`agent://ReviewBatch4` returned one Error — and it was this batch's own thesis reflected back:
+the reworded invariant ("Ajv-validated for every method with a canonical protocol result type")
+was false the moment it was written, because `workspace/get` *has* a canonical type.
+`require_lease_owner` literally returns `batman_protocol::WorkspaceInfo`, whose doc comment says
+"returned by `get`" — and the handler discarded the type and hand-rolled the same JSON with
+per-enum `match` arms, the exact duplication the batch had just removed from its four
+neighbours, in the adjacent function of the same file. `3196b04` closed it: `workspace_get`
+serializes the type, `WorkspaceInfo` joined the schema root, the export list, the barrel, and
+`RESULT_VALIDATORS`. The review's warnings landed in the same commit — the elided `artifact`
+object in `plugin-usage.md`'s fetch example completed, and exact wire key-set assertions for
+`workspace/get`/`workspace/inspect`/`artifact/list` in `orchestration_rpc.rs`, so a future
+`skip_serializing_if` or rename breaks CI here instead of failing Ajv at the far end. One
+finding was registered rather than fixed (`e821a8f`): **R90**, the ts-rs/schemars disagreement
+on numeric width (`bigint` vs number) and Option presence — a static-type trap the new
+validators are the first code to stand in front of.
+
+## Part XXXVI — Three adapters, three honesty fixes
+
+The smallest first: Copilot's unknown-stop-reason health detail interpolated the lowercased,
+separator-stripped match binding instead of the vendor's token — `unknownStopReason:
+somebizarrereason` for a vendor that said `Some_Bizarre-Reason` — while the failure string two
+lines below already used the raw value (R42, `ed45a1d` RED / `985f7a6`). The pre-existing test
+was blind by construction: its input was already lowercase with underscores. The RED test feeds
+a mixed-case, mixed-separator token and asserts the detail carries it verbatim.
+
+R57 (`c7adc2c` RED / `27f152e`) closed a gate that its own doc comment claimed was
+unconditional: `ensure_client` refused a *known-bad* Copilot CLI version but let a response that
+omitted `agentInfo.version` proceed entirely unverified, while `probe()` correctly treated
+`None` as unknown. The two now share one decision function —
+`copilot_negotiated_version_verified`, where a missing version is unknown, not implicitly
+trusted — and the refusal message names the missing-version case. Deliberately **not** done:
+adding the local machine's CLI 1.0.80 to `COPILOT_KNOWN_CLI_VERSIONS`. That table means
+"empirically conformance-verified", and adding an unverified version to silence the one
+environment-failing real-binary test would be R57's defect one layer up. The review's W-1
+pushed the evidence further than the plan had: `d96b3c5` drives `ensure_client` itself, through
+`resume()` against a fake ACP agent (a shell script speaking real NDJSON frames) whose
+initialize response omits the version, and asserts the typed refusal end-to-end — so reverting
+the wiring, not just the predicate, now fails a test.
+
+R12 (`432151a` RED / `b4ef3f2`) stopped Claude's error results from being silently reduced to
+usage reports. The committed `error_max_turns` fixture carries `is_error: true` and a subtype;
+`RawResult` didn't model either field, so the run's failure never surfaced as an event.
+`RawResult` now carries both (optional — a success arm may omit them), and `normalize_result`
+emits `ProtocolHealthChanged { healthy: false }` naming the subtype after the usage report —
+the same shape Copilot, Codex, and OMP-RPC already use for a vendor-reported failure, which is
+exactly why no new event kind was invented. The fixture-mode conformance baseline did not shift:
+the review confirmed the conformance scenarios never feed the error fixture. What the review
+did surface became **R91** (`d57f83c`): all this precision stops one layer short of the
+operator — the `batcave status` row mapping collapses the event to the constant string
+"protocol health changed" and the `/batman` monitor has no handler for it at all. Batch 9's
+monitor work is where that lands. Full suite after the batch: 818 passed, one known-environment
+Copilot real-binary failure, clippy and fmt clean.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
