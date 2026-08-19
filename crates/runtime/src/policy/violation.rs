@@ -14,10 +14,13 @@
 //! `workspace/apply`, and `coordination/publishArtifact` -- see
 //! `crate::service::orchestration`/`crate::coordination::broker`);
 //! `Cancel` creates an audited cancellation intent and cancels the run
-//! directly; `QuarantineAndCancel` (the default) does both. Idempotent:
-//! a run already quarantined or already terminal still gets a durable
-//! `PolicyViolationRecorded` event (so OMP sees every subsequent
-//! unexpected child), but the action is applied at most once.
+//! directly; `QuarantineAndCancel` (the default) does both. Idempotent
+//! for the quarantine flag: a run already quarantined or already terminal
+//! still gets a durable `PolicyViolationRecorded` event (so OMP sees every
+//! subsequent unexpected child), but the flag is applied at most once
+//! (R75) -- see [`ViolationService::record_nested_worker`] for why the
+//! cancellation side effects of `Cancel`/`QuarantineAndCancel` do not
+//! share that guarantee.
 //!
 //! [`ViolationService::record_cost_ceiling`] journals the same event with
 //! code `cost_ceiling_exceeded` and shares the identical action semantics
@@ -199,15 +202,26 @@ impl ViolationService {
     /// when `NestedWorkerObserved` fires while the run's effective
     /// `nested` capability is `NestedCapability::None`.
     ///
-    /// Idempotent: if the run is already quarantined or already terminal
-    /// (a prior call already applied `action`), this still journals
-    /// `PolicyViolationRecorded` -- so OMP sees every subsequent
-    /// unexpected child -- but does not re-apply the quarantine flag,
-    /// create a second cancellation intent, or call `cancel_run` again.
-    /// That `already_actioned` judgment comes back from
+    /// Idempotent for the quarantine flag: if the run is already
+    /// quarantined or already terminal (a prior call already applied
+    /// `action`), this still journals `PolicyViolationRecorded` -- so OMP
+    /// sees every subsequent unexpected child -- but does not re-apply
+    /// the flag. That `already_actioned` judgment comes back from
     /// [`DomainRepository::record_policy_violation`] itself, read inside
     /// the same call as the journal commit (R75), not from a caller-side
-    /// snapshot taken a round trip earlier.
+    /// snapshot taken a round trip earlier -- see
+    /// [`DomainRepository::release_quarantine`] for why that is enough to
+    /// keep the flag exactly-once even against a racing release.
+    ///
+    /// Not idempotent for the cancellation side effects: `already_actioned`
+    /// is still a single value [`Self::apply_action`] consumes at least
+    /// one more `run_domain_op` round trip later, so two concurrent
+    /// violations with `action = Cancel`/`QuarantineAndCancel` can both
+    /// observe `already_actioned = false` and each create an audited
+    /// cancellation intent and attempt [`Self::cancel_and_transition`];
+    /// the losing transition simply fails and is only logged. That
+    /// residue is pre-existing, outside this fix's mechanism, and tracked
+    /// as its own `REVIEW.md` finding rather than fixed here.
     ///
     /// Named rather than overloaded so the cost-ceiling sibling
     /// [`ViolationService::record_cost_ceiling`] can never be mistaken for it.

@@ -1243,6 +1243,9 @@ impl<'c> DomainRepository<'c> {
         vendor_parent_ref: Option<&str>,
         action: &str,
     ) -> Result<PolicyViolationRecordOutcome, DomainError> {
+        // Not `Self::read_run_flags`: that rebuilds the full six-column
+        // `RunFlags` struct, and this check only ever needs
+        // `policy_quarantined` plus `state` -- two columns, not six.
         let (quarantined, state): (i64, String) = self
             .conn
             .query_row(
