@@ -9689,6 +9689,10 @@ function def(name) {
 }
 var validateInitializeResult = def("InitializeResult");
 var validateRuntimeStatus = def("RuntimeStatus");
+var validateArtifactListResult = def("ArtifactListResult");
+var validateArtifactFetchResult = def("ArtifactFetchResult");
+var validateInspectResult = def("InspectResult");
+var validateApplyResult = def("ApplyResult");
 var validateEventEnvelope = def("EventEnvelope");
 var validateJsonRpcResponse = def("JsonRpcResponse");
 var validateJsonRpcErrorResponse = def("JsonRpcErrorResponse");
@@ -9718,6 +9722,13 @@ function assertValid(validate, data, what) {
 // src/client.ts
 var BOOTSTRAP_MAX_FRAME_BYTES = 4 * 1024 * 1024;
 var EVENTS_EVENT_METHOD = "events/event";
+var RESULT_VALIDATORS = {
+  "runtime/status": validateRuntimeStatus,
+  "artifact/list": validateArtifactListResult,
+  "artifact/fetch": validateArtifactFetchResult,
+  "workspace/inspect": validateInspectResult,
+  "workspace/apply": validateApplyResult
+};
 
 class JsonRpcRemoteError extends Error {
   code;
@@ -9763,8 +9774,11 @@ class BatmanClient {
       throw new Error(`cannot call ${method} before initialize()`);
     }
     const result = await this.#send(method, params);
-    if (method === "runtime/status") {
-      assertValid(validateRuntimeStatus, result, "runtime/status result");
+    const validator = RESULT_VALIDATORS[method];
+    if (validator !== undefined) {
+      assertValid(validator, result, `${method} result`);
+    } else if (!isObject(result)) {
+      throw new ValidationError(`${method} result`, [{ message: "result is not a JSON object" }]);
     }
     return result;
   }
@@ -9946,9 +9960,8 @@ var package_default = {
   devDependencies: {
     "@oh-my-pi/pi-coding-agent": ">=17.0.7 <18",
     "@nikolasd/batman-protocol": "workspace:*",
-    "@types/bun": "latest",
+    "@types/bun": "1.3.14",
     ajv: "8.17.1",
-    typescript: "5.9.3",
     zod: "^4"
   }
 };
