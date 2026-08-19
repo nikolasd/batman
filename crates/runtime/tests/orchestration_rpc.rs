@@ -3587,6 +3587,78 @@ async fn coordination_child_decide_against_another_instances_run_is_refused() {
     );
 }
 
+/// GREEN guard for R81/W2: no test anywhere exercised a successful
+/// `coordination/child/decide` "accept" -- the R77 GREEN chain below
+/// only covers "deny", and the attacker "accept" case above is refused
+/// before `decide_child`'s event is ever built. Swapping `Accept` for
+/// `ChildWorkerRequestDenied`, or dropping the three `Some(..)` child
+/// ids, in `DomainRepository::decide_child` would leave the whole suite
+/// green without this pinning the accept arm's actual output.
+#[tokio::test]
+async fn owner_accepting_a_child_request_journals_the_child_ids_and_returns_the_parent_to_working()
+{
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut owner = omp_client(&harness, "omp-1").await;
+    let (_task_id, _worker_id, run_id_str) = submit_run_with_driver(&mut owner, "omp-1").await;
+    let run_id = RunId::parse(&run_id_str).unwrap();
+    seed_pending_child_request(&harness, run_id, "need help").await;
+
+    let child_task_id = TaskId::new().to_string();
+    let child_worker_id = WorkerId::new().to_string();
+    let child_run_id = RunId::new().to_string();
+    let accept = owner
+        .call(
+            6,
+            "coordination/child/decide",
+            json!({
+                "parentRunId": run_id_str,
+                "decision": "accept",
+                "childTaskId": child_task_id,
+                "childWorkerId": child_worker_id,
+                "childRunId": child_run_id,
+            }),
+        )
+        .await;
+    assert!(
+        accept.get("error").is_none(),
+        "owner's own coordination/child/decide accept failed: {accept:?}"
+    );
+
+    let get = owner
+        .call(7, "run/get", json!({ "runId": run_id_str }))
+        .await;
+    assert_eq!(
+        get["result"]["state"], "working",
+        "an accepted child request must return the parent run to working: {get:?}"
+    );
+
+    let replay = owner
+        .call(8, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    let events = replay["result"].as_array().unwrap();
+    let recorded = events
+        .iter()
+        .map(|e| &e["event"])
+        .rfind(|e| e["type"] == "childEvent" && e["payload"]["parentRunId"] == run_id_str)
+        .expect("an accepted decide must journal a childEvent")
+        .clone();
+    // `seed_pending_child_request` above already journaled one
+    // `childEvent` (the request itself, with no child ids yet) sharing
+    // the same `childWorkerRequested` kind as an accept (N3) -- the
+    // decide's own event is the *second*, later one.
+    assert_eq!(
+        recorded["payload"]["kind"], "childWorkerRequested",
+        "an accept must journal childWorkerRequested, the same kind as the original request: \
+         {recorded:?}"
+    );
+    assert_eq!(recorded["payload"]["childTaskId"], child_task_id);
+    assert_eq!(recorded["payload"]["childWorkerId"], child_worker_id);
+    assert_eq!(recorded["payload"]["childRunId"], child_run_id);
+}
+
 /// GREEN guard for R77: every guarded mutation above must still succeed
 /// when the caller genuinely owns the task/run it targets, so the
 /// eventual fix (threading `principal` and arbitrating task ownership
@@ -3690,20 +3762,56 @@ async fn owner_can_perform_every_guarded_run_lifecycle_mutation_on_its_own_task(
 // in the clear) can release/tear down, inspect, or apply into a
 // workspace it never acquired.
 //
-// `workspace_get` is deliberately NOT RED-tested here: it is read-only --
-// no teardown, no materialization, no apply -- and every field its
-// response carries (`leaseId`, `runId`, `mode`, `isolationKind`, `path`,
-// `baseRevision`) is already reproducible from that same already-ungated
-// `events/replay`: `LeaseRequested` carries `mode`; `LeaseAcquired`
-// carries `path`, `isolationKind`, `baseRevision`. The one field
-// `events/replay` does not carry as a single value, `state`, is
-// derivable from the same stream (`active` until a
-// `LeaseReleased`/`CleanupFailed` event for that `leaseId` appears; no
-// code path in this codebase ever transitions a lease to `dirty`).
-// Gating `workspace_get` would close no disclosure that
-// `workspace_acquire`'s R77 gate and `events/replay`'s pre-existing,
-// unrelated exposure don't already leave open -- it is the three
-// mutating siblings below that matter.
+// `workspace_get` closes no confidentiality disclosure by being gated --
+// every field its response carries (`leaseId`, `runId`, `mode`,
+// `isolationKind`, `path`, `baseRevision`, `state`) is already
+// reproducible from that same already-ungated `events/replay` (see
+// `OrchestrationService::workspace_get`'s doc comment). It is gated
+// anyway, through the same `Self::require_lease_owner` the three
+// mutating siblings below share, and ReviewR81's W4 flagged it as the
+// one lease-scoped gate with no test in either direction: deleting it
+// left the whole suite green. The RED test below pins the gate itself,
+// not a new disclosure; owner-success for all four methods is pinned in
+// `workspace_release_by_the_owning_instance_succeeds` below.
+
+/// RED: `workspace_get` resolves its response purely from a
+/// caller-supplied `leaseId`, with no check that `principal` owns the
+/// run it belongs to (ReviewR81 W4).
+#[tokio::test]
+async fn workspace_get_against_another_instances_lease_is_refused() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut owner = omp_client(&harness, "omp-1").await;
+    let (_task_id, _worker_id, run_id) = submit_run_with_driver(&mut owner, "omp-1").await;
+
+    let acquire = owner
+        .call(
+            5,
+            "workspace/acquire",
+            json!({ "runId": run_id, "mode": "readOnly", "requestedIsolation": "shared" }),
+        )
+        .await;
+    assert!(
+        acquire.get("error").is_none(),
+        "owner's own workspace/acquire failed: {acquire:?}"
+    );
+    let lease_id = acquire["result"]["leaseId"].as_str().unwrap().to_string();
+
+    let mut attacker = omp_client(&harness, "omp-2").await;
+    let get = attacker
+        .call(2, "workspace/get", json!({ "leaseId": lease_id }))
+        .await;
+    assert_eq!(
+        get["error"]["code"], -32602,
+        "workspace/get against another instance's lease must be refused: {get:?}"
+    );
+    assert!(
+        get.get("result").is_none(),
+        "a refused get must not disclose the lease's path/mode/state: {get:?}"
+    );
+}
 
 /// RED: `workspace_release` (`dispatch` calls
 /// `self.workspace_release(params).await` with no `principal`) never
@@ -3756,15 +3864,17 @@ async fn workspace_release_against_another_instances_lease_is_refused() {
     );
 }
 
-/// GREEN guard for R81: the owner releasing its own lease must still
+/// GREEN guard for R81: the owner using its own lease must still
 /// succeed once ownership arbitration is threaded into
-/// `workspace_release` -- a universal-refusal fix must not pass either.
+/// `workspace_get`, `workspace_inspect`, and `workspace_release` -- a
+/// universal-refusal fix must not pass any of them either (W4).
 #[tokio::test]
 async fn workspace_release_by_the_owning_instance_succeeds() {
     let harness = Harness::start(|c| {
         c.run_driver = Some(Arc::new(FakeRunDriver));
     })
     .await;
+    init_real_git_repo(&harness.owned_dir);
     let mut owner = omp_client(&harness, "omp-1").await;
     let (_task_id, _worker_id, run_id) = submit_run_with_driver(&mut owner, "omp-1").await;
 
@@ -3781,8 +3891,28 @@ async fn workspace_release_by_the_owning_instance_succeeds() {
     );
     let lease_id = acquire["result"]["leaseId"].as_str().unwrap().to_string();
 
+    let get = owner
+        .call(6, "workspace/get", json!({ "leaseId": lease_id }))
+        .await;
+    assert!(
+        get.get("error").is_none(),
+        "owner's own workspace/get failed: {get:?}"
+    );
+    assert_eq!(get["result"]["leaseId"], lease_id);
+    assert_eq!(get["result"]["state"], "active");
+
+    let inspect = owner
+        .call(7, "workspace/inspect", json!({ "leaseId": lease_id }))
+        .await;
+    assert!(
+        inspect.get("error").is_none(),
+        "owner's own workspace/inspect failed: {inspect:?}"
+    );
+    assert_eq!(inspect["result"]["commitCount"], 1);
+    assert_eq!(inspect["result"]["dirtyFileCount"], 0);
+
     let release = owner
-        .call(6, "workspace/release", json!({ "leaseId": lease_id }))
+        .call(8, "workspace/release", json!({ "leaseId": lease_id }))
         .await;
     assert!(
         release.get("error").is_none(),
@@ -3791,7 +3921,7 @@ async fn workspace_release_by_the_owning_instance_succeeds() {
     assert_eq!(release["result"]["released"], true);
 
     let replay = owner
-        .call(7, "events/replay", json!({ "afterSequence": 0 }))
+        .call(9, "events/replay", json!({ "afterSequence": 0 }))
         .await;
     assert_eq!(
         workspace_event_kinds_for_run(&replay, &run_id)
@@ -3877,7 +4007,7 @@ async fn workspace_apply_against_another_instances_lease_is_refused() {
     })
     .await;
     let mut owner = omp_client(&harness, "omp-1").await;
-    let (_task_id, _worker_id, run_id) = submit_run_with_driver(&mut owner, "omp-1").await;
+    let (task_id, _worker_id, run_id) = submit_run_with_driver(&mut owner, "omp-1").await;
 
     let acquire = owner
         .call(
@@ -3915,10 +4045,10 @@ async fn workspace_apply_against_another_instances_lease_is_refused() {
         "workspace/apply against another instance's lease must be refused before artifact \
          resolution: {apply:?}"
     );
-    let message = apply["error"]["message"].as_str().unwrap_or_default();
-    assert!(
-        !message.contains("artifact") && !message.contains("not found"),
-        "the refusal must be the ownership check, not artifact-not-found: {apply:?}"
+    assert_eq!(
+        apply["error"]["message"],
+        format!("task {task_id} is not owned by omp-2"),
+        "the refusal must classify ownership, not artifact-not-found: {apply:?}"
     );
 
     let replay = owner
@@ -3929,5 +4059,65 @@ async fn workspace_apply_against_another_instances_lease_is_refused() {
             .iter()
             .all(|k| k != "applyStarted"),
         "a refused apply must not journal ApplyStarted: {replay:?}"
+    );
+}
+
+/// GREEN guard for R81: the owner applying against its own lease must
+/// still pass the ownership gate and reach artifact resolution -- the
+/// `-32603` from `WorkspaceApplier` failing on a bogus, never-seeded
+/// artifact is the proof a wrongly-universal refusal would instead
+/// surface as `-32602` before this point is ever reached (W4).
+#[tokio::test]
+async fn workspace_apply_by_the_owning_instance_reaches_artifact_resolution() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut owner = omp_client(&harness, "omp-1").await;
+    let (_task_id, _worker_id, run_id) = submit_run_with_driver(&mut owner, "omp-1").await;
+
+    let acquire = owner
+        .call(
+            5,
+            "workspace/acquire",
+            json!({ "runId": run_id, "mode": "write", "requestedIsolation": "shared" }),
+        )
+        .await;
+    assert!(
+        acquire.get("error").is_none(),
+        "owner's own workspace/acquire failed: {acquire:?}"
+    );
+    let lease_id = acquire["result"]["leaseId"].as_str().unwrap().to_string();
+    let base_revision = acquire["result"]["baseRevision"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let bogus_artifact_id = batman_protocol::ArtifactId::new().to_string();
+    let apply = owner
+        .call(
+            6,
+            "workspace/apply",
+            json!({
+                "leaseId": lease_id,
+                "strategy": "applyPatch",
+                "artifactId": bogus_artifact_id,
+                "expectedTargetRevision": base_revision,
+            }),
+        )
+        .await;
+    assert_eq!(
+        apply["error"]["code"], -32603,
+        "the owner's own apply must pass the ownership gate and fail on artifact resolution, \
+         not ownership: {apply:?}"
+    );
+
+    let replay = owner
+        .call(7, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    assert!(
+        workspace_event_kinds_for_run(&replay, &run_id).contains(&"applyStarted".to_string()),
+        "an owner's apply attempt must journal ApplyStarted before artifact resolution fails, \
+         proving the gate did not refuse it: {replay:?}"
     );
 }
