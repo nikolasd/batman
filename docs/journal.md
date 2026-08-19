@@ -4017,6 +4017,57 @@ the artifact's own owner (W6). W3 became **R93**: `run/cancel` still reports unq
 success after what is now an unambiguous kill failure — the same ten-line treatment, one door
 over, registered rather than folded in.
 
+## Part XXXIX — The counter that was always zero, and the gates that moved inside
+
+Batch 8 was arbitration: four findings about decisions made from numbers or flags that were not
+real. `058174d` (R87) replaced `Shared::active_runs` — a hardcoded `0` the idle-shutdown timer
+and `runtime/status` both believed — with `RunDriver::active_run_count()`, the adapter
+registry's live map length, wired through the same seam `run/submit` already used. The fake
+test drivers report a fixed count, so `runtime/status` tests now assert the driver's number and
+the refusal message renders the real counts. `5aef049` (R82) gave the in-band
+`runtime/shutdown` its missing arbitration: refused with `-32602` while any run is live or
+another connection is being served, unless `params.force == true` — the deliberate, logged
+operator escape hatch. The out-of-band `batcave stop`/SIGTERM path stays unarbitrated on
+purpose; whoever can signal the process can stop it, and both docs now say so. `0ccdb3d` (R78)
+moved the quarantine gates inside the writes they guard: `record_message` and
+`record_workspace_event` take `enforce_quarantine` and re-read the flag inside the same guarded
+transaction, so a quarantine landing between a caller's pre-check and its write now refuses
+instead of journaling; the dead caller-side pre-check and its `run_flags_op` query were
+deleted. `574a00c` (R79) made concurrent policy cancellations honest: the loser of the
+`cancel_and_transition` race acknowledges `superseded` in the audited operations table instead
+of surfacing a transition error, and a deterministic `current_thread` race test proves both
+interleavings land in the operations table. The adversarial review returned one Error — a stale
+dist bundle, already healed by the next batch's refresh — and nine warnings, all applied in
+`ced828a`: `active_run_count` became a required trait method (a silently-zero driver cannot
+reintroduce R87), the unforced accept leg and the quarantined `workspace/apply`/`inspect`
+refusals gained tests, and the race test's expects now name their real proof, since the sink
+swallows violation errors into a warn log. One review finding became R94: `require_live_run`
+is itself an advisory pre-check outside the writes it guards — R78's class, one door over.
+A replay nuance worth recording: an accepted-shutdown journal write races nothing, but a
+pre-R83 binary replaying a post-R83 journal fails the *whole* `events/replay` call on the
+unknown variant, not just the one event — downgrades break replay entirely.
+
+## Part XL — The event that lied about itself, and the violation you could not find
+
+Batch 9 was observability. `c0dfd75`/`d65c542` (R83) stopped `decide_child`'s accept arm from
+journaling `ChildWorkerRequested` — the request's own kind — for an acceptance: the accept now
+emits `RuntimeEventKind::ChildWorkerAccepted`, a new additive wire variant, and the status row,
+monitor label, and TS bindings all render "child worker accepted". The RED test pins the LAST
+`childEvent` for the parent run, so the seeded request row cannot satisfy it. `57faa77` (R80)
+built the discovery surface the quarantine loop was missing: `policy/violation/list` — protocol
+type (`PolicyViolationListResult`/`PolicyViolationSummary`), query op, dispatch, `ompExtension`
+and `display` roles, the extension's `batman_violation { op: "list" }`, the monitor's
+`Open violations:` row naming each undecided violation id, and SKILL.md's recovery loop
+(`quarantineCleared: false` → list → decide the one with `resolution: null`). `2e4f63e` closed
+the R55-class gap in the same motion: the new method's result is Ajv-validated in the client's
+`RESULT_VALIDATORS`, and the Rust test pins the exact wire key set against the
+`additionalProperties: false` schema — then, after review, round-trips the result through the
+canonical `deny_unknown_fields` type so a renamed field fails at `cargo test` time
+(`bd0acf9`, which also let the `display` role read the new list, corrected architecture.md's
+role counts, and taught the docs the third child label). The review's verdict: the hand-rolled
+`json!` projection in `query.rs` deviates from Batch 4's `serde_json::to_value(&canonical)`
+convention but is now pinned from both directions.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
