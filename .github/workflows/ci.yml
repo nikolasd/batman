@@ -85,6 +85,24 @@ jobs:
       - name: Run JS/TS tests
         run: bun test
 
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install JS workspace dependencies
+        run: bun install
+
+      # `strict: true` was declared from day one but never enforced: no local
+      # script and no CI job ran `tsc`, so real compile errors shipped in
+      # tracked source (R37, R61). This gate makes the declaration true.
+      - name: Type-check the TypeScript workspace
+        run: bun run typecheck
+
   generate-check:
     runs-on: ubuntu-latest
     steps:
