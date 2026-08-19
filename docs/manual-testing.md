@@ -215,10 +215,10 @@ mkdir -p /tmp/batman-smoke && cd /tmp/batman-smoke && git init -q && git commit 
 
 ```bash
 omp --extension "$EXT" --print \
-  'Use batman_task to upsert a task with description "smoke test". Then use
+  'Use batman_task to upsert a task. Then use
    batman_worker to create a worker with fingerprint "sha256:smoke" and adapter "fake". Then use
-   batman_run to submit a run for that task against that worker. Report the taskId and workerId
-   plainly.'
+   batman_run to submit a run for that task against that worker with prompt "smoke test".
+   Report the taskId and workerId plainly.'
 ```
 
 Expect the model to report a `taskId` and `workerId`, and to say `run/submit` failed with
@@ -579,7 +579,7 @@ Create a task, then submit two runs with `workspaceMode: "isolated"`:
 
 ```bash
 omp --extension "$EXT" --print \
-  'Use batman_task to upsert a task with description "cross-agent isolation test".
+  'Use batman_task to upsert a task.
    Then use batman_run to submit two runs: one for workerId "<workerId1>" and one for
    workerId "<workerId2>", both with the same taskId, workspaceMode "isolated", and prompt
    "Create a file hello.txt containing your adapter name". Report both runIds and workspacePaths
