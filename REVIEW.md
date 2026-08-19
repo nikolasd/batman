@@ -163,6 +163,16 @@ R13 (2026-08-19) made `RunDriver::cancel_run`'s `Err` unambiguous — an absent 
 
 **Priority:** Low — found during R65's adversarial review (2026-08-19).
 
+#### R97. `concurrent_cancelling_violations_are_both_idempotent_successes` flaked once under full-workspace parallel load
+
+**Location:** `crates/runtime/tests/orchestration_rpc.rs` (`concurrent_cancelling_violations_are_both_idempotent_successes`, R79's race test)
+
+**Evidence:** one failure observed during a full `cargo test --workspace --no-fail-fast` run (2026-08-19); green 5/5 in exact isolation, green in the suite alone, and green in two subsequent full-workspace runs. The failing assertion text was not captured. The test's determinism argument rests on the FIFO database actor plus `biased` join under a `current_thread` runtime; a host-load perturbation may expose a hole in that argument or an over-tight assertion on the audited-ack pair.
+
+**Fix:** reproduce under load with output capture (`--nocapture` in a loop concurrent with heavy suites), then either repair the determinism argument or loosen the assertion to the legal outcome set.
+
+**Priority:** Low — single observation, not reproduced; watch item.
+
 ## Known Environment Limitations
 
 **Not a bug — requires a gated live run to confirm the positive case. Reconfirmed 2026-08-12; code-side citations still match current source.**
@@ -181,5 +191,5 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
 - **High:** 0 — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII), R77 resolved 2026-08-19 (see docs/journal.md Part XXIX), R81 resolved 2026-08-19 (see docs/journal.md Part XXX)
 - **Medium:** 0 (R36 resolved 2026-08-19, see docs/journal.md Part XLI; R12-R16, R34, R35, R37, R42, R45, R55-R60 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII; R78, R79, R82, R87 resolved 2026-08-19, see docs/journal.md Part XXXIX; R83 resolved 2026-08-19, see docs/journal.md Part XL)
-- **Low:** 11 (R38, R65 — carried forward/new 2026-08-12; R67 resolved 2026-08-19, see docs/journal.md Part XLI; R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90-R96 — new, found during R55/R12/R34/R13/R78/R67/R65's adversarial reviews; R17, R18, R20, R29-R32, R39, R40, R43, R46, R61-R64, R66, R84 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII; R80 resolved 2026-08-19, see docs/journal.md Part XL)
+- **Low:** 11 (R38, R65 — carried forward/new 2026-08-12; R67 resolved 2026-08-19, see docs/journal.md Part XLI; R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90-R96 — new, found during R55/R12/R34/R13/R78/R67/R65's adversarial reviews; R97 — new, flake watch from the 2026-08-19 full-suite run; R17, R18, R20, R29-R32, R39, R40, R43, R46, R61-R64, R66, R84 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII; R80 resolved 2026-08-19, see docs/journal.md Part XL)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
