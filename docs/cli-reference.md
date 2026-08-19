@@ -120,10 +120,11 @@ doesn't shut down in time.
 
 ### `batcave lease release`
 
-Force-releases a workspace lease by id, directly against the lease database — no daemon required.
+Force-releases a workspace lease by id, directly against the lease database — no daemon may be
+running.
 
 ```bash
-batcave lease release --repo <path> --lease-id <id> [--state-dir <path>]
+batcave lease release --repo <path> --lease-id <id> [--yes] [--state-dir <path>]
 ```
 
 The operator remedy for a lease whose owning session correlation was never persisted (the extension
@@ -132,9 +133,17 @@ session is a different principal, so such a lease is unreleasable over RPC until
 rebinds its task — and unreleasable, full stop, when no correlation survives to rebind.
 `batcave doctor` reports these as stale and names this command as the remedy.
 
-Prints `lease <id> released` and exits **0**. When the lease's materialized directory still exists,
-prints its path and states that it is now unmanaged — the runtime will no longer tear it down.
-An already-released lease or an unknown id exits **1** with a message naming which case it was.
+Guardrails: refused while a runtime serves this repository (its monitors could never see the
+out-of-band write — release over RPC or `batcave stop` first), and an `active` lease is refused
+without `--yes`, because releasing it strips a run's workspace claim. The operation intent is
+persisted to the audited `operations` table before the release runs, and the release journals
+`LeaseReleased` — so `events/replay` and `audit export` never show a `LeaseAcquired` with no
+terminating event. A non-shared lease's materialized worktree is torn down exactly as the runtime's
+own release path does; if teardown fails, the row moves to `cleanupFailed` so the doctor keeps
+reporting the leaked directory.
+
+Prints `lease <id> released` and exits **0**. An unknown id exits **1**; an already-released lease
+exits **2**.
 
 ### `batcave monitor`
 

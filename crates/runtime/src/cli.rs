@@ -196,6 +196,10 @@ enum LeaseCommand {
         /// The lease to release (full id, as `batcave doctor` prints it).
         #[arg(long)]
         lease_id: String,
+        /// Confirm releasing a lease that is still `active` -- this strips
+        /// a run's workspace claim.
+        #[arg(long, default_value_t = false)]
+        yes: bool,
     },
 }
 
@@ -290,8 +294,9 @@ pub async fn run() -> ExitCode {
                     state_dir,
                     repo,
                     lease_id,
+                    yes,
                 },
-        } => run_lease_release(state_dir, repo, lease_id),
+        } => run_lease_release(state_dir, repo, lease_id, yes).await,
         Command::Doctor {
             state_dir,
             repo,
@@ -440,9 +445,25 @@ async fn run_stop(state_dir: Option<PathBuf>, repo: PathBuf) -> ExitCode {
 /// directly against the lease database -- no daemon required. Prints the
 /// released lease's materialized path (when one exists) so the operator
 /// can remove a leaked worktree the runtime will no longer tear down.
-fn run_lease_release(state_dir: Option<PathBuf>, repo: PathBuf, lease_id: String) -> ExitCode {
+///
+/// Guarded (R86 review E1-E3): refused while a runtime serves this
+/// repository (its socket exists; the daemon's monitors could never see
+/// this out-of-band write); an `active` lease needs `--yes`; the intent
+/// is persisted to the audited `operations` table before the release
+/// runs; the release itself journals `LeaseReleased` (and `CleanupFailed`
+/// when the worktree teardown fails, in which case the row moves to
+/// `cleanupFailed` so the doctor keeps reporting the leaked directory).
+async fn run_lease_release(
+    state_dir: Option<PathBuf>,
+    repo: PathBuf,
+    lease_id: String,
+    yes: bool,
+) -> ExitCode {
+    use batman_protocol::{IsolationKind, OperationId, Timestamp, WorkspaceState};
+    use batman_runtime::domain::DomainRepository;
     use batman_runtime::paths::RuntimePaths;
-    use batman_runtime::workspace::{LeaseError, LeaseService};
+    use batman_runtime::security::redaction::Redactor;
+    use batman_runtime::workspace::{LeaseError, LeaseService, WorkspaceMaterializer};
 
     let state_root = match resolve_state_dir(state_dir) {
         Ok(dir) => dir,
@@ -452,43 +473,167 @@ fn run_lease_release(state_dir: Option<PathBuf>, repo: PathBuf, lease_id: String
         Ok(paths) => paths,
         Err(err) => return fail(&err),
     };
+
+    // A live daemon owns this state: its subscribers would never see an
+    // out-of-band mutation (invariant 7), and the lease may belong to an
+    // in-flight run it is supervising. The socket's existence is the
+    // daemon's own liveness proof -- it is removed only after journal
+    // shutdown completes.
+    if paths.socket.exists() {
+        eprintln!(
+            "a runtime is serving this repository; release the lease over RPC \
+             (workspace/release) or run `batcave stop` first"
+        );
+        return ExitCode::from(1);
+    }
+
     let leases = match LeaseService::open(paths.project_id, &paths.root.join("workspace-leases.db"))
     {
         Ok(service) => service,
         Err(err) => return fail(&err),
     };
 
-    // Read the lease first so the operator learns the materialized path;
-    // a failure here still reports NotFound before any write.
+    // Read the lease first: the operator learns the materialized path, and
+    // the `active` guard below needs the state before any write.
     let info = match leases.get(lease_id.clone()) {
-        Ok(info) => Some(info),
+        Ok(info) => info,
         Err(LeaseError::NotFound { lease_id }) => {
             eprintln!("no lease {lease_id} exists for this repository");
             return ExitCode::from(1);
         }
-        Err(_) => None,
+        Err(err) => {
+            eprintln!("could not read lease {lease_id} before release: {err}");
+            return ExitCode::from(1);
+        }
+    };
+    if info.state == WorkspaceState::Released {
+        eprintln!("lease {lease_id} was already released");
+        return ExitCode::from(2);
+    }
+    if info.state == WorkspaceState::Active && !yes {
+        eprintln!(
+            "lease {lease_id} is active -- releasing it strips a run's workspace \
+             claim; pass --yes to confirm"
+        );
+        return ExitCode::from(1);
+    }
+
+    // Intent before side effect (invariant 4), into the same audited
+    // `operations` table every other out-of-band mutation uses.
+    let db = match batman_runtime::db::DatabaseHandle::start(paths.database.clone()).await {
+        Ok(handle) => std::sync::Arc::new(handle),
+        Err(err) => return fail(&err),
+    };
+    let redactor = Redactor::new();
+    let operation_id = OperationId::new();
+    let intent = redactor.sanitize_json(&serde_json::json!({
+        "kind": "cli.lease.release",
+        "leaseId": lease_id,
+        "runId": info.run_id.to_string(),
+        "state": info.state,
+    }));
+    if let Err(err) = db
+        .record_operation_intent(operation_id, "cli.lease.release", intent, Timestamp::now())
+        .await
+    {
+        let _ = db.shutdown().await;
+        return fail(&err);
+    }
+
+    let released = match leases.release(lease_id.clone()) {
+        Ok(()) => true,
+        Err(LeaseError::AlreadyReleased { .. }) => true,
+        Err(err) => {
+            let _ = db.shutdown().await;
+            return fail(&err);
+        }
     };
 
-    match leases.release(lease_id.clone()) {
-        Ok(()) => {
-            println!("lease {lease_id} released");
-            if let Some(info) = info
-                && !info.path.is_empty()
-                && std::path::Path::new(&info.path).exists()
-            {
-                println!(
-                    "its materialized directory still exists and is now unmanaged: {}",
-                    info.path
-                );
-            }
-            ExitCode::SUCCESS
-        }
-        Err(LeaseError::AlreadyReleased { lease_id }) => {
-            println!("lease {lease_id} was already released");
-            ExitCode::from(1)
-        }
-        Err(err) => fail(&err),
+    // Tear the materialized directory down exactly as `abandon_lease`
+    // does; a shared lease's path is the repository itself and is never
+    // touched. A teardown failure moves the row to `cleanupFailed` so
+    // `stale()` keeps reporting the leaked directory (review E3).
+    let teardown_error = if info.isolation_kind != IsolationKind::Shared
+        && !info.path.is_empty()
+        && std::path::Path::new(&info.path).exists()
+    {
+        WorkspaceMaterializer::new(paths.project_id, repo.clone())
+            .map_err(|e| e.to_string())
+            .and_then(|m| {
+                m.teardown(std::path::Path::new(&info.path), info.isolation_kind)
+                    .map_err(|e| e.to_string())
+            })
+            .err()
+    } else {
+        None
+    };
+    if let Some(message) = &teardown_error {
+        let _ = leases.mark_cleanup_failed(lease_id.clone());
+        eprintln!(
+            "worktree teardown failed; the doctor will keep reporting {}: {message}",
+            info.path
+        );
     }
+
+    // Journal what happened (invariant 7's commit half; no daemon is
+    // serving, so there are no live subscribers to broadcast to).
+    let project_id = paths.project_id;
+    let run_id = info.run_id;
+    let event_lease_id = lease_id.clone();
+    let cleanup_error = teardown_error.clone();
+    let journaled = db
+        .run_domain_op(Box::new(move |conn| {
+            let mut repo = DomainRepository::new(conn, project_id);
+            if let Some(error) = cleanup_error {
+                repo.record_workspace_event(
+                    batman_protocol::WorkspaceEvent::CleanupFailed {
+                        lease_id: event_lease_id.clone(),
+                        error,
+                    },
+                    run_id,
+                    event_lease_id.clone(),
+                )?;
+            }
+            repo.record_workspace_event(
+                batman_protocol::WorkspaceEvent::LeaseReleased {
+                    lease_id: event_lease_id.clone(),
+                    run_id,
+                },
+                run_id,
+                event_lease_id,
+            )
+            .map(|_| serde_json::json!({}))
+        }))
+        .await;
+    if let Err(err) = journaled {
+        let _ = db.shutdown().await;
+        return fail(&err);
+    }
+
+    let ack = redactor.sanitize_json(&serde_json::json!({
+        "released": released,
+        "cleanupFailed": teardown_error.is_some(),
+    }));
+    if let Err(err) = db.acknowledge_operation(operation_id, ack).await {
+        let _ = db.shutdown().await;
+        return fail(&err);
+    }
+    if let Err(err) = db.shutdown().await {
+        return fail(&err);
+    }
+
+    println!("lease {lease_id} released");
+    if teardown_error.is_none()
+        && info.isolation_kind == IsolationKind::Shared
+        && !info.path.is_empty()
+        && std::path::Path::new(&info.path).exists()
+    {
+        println!(
+            "its shared workspace is the repository itself and was left in place: {}",
+            info.path
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 /// Runs `batcave monitor`: connects to the runtime, replays events, and
