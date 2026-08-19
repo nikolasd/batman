@@ -232,7 +232,9 @@ async fn ensure_client_refuses_end_to_end_when_the_agent_omits_its_version() {
     let program = dir.path().join("fake-copilot");
     std::fs::write(
         &program,
-        format!("#!/bin/sh\nread -r req\ncat <<'ACPEOF'\n{response_line}\nACPEOF\nsleep 5\n"),
+        format!(
+            "#!/bin/sh\ntrap 'exit 0' INT TERM\nread -r req\ncat <<'ACPEOF'\n{response_line}\nACPEOF\nwhile :; do sleep 1; done\n"
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -249,7 +251,10 @@ async fn ensure_client_refuses_end_to_end_when_the_agent_omits_its_version() {
     );
 
     let error = timeout(
-        Duration::from_secs(10),
+        // Generous: the refusal path terminates the fake agent via the
+        // supervisor's SIGINT -> SIGTERM escalation, whose per-step
+        // deadlines dominate this test's wall time.
+        Duration::from_secs(30),
         adapter.resume(
             batman_runtime::adapter::VendorSessionRef("session-1".to_string()),
             std::sync::Arc::new(NullSink),
