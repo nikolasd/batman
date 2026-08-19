@@ -202,7 +202,9 @@ reconnecting clients.
 ## 3. Trace: submitting a run through `batman_run`, and the monitor observing it live
 
 Same idea as §2, but through the orchestration surface — follow it once and you've seen how a
-mutation, the durable journal, and the embedded monitor connect.
+mutation, the durable journal, and the embedded monitor connect. This trace is the symbol-level
+companion to the design-level sequence in
+[`architecture.md` § Data Flow: Event Lifecycle](architecture.md#data-flow-event-lifecycle).
 
 1. **The tool call** — the model calls `batman_run` with `{ op: "submit", taskId, workerId }`
    (`tools/runs.ts`); `execute` calls `ctx.getClient(cwd)` (the *same* cached `ompExtension`

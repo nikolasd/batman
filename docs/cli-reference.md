@@ -227,10 +227,12 @@ batcave audit export --repo <path> --state-dir <path> --output <path> [--from <t
 **This is the one command where `--state-dir` means something different from every other
 subcommand.** `serve`/`status`/`stop`/`monitor`/`doctor` treat `--state-dir` as a *state root* and
 derive the per-repository runtime directory themselves. `audit export` does not — it opens
-`<state-dir>/runtime.db` directly. Pass it the actual per-repository runtime directory (what the
-other commands would compute as `<state-root>/repos/<repository-id>/`), not the top-level state
-root, or you'll silently get an empty, freshly-migrated database with zero events rather than an
-error.
+`<state-dir>/runtime.db` directly, and `--repo` won't rescue a wrong path: it is recorded in the
+export's metadata only, never used to locate the database
+([`run_audit_export`](../crates/runtime/src/cli.rs)). Pass the actual per-repository runtime
+directory (what the other commands would compute as `<state-root>/repos/<repository-id>/`), not
+the top-level state root, or you'll silently get an empty, freshly-migrated database with zero
+events rather than an error.
 
 Other details:
 - `--from`/`--to` should be RFC3339 timestamps. They are **not validated** — the raw strings go into

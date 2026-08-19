@@ -8,11 +8,9 @@ upgrades, and the real (as opposed to imagined) install/uninstall path. For the 
 command reference, see [`cli-reference.md`](cli-reference.md) — this guide doesn't repeat flags,
 only the procedures around them.
 
-Examples below invoke `batcave` bare. Nothing puts it on your `PATH`: an installed runtime lives
-at `<state-root>/bin/<version>/batcave` (default `~/.omp/batman/bin/<version>/batcave`, fetched by
-`/batman-runtime-install` and invoked by absolute path from the extension) and a local build at
-`target/debug/batcave` or `target/release/batcave`. Alias or symlink it, or substitute the full
-path in every command.
+Examples below invoke `batcave` bare — nothing puts it on your `PATH`; alias it or substitute the
+full path. Where installed and source-built binaries live is specified once in
+[`cli-reference.md`](cli-reference.md).
 
 ## Daemon Lifecycle
 
@@ -23,7 +21,7 @@ batcave serve --repo <path> --state-dir "$HOME/.omp/batman" [--idle-seconds <n>]
 ```
 
 In normal use you don't run this yourself — the OMP extension spawns it on first use per
-repository (see [`plugin-usage.md`](plugin-usage.md#how-the-extension-finds-and-starts-batcave)).
+repository (see [`getting-started.md`](getting-started.md#how-the-extension-finds-and-starts-batcave)).
 Run it by hand for debugging or CI. See [`cli-reference.md`](cli-reference.md#batcave-serve) for
 every flag, and the [state-directory note](cli-reference.md#before-you-start-state-directories)
 before you pick a `--state-dir` — the CLI's own default when it's omitted (`.batman` in the current
@@ -61,7 +59,7 @@ batcave monitor --repo <path> --state-dir "$HOME/.omp/batman" --run-id <run-id>
 There's no separate "replay" vs. "live" mode — `monitor` always replays what's already journaled
 and then keeps tailing new events until you interrupt it. If the daemon restarts mid-session,
 `monitor` reconnects and resumes from where it left off rather than exiting. For day-to-day use
-inside OMP, prefer `/batman` (see [`plugin-usage.md`](plugin-usage.md#the-embedded-monitor-batman))
+inside OMP, prefer `/batman` (see [`plugin-usage.md`](plugin-usage.md#4-watching-runs))
 — this CLI form is for scripting or debugging outside an OMP session.
 
 ### Diagnosing a runtime
@@ -119,7 +117,7 @@ by a git credential helper). `/batman-runtime-install` additionally needs a `GIT
 `GH_TOKEN` environment variable, or that same `gh auth login` session, to download the asset — see
 the README's [Installation](../README.md#installation) section. The `batcave` binary itself resolves
 in two tiers (see
-[`plugin-usage.md`](plugin-usage.md#how-the-extension-finds-and-starts-batcave)): `OMP_BATMAN_BINARY`
+[`plugin-usage.md`](getting-started.md#how-the-extension-finds-and-starts-batcave)): `OMP_BATMAN_BINARY`
 (a local-development override) if set, otherwise the SHA-256-verified binary
 `/batman-runtime-install` cached under the BATMAN state root — there's no separate binary install
 step beyond that command.
@@ -142,7 +140,7 @@ separate step. `/marketplace upgrade batman@batman` refreshes the extension + sk
 repository; if that bumps the extension's version, re-run `/batman-runtime-install` to download the
 matching binary (a version-mismatched cached binary is rejected rather than silently reused). If
 you're testing an unreleased build instead, use the `OMP_BATMAN_BINARY` override described in
-[`plugin-usage.md`](plugin-usage.md#how-the-extension-finds-and-starts-batcave) instead of
+[`plugin-usage.md`](getting-started.md#how-the-extension-finds-and-starts-batcave) instead of
 installing anything.
 
 1. **Stop the running daemon** for any repository you're about to touch: `batcave stop --repo ...`

@@ -47,7 +47,7 @@ Binary source: package
 
 `Binary source: package` means the verified, downloaded-and-cached binary is running. `override`
 means `OMP_BATMAN_BINARY` was set and is running instead — the local-development path, described in
-Appendix B.
+[`getting-started.md`](getting-started.md#how-the-extension-finds-and-starts-batcave).
 
 If this fails instead, skip to [When something breaks](#6-when-something-breaks).
 
@@ -128,10 +128,11 @@ Every BATMAN tool failure has the same shape: text `"<method> failed: <message>"
 ## Appendix A — tool reference
 
 For advanced users, and for the model's own use: the extension registers **11 orchestration
-tools**, plus `batman_status`/`/batman-status`, `batman_doctor`/`/batman-doctor`, and
-`batman_runtime_install`/`/batman-runtime-install`. Every tool shares one runtime connection per OMP
-session — the first call connects to (or spawns) the repository's `batcave` daemon; every later call
-in the same session reuses that connection.
+tools** (the deterministic `batman_*` tools below), plus three health/install helpers —
+`batman_status`, `batman_doctor`, and `batman_runtime_install` — each also available as a slash
+command (`/batman-status`, `/batman-doctor`, `/batman-runtime-install`). Every tool shares one
+runtime connection per OMP session — the first call connects to (or spawns) the repository's
+`batcave` daemon; every later call in the same session reuses that connection.
 
 **Shared contract** (`packages/extension/src/tools/shared.ts`, `callOrchestration`): a successful
 call's text content is `"<method>: <JSON.stringify(result)>"`, and `details` is the daemon's JSON
@@ -540,20 +541,8 @@ That `404` on a private repo almost always means no `GITHUB_TOKEN`/`GH_TOKEN` wa
 
 ## Appendix B — how the runtime binary is resolved
 
-You don't need to know this to use the tools above, but it explains what `batman_status` reports and
-what `OMP_BATMAN_BINARY` is for:
-
-1. On first use in a session, the extension tries to connect to the repository's existing runtime
-   socket. If one answers, it's reused — no process is spawned.
-2. If nothing answers, it picks a binary in two tiers: `OMP_BATMAN_BINARY` (an absolute, executable
-   path) wins outright if set — this is the local-development override, and it skips checksum/
-   version validation entirely. Otherwise it looks for `<state root>/bin/<version>/batcave`, verifies
-   its SHA-256 and version against a sibling `manifest.json` (and rejects a manifest whose `target`
-   doesn't match this platform), and only trusts it once that check passes. That cache is populated
-   by `/batman-runtime-install`, which downloads both files from this extension version's GitHub
-   Release. The state root itself resolves as `BATMAN_STATE_DIR` (env var) →
-   `$XDG_STATE_HOME/omp/batman` → `$HOME/${PI_CONFIG_DIR:-.omp}/batman`.
-3. It spawns `batcave serve` detached, with `BATMAN_BINARY_SOURCE` set to `override` or `package`
-   accordingly (this is the "Binary source" field `batman_status` reports), then retries connecting
-   with bounded exponential backoff. If a different concurrent caller won the daemon's single-
-   instance lock in the meantime, this session simply connects to that winner.
+Moved to [`getting-started.md` § How the extension finds and starts `batcave`](getting-started.md#how-the-extension-finds-and-starts-batcave)
+— you don't need it to use the tools above. Short version: an existing daemon is reused if its
+socket answers; otherwise `OMP_BATMAN_BINARY` (developer override) or the checksum-verified
+`<state root>/bin/<version>/batcave` cache is spawned, and `batman_status` reports which one as
+"Binary source".

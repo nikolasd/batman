@@ -304,9 +304,8 @@ requires it to be fully torn down and restarted. Both must hold; neither one pro
 ### 3d. What this walkthrough can't cover
 
 Approval creation (`ApprovalService::request`) is only ever invoked by an adapter reporting it
-needs human sign-off, and there is no `approval/request` RPC method — adapters are out of scope
-this milestone. There is no way to trigger it from a live `omp` session. Exercise that half of the
-flow with:
+needs human sign-off, and there is no `approval/request` RPC method — so there is no way to
+trigger it from a live `omp` session. Exercise that half of the flow with:
 
 ```bash
 cargo test -p batman-runtime --test approval
@@ -337,10 +336,8 @@ rm -rf /tmp/batman-smoke
 
 ## 4. Worker adapters
 
-Everything above this line predates the Worker Adapters milestone and never spawns a real Claude/
-Codex/Copilot/OMP-RPC process. This section covers the four supervised adapters, their conformance
-suites, and the worker coordination MCP surface.
-
+Steps 1-3 never spawn a real Claude/Codex/Copilot/OMP-RPC process. This section covers the four
+supervised adapters, their conformance suites, and the worker coordination MCP surface.
 
 The `batcave conformance` and `batcave adapters` CLI subcommands (see
 [`cli-reference.md`](cli-reference.md#batcave-conformance)) run the same fixture/live suites as
@@ -354,11 +351,11 @@ integration test harness's own assertions and `#[ignore]`/live gating.
 Four vendor CLIs, plus everything from the top-level [Prerequisites](#prerequisites) above:
 
 ```bash
-claude --version   # this milestone's baseline: Claude Code 2.1.217 (2.1.220 verified to work)
-codex --version    # this milestone's baseline: codex-cli 0.145.0 (exact match required for the
+claude --version   # verified baseline: Claude Code 2.1.217 (2.1.220 verified to work)
+codex --version    # verified baseline: codex-cli 0.145.0 (exact match required for the
                     # schema-compatibility check — see 4b)
-copilot --version  # this milestone's baseline: GitHub Copilot CLI 1.0.73 (1.0.75 verified to work)
-omp --version       # this milestone's baseline: omp/17.0.7 (17.1.1 verified to work)
+copilot --version  # verified baseline: GitHub Copilot CLI 1.0.73 (1.0.75 verified to work)
+omp --version       # verified baseline: omp/17.0.7 (17.1.1 verified to work)
 ```
 
 None of these baselines are a hard requirement — the conformance test suites *measure* what the
@@ -425,8 +422,8 @@ anywhere, read that scenario's own `detail` first — it names concretely what f
 something did.
 
 Every adapter's fixture report should show `"passed": true` throughout, with these documented,
-intentional exceptions — genuine gaps or environment dependencies this milestone reports honestly
-rather than papering over with a fabricated pass:
+intentional exceptions — genuine gaps or environment dependencies, reported honestly rather than
+papered over with a fabricated pass:
 
 | Adapter | Scenario(s) | Why |
 |---|---|---|
@@ -474,22 +471,21 @@ model at all, so the switch has nothing to suppress for them — they are safe b
 and are instead protected in CI simply by the `copilot` or `omp` binary being absent.
 
 **What "no paid model call" means here, precisely:** every 4b (fixture) test is *guaranteed*
-zero model calls — that is this milestone's own design invariant, proven by the test code never
-invoking a model. A 4c (live) test that reaches a model, run with the kill switch unset, is the
-opposite: it deliberately makes a real, billed call for whichever scenarios that adapter's own
-live suite defines as needing one (this milestone's default posture is to prove as much as
-possible in fixture mode and reserve live mode for the few properties — a real vendor process
-schema/handshake, mostly — that only a live process can prove at all). Always set
+zero model calls — a design invariant, proven by the test code never invoking a model. A 4c
+(live) test that reaches a model, run with the kill switch unset, is the opposite: it
+deliberately makes a real, billed call for whichever scenarios that adapter's own live suite
+defines as needing one (the default posture: prove as much as possible in fixture mode, reserve
+live mode for the few properties — a real vendor process schema/handshake, mostly — that only a
+live process can prove at all). Always set
 `export BATMAN_DISABLE_VENDOR_CLI=1` in a CI job or an unattended run, so a stray `--ignored`
 invocation degrades to an honest skip instead of a charge.
 
-### 4d. AdapterRegistry is wired into the daemon (changed from previous milestone)
+### 4d. AdapterRegistry wiring
 
 `AdapterRegistry` (the `RunDriver` implementation this section's conformance suites feed into) is
-built, tested (`cargo test -p batman-runtime --test adapter_registry`), and **is now wired into
-the running daemon** — `lifecycle::serve()`'s `ServerConfig` sets `run_driver` to an
-`AdapterRegistry` instance. This is a change from the previous milestone, where the registry was
-not wired in.
+wired into the running daemon: `lifecycle::serve()`'s `ServerConfig` sets `run_driver` to an
+`AdapterRegistry` instance (`cargo test -p batman-runtime --test adapter_registry` exercises it
+directly).
 
 However, whether the registry starts an adapter is decided by the merged org policy, evaluated by
 `PolicyEvaluator`: the `models` and `adapters` allowlists (empty means "all allowed"), any

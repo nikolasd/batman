@@ -714,9 +714,9 @@ sequenceDiagram
 
 ## Known Deferred Items
 
-Consciously deferred as non-blocking after review (tracked for later milestones). See [`REVIEW.md`](../REVIEW.md) for the full, verified catalog with status updates.
-
-**Status:** All items tracked in [`REVIEW.md`](../REVIEW.md).
+Consciously deferred features, each with a decision trigger, live in
+[`future-features.md`](future-features.md). Open defects and watch items live in
+[`REVIEW.md`](../REVIEW.md).
 
 ## Appendix A: Quick Reference
 
@@ -782,11 +782,9 @@ Generated from [`crates/runtime/src/ipc/mod.rs`](crates/runtime/src/ipc/mod.rs)'
 
 **Note:** A cached connection shared across callers must authenticate as the *union* of all roles (see [Engineering Lessons](engineering-lessons.md#cached-client-must-authenticate-with-the-union-of-all-roles)).
 
-**Read-side policy** ([ADR-0024](adr/0024-project-scoped-reads-are-open-ownership-gates-writes.md)):
-project-scoped reads are deliberately open to any same-user client the role table admits;
-ownership gates *mutation*. `workspace/get` is the one ownership-gated read, kept so solely for
-uniform refusals across the four `workspace/*` methods — not as a confidentiality boundary; the
-facts it withholds are readable via `run/get`.
+**Read-side policy:** project-scoped reads are open to any same-user client the role table admits;
+ownership gates *mutation*. Rationale and the one exception (`workspace/get`) in
+[ADR-0024](adr/0024-project-scoped-reads-are-open-ownership-gates-writes.md).
 
 ### Regression Tests for Critical Invariants
 
