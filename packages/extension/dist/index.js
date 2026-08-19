@@ -6906,6 +6906,18 @@ var batman_schema_default = {
     },
     runtimeStatus: {
       $ref: "#/$defs/RuntimeStatus"
+    },
+    artifactListResult: {
+      $ref: "#/$defs/ArtifactListResult"
+    },
+    artifactFetchResult: {
+      $ref: "#/$defs/ArtifactFetchResult"
+    },
+    inspectResult: {
+      $ref: "#/$defs/InspectResult"
+    },
+    applyResult: {
+      $ref: "#/$defs/ApplyResult"
     }
   },
   required: [
@@ -6920,7 +6932,11 @@ var batman_schema_default = {
     "jsonRpcResponse",
     "jsonRpcErrorResponse",
     "jsonRpcNotification",
-    "runtimeStatus"
+    "runtimeStatus",
+    "artifactListResult",
+    "artifactFetchResult",
+    "inspectResult",
+    "applyResult"
   ],
   $defs: {
     InitializeParams: {
@@ -9456,6 +9472,197 @@ range (a self-check that always holds for a live, negotiated session).`,
         "package",
         "unknown"
       ]
+    },
+    ArtifactListResult: {
+      description: "Result of listing artifacts.",
+      type: "object",
+      properties: {
+        artifacts: {
+          type: "array",
+          items: {
+            $ref: "#/$defs/Artifact"
+          }
+        }
+      },
+      additionalProperties: false,
+      required: [
+        "artifacts"
+      ]
+    },
+    Artifact: {
+      description: "Metadata for a stored artifact.",
+      type: "object",
+      properties: {
+        artifactId: {
+          $ref: "#/$defs/ArtifactId"
+        },
+        kind: {
+          $ref: "#/$defs/ArtifactKind"
+        },
+        sha256: {
+          type: "string"
+        },
+        byteLength: {
+          type: "integer",
+          format: "uint64",
+          minimum: 0
+        },
+        mediaType: {
+          type: "string"
+        },
+        storagePath: {
+          description: "The relative storage path under the artifacts directory.",
+          type: "string"
+        },
+        runId: {
+          description: "The run ID that produced this artifact, if known.",
+          type: [
+            "string",
+            "null"
+          ]
+        }
+      },
+      additionalProperties: false,
+      required: [
+        "artifactId",
+        "kind",
+        "sha256",
+        "byteLength",
+        "mediaType",
+        "storagePath"
+      ]
+    },
+    ArtifactKind: {
+      description: "The kind of an artifact.",
+      type: "string",
+      enum: [
+        "patch",
+        "commitList",
+        "conflictReport",
+        "workspaceManifest"
+      ]
+    },
+    ArtifactFetchResult: {
+      description: "Result of fetching an artifact.",
+      type: "object",
+      properties: {
+        artifact: {
+          $ref: "#/$defs/Artifact"
+        },
+        contentBase64: {
+          description: `Base64-encoded chunk of artifact bytes; callers decode explicitly.
+Capped at 256 KiB per call.`,
+          type: "string"
+        },
+        nextOffset: {
+          type: [
+            "integer",
+            "null"
+          ],
+          format: "uint64",
+          minimum: 0
+        },
+        complete: {
+          type: "boolean"
+        }
+      },
+      additionalProperties: false,
+      required: [
+        "artifact",
+        "contentBase64",
+        "complete"
+      ]
+    },
+    InspectResult: {
+      description: "Evidence captured by `inspect`: a binary-safe patch, commit list, and\ndirty/untracked state summary.",
+      type: "object",
+      properties: {
+        leaseId: {
+          type: "string"
+        },
+        patchArtifactId: {
+          $ref: "#/$defs/ArtifactId"
+        },
+        commitCount: {
+          type: "integer",
+          format: "uint64",
+          minimum: 0
+        },
+        commitIds: {
+          type: "array",
+          items: {
+            type: "string"
+          }
+        },
+        dirtyFileCount: {
+          type: "integer",
+          format: "uint64",
+          minimum: 0
+        },
+        untrackedFileCount: {
+          type: "integer",
+          format: "uint64",
+          minimum: 0
+        },
+        baseRevision: {
+          type: "string"
+        },
+        currentRevision: {
+          type: [
+            "string",
+            "null"
+          ]
+        }
+      },
+      additionalProperties: false,
+      required: [
+        "leaseId",
+        "patchArtifactId",
+        "commitCount",
+        "commitIds",
+        "dirtyFileCount",
+        "untrackedFileCount",
+        "baseRevision"
+      ]
+    },
+    ApplyResult: {
+      description: "Result of applying a workspace change.",
+      type: "object",
+      properties: {
+        leaseId: {
+          type: "string"
+        },
+        success: {
+          type: "boolean"
+        },
+        conflictArtifactId: {
+          anyOf: [
+            {
+              $ref: "#/$defs/ArtifactId"
+            },
+            {
+              type: "null"
+            }
+          ]
+        },
+        targetRevisionAfter: {
+          type: [
+            "string",
+            "null"
+          ]
+        },
+        errorCode: {
+          type: [
+            "string",
+            "null"
+          ]
+        }
+      },
+      additionalProperties: false,
+      required: [
+        "leaseId",
+        "success"
+      ]
     }
   }
 };
@@ -10744,11 +10951,12 @@ function registerApprovalTool(pi, ctx) {
 }
 
 // src/tools/artifacts.ts
+var ARTIFACT_KINDS = ["patch", "commitList", "conflictReport", "workspaceManifest"];
 var BATMAN_ARTIFACT_TOOL_NAME = "batman_artifact";
 function registerArtifactTool(pi, ctx) {
   const params = pi.zod.object({
     op: pi.zod.enum(["list", "fetch"]).describe("Which artifact operation to perform."),
-    kind: pi.zod.enum(["patch", "commitList", "conflictReport", "workspaceManifest"]).optional().describe("Optional filter for list: only return artifacts of this kind. Omit to list every kind."),
+    kind: pi.zod.enum(ARTIFACT_KINDS).optional().describe("Optional filter for list: only return artifacts of this kind. Omit to list every kind."),
     taskId: pi.zod.string().optional().describe("Optional for list: narrow to artifacts from a specific task. Defaults to all tasks owned by the current session."),
     artifactId: pi.zod.string().optional().describe("Required for fetch: the artifact id to read."),
     offset: pi.zod.number().int().optional().describe("Optional for fetch: byte offset to start from. Defaults to 0."),
@@ -11063,15 +11271,18 @@ function registerWorkerTool(pi, ctx) {
 }
 
 // src/tools/workspaces.ts
+var LEASE_MODES = ["readOnly", "write"];
+var ISOLATION_KINDS = ["shared", "gitWorktree", "copy"];
+var APPLY_STRATEGIES = ["applyPatch", "cherryPick"];
 var BATMAN_WORKSPACE_TOOL_NAME = "batman_workspace";
 function registerWorkspaceTool(pi, ctx) {
   const params = pi.zod.object({
     op: pi.zod.enum(["acquire", "get", "release", "inspect", "apply"]).describe("Which workspace operation to perform."),
     runId: pi.zod.string().optional().describe("Required for acquire: the run this workspace lease belongs to."),
-    mode: pi.zod.enum(["readOnly", "write"]).optional().describe("Required for acquire: readOnly allows sharing with other readers, write requires isolation."),
-    requestedIsolation: pi.zod.enum(["shared", "gitWorktree", "copy"]).optional().describe("Optional for acquire: the isolation strategy to materialize. Defaults to shared. Use gitWorktree or copy when a peer agent will work on the same task concurrently."),
+    mode: pi.zod.enum(LEASE_MODES).optional().describe("Required for acquire: readOnly allows sharing with other readers, write requires isolation."),
+    requestedIsolation: pi.zod.enum(ISOLATION_KINDS).optional().describe("Optional for acquire: the isolation strategy to materialize. Defaults to shared. Use gitWorktree or copy when a peer agent will work on the same task concurrently."),
     leaseId: pi.zod.string().optional().describe("Required for get, release, inspect, and apply: the lease id."),
-    strategy: pi.zod.enum(["applyPatch", "cherryPick"]).optional().describe("Required for apply: applyPatch applies a patch artifact, cherryPick replays commits."),
+    strategy: pi.zod.enum(APPLY_STRATEGIES).optional().describe("Required for apply: applyPatch applies a patch artifact, cherryPick replays commits."),
     artifactId: pi.zod.string().optional().describe("Required for apply: the artifact to apply (from batman_artifact { op: 'list' })."),
     expectedTargetRevision: pi.zod.string().optional().describe("Required for apply: the revision the workspace must currently be at. A mismatch is refused as STALE_REVISION rather than applied to the wrong base."),
     approvalCorrelationId: pi.zod.string().optional().describe("Optional for apply: correlates this application with an approval decision.")
