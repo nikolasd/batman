@@ -55,6 +55,16 @@ pub fn copilot_cli_version_known(cli_version: &str) -> bool {
         .any(|entry| entry.cli_version == cli_version)
 }
 
+/// The single decision `ensure_client` and `probe()` must agree on:
+/// whether a negotiated `agentInfo.version` is verified. A missing
+/// version is **unknown, not implicitly verified** — the vendor omitting
+/// an ordinary optional field must not bypass the empirical-verification
+/// gate (R57).
+#[must_use]
+pub fn copilot_negotiated_version_verified(agent_version: Option<&str>) -> bool {
+    agent_version.is_some_and(copilot_cli_version_known)
+}
+
 /// Whether `protocol_version` is one this adapter's client/normalize code
 /// understands the field names of.
 #[must_use]

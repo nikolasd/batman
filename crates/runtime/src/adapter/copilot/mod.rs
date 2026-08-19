@@ -202,8 +202,10 @@ impl CopilotAdapter {
     /// Spawns and initializes a fresh [`CopilotAcpClient`] if this
     /// instance does not already own a live one. Refuses to proceed past
     /// `initialize` for a CLI version this adapter has not been
-    /// empirically verified against (see `compatibility.rs`); there is
-    /// currently no `CopilotStartupOptions` field to opt into an
+    /// empirically verified against (see `compatibility.rs`) — including
+    /// a response that omits `agentInfo.version` entirely, which is
+    /// treated as unverified rather than implicitly trusted (R57). There
+    /// is currently no `CopilotStartupOptions` field to opt into an
     /// unverified version, so this refusal is unconditional. When
     /// `self.mcp` is `Some`, also injects and activates the coordination
     /// MCP scope token via [`Self::spawn_plan`] before returning.
@@ -240,16 +242,23 @@ impl CopilotAdapter {
             }
         }
         let negotiated = client.initialize().await?;
-        if let Some(version) = &negotiated.agent_version
-            && !copilot_cli_version_known(version)
+        // A missing `agentInfo.version` is unknown, not implicitly
+        // verified: refuse it exactly like a known-bad version (R57).
+        // `probe()` reports the same condition as `inventory_incomplete`.
+        if !compatibility::copilot_negotiated_version_verified(negotiated.agent_version.as_deref())
         {
             client.shutdown().await;
+            let installed = negotiated
+                .agent_version
+                .as_deref()
+                .map_or_else(|| "an unreported version".to_string(), str::to_string);
             return Err(AdapterError::incompatible_version(
                 "copilot",
                 "initialize",
                 format!(
-                    "installed Copilot CLI {version} has not been verified by this adapter \
-                         (known versions: {:?}); no CopilotStartupOptions field currently opts \
+                    "installed Copilot CLI {installed} has not been verified by this adapter \
+                         (known versions: {:?}); a response omitting agentInfo.version is \
+                         treated as unverified; no CopilotStartupOptions field currently opts \
                          into an unverified version",
                     COPILOT_KNOWN_CLI_VERSIONS
                         .iter()
@@ -378,10 +387,9 @@ impl Adapter for CopilotAdapter {
                     return Err(error);
                 }
             };
-            let known = negotiated
-                .agent_version
-                .as_deref()
-                .is_some_and(copilot_cli_version_known);
+            let known = compatibility::copilot_negotiated_version_verified(
+                negotiated.agent_version.as_deref(),
+            );
             // A real, no-model-call structured probe: `session/list`
             // requires the CLI to be authenticated (it lists Copilot's
             // own persisted session history), so its success/failure is
