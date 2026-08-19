@@ -1086,7 +1086,29 @@ impl OrchestrationService {
         if let Some(driver) = &self.run_driver
             && let Err(err) = driver.cancel_run(run_id, CancelScope::Worker).await
         {
+            // A real kill failure (an absent adapter is the clean
+            // `CancelOutcome::NoRunningAdapter`, not an `Err`): the run is
+            // journaled `cancelled` but a vendor process may still be
+            // live. Make that visible to `run/get` and the monitor via
+            // `degradedControl` (R93), mirroring the policy-violation
+            // path's R13 treatment -- guarded write, journaled, broadcast.
             tracing::warn!(error = %err, run_id = %run_id, "failed to cancel running adapter subprocess");
+            match self
+                .db
+                .run_domain_op(Box::new(move |conn| {
+                    let mut repo = DomainRepository::new(conn, project_id);
+                    repo.set_run_flag(run_id, crate::domain::RunFlag::DegradedControl, true)
+                        .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+                }))
+                .await
+            {
+                Ok(mut committed) => self.broadcast(&mut committed),
+                Err(flag_err) => tracing::warn!(
+                    error = %flag_err,
+                    run_id = %run_id,
+                    "failed to record degradedControl after a kill failure"
+                ),
+            }
         }
 
         Ok(result)
