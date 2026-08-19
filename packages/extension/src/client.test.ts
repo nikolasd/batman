@@ -240,6 +240,114 @@ test("an inbound frame exceeding the negotiated cap is rejected before dispatch 
   }
 });
 
+test("a malformed artifact/fetch result (missing contentBase64) is rejected by schema validation (R55)", async () => {
+  const fakeSocketPath = mkdtempSync("/tmp/bat-ts-f-") + "/fake.sock";
+  let requestCount = 0;
+
+  const fakeServer: Server = createServer((socket: Socket) => {
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => {
+      buffer += chunk;
+      let newline = buffer.indexOf("\n");
+      while (newline !== -1) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        const request = JSON.parse(line) as { id: unknown };
+        requestCount += 1;
+
+        if (requestCount === 1) {
+          const result = {
+            runtime: { name: "fake", version: "0.0.0" },
+            negotiated: { major: 1, minor: 0 },
+            projectId: "018f1435-2e2b-7c1a-9d4b-6a1e2f3c4d5b",
+            principal: { role: "ompExtension", instanceId: "omp-1" },
+            allowedMethods: ["artifact/fetch"],
+            capabilities: { maxFrameBytes: 1048576, peerCredentialsVerified: true },
+            nextSequence: 1,
+          };
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n`);
+        } else {
+          // An artifact/fetch result missing `contentBase64` entirely.
+          const result = {
+            artifact: {
+              artifactId: "018f1435-2e2b-7c1a-9d4b-6a1e2f3c4d5c",
+              kind: "patch",
+              sha256: "0".repeat(64),
+              byteLength: 3,
+              mediaType: "text/x-patch",
+              storagePath: "sha256/00/000",
+              runId: null,
+            },
+            nextOffset: null,
+            complete: true,
+          };
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n`);
+        }
+        newline = buffer.indexOf("\n");
+      }
+    });
+  });
+
+  await new Promise<void>((resolve) => fakeServer.listen(fakeSocketPath, resolve));
+
+  const client = new BatmanClient({ socketPath: fakeSocketPath });
+  try {
+    await client.initialize(ompInitParams(repoDir, 1024 * 1024));
+    await expect(client.request("artifact/fetch", { artifactId: "018f1435-2e2b-7c1a-9d4b-6a1e2f3c4d5c" })).rejects.toBeInstanceOf(ValidationError);
+  } finally {
+    client.close();
+    await new Promise<void>((resolve) => fakeServer.close(() => resolve()));
+  }
+});
+
+test("a null result for a validator-less method is rejected by the structural object guard (R55)", async () => {
+  const fakeSocketPath = mkdtempSync("/tmp/bat-ts-f-") + "/fake.sock";
+  let requestCount = 0;
+
+  const fakeServer: Server = createServer((socket: Socket) => {
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => {
+      buffer += chunk;
+      let newline = buffer.indexOf("\n");
+      while (newline !== -1) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        const request = JSON.parse(line) as { id: unknown };
+        requestCount += 1;
+
+        if (requestCount === 1) {
+          const result = {
+            runtime: { name: "fake", version: "0.0.0" },
+            negotiated: { major: 1, minor: 0 },
+            projectId: "018f1435-2e2b-7c1a-9d4b-6a1e2f3c4d5b",
+            principal: { role: "ompExtension", instanceId: "omp-1" },
+            allowedMethods: ["task/upsert"],
+            capabilities: { maxFrameBytes: 1048576, peerCredentialsVerified: true },
+            nextSequence: 1,
+          };
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n`);
+        } else {
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: null })}\n`);
+        }
+        newline = buffer.indexOf("\n");
+      }
+    });
+  });
+
+  await new Promise<void>((resolve) => fakeServer.listen(fakeSocketPath, resolve));
+
+  const client = new BatmanClient({ socketPath: fakeSocketPath });
+  try {
+    await client.initialize(ompInitParams(repoDir, 1024 * 1024));
+    await expect(client.request("task/upsert", { taskId: "t" })).rejects.toBeInstanceOf(ValidationError);
+  } finally {
+    client.close();
+    await new Promise<void>((resolve) => fakeServer.close(() => resolve()));
+  }
+});
+
 test("JsonRpcRemoteError carries the JSON-RPC error code", () => {
   const err = new JsonRpcRemoteError(-32602, "bad", undefined);
   expect(err.code).toBe(-32602);
