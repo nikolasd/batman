@@ -1174,6 +1174,142 @@ async fn second_nested_worker_observed_on_an_already_actioned_run_never_double_c
     assert_eq!(get["result"]["state"], "cancelled");
 }
 
+/// R79: two CONCURRENT cancelling observations -- both journaled before
+/// either transition commits, so both read `already_actioned = false` --
+/// must both report success. The loser's transition fails because the
+/// winner terminalized the run; that is the idempotent success the doc
+/// comment always promised, acknowledged as `superseded` in the audited
+/// `operations` table rather than surfacing as an error.
+///
+/// `current_thread` flavor on purpose: `join!` then alternates the two
+/// emit futures at every await, so their database-actor submissions
+/// interleave A-journal, B-journal, A-intent, B-intent, A-transition,
+/// B-transition (FIFO actor queue) -- deterministically producing the
+/// race. On the multi-thread runtime the observations can serialize
+/// (B journals after A's transition), which is the *other*, pre-existing
+/// idempotency path already covered by
+/// `second_nested_worker_observed_on_an_already_actioned_run_never_double_cancels`.
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_cancelling_violations_are_both_idempotent_successes() {
+    /// Captures the driver context in `start` WITHOUT emitting, so the
+    /// test controls exactly when each observation fires.
+    #[derive(Default)]
+    struct CapturingDriver {
+        captured: parking_lot::Mutex<Option<RunDriverContext>>,
+        cancel_calls: parking_lot::Mutex<usize>,
+    }
+
+    impl RunDriver for CapturingDriver {
+        fn start(&self, ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
+            *self.captured.lock() = Some(ctx);
+            Box::pin(async { Ok(()) })
+        }
+
+        fn send_follow_up(
+            &self,
+            _run_id: RunId,
+            _task_id: TaskId,
+            _worker_id: WorkerId,
+            _prompt: String,
+        ) -> AdapterFuture<'static, Result<(), String>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn running_adapter(&self, _run_id: RunId) -> Option<Arc<dyn Adapter>> {
+            None
+        }
+
+        fn cancel_run(
+            &self,
+            _run_id: RunId,
+            _scope: CancelScope,
+        ) -> AdapterFuture<'static, Result<batman_runtime::service::CancelOutcome, String>>
+        {
+            *self.cancel_calls.lock() += 1;
+            Box::pin(async { Ok(batman_runtime::service::CancelOutcome::Cancelled) })
+        }
+    }
+
+    let driver = Arc::new(CapturingDriver::default());
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::clone(&driver) as Arc<dyn RunDriver>);
+        // Default action is QuarantineAndCancel.
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+    let (_, _, run_id) = submit_run_with_driver(&mut client, "omp-1").await;
+
+    let ctx = driver
+        .captured
+        .lock()
+        .clone()
+        .expect("start captured the context");
+    let emit = |child: &'static str, parent: &'static str| {
+        let ctx = ctx.clone();
+        async move {
+            let sink = batman_runtime::adapter::DomainAdapterEventSink::new(
+                ctx.db.clone(),
+                ctx.project_id,
+                ctx.events_tx.clone(),
+                vec![],
+                true,
+                Arc::clone(&ctx.violation_service),
+                None,
+            )
+            .expect("built-in patterns always compile");
+            sink.emit(AdapterEvent {
+                run_id: ctx.run_id,
+                task_id: ctx.task_id,
+                worker_id: ctx.worker_id,
+                payload: AdapterEventPayload::NestedWorkerObserved {
+                    vendor_child_id: child.to_string(),
+                    vendor_parent_ref: parent.to_string(),
+                },
+            })
+            .await
+        }
+    };
+
+    // Both observations in flight together: each journals its violation
+    // (reading already_actioned = false) before either transition commits.
+    let (first, second) = tokio::join!(emit("child-a", "parent-a"), emit("child-b", "parent-b"));
+    first.expect("the winning observation reports success");
+    second.expect("the losing observation must be an idempotent success, not an error (R79)");
+
+    // Exactly one cancelled transition.
+    let get = client.call(6, "run/get", json!({ "runId": run_id })).await;
+    assert_eq!(get["result"]["state"], "cancelled");
+
+    // The audited trail is honest: two policyViolationCancel intents, one
+    // acknowledged cancelled, one superseded.
+    let conn = rusqlite::Connection::open(&harness.database).unwrap();
+    let acks: Vec<Option<String>> = conn
+        .prepare("SELECT acknowledgement_json FROM operations WHERE kind = 'policyViolationCancel' ORDER BY requested_at")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(acks.len(), 2, "both observations persist an audited intent");
+    let outcomes: Vec<String> = acks
+        .iter()
+        .map(|a| {
+            let ack = a.as_ref().expect("every intent is acknowledged");
+            serde_json::from_str::<serde_json::Value>(ack).unwrap()["outcome"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    let mut sorted = outcomes.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted,
+        ["cancelled", "superseded"],
+        "one intent cancelled, one superseded: {outcomes:?}"
+    );
+}
+
 // --------------------------------------------------------------- harness
 struct Harness {
     socket: PathBuf,

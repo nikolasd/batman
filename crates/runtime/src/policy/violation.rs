@@ -369,25 +369,29 @@ impl ViolationService {
                 self.quarantine(run_id).await?;
             }
             NestedViolationAction::Cancel => {
-                self.create_cancellation_intent(
-                    run_id,
-                    worker_id,
-                    vendor_child_id,
-                    vendor_parent_ref,
-                )
-                .await?;
-                self.cancel_and_transition(run_id).await?;
+                let operation_id = self
+                    .create_cancellation_intent(
+                        run_id,
+                        worker_id,
+                        vendor_child_id,
+                        vendor_parent_ref,
+                    )
+                    .await?;
+                self.cancel_and_transition(run_id, Some(operation_id))
+                    .await?;
             }
             NestedViolationAction::QuarantineAndCancel => {
                 self.quarantine(run_id).await?;
-                self.create_cancellation_intent(
-                    run_id,
-                    worker_id,
-                    vendor_child_id,
-                    vendor_parent_ref,
-                )
-                .await?;
-                self.cancel_and_transition(run_id).await?;
+                let operation_id = self
+                    .create_cancellation_intent(
+                        run_id,
+                        worker_id,
+                        vendor_child_id,
+                        vendor_parent_ref,
+                    )
+                    .await?;
+                self.cancel_and_transition(run_id, Some(operation_id))
+                    .await?;
             }
         }
 
@@ -436,7 +440,7 @@ impl ViolationService {
         worker_id: WorkerId,
         vendor_child_id: Option<&str>,
         vendor_parent_ref: Option<&str>,
-    ) -> Result<(), ViolationError> {
+    ) -> Result<batman_protocol::OperationId, ViolationError> {
         use batman_protocol::{OperationId, Timestamp};
 
         let reason = if vendor_child_id.is_some() {
@@ -452,21 +456,45 @@ impl ViolationService {
             "reason": reason,
         });
         let sanitized = Redactor::new().sanitize_json(&intent);
+        let operation_id = OperationId::new();
         self.db
             .record_operation_intent(
-                OperationId::new(),
+                operation_id,
                 "policyViolationCancel",
                 sanitized,
                 Timestamp::now(),
             )
             .await
-            .map_err(ViolationError::Db)
+            .map_err(ViolationError::Db)?;
+        Ok(operation_id)
     }
 
     /// Transitions the run to `cancelled` and then calls the live adapter's
     /// `cancel(CancelScope::Worker)` if one is running (mirrors
     /// `OrchestrationService::run_cancel`'s subprocess termination).
-    async fn cancel_and_transition(&self, run_id: RunId) -> Result<(), ViolationError> {
+    ///
+    /// Idempotent against a racing sibling observation (R79): two
+    /// concurrent violations with a cancelling action both persist an
+    /// audited intent (invariant 4 keeps the intent BEFORE the transition)
+    /// and both reach this method; the loser's transition fails with
+    /// [`DomainError::Transition`] because the winner already terminalized
+    /// the run. That is a success, not an error -- the loser acknowledges
+    /// its intent as `superseded`, still attempts the adapter kill, and
+    /// returns `Ok(())`, so the doc-comment promise on
+    /// [`Self::record_nested_worker`] ("idempotent") is finally true and
+    /// the `operations` table carries an honest audit trail: one intent
+    /// acknowledged `cancelled`, one `superseded`, never two
+    /// indistinguishable rows. Only [`DomainError::Transition`] is
+    /// classified as superseded; every other error still fails.
+    /// `operation_id` is `Some` on the observation paths, which persist an
+    /// audited intent first; `policy/violation/decide`'s operator cancel
+    /// passes `None` (no intent row exists there) and keeps its
+    /// pre-existing strict semantics: a failed transition is an error.
+    async fn cancel_and_transition(
+        &self,
+        run_id: RunId,
+        operation_id: Option<batman_protocol::OperationId>,
+    ) -> Result<(), ViolationError> {
         // Transition first, mirroring `OrchestrationService::run_cancel`:
         // the adapter's own exit event now terminalizes runs
         // (`adapter/run_lifecycle.rs`), so killing first would race a
@@ -486,6 +514,32 @@ impl ViolationService {
             .map_err(ViolationError::Domain);
         if let Ok(committed) = result.as_mut() {
             self.broadcast(committed);
+        }
+        // Acknowledge the audited intent with its real outcome. A failed
+        // acknowledgement is logged, never allowed to mask the cancel's
+        // own result.
+        let (outcome_result, ack) = match result {
+            Ok(_) => (Ok(()), Some(json!({ "outcome": "cancelled" }))),
+            // A sibling observation already terminalized the run: the
+            // idempotent success path (R79). Only intent-backed callers
+            // get this classification; the operator path stays strict.
+            Err(ViolationError::Domain(crate::domain::DomainError::Transition(_)))
+                if operation_id.is_some() =>
+            {
+                (Ok(()), Some(json!({ "outcome": "superseded" })))
+            }
+            Err(err) => (Err(err), None),
+        };
+        if let (Some(operation_id), Some(ack)) = (operation_id, ack) {
+            let sanitized = Redactor::new().sanitize_json(&ack);
+            if let Err(ack_err) = self.db.acknowledge_operation(operation_id, sanitized).await {
+                tracing::warn!(
+                    error = %ack_err,
+                    run_id = %run_id,
+                    operation_id = %operation_id,
+                    "failed to acknowledge a policy cancellation intent"
+                );
+            }
         }
         if let Some(driver) = &self.run_driver
             && let Err(err) = driver
@@ -522,7 +576,7 @@ impl ViolationService {
                 ),
             }
         }
-        result.map(|_| ())
+        outcome_result
     }
 
     /// `policy/violation/decide`: resolves `violation_id` as `resolution`
@@ -672,7 +726,7 @@ impl ViolationService {
         let quarantine_cleared = if resolution == "release" {
             Some(self.release_quarantine(run_id).await?)
         } else {
-            self.cancel_and_transition(run_id).await?;
+            self.cancel_and_transition(run_id, None).await?;
             None
         };
 
