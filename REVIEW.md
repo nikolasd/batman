@@ -245,6 +245,14 @@ R12/R42/R57 all invest in a precise `detail` (the vendor's error subtype, the ra
 
 **Priority:** Low — found during R34/R59's adversarial review (2026-08-19).
 
+#### R93. `run/cancel` still reports success after a genuine kill failure
+
+**Location:** `crates/runtime/src/service/orchestration.rs:1087-1091` (`run_cancel`'s `cancel_run` error arm)
+
+R13 (2026-08-19) made `RunDriver::cancel_run`'s `Err` unambiguous — an absent adapter is the clean `CancelOutcome::NoRunningAdapter`, so `Err` now always means a live vendor process a kill actually failed against. The policy-violation path raises `flags.degradedControl` on that condition; `run_cancel` still only `tracing::warn!`s and returns unqualified success to the caller. Apply the same ten-line `set_run_flag(DegradedControl)` treatment (guarded write, journaled, broadcast).
+
+**Priority:** Low — found during R13's adversarial review (2026-08-19); same defect class one door over.
+
 ## Known Environment Limitations
 
 **Not a bug — requires a gated live run to confirm the positive case. Reconfirmed 2026-08-12; code-side citations still match current source.**
@@ -263,5 +271,5 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
 - **High:** 0 — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII), R77 resolved 2026-08-19 (see docs/journal.md Part XXIX), R81 resolved 2026-08-19 (see docs/journal.md Part XXX)
 - **Medium:** 9 (R13, R14, R35, R36 — carried forward; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review; R87 — new, found during the 2026-08-19 close-out sweep; R12, R15, R16, R34, R37, R42, R45, R55, R56, R57, R58, R59, R60 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVII)
-- **Low:** 15 (R38, R62, R63, R65, R66, R67 — carried forward/new 2026-08-12; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90, R91, R92 — new, found during R55/R12/R34's adversarial reviews; R17, R18, R20, R29, R30, R31, R32, R39, R40, R43, R46, R61, R64 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXIV)
+- **Low:** 16 (R38, R62, R63, R65, R66, R67 — carried forward/new 2026-08-12; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90, R91, R92, R93 — new, found during R55/R12/R34/R13's adversarial reviews; R17, R18, R20, R29, R30, R31, R32, R39, R40, R43, R46, R61, R64 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXIV)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
