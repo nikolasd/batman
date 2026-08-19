@@ -23,7 +23,7 @@ To run a task on an AI worker, follow this chain — each step reads an id from 
 
 1. **Find or create a worker.** Call `batman_worker { op: "list" }` and reuse a `workers[].workerId` whose `profileRef.adapter` and `profileRef.model` match what the user asked for. If none matches, create one with `batman_worker { op: "create", fingerprint, adapter, model }` and read the new `workerId` from the response.
 
-2. **Create a task.** Call `batman_task { op: "upsert", description }` and read the `taskId` from the response. This is a persistent unit of work stored in the SQLite journal.
+2. **Create a task.** Call `batman_task { op: "upsert" }` and read the `taskId` from the response. This is a persistent unit of work stored in the SQLite journal. BATMAN stores no task text — the instruction the worker executes is passed to `batman_run` as `prompt` in the next step.
 
 3. **Submit the run.** Call `batman_run { op: "submit", taskId, workerId, prompt }` and read the `runId` from the response. The `prompt` is the full instruction text the worker will execute — pass it exactly as the user stated (or as you refined it).
 

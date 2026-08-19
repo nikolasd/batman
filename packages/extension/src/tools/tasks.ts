@@ -22,7 +22,6 @@ const INITIAL_TASK_REVISION = 0;
 export function registerTaskTool(pi: ExtensionAPI, ctx: OrchestrationToolContext): void {
   const params = pi.zod.object({
     op: pi.zod.enum(["upsert", "get"]).describe("Which task operation to perform."),
-    description: pi.zod.string().optional().describe("What the task should do (natural language description)."),
     taskId: pi.zod.string().optional().describe("Optional for upsert: reuse an existing task ID (for resume); auto-generated if omitted. Required for get."),
   });
 
@@ -30,7 +29,7 @@ export function registerTaskTool(pi: ExtensionAPI, ctx: OrchestrationToolContext
     name: BATMAN_TASK_TOOL_NAME,
     label: "BATMAN Task",
     description:
-      "Use when you need to create a persistent, cross-session unit of work that will be executed by an external AI harness (Claude, Codex, Copilot, or OMP-RPC) -- not OMP's native in-process task subagent. Use op: 'upsert' to create or update a task, or op: 'get' to read one back. Persists across session disconnects (stored in SQLite journal), executes via external harness processes, and can be retried, cancelled, or reconciled after failure. Auto-generates a task ID and uses your OMP session as owner. After creating, select a worker with batman_worker { op: 'list' } and submit execution with batman_run { op: 'submit', taskId, workerId, prompt }.",
+      "Use when you need to create a persistent, cross-session unit of work that will be executed by an external AI harness (Claude, Codex, Copilot, or OMP-RPC) -- not OMP's native in-process task subagent. Use op: 'upsert' to create or update a task, or op: 'get' to read one back. BATMAN stores no task text: the task graph and its descriptions live in OMP, and the instruction a worker executes is passed to batman_run as prompt. Persists across session disconnects (stored in SQLite journal), executes via external harness processes, and can be retried, cancelled, or reconciled after failure. Auto-generates a task ID and uses your OMP session as owner. After creating, select a worker with batman_worker { op: 'list' } and submit execution with batman_run { op: 'submit', taskId, workerId, prompt }.",
     parameters: params,
     // `get` is a read: charging it a write approval made reading a task
     // cost the same as mutating one.
