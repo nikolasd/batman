@@ -80,7 +80,7 @@ These hold everywhere in the codebase; changes that weaken them will be rejected
 
 1. **Rust types are canonical.** `packages/protocol-ts/src/generated/` and `packages/protocol-ts/schema/batman.schema.json` are build outputs (`bun run generate`). Generated files are never hand-edited.
 
-2. **TypeScript validates every message** received from the daemon with Ajv before it reaches extension logic.
+2. **TypeScript validates every message** received from the daemon before it reaches extension logic: the JSON-RPC envelope and every event notification are Ajv schema-validated; result payloads are Ajv-validated for every method with a canonical protocol result type and structurally validated (must be a JSON object) otherwise.
 
 3. **SQLite runs with WAL**, foreign keys, `synchronous=FULL`, and atomic versioned migrations; the event journal is append-only.
 

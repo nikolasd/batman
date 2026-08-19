@@ -8,6 +8,11 @@
 import Ajv2020, { type ValidateFunction } from "ajv/dist/2020";
 import schema from "../schema/batman.schema.json" with { type: "json" };
 
+/** The Ajv validate-function type every exported validator conforms to;
+ *  re-exported so consumers can type validator tables without importing
+ *  ajv directly. */
+export type { ValidateFunction };
+
 /** The `$id` under which the whole schema document is registered, so
  * individual `$def`s can be retrieved (and cross-referenced) by JSON pointer. */
 const SCHEMA_ID = "https://schema.batman.satorianalytics.com/batman.schema.json";
@@ -45,6 +50,14 @@ function def(name: string): ValidateFunction {
 export const validateInitializeResult = def("InitializeResult");
 /** Validates a `runtime/status` result payload. */
 export const validateRuntimeStatus = def("RuntimeStatus");
+/** Validates an `artifact/list` result payload. */
+export const validateArtifactListResult = def("ArtifactListResult");
+/** Validates an `artifact/fetch` result payload. */
+export const validateArtifactFetchResult = def("ArtifactFetchResult");
+/** Validates a `workspace/inspect` result payload. */
+export const validateInspectResult = def("InspectResult");
+/** Validates a `workspace/apply` result payload. */
+export const validateApplyResult = def("ApplyResult");
 /** Validates a single durable event envelope. */
 export const validateEventEnvelope = def("EventEnvelope");
 /** Validates a JSON-RPC success response envelope. */

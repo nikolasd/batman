@@ -118,8 +118,9 @@ structural choice is accidental.
 - Protocol types flow **Rust → TypeScript**, never the reverse: edit `crates/protocol/`, then run
   `bun run generate` to regenerate `packages/protocol-ts/src/generated/` and the JSON Schema. CI's
   `generate-check` job fails the build if generated output has drifted from source.
-- Every message the extension receives from the daemon is validated with Ajv
-  (`packages/protocol-ts/src/validate.ts`) before it reaches extension logic.
+- Every message the extension receives from the daemon is validated before it reaches extension
+  logic (`packages/protocol-ts/src/validate.ts`): envelopes and events via Ajv schemas; results
+  via Ajv where a canonical protocol result type exists, structurally otherwise.
 - `packages/extension/src/state.ts`'s `resolveStateRoot` must stay semantically identical to Rust's
   `StateRoot::resolve` (`crates/runtime/src/paths.rs`) — they resolve the same on-disk state root
   independently, in two languages.
@@ -136,7 +137,7 @@ structural choice is accidental.
 These are enforced in review, not just style preference:
 
 1. Rust types in `crates/protocol/` are canonical; generated TS/JSON Schema are build outputs only.
-2. TypeScript validates every daemon message with Ajv before extension logic touches it.
+2. TypeScript validates every daemon message before extension logic touches it — envelopes/events via Ajv, results via Ajv where a canonical type exists, structurally otherwise.
 3. SQLite runs WAL + foreign keys + `synchronous=FULL` + versioned migrations; the event journal is append-only.
 4. Intent persisted before side effects; content redacted before durability.
 5. Supported platforms: macOS and glibc Linux, arm64/x64 only — everything else gets a typed rejection, never a silent fallback.

@@ -1598,16 +1598,12 @@ impl OrchestrationService {
         )
         .await?;
 
-        Ok(json!({
-            "leaseId": result.lease_id,
-            "patchArtifactId": result.patch_artifact_id.to_string(),
-            "commitCount": result.commit_count,
-            "commitIds": result.commit_ids,
-            "dirtyFileCount": result.dirty_file_count,
-            "untrackedFileCount": result.untracked_file_count,
-            "baseRevision": result.base_revision,
-            "currentRevision": result.current_revision,
-        }))
+        // Serialize the canonical protocol type rather than a hand-rolled
+        // shape: `InspectResult`'s serde output is byte-identical to the
+        // previous `json!` block (camelCase, ids as UUID strings), and the
+        // extension validates against its schema $def (R55).
+        serde_json::to_value(&result)
+            .map_err(|e| ServiceError::internal(format!("serializing InspectResult: {e}")))
     }
 
     /// [`Self::require_lease_owner`] runs before
@@ -1692,13 +1688,10 @@ impl OrchestrationService {
             .await?;
         }
 
-        Ok(json!({
-            "leaseId": result.lease_id,
-            "success": result.success,
-            "conflictArtifactId": result.conflict_artifact_id.as_ref().map(|id| id.to_string()),
-            "targetRevisionAfter": result.target_revision_after,
-            "errorCode": result.error_code,
-        }))
+        // Canonical `ApplyResult` serialization; byte-identical to the
+        // previous hand-rolled shape (R55).
+        serde_json::to_value(&result)
+            .map_err(|e| ServiceError::internal(format!("serializing ApplyResult: {e}")))
     }
 
     async fn artifact_list(
@@ -1741,19 +1734,21 @@ impl OrchestrationService {
             .unwrap_or_default();
         // Fetch all artifacts and filter by scope.
         let result = self.artifact_store.list(kind).await;
-        let scoped = result
-            .artifacts
-            .iter()
-            .filter(|a| {
-                a.run_id
-                    .as_deref()
-                    .is_some_and(|id| scope.iter().any(|s| s == id))
-            })
-            .map(|a| serde_json::to_value(a).expect("Artifact is serializable"))
-            .collect::<Vec<_>>();
-        Ok(json!({
-            "artifacts": scoped,
-        }))
+        let scoped = batman_protocol::ArtifactListResult {
+            artifacts: result
+                .artifacts
+                .into_iter()
+                .filter(|a| {
+                    a.run_id
+                        .as_deref()
+                        .is_some_and(|id| scope.iter().any(|s| s == id))
+                })
+                .collect(),
+        };
+        // Canonical `ArtifactListResult` serialization; byte-identical to
+        // the previous hand-rolled shape (R55).
+        serde_json::to_value(&scoped)
+            .map_err(|e| ServiceError::internal(format!("serializing ArtifactListResult: {e}")))
     }
     async fn artifact_fetch(
         &self,
@@ -1815,12 +1810,10 @@ impl OrchestrationService {
             ));
         }
 
-        Ok(json!({
-            "artifact": serde_json::to_value(&result.artifact).expect("Artifact is serializable"),
-            "contentBase64": result.content_base64,
-            "nextOffset": result.next_offset,
-            "complete": result.complete,
-        }))
+        // Canonical `ArtifactFetchResult` serialization; byte-identical to
+        // the previous hand-rolled shape (R55).
+        serde_json::to_value(&result)
+            .map_err(|e| ServiceError::internal(format!("serializing ArtifactFetchResult: {e}")))
     }
 
     // ---------------------------------------------------------- message

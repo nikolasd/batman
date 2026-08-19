@@ -2,23 +2,53 @@
 //
 // `BatmanClient` connects to the runtime's per-repository Unix domain socket,
 // performs the `initialize` handshake, and correlates requests to responses by
-// a monotonically increasing string id. Every inbound message is validated
-// against the canonical JSON Schema (via Ajv) before it is handed to caller
-// code, so an unknown or malformed field is rejected before it can reach
-// extension logic. Framing is newline-delimited JSON with a 4 MiB bootstrap
+// a monotonically increasing string id. Validation boundary (R55): the
+// JSON-RPC envelope of every inbound message and every event notification is
+// schema-validated (Ajv) before it reaches caller code. Result payloads are
+// schema-validated for every method with a canonical protocol result type
+// (`RESULT_VALIDATORS`); every other method's result is structurally
+// validated to be a JSON object, so a null/scalar/array result can never
+// reach tool logic. Framing is newline-delimited JSON with a 4 MiB bootstrap
 // hard limit, tightened to the negotiated `maxFrameBytes` in both directions
 // once `initialize` succeeds.
 
 import { createConnection, type Socket } from "node:net";
 
-import { assertValid, ValidationError, validateEventEnvelope, validateEventEnvelopeArray, validateInitializeResult, validateJsonRpcErrorResponse, validateJsonRpcNotification, validateJsonRpcResponse, validateRuntimeStatus } from "@nikolasd/batman-protocol/validate";
-import type { EventEnvelope, InitializeParams, InitializeResult, RuntimeStatus } from "@nikolasd/batman-protocol";
+import {
+  assertValid,
+  ValidationError,
+  validateApplyResult,
+  validateArtifactFetchResult,
+  validateArtifactListResult,
+  validateEventEnvelope,
+  validateEventEnvelopeArray,
+  validateInitializeResult,
+  validateInspectResult,
+  validateJsonRpcErrorResponse,
+  validateJsonRpcNotification,
+  validateJsonRpcResponse,
+  validateRuntimeStatus,
+  type ValidateFunction,
+} from "@nikolasd/batman-protocol/validate";
+import type { EventEnvelope, InitializeParams, InitializeResult } from "@nikolasd/batman-protocol";
 
 /** The 4 MiB bootstrap frame limit applied before `initialize` completes. */
 const BOOTSTRAP_MAX_FRAME_BYTES = 4 * 1024 * 1024;
 
 /** The method name of the runtime's event notifications. */
 const EVENTS_EVENT_METHOD = "events/event";
+
+/** Per-method result validators: every method whose result has a canonical
+ *  protocol type is schema-validated here; the rest get the structural
+ *  object check in {@link BatmanClient.request}. `initialize` is validated
+ *  separately in {@link BatmanClient.initialize}. */
+const RESULT_VALIDATORS: Record<string, ValidateFunction> = {
+  "runtime/status": validateRuntimeStatus,
+  "artifact/list": validateArtifactListResult,
+  "artifact/fetch": validateArtifactFetchResult,
+  "workspace/inspect": validateInspectResult,
+  "workspace/apply": validateApplyResult,
+};
 
 /** Removes a subscription registered with {@link BatmanClient.subscribe}. */
 export type Unsubscribe = () => void;
@@ -90,16 +120,21 @@ export class BatmanClient {
   }
 
   /**
-   * Sends a JSON-RPC request and resolves with its `result`. Known result
-   * payloads are schema-validated before being returned.
+   * Sends a JSON-RPC request and resolves with its `result`. Methods with a
+   * canonical protocol result type are schema-validated; every other result
+   * must at least be a JSON object (events/replay's array is validated in
+   * {@link BatmanClient.subscribe} before this guard would see it).
    */
   async request(method: string, params?: unknown): Promise<unknown> {
     if (!this.#initialized && method !== "initialize") {
       throw new Error(`cannot call ${method} before initialize()`);
     }
     const result = await this.#send(method, params);
-    if (method === "runtime/status") {
-      assertValid<RuntimeStatus>(validateRuntimeStatus, result, "runtime/status result");
+    const validator = RESULT_VALIDATORS[method];
+    if (validator !== undefined) {
+      assertValid(validator, result, `${method} result`);
+    } else if (!isObject(result)) {
+      throw new ValidationError(`${method} result`, [{ message: "result is not a JSON object" }]);
     }
     return result;
   }
