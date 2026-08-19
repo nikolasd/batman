@@ -16,6 +16,13 @@ contributor concern, not a usage one), see [`architecture.md`](architecture.md).
 ```
 /marketplace add nikolasd/batman
 /marketplace install batman@batman
+```
+
+**Exit and start a new `omp` session** — `/reload-plugins` only refreshes skills and slash
+commands, not extension modules or tools, so `/batman-runtime-install` (and every `batman_*`
+tool) only exists once a fresh session has loaded the installed module. Then:
+
+```
 /batman-runtime-install
 /batman-status
 ```
@@ -25,10 +32,6 @@ read access to `nikolasd/batman` (an SSH key registered with GitHub, or a `gh au
 backed by a git credential helper). `/batman-runtime-install` additionally needs a `GITHUB_TOKEN` or
 `GH_TOKEN` environment variable, or that same `gh auth login` session, to download and verify the
 release asset.
-
-After installing, **restart your OMP session** — `/reload-plugins` only refreshes skills and slash
-commands, not extension modules or tools, so the `batman_*` tools won't appear until a fresh
-session picks up the newly installed extension module.
 
 ## 2. Confirm it works
 

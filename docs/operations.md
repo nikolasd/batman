@@ -105,10 +105,22 @@ apt/deb/rpm package, or any other system package** — don't reach for a package
 ### Installing / uninstalling
 
 ```bash
-/marketplace add nikolasd/batman           # registers this repo as a marketplace source
-/marketplace install batman@batman         # installs the extension + skills
-/batman-runtime-install                    # downloads and verifies the batcave binary
-/marketplace uninstall batman@batman       # removes the extension + skills
+/marketplace add nikolasd/batman     # registers this repo as a marketplace source
+/marketplace install batman@batman   # installs the extension + skills
+```
+
+**Exit and start a new `omp` session** — `/reload-plugins` does not reload extension modules, so
+`/batman-runtime-install` (and every `batman_*` tool) only exists once a fresh session has loaded
+the newly-installed module. Then, in that session:
+
+```bash
+/batman-runtime-install              # downloads and verifies the batcave binary
+```
+
+Uninstalling works in any session:
+
+```bash
+/marketplace uninstall batman@batman   # removes the extension + skills
 ```
 
 **This repository is private.** `/marketplace add` git-clones it, so it needs your own GitHub read

@@ -34,6 +34,13 @@ BATMAN consists of two components, installed in two steps:
 ```
 /marketplace add nikolasd/batman
 /marketplace install batman@batman
+```
+
+**Exit and start a new `omp` session.** `/reload-plugins` does not reload extension modules,
+so `/batman-runtime-install` (and every `batman_*` tool) only exists once a fresh session has
+loaded the installed module. Then:
+
+```
 /batman-runtime-install
 /batman-status
 ```
@@ -42,12 +49,7 @@ BATMAN consists of two components, installed in two steps:
 read access to `nikolasd/batman` — an SSH key registered with GitHub, or a `gh auth login` session
 backed by a git credential helper. `/batman-runtime-install` additionally needs a `GITHUB_TOKEN` or
 `GH_TOKEN` environment variable set, or that same `gh auth login` session, to download and verify
-the release asset.
-
-This installs the extension (`packages/extension`) and its bundled skills into OMP's plugin cache,
-then caches a SHA-256-verified `batcave` binary under your BATMAN state root. **Restart your OMP
-session afterward** — `/reload-plugins` only refreshes skills and slash commands, not extension
-modules or tools.
+the release asset. The binary is cached under your BATMAN state root.
 
 Once installed, [`docs/plugin-usage.md`](docs/plugin-usage.md) is the user manual: every tool and
 command the extension registers, and the recommended flow for running a task through it.

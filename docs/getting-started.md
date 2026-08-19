@@ -7,7 +7,7 @@ doctor, and testing. Its companions are [`code-walkthrough.md`](code-walkthrough
 and debugging playbook), [`rust-primer.md`](rust-primer.md) (Rust via this codebase), and
 [`manual-testing.md`](manual-testing.md) (QA verification steps).
 
-> **Just want to use BATMAN, not build it?** See [README.md's Installation section](../README.md#installation) — `/marketplace add nikolasd/batman` then `/marketplace install batman@batman` installs the extension, and `/batman-runtime-install` downloads the runtime binary; no build step. Note this is a private repository, so both need your own GitHub read access. Then see [`plugin-usage.md`](plugin-usage.md), the user manual. This guide is for developing BATMAN itself.
+> **Just want to use BATMAN, not build it?** See [README.md's Installation section](../README.md#installation) — `/marketplace add nikolasd/batman` then `/marketplace install batman@batman` installs the extension, then a session restart, then `/batman-runtime-install` in the new session downloads the runtime binary; no build step. Note this is a private repository, so both need your own GitHub read access. Then see [`plugin-usage.md`](plugin-usage.md), the user manual. This guide is for developing BATMAN itself.
 
 ## Prerequisites
 
