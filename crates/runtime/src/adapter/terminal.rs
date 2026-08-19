@@ -36,6 +36,10 @@ pub trait CommandRunner: Send + Sync {
     >;
 }
 
+/// The sink and run identity a terminal-adapter `start` captures for
+/// `cancel`'s synthetic settlement (R95).
+type CapturedSession = (Arc<dyn AdapterEventSink>, RunId, TaskId, WorkerId);
+
 /// A terminal adapter that wraps an underlying harness.
 ///
 /// This adapter declares `ProtocolKind::Terminal` (degraded) and explicitly
@@ -51,7 +55,7 @@ pub struct TerminalAdapter {
     /// the registry's settlement watcher frees the run's slot -- without
     /// it, a terminal-adapter run pinned its slot, the idle timer, and
     /// unforced shutdown for the life of the process.
-    session: parking_lot::Mutex<Option<(Arc<dyn AdapterEventSink>, RunId, TaskId, WorkerId)>>,
+    session: parking_lot::Mutex<Option<CapturedSession>>,
 }
 
 impl TerminalAdapter {
