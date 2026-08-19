@@ -46,6 +46,14 @@ pub struct ApprovalRequest {
     /// The decision made, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decision: Option<String>,
+    /// Who produced the decision (`"human"` or `"model"`), when decided.
+    /// Read-side provenance (R92): persisted since MIGRATION_7, carried on
+    /// `ApprovalDecided` events, and now projected by `approval/list`.
+    #[serde(rename = "decidedBy", skip_serializing_if = "Option::is_none")]
+    pub decided_by: Option<DecidedBy>,
+    /// The decision rationale (R59), when one was supplied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// A decision on an approval request: approve or deny.

@@ -268,7 +268,7 @@ pub fn approval_list_op(run_id: Option<RunId>) -> DomainClosure {
         let rows = if let Some(run_id) = run_id {
             let mut stmt = conn.prepare(
                 "SELECT approval_id, run_id, task_id, action, arguments, human_required,
-                        policy_reason, created_at, decided_at, decision
+                        policy_reason, created_at, decided_at, decision, decided_by, reason
                  FROM approvals WHERE run_id = ?1 ORDER BY created_at",
             )?;
             stmt.query_map([run_id.to_string()], row_to_approval_json)?
@@ -276,7 +276,7 @@ pub fn approval_list_op(run_id: Option<RunId>) -> DomainClosure {
         } else {
             let mut stmt = conn.prepare(
                 "SELECT approval_id, run_id, task_id, action, arguments, human_required,
-                        policy_reason, created_at, decided_at, decision
+                        policy_reason, created_at, decided_at, decision, decided_by, reason
                  FROM approvals WHERE decision IS NULL ORDER BY created_at",
             )?;
             stmt.query_map([], row_to_approval_json)?
@@ -298,6 +298,8 @@ fn row_to_approval_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "createdAt": row.get::<_, String>(7)?,
         "decidedAt": row.get::<_, Option<String>>(8)?,
         "decision": row.get::<_, Option<String>>(9)?,
+        "decidedBy": row.get::<_, Option<String>>(10)?,
+        "reason": row.get::<_, Option<String>>(11)?,
     }))
 }
 

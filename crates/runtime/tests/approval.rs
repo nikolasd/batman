@@ -268,6 +268,8 @@ async fn seed_pending_approval(
             created_at: Timestamp::now(),
             decided_at: None,
             decision: None,
+            decided_by: None,
+            reason: None,
         })
         .await
         .unwrap();
@@ -654,6 +656,57 @@ async fn a_human_required_approval_is_accepted_when_decided_by_a_human() {
         "human decision on human_required approval must succeed: {result:?}"
     );
     assert_eq!(result["result"]["outcome"], "decided");
+}
+
+/// R92: `decided_by` has been persisted since MIGRATION_7 and `reason`
+/// since MIGRATION_9, both carried on `ApprovalDecided` events -- but
+/// `approval/list` projected neither, so decision provenance was readable
+/// only via `events/replay` or `batcave audit export`. The list must
+/// carry both for a decided approval and neither key for a pending one.
+#[tokio::test]
+async fn approval_list_projects_decision_provenance() {
+    let harness = Harness::start(|_| {}).await;
+    let mut client = omp_client(&harness, "omp-1").await;
+
+    let (approval_id, run_id, _task_id) =
+        seed_pending_approval(&harness, &mut client, "omp-1").await;
+
+    // Pending: provenance keys absent (skip_serializing_if), not null.
+    let pending = client
+        .call(5, "approval/list", json!({ "runId": run_id.to_string() }))
+        .await;
+    let row = &pending["result"]["approvals"].as_array().unwrap()[0];
+    assert!(
+        row["decidedBy"].is_null() && row["reason"].is_null(),
+        "an undecided approval carries no provenance: {row:?}"
+    );
+
+    let decided = client
+        .call(
+            6,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "reviewed the diff by hand", "decidedBy": "human" }),
+        )
+        .await;
+    assert!(decided.get("error").is_none(), "{decided:?}");
+
+    let list = client
+        .call(7, "approval/list", json!({ "runId": run_id.to_string() }))
+        .await;
+    let row = &list["result"]["approvals"].as_array().unwrap()[0];
+    assert_eq!(
+        row["decidedBy"], "human",
+        "the decider must be readable from approval/list, not only the \
+         journal: {row:?}"
+    );
+    assert_eq!(
+        row["reason"], "reviewed the diff by hand",
+        "the rationale must be readable from approval/list: {row:?}"
+    );
+    // The wire row round-trips through the canonical deny_unknown_fields
+    // type, so a renamed field fails here at test time.
+    serde_json::from_value::<batman_protocol::ApprovalRequest>(row.clone())
+        .expect("the list row must deserialize as the canonical ApprovalRequest");
 }
 
 #[tokio::test]

@@ -433,6 +433,9 @@ Same as `run/submit`, plus `priorRunId`:
 }
 ```
 
+A decided approval also carries its provenance — `decidedBy` (`"human"` or `"model"`) and the
+`reason` supplied with the decision; both keys are absent while the approval is pending.
+
 ### `approval/decide`
 
 Request takes `decision: "approve" | "deny"`; the response's `outcome` reports what happened to

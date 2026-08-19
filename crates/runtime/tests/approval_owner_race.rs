@@ -159,6 +159,8 @@ async fn seed_pending_approval(
         created_at: Timestamp::now(),
         decided_at: None,
         decision: None,
+        decided_by: None,
+        reason: None,
     };
     db.run_domain_op(Box::new(move |conn| {
         let mut repo = DomainRepository::new(conn, project_id);
