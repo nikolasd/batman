@@ -508,8 +508,8 @@ fn initialize_fixture_normalizes_session_id_text_tools_and_final_result() {
             .count(),
         0
     );
-    // A successful result (`is_error` absent) must not emit the R12
-    // terminal-failure event.
+    // A successful result (this fixture carries `is_error: false`; an
+    // absent field is equally inert) must not emit the R12 failure event.
     assert_eq!(
         payloads
             .iter()

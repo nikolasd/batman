@@ -23,6 +23,7 @@ pub use client::{
 pub use compatibility::{
     COPILOT_KNOWN_CLI_VERSIONS, COPILOT_MAX_ACP_PROTOCOL_VERSION, COPILOT_MIN_ACP_PROTOCOL_VERSION,
     copilot_acp_protocol_version_supported, copilot_cli_version_known,
+    copilot_negotiated_version_verified,
 };
 pub use normalize::StopOutcome;
 pub use normalize::copilot_normalize_session_update;
