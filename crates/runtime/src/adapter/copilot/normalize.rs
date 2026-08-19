@@ -276,6 +276,23 @@ mod tests {
     }
 
     #[test]
+    fn an_unrecognized_stop_reason_reports_the_raw_vendor_token_in_the_health_detail() {
+        // The detail must carry the vendor's exact token, not the lowercased,
+        // separator-stripped match binding -- an operator greps vendor docs
+        // and logs for the raw spelling (R42).
+        let outcome = copilot_normalize_stop_reason("Some_Bizarre-Reason");
+        assert_eq!(outcome.events.len(), 1);
+        let AdapterEventPayload::ProtocolHealthChanged { detail, .. } = &outcome.events[0] else {
+            panic!("expected ProtocolHealthChanged");
+        };
+        assert!(
+            detail.value.contains("Some_Bizarre-Reason"),
+            "detail was: {:?}",
+            detail.value
+        );
+    }
+
+    #[test]
     fn stop_reason_matching_ignores_case_and_separators() {
         let outcomes = ["endTurn", "end_turn", "END-TURN"].map(copilot_normalize_stop_reason);
         for outcome in outcomes {
