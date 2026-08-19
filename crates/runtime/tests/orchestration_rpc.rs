@@ -3320,7 +3320,9 @@ async fn run_cancel_against_another_instances_run_is_refused() {
     // (`run_cancel_on_settled_run_is_illegal_transition`), which is
     // still -32100: that caller clears ownership, so validity is what's
     // left to fail.
-    let owner_cancel = owner.call(8, "run/cancel", json!({ "runId": run_id })).await;
+    let owner_cancel = owner
+        .call(8, "run/cancel", json!({ "runId": run_id }))
+        .await;
     assert!(
         owner_cancel.get("error").is_none(),
         "owner's own cancel must succeed, reaching a terminal state: {owner_cancel:?}"
@@ -3673,4 +3675,259 @@ async fn owner_can_perform_every_guarded_run_lifecycle_mutation_on_its_own_task(
     );
     let new_run_id = retry["result"]["runId"].as_str().unwrap().to_string();
     assert_ne!(new_run_id, run_id_str, "retry must create a distinct RunId");
+}
+
+// -------------------------------------------------------- R81: workspace lease authority
+//
+// ReviewR77's N1 finding: `workspace_acquire` (R77, above) is owner-gated,
+// but its four siblings -- `workspace_get`, `workspace_release`,
+// `workspace_inspect`, `workspace_apply` (`orchestration.rs` ~1403, ~1421,
+// ~1476, ~1533) -- take no `principal` and resolve their target purely
+// from a caller-supplied `leaseId` via `LeaseService::get`. A non-owning
+// `ompExtension` instance that learns another instance's `leaseId`
+// (trivially available: `events/replay` is itself ungated, and the
+// `LeaseRequested`/`LeaseAcquired` events it returns carry the `leaseId`
+// in the clear) can release/tear down, inspect, or apply into a
+// workspace it never acquired.
+//
+// `workspace_get` is deliberately NOT RED-tested here: it is read-only --
+// no teardown, no materialization, no apply -- and every field its
+// response carries (`leaseId`, `runId`, `mode`, `isolationKind`, `path`,
+// `baseRevision`) is already reproducible from that same already-ungated
+// `events/replay`: `LeaseRequested` carries `mode`; `LeaseAcquired`
+// carries `path`, `isolationKind`, `baseRevision`. The one field
+// `events/replay` does not carry as a single value, `state`, is
+// derivable from the same stream (`active` until a
+// `LeaseReleased`/`CleanupFailed` event for that `leaseId` appears; no
+// code path in this codebase ever transitions a lease to `dirty`).
+// Gating `workspace_get` would close no disclosure that
+// `workspace_acquire`'s R77 gate and `events/replay`'s pre-existing,
+// unrelated exposure don't already leave open -- it is the three
+// mutating siblings below that matter.
+
+/// RED: `workspace_release` (`dispatch` calls
+/// `self.workspace_release(params).await` with no `principal`) never
+/// checks that the caller owns the lease's run. A second, unrelated
+/// instance can release -- and, for isolated leases, tear down the
+/// worktree of -- a lease it never acquired.
+#[tokio::test]
+async fn workspace_release_against_another_instances_lease_is_refused() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut owner = omp_client(&harness, "omp-1").await;
+    let (_task_id, _worker_id, run_id) = submit_run_with_driver(&mut owner, "omp-1").await;
+
+    let acquire = owner
+        .call(
+            5,
+            "workspace/acquire",
+            json!({ "runId": run_id, "mode": "readOnly", "requestedIsolation": "shared" }),
+        )
+        .await;
+    assert!(
+        acquire.get("error").is_none(),
+        "owner's own workspace/acquire failed: {acquire:?}"
+    );
+    let lease_id = acquire["result"]["leaseId"].as_str().unwrap().to_string();
+
+    let mut attacker = omp_client(&harness, "omp-2").await;
+    let release = attacker
+        .call(2, "workspace/release", json!({ "leaseId": lease_id }))
+        .await;
+    assert_eq!(
+        release["error"]["code"], -32602,
+        "workspace/release against another instance's lease must be refused: {release:?}"
+    );
+
+    let get = owner.call(6, "run/get", json!({ "runId": run_id })).await;
+    assert!(
+        get["result"]["workspacePath"].as_str().is_some(),
+        "a refused release must leave the lease active: {get:?}"
+    );
+
+    let replay = owner
+        .call(7, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    assert!(
+        !workspace_event_kinds_for_run(&replay, &run_id).contains(&"leaseReleased".to_string()),
+        "a refused release must not journal LeaseReleased: {replay:?}"
+    );
+}
+
+/// GREEN guard for R81: the owner releasing its own lease must still
+/// succeed once ownership arbitration is threaded into
+/// `workspace_release` -- a universal-refusal fix must not pass either.
+#[tokio::test]
+async fn workspace_release_by_the_owning_instance_succeeds() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut owner = omp_client(&harness, "omp-1").await;
+    let (_task_id, _worker_id, run_id) = submit_run_with_driver(&mut owner, "omp-1").await;
+
+    let acquire = owner
+        .call(
+            5,
+            "workspace/acquire",
+            json!({ "runId": run_id, "mode": "readOnly", "requestedIsolation": "shared" }),
+        )
+        .await;
+    assert!(
+        acquire.get("error").is_none(),
+        "owner's own workspace/acquire failed: {acquire:?}"
+    );
+    let lease_id = acquire["result"]["leaseId"].as_str().unwrap().to_string();
+
+    let release = owner
+        .call(6, "workspace/release", json!({ "leaseId": lease_id }))
+        .await;
+    assert!(
+        release.get("error").is_none(),
+        "owner's own workspace/release failed: {release:?}"
+    );
+    assert_eq!(release["result"]["released"], true);
+
+    let replay = owner
+        .call(7, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    assert_eq!(
+        workspace_event_kinds_for_run(&replay, &run_id)
+            .last()
+            .map(String::as_str),
+        Some("leaseReleased"),
+        "owner's own release must journal LeaseReleased: {replay:?}"
+    );
+}
+
+/// RED: `workspace_inspect` (`dispatch` calls
+/// `self.workspace_inspect(params).await` with no `principal`) never
+/// checks that the caller owns the lease's run. A second, unrelated
+/// instance can inspect another instance's real workspace -- reading
+/// back commit history and dirty/untracked counts, and materializing a
+/// fetchable patch artifact of its contents -- for a lease it never
+/// acquired.
+#[tokio::test]
+async fn workspace_inspect_against_another_instances_lease_is_refused() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    init_real_git_repo(&harness.owned_dir);
+    let mut owner = omp_client(&harness, "omp-1").await;
+    let (_task_id, _worker_id, run_id) = submit_run_with_driver(&mut owner, "omp-1").await;
+
+    let acquire = owner
+        .call(
+            5,
+            "workspace/acquire",
+            json!({ "runId": run_id, "mode": "readOnly", "requestedIsolation": "shared" }),
+        )
+        .await;
+    assert!(
+        acquire.get("error").is_none(),
+        "owner's own workspace/acquire failed: {acquire:?}"
+    );
+    let lease_id = acquire["result"]["leaseId"].as_str().unwrap().to_string();
+
+    let mut attacker = omp_client(&harness, "omp-2").await;
+    let inspect = attacker
+        .call(2, "workspace/inspect", json!({ "leaseId": lease_id }))
+        .await;
+    assert_eq!(
+        inspect["error"]["code"], -32602,
+        "workspace/inspect against another instance's lease must be refused: {inspect:?}"
+    );
+    assert!(
+        inspect.get("result").is_none(),
+        "a refused inspect must not return a patch artifact or revision evidence: {inspect:?}"
+    );
+
+    let replay = owner
+        .call(6, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    assert!(
+        workspace_event_kinds_for_run(&replay, &run_id)
+            .iter()
+            .all(|k| k != "workspaceInspected" && k != "artifactPublished"),
+        "a refused inspect must not journal WorkspaceInspected/ArtifactPublished: {replay:?}"
+    );
+}
+
+/// RED: `workspace_apply` (`dispatch` calls
+/// `self.workspace_apply(params).await` with no `principal`) never
+/// checks that the caller owns the lease's run. Ownership must be
+/// arbitrated immediately after `lease_service.get` and before any
+/// artifact resolution, so a non-owner is refused `-32602` before ever
+/// learning whether the artifact it named exists. A bogus, never-seeded
+/// artifact ref is deliberately used here: seeding a real one is no
+/// harder (`seed_artifact` above), but would not distinguish "refused for
+/// ownership" from "refused because the artifact could not be resolved
+/// yet" -- the two errors this test's message assertion tells apart.
+/// Today, absent any ownership check, the handler runs
+/// `ensure_not_quarantined`, journals `ApplyStarted`, and only then fails
+/// resolving the artifact -- a mutation reaches the journal from an
+/// unauthorized caller before the request is refused at all.
+#[tokio::test]
+async fn workspace_apply_against_another_instances_lease_is_refused() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(FakeRunDriver));
+    })
+    .await;
+    let mut owner = omp_client(&harness, "omp-1").await;
+    let (_task_id, _worker_id, run_id) = submit_run_with_driver(&mut owner, "omp-1").await;
+
+    let acquire = owner
+        .call(
+            5,
+            "workspace/acquire",
+            json!({ "runId": run_id, "mode": "write", "requestedIsolation": "shared" }),
+        )
+        .await;
+    assert!(
+        acquire.get("error").is_none(),
+        "owner's own workspace/acquire failed: {acquire:?}"
+    );
+    let lease_id = acquire["result"]["leaseId"].as_str().unwrap().to_string();
+    let base_revision = acquire["result"]["baseRevision"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let mut attacker = omp_client(&harness, "omp-2").await;
+    let bogus_artifact_id = batman_protocol::ArtifactId::new().to_string();
+    let apply = attacker
+        .call(
+            2,
+            "workspace/apply",
+            json!({
+                "leaseId": lease_id,
+                "strategy": "applyPatch",
+                "artifactId": bogus_artifact_id,
+                "expectedTargetRevision": base_revision,
+            }),
+        )
+        .await;
+    assert_eq!(
+        apply["error"]["code"], -32602,
+        "workspace/apply against another instance's lease must be refused before artifact \
+         resolution: {apply:?}"
+    );
+    let message = apply["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        !message.contains("artifact") && !message.contains("not found"),
+        "the refusal must be the ownership check, not artifact-not-found: {apply:?}"
+    );
+
+    let replay = owner
+        .call(6, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    assert!(
+        workspace_event_kinds_for_run(&replay, &run_id)
+            .iter()
+            .all(|k| k != "applyStarted"),
+        "a refused apply must not journal ApplyStarted: {replay:?}"
+    );
 }
