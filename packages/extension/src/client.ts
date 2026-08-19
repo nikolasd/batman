@@ -28,6 +28,7 @@ import {
   validateJsonRpcNotification,
   validateJsonRpcResponse,
   validateRuntimeStatus,
+  validateWorkspaceInfo,
   type ValidateFunction,
 } from "@nikolasd/batman-protocol/validate";
 import type { EventEnvelope, InitializeParams, InitializeResult } from "@nikolasd/batman-protocol";
@@ -48,6 +49,7 @@ const RESULT_VALIDATORS: Record<string, ValidateFunction> = {
   "artifact/fetch": validateArtifactFetchResult,
   "workspace/inspect": validateInspectResult,
   "workspace/apply": validateApplyResult,
+  "workspace/get": validateWorkspaceInfo,
 };
 
 /** Removes a subscription registered with {@link BatmanClient.subscribe}. */
@@ -154,6 +156,9 @@ export class BatmanClient {
         for (const event of replayed as EventEnvelope[]) {
           onEvent(event);
         }
+        // The `{ "active": true }` ack is deliberately not validated: it is
+        // the subscription trigger, not data, and this path already bypasses
+        // request()'s guards the same way events/replay's array does above.
         await this.#send("events/subscribe", {});
       } catch (err) {
         // A failed subscription must not take down the process; surface it via

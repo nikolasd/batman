@@ -72,7 +72,7 @@ bun run check
 
 - Use TypeScript with strict mode
 - Generate bindings from Rust protocol types (never hand-edit generated files)
-- Validate all messages with Ajv before extension logic
+- Validate every daemon message before extension logic: envelopes/events via Ajv, results via Ajv where a canonical protocol result type exists, structurally otherwise (see invariant 2 below)
 
 ## Non-Negotiable Invariants
 

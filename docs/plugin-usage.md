@@ -380,7 +380,7 @@ Same as `run/submit`, plus `priorRunId`:
 ### `artifact/fetch`
 
 ```json
-{ "artifact": { "artifactId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8a9b", "kind": "patch" }, "contentBase64": "ZGlmZiAtLWdpdCBhL2ZvbyBiL2Zvbwo=", "nextOffset": 4096, "complete": false }
+{ "artifact": { "artifactId": "e5f6a7b8-c9d0-4e1f-2a3b-4c5d6e7f8a9b", "kind": "patch", "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "byteLength": 4096, "mediaType": "text/x-patch", "storagePath": "sha256/9f/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "runId": "c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f" }, "contentBase64": "ZGlmZiAtLWdpdCBhL2ZvbyBiL2Zvbwo=", "nextOffset": 4096, "complete": false }
 ```
 
 ### `message/send`

@@ -19,7 +19,7 @@ use batman_protocol::{
     JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, LeaseRequest,
     MessageId, OperationId, ProjectId, ProtocolVersion, ReleaseRequest, RepositoryIdentity,
     RequestId, RunId, RuntimeCapabilities, RuntimeEvent, RuntimeInfo, RuntimeStatus, TaskId,
-    Timestamp, VersionRange, WorkerId,
+    Timestamp, VersionRange, WorkerId, WorkspaceInfo,
 };
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
@@ -260,6 +260,7 @@ fn export_bindings(dir: &Path) -> Result<()> {
         InspectRequest,
         ApplyRequest,
         ReleaseRequest,
+        WorkspaceInfo,
     );
 
     Ok(())

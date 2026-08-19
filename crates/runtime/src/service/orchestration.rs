@@ -1463,15 +1463,10 @@ impl OrchestrationService {
         let lease_id = str_field(params, "leaseId")?;
         let info = self.require_lease_owner(principal, lease_id).await?;
 
-        Ok(json!({
-            "leaseId": info.lease_id,
-            "runId": info.run_id.to_string(),
-            "mode": match info.mode { batman_protocol::LeaseMode::ReadOnly => "readOnly", batman_protocol::LeaseMode::Write => "write" },
-            "isolationKind": match info.isolation_kind { batman_protocol::IsolationKind::Shared => "shared", batman_protocol::IsolationKind::GitWorktree => "gitWorktree", batman_protocol::IsolationKind::Copy => "copy" },
-            "path": info.path,
-            "state": match info.state { batman_protocol::WorkspaceState::Allocating => "allocating", batman_protocol::WorkspaceState::Active => "active", batman_protocol::WorkspaceState::Dirty => "dirty", batman_protocol::WorkspaceState::Released => "released", batman_protocol::WorkspaceState::CleanupFailed => "cleanupFailed" },
-            "baseRevision": info.base_revision,
-        }))
+        // Canonical `WorkspaceInfo` serialization; byte-identical to the
+        // previous hand-rolled shape (R55 review E1).
+        serde_json::to_value(&info)
+            .map_err(|e| ServiceError::internal(format!("serializing WorkspaceInfo: {e}")))
     }
 
     /// [`Self::require_lease_owner`] runs before
@@ -1732,22 +1727,17 @@ impl OrchestrationService {
                     .collect()
             })
             .unwrap_or_default();
-        // Fetch all artifacts and filter by scope.
-        let result = self.artifact_store.list(kind).await;
-        let scoped = batman_protocol::ArtifactListResult {
-            artifacts: result
-                .artifacts
-                .into_iter()
-                .filter(|a| {
-                    a.run_id
-                        .as_deref()
-                        .is_some_and(|id| scope.iter().any(|s| s == id))
-                })
-                .collect(),
-        };
+        // Fetch all artifacts and keep only those in scope; the store
+        // already returns the canonical `ArtifactListResult`.
+        let mut result = self.artifact_store.list(kind).await;
+        result.artifacts.retain(|a| {
+            a.run_id
+                .as_deref()
+                .is_some_and(|id| scope.iter().any(|s| s == id))
+        });
         // Canonical `ArtifactListResult` serialization; byte-identical to
         // the previous hand-rolled shape (R55).
-        serde_json::to_value(&scoped)
+        serde_json::to_value(&result)
             .map_err(|e| ServiceError::internal(format!("serializing ArtifactListResult: {e}")))
     }
     async fn artifact_fetch(

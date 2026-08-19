@@ -3102,6 +3102,42 @@ async fn artifact_isolation_enforces_task_ownership_scoping() {
         !artifacts_a.contains(&artifact_b.to_string()),
         "Client A should NOT see Client B's artifact, got: {artifacts_a:?}"
     );
+    // Pin the result envelope and each `Artifact` element's exact wire key
+    // set (R55 review W3): the handler serializes the canonical
+    // `ArtifactListResult`, and a serde attribute change would silently
+    // change the wire under a green suite.
+    let mut list_keys: Vec<&str> = list_a["result"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    list_keys.sort_unstable();
+    assert_eq!(list_keys, ["artifacts"]);
+    let first = list_a["result"]["artifacts"]
+        .as_array()
+        .unwrap()
+        .first()
+        .expect("client A has at least one artifact");
+    let mut artifact_keys: Vec<&str> = first
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    artifact_keys.sort_unstable();
+    assert_eq!(
+        artifact_keys,
+        [
+            "artifactId",
+            "byteLength",
+            "kind",
+            "mediaType",
+            "runId",
+            "sha256",
+            "storagePath"
+        ]
+    );
 
     // Client B lists artifacts — should only see their own
     let list_b = client_b.call(31, "artifact/list", json!({})).await;
@@ -3900,6 +3936,29 @@ async fn workspace_release_by_the_owning_instance_succeeds() {
     );
     assert_eq!(get["result"]["leaseId"], lease_id);
     assert_eq!(get["result"]["state"], "active");
+    // Pin the exact wire key set (R55 review W3): the handler serializes the
+    // canonical `WorkspaceInfo`, and a `skip_serializing_if`/rename/added
+    // field would silently change the wire and fail the extension's
+    // additionalProperties:false validation with CI otherwise green.
+    let mut get_keys: Vec<&str> = get["result"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    get_keys.sort_unstable();
+    assert_eq!(
+        get_keys,
+        [
+            "baseRevision",
+            "isolationKind",
+            "leaseId",
+            "mode",
+            "path",
+            "runId",
+            "state"
+        ]
+    );
 
     let inspect = owner
         .call(7, "workspace/inspect", json!({ "leaseId": lease_id }))
@@ -3910,6 +3969,27 @@ async fn workspace_release_by_the_owning_instance_succeeds() {
     );
     assert_eq!(inspect["result"]["commitCount"], 1);
     assert_eq!(inspect["result"]["dirtyFileCount"], 0);
+    // Pin `InspectResult`'s exact wire key set (R55 review W3).
+    let mut inspect_keys: Vec<&str> = inspect["result"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    inspect_keys.sort_unstable();
+    assert_eq!(
+        inspect_keys,
+        [
+            "baseRevision",
+            "commitCount",
+            "commitIds",
+            "currentRevision",
+            "dirtyFileCount",
+            "leaseId",
+            "patchArtifactId",
+            "untrackedFileCount"
+        ]
+    );
 
     let release = owner
         .call(8, "workspace/release", json!({ "leaseId": lease_id }))

@@ -18,7 +18,7 @@ use crate::{
     ApplyResult, ArtifactFetchResult, ArtifactListResult, DisplayBackend, DisplayConfig,
     DisplayStatus, EventEnvelope, InitializeParams, InitializeResult, InspectResult,
     JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, RuntimeEvent,
-    RuntimeStatus,
+    RuntimeStatus, WorkspaceInfo,
 };
 
 /// Root schema document referencing every exported request/result/event
@@ -43,6 +43,7 @@ pub struct ProtocolDocument {
     artifact_fetch_result: ArtifactFetchResult,
     inspect_result: InspectResult,
     apply_result: ApplyResult,
+    workspace_info: WorkspaceInfo,
 }
 
 /// Renders the [`ProtocolDocument`] schema as pretty JSON with a trailing

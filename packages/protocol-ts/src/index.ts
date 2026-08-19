@@ -66,3 +66,5 @@ export type * from "./generated/Timestamp";
 export type * from "./generated/VersionRange";
 export type * from "./generated/WorkerId";
 export type * from "./generated/WorkspaceEvent";
+export type * from "./generated/WorkspaceInfo";
+export type * from "./generated/WorkspaceState";

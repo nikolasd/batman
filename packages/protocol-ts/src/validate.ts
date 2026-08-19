@@ -58,6 +58,8 @@ export const validateArtifactFetchResult = def("ArtifactFetchResult");
 export const validateInspectResult = def("InspectResult");
 /** Validates a `workspace/apply` result payload. */
 export const validateApplyResult = def("ApplyResult");
+/** Validates a `workspace/get` result payload. */
+export const validateWorkspaceInfo = def("WorkspaceInfo");
 /** Validates a single durable event envelope. */
 export const validateEventEnvelope = def("EventEnvelope");
 /** Validates a JSON-RPC success response envelope. */
