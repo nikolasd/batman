@@ -349,7 +349,7 @@ impl RecoveryCoordinator {
         let target_for_closure = target.clone();
         let closure: DomainClosure = Box::new(move |conn| {
             let mut repo = DomainRepository::new(conn, project_id);
-            repo.transition_run(run_id, &target_for_closure)
+            repo.transition_run(run_id, &target_for_closure, None)
                 .map(|c| serde_json::json!({ "sequence": c.sequence }))
         });
 

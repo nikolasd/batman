@@ -958,7 +958,7 @@ mod run_state_tests {
                 started_at: None,
                 completed_at: None,
             };
-            repo.submit_run(&run, None)?;
+            repo.submit_run(&run, None, None)?;
             Ok(serde_json::json!({}))
         }))
         .await

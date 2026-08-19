@@ -479,7 +479,7 @@ impl ViolationService {
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.transition_run(run_id, &to)
+                repo.transition_run(run_id, &to, None)
                     .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await

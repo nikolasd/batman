@@ -289,7 +289,7 @@ impl CoordinationBroker {
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.record_message(&message)
+                repo.record_message(&message, None)
                     .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await?;
@@ -607,7 +607,7 @@ impl CoordinationBroker {
                     acknowledged_at: None,
                     reply_to: None,
                 };
-                repo.record_message(&message).map(|c| {
+                repo.record_message(&message, None).map(|c| {
                     embed_envelope(
                         json!({ "sequence": c.sequence, "artifactRef": artifact_ref }),
                         &c.envelope,

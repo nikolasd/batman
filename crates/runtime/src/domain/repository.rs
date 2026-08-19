@@ -553,10 +553,25 @@ impl<'c> DomainRepository<'c> {
     /// specific policy rather than against whatever is merged today.
     /// `None` for callers with no merged config (tests, embeddings), which
     /// leaves the column NULL rather than fabricating a fingerprint.
+    ///
+    /// `principal_instance_id` is the connected `ompExtension` instance to
+    /// arbitrate ownership against, re-read from `tasks` inside this same
+    /// guarded write (R77) -- not from a caller-side snapshot a
+    /// `reconcile/omp` rebind could invalidate between read and write.
+    /// `None` for callers with no external principal to check: every
+    /// internal, adapter-, and recovery-driven submission (retries staged
+    /// by the runtime itself, crash recovery, test seeding) is already
+    /// trusted and has no connected caller to arbitrate against.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::NotOwner`] if `principal_instance_id` is
+    /// `Some` and does not own `run.task_id`, or [`DomainError::NotFound`]
+    /// if that task does not exist.
     pub fn submit_run(
         &mut self,
         run: &Run,
         policy_fingerprint: Option<&str>,
+        principal_instance_id: Option<&str>,
     ) -> Result<Committed, DomainError> {
         let event = RuntimeEvent::RunEvent {
             kind: RuntimeEventKind::RunQueued,
@@ -567,6 +582,7 @@ impl<'c> DomainRepository<'c> {
         };
         let run = run.clone();
         let policy_fingerprint = policy_fingerprint.map(str::to_string);
+        let principal_instance_id = principal_instance_id.map(str::to_string);
         self.append_and_apply(
             &event,
             Some(run.task_id),
@@ -574,6 +590,36 @@ impl<'c> DomainRepository<'c> {
             Some(run.run_id),
             move |tx| {
                 let now = Timestamp::now();
+                // Ownership is arbitrated here, inside the guarded write,
+                // not by a caller-side snapshot (R70-R77 doctrine): the
+                // database actor interleaves whole `run_domain_op`
+                // closures, so only a re-read from inside this same
+                // transaction can observe a `reconcile/omp` rebind that
+                // commits between a caller's snapshot read and this write.
+                if let Some(principal_instance_id) = principal_instance_id {
+                    let owner: Option<String> = tx
+                        .query_row(
+                            "SELECT owner_client_instance_id FROM tasks WHERE task_id = ?1",
+                            [run.task_id.to_string()],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    match owner {
+                        Some(owner) if owner == principal_instance_id => {}
+                        Some(_) => {
+                            return Err(DomainError::NotOwner {
+                                task_id: run.task_id.to_string(),
+                                instance_id: principal_instance_id,
+                            });
+                        }
+                        None => {
+                            return Err(DomainError::NotFound {
+                                kind: "task",
+                                id: run.task_id.to_string(),
+                            });
+                        }
+                    }
+                }
                 tx.execute(
                     "INSERT INTO runs (run_id, task_id, worker_id, state,
                        flags_degraded_control, flags_needs_reconciliation, flags_protocol_unhealthy,
@@ -606,10 +652,27 @@ impl<'c> DomainRepository<'c> {
     /// Transitions a run to a new state, validating the edge first. Emits the
     /// matching `Run*` event and updates the projection. An illegal edge
     /// appends nothing.
+    ///
+    /// `principal_instance_id` arbitrates ownership the same way
+    /// [`Self::submit_run`] does, re-read from `tasks` inside this guarded
+    /// write, immediately before the mutating `UPDATE` (R77). `None` for
+    /// every internal caller -- adapter-driven lifecycle transitions,
+    /// approval/violation resolution returning a run to `working`, crash
+    /// recovery, and test seeding all transition a run on the runtime's
+    /// own authority, with no connected caller to arbitrate against. Only
+    /// `run/cancel`'s handler, the one client-facing caller, passes
+    /// `Some`.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::NotOwner`] if `principal_instance_id` is
+    /// `Some` and does not own the run's task, or [`DomainError::NotFound`]
+    /// if that task does not exist, in addition to the transition errors
+    /// documented above.
     pub fn transition_run(
         &mut self,
         run_id: batman_protocol::RunId,
         to: &RunState,
+        principal_instance_id: Option<&str>,
     ) -> Result<Committed, DomainError> {
         let (from_str, task_id_str, worker_id_str): (String, String, String) = self
             .conn
@@ -652,6 +715,7 @@ impl<'c> DomainRepository<'c> {
         let to_owned = to.clone();
         let is_terminal = to.is_terminal();
         let entering_working = to.to_string() == "starting";
+        let principal_instance_id = principal_instance_id.map(str::to_string);
         self.append_and_apply(
             &event,
             Some(task_id),
@@ -659,6 +723,36 @@ impl<'c> DomainRepository<'c> {
             Some(run_id),
             move |tx| {
                 let now = Timestamp::now();
+                // Ownership is arbitrated here, inside the guarded write,
+                // immediately before the mutating `UPDATE` -- see
+                // `submit_run`'s doc comment for why a re-read from inside
+                // this same closure, not a caller-side snapshot, is what
+                // makes this safe against a concurrent `reconcile/omp`
+                // rebind (R70-R77 doctrine).
+                if let Some(principal_instance_id) = principal_instance_id {
+                    let owner: Option<String> = tx
+                        .query_row(
+                            "SELECT owner_client_instance_id FROM tasks WHERE task_id = ?1",
+                            [task_id.to_string()],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    match owner {
+                        Some(owner) if owner == principal_instance_id => {}
+                        Some(_) => {
+                            return Err(DomainError::NotOwner {
+                                task_id: task_id.to_string(),
+                                instance_id: principal_instance_id,
+                            });
+                        }
+                        None => {
+                            return Err(DomainError::NotFound {
+                                kind: "task",
+                                id: task_id.to_string(),
+                            });
+                        }
+                    }
+                }
                 tx.execute(
                     "UPDATE runs SET state = ?1 WHERE run_id = ?2",
                     rusqlite::params![to_owned.to_string(), run_id.to_string()],
@@ -853,7 +947,31 @@ impl<'c> DomainRepository<'c> {
 
     /// Records a message in `recorded` delivery state (record-before-send).
     /// Emits a `MessageRecorded` event.
-    pub fn record_message(&mut self, message: &RunMessage) -> Result<Committed, DomainError> {
+    ///
+    /// `principal_instance_id` arbitrates ownership against the message's
+    /// *run* (re-read from `runs` inside this guarded write, immediately
+    /// before the `INSERT`, then checked against `tasks` -- R77), never
+    /// against `message.task_id` as presented: that field is caller
+    /// content, not something this write may trust for authorization, so
+    /// a caller cannot dodge the check by asserting a `taskId` it happens
+    /// to own for a `runId` it does not. `None` for `coordination/send`
+    /// and `coordination/publishArtifact` (`crate::coordination::broker`):
+    /// a `workerMcp` principal's authority is its scope token, already
+    /// verified against the run at connection time and re-checked by
+    /// `run_task_id != task_id` in the broker -- it is never the
+    /// task-owning `ompExtension` instance, so an ownership check here
+    /// would refuse every legitimate worker message. Only `message/send`
+    /// (`ompExtension`-only) passes `Some`.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::NotFound`] if the message's run or task does
+    /// not exist, or [`DomainError::NotOwner`] if `principal_instance_id`
+    /// is `Some` and does not own the run's task.
+    pub fn record_message(
+        &mut self,
+        message: &RunMessage,
+        principal_instance_id: Option<&str>,
+    ) -> Result<Committed, DomainError> {
         let event = RuntimeEvent::MessageEvent {
             kind: RuntimeEventKind::MessageRecorded,
             message_id: message.message_id,
@@ -862,12 +980,48 @@ impl<'c> DomainRepository<'c> {
             delivery_state: delivery_state_str(&message.delivery_state).to_string(),
         };
         let message = message.clone();
+        let principal_instance_id = principal_instance_id.map(str::to_string);
         self.append_and_apply(
             &event,
             Some(message.task_id),
             Some(message.sender_worker_id),
             Some(message.run_id),
             move |tx| {
+                if let Some(principal_instance_id) = principal_instance_id {
+                    let owning_task_id: String = tx
+                        .query_row(
+                            "SELECT task_id FROM runs WHERE run_id = ?1",
+                            [message.run_id.to_string()],
+                            |row| row.get(0),
+                        )
+                        .optional()?
+                        .ok_or(DomainError::NotFound {
+                            kind: "run",
+                            id: message.run_id.to_string(),
+                        })?;
+                    let owner: Option<String> = tx
+                        .query_row(
+                            "SELECT owner_client_instance_id FROM tasks WHERE task_id = ?1",
+                            [owning_task_id.clone()],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    match owner {
+                        Some(owner) if owner == principal_instance_id => {}
+                        Some(_) => {
+                            return Err(DomainError::NotOwner {
+                                task_id: owning_task_id,
+                                instance_id: principal_instance_id,
+                            });
+                        }
+                        None => {
+                            return Err(DomainError::NotFound {
+                                kind: "task",
+                                id: owning_task_id,
+                            });
+                        }
+                    }
+                }
                 tx.execute(
                     "INSERT INTO messages (message_id, run_id, sender_worker_id, recipient_worker_id,
                        task_id, kind, payload, delivery_state, created_at, sent_at, acknowledged_at, reply_to)
@@ -1630,6 +1784,20 @@ impl<'c> DomainRepository<'c> {
     /// the parent run to `working`. Acceptance carries the OMP-created
     /// child ids; denial carries a reason. The runtime owns both
     /// transitions after the correlated decision commits.
+    ///
+    /// `principal_instance_id` arbitrates ownership of the parent run's
+    /// task, re-read from `tasks` inside this guarded write immediately
+    /// before the mutating `UPDATE` (R77), the same way [`Self::submit_run`]
+    /// and [`Self::transition_run`] do. `None` is not used by any current
+    /// caller: `coordination/child/decide` is `ompExtension`-only
+    /// (`crate::ipc::ClientPrincipal::allowed_methods`), so every call
+    /// site has a principal to arbitrate against.
+    ///
+    /// # Errors
+    /// Returns [`DomainError::NotOwner`] if `principal_instance_id` is
+    /// `Some` and does not own the parent run's task, or
+    /// [`DomainError::NotFound`] if that task does not exist, in addition
+    /// to the transition errors documented above.
     pub fn decide_child(
         &mut self,
         parent_run_id: RunId,
@@ -1638,6 +1806,7 @@ impl<'c> DomainRepository<'c> {
         child_worker_id: Option<WorkerId>,
         child_run_id: Option<RunId>,
         reason: Option<&str>,
+        principal_instance_id: Option<&str>,
     ) -> Result<Committed, DomainError> {
         let (from_str, task_id_str, worker_id_str): (String, String, String) = self
             .conn
@@ -1679,12 +1848,37 @@ impl<'c> DomainRepository<'c> {
             child_run_id,
             reason: reason.map(str::to_string),
         };
+        let principal_instance_id = principal_instance_id.map(str::to_string);
         self.append_and_apply(
             &event,
             Some(task_id),
             Some(worker_id),
             Some(parent_run_id),
             move |tx| {
+                if let Some(principal_instance_id) = principal_instance_id {
+                    let owner: Option<String> = tx
+                        .query_row(
+                            "SELECT owner_client_instance_id FROM tasks WHERE task_id = ?1",
+                            [task_id.to_string()],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    match owner {
+                        Some(owner) if owner == principal_instance_id => {}
+                        Some(_) => {
+                            return Err(DomainError::NotOwner {
+                                task_id: task_id.to_string(),
+                                instance_id: principal_instance_id,
+                            });
+                        }
+                        None => {
+                            return Err(DomainError::NotFound {
+                                kind: "task",
+                                id: task_id.to_string(),
+                            });
+                        }
+                    }
+                }
                 tx.execute(
                     "UPDATE runs SET state = 'working' WHERE run_id = ?1",
                     rusqlite::params![parent_run_id.to_string()],
@@ -1849,7 +2043,9 @@ mod tests {
         };
 
         let mut repo = DomainRepository::new(&mut conn, project_id);
-        let committed = repo.submit_run(&run, None).expect("submit_run commits");
+        let committed = repo
+            .submit_run(&run, None, None)
+            .expect("submit_run commits");
         assert_eq!(
             committed.sequence, 3,
             "task upsert (1), worker create (2), run submit (3)"
@@ -1857,7 +2053,7 @@ mod tests {
 
         let working = RunState::try_from("starting").unwrap();
         let committed2 = repo
-            .transition_run(run_id, &working)
+            .transition_run(run_id, &working, None)
             .expect("transition_run commits");
         assert_eq!(committed2.sequence, 4);
 
@@ -1897,7 +2093,7 @@ mod tests {
             completed_at: None,
         };
         let mut repo = DomainRepository::new(&mut conn, project_id);
-        repo.submit_run(&run, None).unwrap();
+        repo.submit_run(&run, None, None).unwrap();
 
         let before: i64 = conn
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
@@ -1906,7 +2102,7 @@ mod tests {
         // queued -> succeeded is not a legal edge.
         let mut repo = DomainRepository::new(&mut conn, project_id);
         let target = RunState::try_from("succeeded").unwrap();
-        let err = repo.transition_run(run_id, &target).unwrap_err();
+        let err = repo.transition_run(run_id, &target, None).unwrap_err();
         assert!(matches!(err, DomainError::Transition(_)));
 
         let after: i64 = conn
@@ -1944,7 +2140,8 @@ mod tests {
             completed_at: None,
         };
         let mut repo = DomainRepository::new(&mut conn, project_id);
-        repo.submit_run(&run, None).expect("submit_run commits");
+        repo.submit_run(&run, None, None)
+            .expect("submit_run commits");
 
         let violation_id = PolicyViolationId::new();
         let committed = repo.record_policy_violation(

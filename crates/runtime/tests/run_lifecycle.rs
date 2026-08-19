@@ -148,7 +148,7 @@ async fn seed_run(db: &DatabaseHandle, project_id: ProjectId) -> (TaskId, Worker
             started_at: None,
             completed_at: None,
         };
-        repo.submit_run(&run, None)?;
+        repo.submit_run(&run, None, None)?;
         Ok(serde_json::json!({}))
     }))
     .await

@@ -313,3 +313,60 @@ pub fn owned_run_ids_op(
         Ok(json!(ids))
     })
 }
+
+/// Confirms `expected_instance_id` currently owns the task that owns
+/// `run_id`, for `workspace/acquire`'s ownership arbitration (R77).
+///
+/// A workspace lease lives in [`crate::workspace::LeaseService`]'s own
+/// database file, not the runs database this query reads, so this
+/// round trip cannot commit atomically with the lease acquisition it
+/// guards the way an owner check inside a runs-DB write can (see
+/// `crate::domain::DomainRepository::submit_run`'s doc comment for that
+/// pattern). `OrchestrationService::workspace_acquire` calls this as
+/// close to `LeaseService::acquire` as possible -- immediately before it,
+/// with no other I/O between the two -- to bound, not eliminate, the
+/// window: a `reconcile/omp` rebind that commits inside that single gap
+/// is not observed, and a lease already allocated when this call runs
+/// again for a second attempt is unaffected either way. Making this
+/// atomic with the lease acquisition it guards would require the two
+/// database files to share a transaction, which they do not.
+///
+/// # Errors
+/// Returns [`DomainError::NotFound`] if `run_id` or its task does not
+/// exist, or [`DomainError::NotOwner`] if `expected_instance_id` does not
+/// own the run's task.
+pub fn run_owner_op(run_id: RunId, expected_instance_id: String) -> DomainClosure {
+    Box::new(move |conn| {
+        let task_id: String = conn
+            .query_row(
+                "SELECT task_id FROM runs WHERE run_id = ?1",
+                [run_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(DomainError::Sqlite)?
+            .ok_or(DomainError::NotFound {
+                kind: "run",
+                id: run_id.to_string(),
+            })?;
+        let owner: Option<String> = conn
+            .query_row(
+                "SELECT owner_client_instance_id FROM tasks WHERE task_id = ?1",
+                [task_id.clone()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(DomainError::Sqlite)?;
+        match owner {
+            Some(owner) if owner == expected_instance_id => Ok(json!({})),
+            Some(_) => Err(DomainError::NotOwner {
+                task_id,
+                instance_id: expected_instance_id,
+            }),
+            None => Err(DomainError::NotFound {
+                kind: "task",
+                id: task_id,
+            }),
+        }
+    })
+}

@@ -73,7 +73,7 @@ async fn seed_run(
             started_at: None,
             completed_at: None,
         };
-        repo.submit_run(&run, None)?;
+        repo.submit_run(&run, None, None)?;
         Ok(serde_json::json!({}))
     }))
     .await
@@ -105,7 +105,7 @@ async fn drive_to_state(
         let to = RunState::try_from(*state).expect("valid state");
         db.run_domain_op(Box::new(move |conn| {
             let mut repo = DomainRepository::new(conn, project_id);
-            repo.transition_run(run_id, &to)
+            repo.transition_run(run_id, &to, None)
                 .map(|_| serde_json::json!({}))
         }))
         .await
@@ -327,7 +327,7 @@ async fn terminal_run_is_never_touched() {
     let failed = RunState::try_from("failed").unwrap();
     db.run_domain_op(Box::new(move |conn| {
         let mut repo = DomainRepository::new(conn, project_id);
-        repo.transition_run(run_id, &failed)
+        repo.transition_run(run_id, &failed, None)
             .map(|_| serde_json::json!({}))
     }))
     .await

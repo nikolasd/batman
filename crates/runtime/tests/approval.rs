@@ -414,7 +414,7 @@ async fn a_decision_cannot_target_a_settled_run() {
         let mut conn = rusqlite::Connection::open(&harness.database).unwrap();
         let mut repo = DomainRepository::new(&mut conn, harness.project_id);
         let failed = batman_protocol::RunState::try_from("failed").unwrap();
-        repo.transition_run(run_id, &failed)
+        repo.transition_run(run_id, &failed, None)
             .expect("force-fail the run for this test");
     }
     drop(db);

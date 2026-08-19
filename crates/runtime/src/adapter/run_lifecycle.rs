@@ -106,12 +106,13 @@ impl RunLifecycle {
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.transition_run(run_id, &to_owned).map(|committed| {
-                    embed_envelope(
-                        json!({ "sequence": committed.sequence }),
-                        &committed.envelope,
-                    )
-                })
+                repo.transition_run(run_id, &to_owned, None)
+                    .map(|committed| {
+                        embed_envelope(
+                            json!({ "sequence": committed.sequence }),
+                            &committed.envelope,
+                        )
+                    })
             }))
             .await?;
         if let Some(envelope) = take_envelope(&mut result) {
@@ -412,7 +413,7 @@ mod tests {
                 started_at: None,
                 completed_at: None,
             };
-            repo.submit_run(&run, None)?;
+            repo.submit_run(&run, None, None)?;
             Ok(serde_json::json!({}))
         }))
         .await
@@ -439,7 +440,7 @@ mod tests {
             let to = RunState::try_from(*state).expect("valid state");
             db.run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.transition_run(run_id, &to)
+                repo.transition_run(run_id, &to, None)
                     .map(|_| serde_json::json!({}))
             }))
             .await

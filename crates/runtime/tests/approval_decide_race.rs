@@ -151,7 +151,7 @@ async fn seed_pending_approval(
             started_at: None,
             completed_at: None,
         };
-        repo.submit_run(&run, None)?;
+        repo.submit_run(&run, None, None)?;
         Ok(json!({}))
     }))
     .await
@@ -161,7 +161,7 @@ async fn seed_pending_approval(
         let to = RunState::try_from(state).expect("valid state");
         db.run_domain_op(Box::new(move |conn| {
             let mut repo = DomainRepository::new(conn, project_id);
-            repo.transition_run(run_id, &to).map(|_| json!({}))
+            repo.transition_run(run_id, &to, None).map(|_| json!({}))
         }))
         .await
         .unwrap_or_else(|e| panic!("drive to {state} failed: {e}"));
@@ -207,7 +207,7 @@ async fn fail_the_run(db: &DatabaseHandle, project_id: ProjectId, run_id: RunId)
     let to = RunState::try_from("failed").expect("failed is a valid state");
     db.run_domain_op(Box::new(move |conn| {
         let mut repo = DomainRepository::new(conn, project_id);
-        repo.transition_run(run_id, &to).map(|_| json!({}))
+        repo.transition_run(run_id, &to, None).map(|_| json!({}))
     }))
     .await
     .expect("fail the run");

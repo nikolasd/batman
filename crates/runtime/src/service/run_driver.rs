@@ -134,12 +134,13 @@ async fn transition(ctx: &RunDriverContext, to: &str) -> Result<(), String> {
         .db
         .run_domain_op(Box::new(move |conn| {
             let mut repo = DomainRepository::new(conn, project_id);
-            repo.transition_run(run_id, &to_state).map(|committed| {
-                crate::domain::embed_envelope(
-                    serde_json::json!({ "sequence": committed.sequence }),
-                    &committed.envelope,
-                )
-            })
+            repo.transition_run(run_id, &to_state, None)
+                .map(|committed| {
+                    crate::domain::embed_envelope(
+                        serde_json::json!({ "sequence": committed.sequence }),
+                        &committed.envelope,
+                    )
+                })
         }))
         .await
         .map_err(|e| e.to_string())?;

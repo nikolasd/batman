@@ -125,7 +125,7 @@ async fn seed_quarantined_violation(
             started_at: None,
             completed_at: None,
         };
-        repo.submit_run(&run, None)?;
+        repo.submit_run(&run, None, None)?;
         Ok(json!({}))
     }))
     .await
@@ -135,7 +135,7 @@ async fn seed_quarantined_violation(
         let to = RunState::try_from(state).expect("valid state");
         db.run_domain_op(Box::new(move |conn| {
             let mut repo = DomainRepository::new(conn, project_id);
-            repo.transition_run(run_id, &to).map(|_| json!({}))
+            repo.transition_run(run_id, &to, None).map(|_| json!({}))
         }))
         .await
         .unwrap_or_else(|e| panic!("drive to {state} failed: {e}"));
@@ -193,7 +193,7 @@ async fn cancel_the_run(db: &DatabaseHandle, project_id: ProjectId, run_id: RunI
     let to = RunState::try_from("cancelled").expect("cancelled is a valid state");
     db.run_domain_op(Box::new(move |conn| {
         let mut repo = DomainRepository::new(conn, project_id);
-        repo.transition_run(run_id, &to).map(|_| json!({}))
+        repo.transition_run(run_id, &to, None).map(|_| json!({}))
     }))
     .await
     .expect("cancel the run");
