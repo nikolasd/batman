@@ -52,28 +52,8 @@ None open — see the resolution-history paragraph above for what closed and whe
 
 ### Low
 
-#### R38. `install_frame_tap` exported on the crate's public API surface
-
-**Location:** `crates/runtime/src/supervisor/mod.rs:14-16`
-
-`pub use output::{..., install_frame_tap};` re-exports a raw-content capture bypass beyond the crate boundary; a comment states production never installs one, but nothing prevents an external caller in the same binary from doing so. Narrow to `pub(crate)` unless a cross-crate consumer is intended.
-
-#### R65. `RateLimiter`'s per-sender map grows unboundedly
-
-**Location:** `crates/runtime/src/coordination/rate_limit.rs:42-55`
-
-Stale timestamps are pruned, but the `HashMap` key itself (the sender) is never removed on worker/run retirement — unlike `ScopeTokenStore::revoke_for_run`. Slow, unbounded memory growth proportional to total distinct workers ever spawned over a long-running daemon's uptime.
 
 
-#### R85. Project-scoped reads are open by design while `workspace/get` alone is gated
-
-**Location:** `crates/runtime/src/service/orchestration.rs:408` (`task_get`), `:573`/`:580` (`worker_list`/`worker_get`), `:902` (`run_list`), `:915` (`run_get`), `:1922` (`message_list`), `:1932` (`approval_list`); `crates/runtime/src/ipc/connection.rs:385-395` (`events/replay`)
-
-**Evidence:** none of the read handlers above take a principal; all are deliberately project-wide so any same-user `ompExtension`/`Display` client can see the whole project's state (`coordination_child_list`'s own doc makes the same intent explicit for that read). `run/get`'s `workspacePath` (`orchestration.rs:923-927`) is precisely the disclosure route R81's evidence names as the attack's entry point into the now-gated `workspace/*` mutations, and it stays open — as does `events/replay`'s `LeaseAcquired` payload. This is not a bug so much as an undocumented asymmetry: `workspace/get` is now the only ownership-gated read in the surface, beside reads that disclose the same facts.
-
-**Fix:** record the read-side policy as an explicit decision rather than leaving it implicit — project-scoped reads (task/worker/run/message/approval reads, `events/replay`) are intentionally open to any same-user client; `workspace/get` is gated for surface uniformity with the other three `workspace/*` mutations, not because it protects any confidentiality boundary the other reads don't already cross.
-
-**Priority:** Low — a documentation/decision gap, not a functional one; no read here discloses more than `run/get` already does today.
 
 #### R86. Cross-session lease cleanup has no remedy when a correlation was never persisted
 
