@@ -875,7 +875,13 @@ impl OrchestrationService {
         });
         if let Some(path) = &workspace_path {
             result["workspacePath"] = json!(path.to_string_lossy().to_string());
-            result["workspaceMode"] = json!("isolated");
+            // Echo the caller's resolved mode: a path only exists for
+            // isolated and copy, and copy must read back as copy (R89).
+            result["workspaceMode"] = json!(if workspace_mode.as_deref() == Some("copy") {
+                "copy"
+            } else {
+                "isolated"
+            });
         }
         if let Some(selection) = &display {
             result["display"] = serde_json::to_value(selection)
@@ -917,7 +923,7 @@ impl OrchestrationService {
             result["workspaceMode"] = json!(match info.isolation_kind {
                 IsolationKind::Shared => "shared",
                 IsolationKind::GitWorktree => "isolated",
-                IsolationKind::Copy => "isolated",
+                IsolationKind::Copy => "copy",
             });
         }
         Ok(result)
@@ -1034,7 +1040,13 @@ impl OrchestrationService {
         });
         if let Some(path) = &workspace_path {
             result["workspacePath"] = json!(path.to_string_lossy().to_string());
-            result["workspaceMode"] = json!("isolated");
+            // Echo the caller's resolved mode: a path only exists for
+            // isolated and copy, and copy must read back as copy (R89).
+            result["workspaceMode"] = json!(if workspace_mode.as_deref() == Some("copy") {
+                "copy"
+            } else {
+                "isolated"
+            });
         }
         if let Some(selection) = &display {
             result["display"] = serde_json::to_value(selection)
