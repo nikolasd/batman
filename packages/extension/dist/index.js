@@ -6921,6 +6921,9 @@ var batman_schema_default = {
     },
     workspaceInfo: {
       $ref: "#/$defs/WorkspaceInfo"
+    },
+    policyViolationListResult: {
+      $ref: "#/$defs/PolicyViolationListResult"
     }
   },
   required: [
@@ -6940,7 +6943,8 @@ var batman_schema_default = {
     "artifactFetchResult",
     "inspectResult",
     "applyResult",
-    "workspaceInfo"
+    "workspaceInfo",
+    "policyViolationListResult"
   ],
   $defs: {
     InitializeParams: {
@@ -7280,49 +7284,60 @@ confirm how the runtime identified it.`,
 orchestration extension methods.
 
 Serialized as the literal method name string used on the wire.`,
-      type: "string",
-      enum: [
-        "initialize",
-        "runtime/status",
-        "events/subscribe",
-        "events/replay",
-        "runtime/shutdown",
-        "task/upsert",
-        "task/get",
-        "worker/create",
-        "worker/list",
-        "worker/get",
-        "run/submit",
-        "run/list",
-        "run/get",
-        "run/retry",
-        "run/cancel",
-        "message/send",
-        "message/list",
-        "approval/list",
-        "approval/decide",
-        "coordination/child/list",
-        "coordination/child/decide",
-        "coordination/task",
-        "coordination/peers",
-        "coordination/send",
-        "coordination/requestChild",
-        "coordination/publishArtifact",
-        "coordination/reportBlocked",
-        "coordination/askPolicy",
-        "coordination/peerWorkspace",
-        "coordination/artifactList",
-        "coordination/artifactFetch",
-        "reconcile/omp",
-        "profile/register",
-        "workspace/acquire",
-        "workspace/get",
-        "workspace/release",
-        "workspace/inspect",
-        "workspace/apply",
-        "artifact/list",
-        "artifact/fetch",
-        "policy/violation/decide"
+      oneOf: [
+        {
+          type: "string",
+          enum: [
+            "initialize",
+            "runtime/status",
+            "events/subscribe",
+            "events/replay",
+            "runtime/shutdown",
+            "task/upsert",
+            "task/get",
+            "worker/create",
+            "worker/list",
+            "worker/get",
+            "run/submit",
+            "run/list",
+            "run/get",
+            "run/retry",
+            "run/cancel",
+            "message/send",
+            "message/list",
+            "approval/list",
+            "approval/decide",
+            "coordination/child/list",
+            "coordination/child/decide",
+            "coordination/task",
+            "coordination/peers",
+            "coordination/send",
+            "coordination/requestChild",
+            "coordination/publishArtifact",
+            "coordination/reportBlocked",
+            "coordination/askPolicy",
+            "coordination/peerWorkspace",
+            "coordination/artifactList",
+            "coordination/artifactFetch",
+            "reconcile/omp",
+            "profile/register",
+            "workspace/acquire",
+            "workspace/get",
+            "workspace/release",
+            "workspace/inspect",
+            "workspace/apply",
+            "artifact/list",
+            "artifact/fetch",
+            "policy/violation/decide"
+          ]
+        },
+        {
+          description: `Lists a project's recorded policy violations with their decision
+state, so an operator can find which violation still holds a
+quarantine without diffing the raw event stream (R80).`,
+          type: "string",
+          const: "policy/violation/list"
+        }
       ]
     },
     RuntimeCapabilities: {
@@ -8497,6 +8512,17 @@ change, and approval request/decision produces one of these variants.`,
           ]
         },
         {
+          description: `OMP accepted a pending child-worker request, binding the created
+child task/worker/run ids. Distinct from
+[\`Self::ChildWorkerRequested\`] so a consumer never has to infer
+"accepted" from whether the child ids happen to be populated
+(R83). Additive and forward-safe; a pre-R83 binary replaying a
+post-R83 journal fails on the unknown variant, the same
+forward-only property as every event-kind addition.`,
+          type: "string",
+          const: "childWorkerAccepted"
+        },
+        {
           description: "A worker adapter's supervised process started.",
           type: "string",
           const: "adapterProcessStarted"
@@ -9436,7 +9462,7 @@ terminal. Changes presentation only; never run ownership.`,
           $ref: "#/$defs/ProjectId"
         },
         activeRuns: {
-          description: "Number of active runs. Always `0` at foundation scope.",
+          description: "Number of runs the runtime's adapter registry is actively driving.",
           type: "integer",
           format: "uint32",
           minimum: 0
@@ -9721,6 +9747,90 @@ Capped at 256 KiB per call.`,
         "dirty",
         "released",
         "cleanupFailed"
+      ]
+    },
+    PolicyViolationListResult: {
+      description: "Result of `policy/violation/list`.",
+      type: "object",
+      properties: {
+        violations: {
+          type: "array",
+          items: {
+            $ref: "#/$defs/PolicyViolationSummary"
+          }
+        }
+      },
+      additionalProperties: false,
+      required: [
+        "violations"
+      ]
+    },
+    PolicyViolationSummary: {
+      description: "One recorded policy violation, projected exactly from the\n`policy_violations` table: an undecided row (`resolution` null) on a\nquarantined run is the one holding the quarantine.",
+      type: "object",
+      properties: {
+        violationId: {
+          $ref: "#/$defs/PolicyViolationId"
+        },
+        runId: {
+          type: "string"
+        },
+        taskId: {
+          type: "string"
+        },
+        workerId: {
+          type: "string"
+        },
+        vendorChildId: {
+          description: `The vendor-reported child id, when the violation had a vendor
+child at all (a cost ceiling does not).`,
+          type: [
+            "string",
+            "null"
+          ]
+        },
+        vendorParentRef: {
+          type: [
+            "string",
+            "null"
+          ]
+        },
+        action: {
+          description: "The action policy applied when the violation was recorded\n(`quarantine`, `cancel`, `quarantineAndCancel`).",
+          type: "string"
+        },
+        createdAt: {
+          type: "string"
+        },
+        resolvedAt: {
+          description: "Set once decided via `policy/violation/decide`.",
+          type: [
+            "string",
+            "null"
+          ]
+        },
+        resolution: {
+          description: '`"release"` or `"cancel"` once decided; `None` while open.',
+          type: [
+            "string",
+            "null"
+          ]
+        },
+        resolvedBy: {
+          type: [
+            "string",
+            "null"
+          ]
+        }
+      },
+      additionalProperties: false,
+      required: [
+        "violationId",
+        "runId",
+        "taskId",
+        "workerId",
+        "action",
+        "createdAt"
       ]
     }
   }
@@ -11284,22 +11394,28 @@ function registerTaskTool(pi, ctx) {
 var BATMAN_VIOLATION_TOOL_NAME = "batman_violation";
 function registerViolationTool(pi, ctx) {
   const params = pi.zod.object({
-    op: pi.zod.enum(["decide"]).describe("Which violation operation to perform."),
-    violationId: pi.zod.string().describe("The recorded violation to decide."),
-    resolution: pi.zod.enum(["release", "cancel"]).describe("How the violation is resolved: 'release' resumes the quarantined run (if this was its last unresolved violation), 'cancel' ends the run outright.")
+    op: pi.zod.enum(["decide", "list"]).describe("Which violation operation to perform."),
+    violationId: pi.zod.string().optional().describe("Required for decide: the recorded violation to decide."),
+    resolution: pi.zod.enum(["release", "cancel"]).optional().describe("Required for decide: 'release' resumes the quarantined run (if this was its last unresolved violation), 'cancel' ends the run outright."),
+    runId: pi.zod.string().optional().describe("Optional for list: narrow to one run's violations.")
   });
   pi.registerTool({
     name: BATMAN_VIOLATION_TOOL_NAME,
     label: "BATMAN Violation",
-    description: `Use to resolve a policy violation that quarantined a run -- for example a worker that spawned a nested child when policy forbids it. Pass the violationId from the violation event and a resolution describing the decision. The deciding identity is taken from your session automatically. A "release" only lifts quarantine if this was the last unresolved violation on the run -- check the result's quarantineCleared field (true/false/absent) to tell whether it did; if false, a different violation is still open and must be found via the event stream or the /batman monitor. Until every violation on a run is decided, the run makes no further progress.`,
+    description: `Use to find and resolve policy violations. Use op: 'list' (optionally with runId) to see every recorded violation and its decision state -- an entry with resolution: null on a quarantined run is the one holding the quarantine. Use op: 'decide' with the violationId and a resolution to resolve one. The deciding identity is taken from your session automatically. A "release" only lifts quarantine if this was the last unresolved violation on the run -- check the result's quarantineCleared field (true/false/absent) to tell whether it did; if false, use op: 'list' to find the still-open violation. Until every violation on a run is decided, the run makes no further progress.`,
     parameters: params,
-    approval: "exec",
+    approval: (args) => typeof args === "object" && args !== null && ("op" in args) && args.op === "list" ? "read" : "exec",
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
       const client = await ctx.getClient(extCtx);
-      return callOrchestration(client, "policy/violation/decide", {
-        violationId: input.violationId,
-        resolution: input.resolution
-      });
+      switch (input.op) {
+        case "list":
+          return callOrchestration(client, "policy/violation/list", { runId: input.runId });
+        case "decide":
+          return callOrchestration(client, "policy/violation/decide", {
+            violationId: input.violationId,
+            resolution: input.resolution
+          });
+      }
     }
   });
 }
@@ -11437,6 +11553,7 @@ function reduceEvent(state, envelope) {
     state: "queued",
     flags: EMPTY_FLAGS,
     pendingApprovalCount: 0,
+    openViolations: {},
     firstSeenAt: envelope.timestamp,
     lastEventAt: envelope.timestamp,
     lastAppliedSequence: envelope.sequence
@@ -11449,6 +11566,7 @@ function reduceEvent(state, envelope) {
     flags: patch.flags ?? base.flags,
     latestActivity: patch.latestActivity ?? base.latestActivity,
     pendingApprovalCount: patch.pendingApprovalCountDelta !== undefined ? Math.max(0, base.pendingApprovalCount + patch.pendingApprovalCountDelta) : base.pendingApprovalCount,
+    openViolations: applyViolationPatch(base.openViolations, patch),
     lastEventAt: envelope.timestamp,
     lastAppliedSequence: envelope.sequence
   };
@@ -11456,6 +11574,17 @@ function reduceEvent(state, envelope) {
     rows: { ...state.rows, [patch.runId]: updated },
     lastSequence
   };
+}
+function applyViolationPatch(open, patch) {
+  if (patch.addViolation !== undefined) {
+    return { ...open, [patch.addViolation.violationId]: patch.addViolation.code };
+  }
+  if (patch.removeViolationId !== undefined && patch.removeViolationId in open) {
+    const next = { ...open };
+    delete next[patch.removeViolationId];
+    return next;
+  }
+  return open;
 }
 function eventPatch(envelope) {
   const event = envelope.event;
@@ -11509,8 +11638,34 @@ function eventPatch(envelope) {
       if (runId === null || runId === undefined) {
         return;
       }
-      const label = event.payload.kind === "childWorkerRequested" ? "child worker requested" : "child worker request denied";
+      const label = event.payload.kind === "childWorkerRequested" ? "child worker requested" : event.payload.kind === "childWorkerAccepted" ? "child worker accepted" : "child worker request denied";
       return { runId, latestActivity: label };
+    }
+    case "policyViolationRecorded": {
+      const kind = event.payload.kind;
+      if (typeof kind !== "object" || !("policyViolationRecorded" in kind)) {
+        return;
+      }
+      const recorded = kind.policyViolationRecorded;
+      return {
+        runId: event.payload.runId,
+        taskId: event.payload.taskId,
+        workerId: event.payload.workerId,
+        latestActivity: `policy violation: ${recorded.code}`,
+        addViolation: { violationId: recorded.violation_id, code: recorded.code }
+      };
+    }
+    case "policyViolationDecided": {
+      const kind = event.payload.kind;
+      if (typeof kind !== "object" || !("policyViolationDecided" in kind)) {
+        return;
+      }
+      const decided = kind.policyViolationDecided;
+      return {
+        runId: event.payload.runId,
+        latestActivity: `violation decided: ${decided.resolution}`,
+        removeViolationId: decided.violation_id
+      };
     }
     case "adapterUsageEvent": {
       const { inputTokens, outputTokens, costUsd } = event.payload;
@@ -11646,6 +11801,10 @@ function renderRowDetails(row) {
   lines.push(`Flags: ${flags.length > 0 ? flags.join(", ") : "none"}`);
   if (row.flags.childrenActive) {
     lines.push("Children: active -- list and decide with batman_child");
+  }
+  const openViolations = Object.entries(row.openViolations);
+  if (openViolations.length > 0) {
+    lines.push(`Open violations: ${openViolations.map(([id, code]) => `${code} (${id})`).join(", ")} -- decide with batman_violation`);
   }
   lines.push(`Pending approvals: ${row.pendingApprovalCount}`);
   if (row.workspaceMode !== undefined) {
