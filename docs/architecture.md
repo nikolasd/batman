@@ -782,6 +782,12 @@ Generated from [`crates/runtime/src/ipc/mod.rs`](crates/runtime/src/ipc/mod.rs)'
 
 **Note:** A cached connection shared across callers must authenticate as the *union* of all roles (see [Engineering Lessons](engineering-lessons.md#cached-client-must-authenticate-with-the-union-of-all-roles)).
 
+**Read-side policy** ([ADR-0024](adr/0024-project-scoped-reads-are-open-ownership-gates-writes.md)):
+project-scoped reads are deliberately open to any same-user client the role table admits;
+ownership gates *mutation*. `workspace/get` is the one ownership-gated read, kept so solely for
+uniform refusals across the four `workspace/*` methods — not as a confidentiality boundary; the
+facts it withholds are readable via `run/get`.
+
 ### Regression Tests for Critical Invariants
 
 | Invariant | Test |
