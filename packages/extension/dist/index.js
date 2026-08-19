@@ -11501,7 +11501,7 @@ function eventPatch(envelope) {
       return {
         runId,
         taskId: event.payload.taskId,
-        latestActivity: isRequest ? `approval requested: ${event.payload.action}` : "approval decided",
+        latestActivity: isRequest ? `approval requested: ${event.payload.action}` : `approval decided${event.payload.reason !== undefined && event.payload.reason !== null ? `: ${event.payload.reason}` : ""}`,
         pendingApprovalCountDelta: isRequest ? 1 : -1
       };
     }
