@@ -11,4 +11,4 @@ pub(crate) mod query;
 mod run_driver;
 
 pub use orchestration::{OrchestrationService, ServiceError};
-pub use run_driver::{AdapterFuture, FakeRunDriver, RunDriver, RunDriverContext};
+pub use run_driver::{AdapterFuture, CancelOutcome, FakeRunDriver, RunDriver, RunDriverContext};

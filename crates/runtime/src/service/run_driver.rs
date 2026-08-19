@@ -50,6 +50,18 @@ pub struct RunDriverContext {
     pub display: Option<batman_protocol::DisplaySelection>,
 }
 
+/// The typed success of [`RunDriver::cancel_run`]: an absent adapter is
+/// not a kill failure. `Cancelled` means a live adapter acknowledged the
+/// cancel; `NoRunningAdapter` means there was nothing to kill (the run
+/// settled, or never started an adapter) -- a clean outcome, not an error
+/// (R13: stringifying `NoRunningAdapter` into the `Err` channel made it
+/// indistinguishable from a real kill failure).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelOutcome {
+    Cancelled,
+    NoRunningAdapter,
+}
+
 /// Seam for starting an adapter-backed run. The (later) adapter registry
 /// plan implements this against real harnesses; orchestration tests inject
 /// [`FakeRunDriver`].
@@ -72,13 +84,14 @@ pub trait RunDriver: Send + Sync {
     /// Returns the adapter currently running for `run_id`, if any.
     fn running_adapter(&self, run_id: RunId) -> Option<Arc<dyn Adapter>>;
 
-    /// Cancels a running adapter at the given scope. Returns [`RegistryError::NoRunningAdapter`]
-    /// if no adapter is currently driving the run.
+    /// Cancels a running adapter at the given scope. An absent adapter is
+    /// the clean [`CancelOutcome::NoRunningAdapter`], never an `Err`;
+    /// `Err` means a live adapter's kill actually failed (R13).
     fn cancel_run(
         &self,
         run_id: RunId,
         scope: CancelScope,
-    ) -> AdapterFuture<'static, Result<(), String>>;
+    ) -> AdapterFuture<'static, Result<CancelOutcome, String>>;
 }
 
 /// A deterministic driver for orchestration tests and fixtures: acknowledges
@@ -115,14 +128,12 @@ impl RunDriver for FakeRunDriver {
 
     fn cancel_run(
         &self,
-        run_id: RunId,
+        _run_id: RunId,
         _scope: CancelScope,
-    ) -> AdapterFuture<'static, Result<(), String>> {
-        Box::pin(async move {
-            Err(format!(
-                "fake driver does not support cancel for run {run_id}"
-            ))
-        })
+    ) -> AdapterFuture<'static, Result<CancelOutcome, String>> {
+        // The fake driver never spawns an adapter, so there is never
+        // anything to kill: the clean no-adapter outcome, not an error.
+        Box::pin(async move { Ok(CancelOutcome::NoRunningAdapter) })
     }
 }
 

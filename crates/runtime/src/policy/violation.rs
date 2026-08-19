@@ -492,11 +492,35 @@ impl ViolationService {
                 .cancel_run(run_id, crate::adapter::CancelScope::Worker)
                 .await
         {
+            // A real kill failure (an absent adapter is the clean
+            // `CancelOutcome::NoRunningAdapter`, not an `Err`): the run is
+            // journaled `cancelled` but a vendor process may still be
+            // live. Make that visible to `run/get` and the monitor via
+            // `degradedControl` instead of only the log (R13). The flag
+            // write uses the same guarded single-call `set_run_flag`
+            // `quarantine` uses, so it journals and broadcasts.
             tracing::warn!(
                 error = %err,
                 run_id = %run_id,
                 "failed to cancel adapter subprocess for policy violation"
             );
+            let project_id = self.project_id;
+            match self
+                .db
+                .run_domain_op(Box::new(move |conn| {
+                    let mut repo = DomainRepository::new(conn, project_id);
+                    repo.set_run_flag(run_id, RunFlag::DegradedControl, true)
+                        .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
+                }))
+                .await
+            {
+                Ok(mut committed) => self.broadcast(&mut committed),
+                Err(flag_err) => tracing::warn!(
+                    error = %flag_err,
+                    run_id = %run_id,
+                    "failed to record degradedControl after a kill failure"
+                ),
+            }
         }
         result.map(|_| ())
     }

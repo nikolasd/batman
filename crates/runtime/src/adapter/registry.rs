@@ -293,17 +293,22 @@ impl RunDriver for AdapterRegistry {
         &self,
         run_id: RunId,
         scope: CancelScope,
-    ) -> RunDriverFuture<'static, Result<(), String>> {
+    ) -> RunDriverFuture<'static, Result<crate::service::CancelOutcome, String>> {
         let running = Arc::clone(&self.running);
 
         Box::pin(async move {
-            let adapter = running
-                .lock()
-                .get(&run_id)
-                .cloned()
-                .ok_or_else(|| RegistryError::NoRunningAdapter(run_id).to_string())?;
+            // An absent adapter is not a kill failure: the run settled or
+            // never started one. Report the typed clean outcome so callers
+            // never mistake it for a failed kill (R13).
+            let Some(adapter) = running.lock().get(&run_id).cloned() else {
+                return Ok(crate::service::CancelOutcome::NoRunningAdapter);
+            };
 
-            adapter.cancel(scope).await.map_err(|e| e.to_string())
+            adapter
+                .cancel(scope)
+                .await
+                .map(|()| crate::service::CancelOutcome::Cancelled)
+                .map_err(|e| e.to_string())
         })
     }
 }
@@ -465,7 +470,9 @@ async fn run_one(
             return Err(err.into());
         }
     };
-    let sink: Arc<dyn AdapterEventSink> = Arc::new(DomainAdapterEventSink::new(
+    // Fail closed: a sink whose org redaction patterns do not compile
+    // must never journal anything (invariant 4, R14).
+    let sink = match DomainAdapterEventSink::new(
         Arc::clone(&ctx.db),
         ctx.project_id,
         ctx.events_tx.clone(),
@@ -475,7 +482,13 @@ async fn run_one(
         ctx.policy
             .as_deref()
             .and_then(|p| p.cost_ceiling_per_run_usd),
-    ));
+    ) {
+        Ok(sink) => Arc::new(sink) as Arc<dyn AdapterEventSink>,
+        Err(err) => {
+            authorization.release();
+            return Err(format!("org security patterns failed to compile: {err}"));
+        }
+    };
     let sink = RunLifecycleSink::wrap(
         sink,
         Arc::clone(&ctx.db),
