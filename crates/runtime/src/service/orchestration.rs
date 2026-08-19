@@ -343,10 +343,10 @@ impl OrchestrationService {
                 self.policy_violation_decide(principal, params).await
             }
             BatmanMethod::WorkspaceAcquire => self.workspace_acquire(principal, params).await,
-            BatmanMethod::WorkspaceGet => self.workspace_get(params).await,
-            BatmanMethod::WorkspaceRelease => self.workspace_release(params).await,
-            BatmanMethod::WorkspaceInspect => self.workspace_inspect(params).await,
-            BatmanMethod::WorkspaceApply => self.workspace_apply(params).await,
+            BatmanMethod::WorkspaceGet => self.workspace_get(principal, params).await,
+            BatmanMethod::WorkspaceRelease => self.workspace_release(principal, params).await,
+            BatmanMethod::WorkspaceInspect => self.workspace_inspect(principal, params).await,
+            BatmanMethod::WorkspaceApply => self.workspace_apply(principal, params).await,
             BatmanMethod::ArtifactList => self.artifact_list(principal, params).await,
             BatmanMethod::ArtifactFetch => self.artifact_fetch(principal, params).await,
             _ => Err(ServiceError::internal(
@@ -1406,12 +1406,42 @@ impl OrchestrationService {
         }))
     }
 
-    async fn workspace_get(&self, params: &Value) -> Result<Value, ServiceError> {
+    /// Ownership arbitration (R81) runs immediately after
+    /// [`crate::workspace::LeaseService::get`] resolves the lease, before
+    /// this method returns any of its fields. `workspace_get` is
+    /// read-only -- no teardown, no materialization, no apply -- and every
+    /// field it discloses is already reproducible by any caller from the
+    /// pre-existing, unrelated `events/replay` stream (`LeaseRequested`
+    /// carries `mode`; `LeaseAcquired` carries `path`, `isolationKind`,
+    /// `baseRevision`; `state` is derivable from the presence or absence
+    /// of a later `LeaseReleased`/`CleanupFailed` event). Gating this
+    /// method closes no disclosure that stream doesn't already leave
+    /// open. It is gated anyway: a uniform ownership surface across all
+    /// four lease-scoped methods is worth more than a documented
+    /// exception that a future response field could silently invalidate,
+    /// and the gate costs one call to `query::run_owner_op` now that
+    /// `workspace_acquire` (R77) already established the helper. The
+    /// same bounded, cross-database residual documented on
+    /// `workspace_acquire` applies here too: a `reconcile/omp` rebind
+    /// that commits between this check and the response below is not
+    /// observed.
+    async fn workspace_get(
+        &self,
+        principal: &ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
         let lease_id = str_field(params, "leaseId")?;
         let info = self
             .lease_service
             .get(lease_id)
             .map_err(|e| ServiceError::internal(e.to_string()))?;
+        self.db
+            .run_domain_op(query::run_owner_op(
+                info.run_id,
+                principal.instance_id.clone(),
+            ))
+            .await
+            .map_err(ServiceError::from)?;
 
         Ok(json!({
             "leaseId": info.lease_id,
@@ -1424,7 +1454,22 @@ impl OrchestrationService {
         }))
     }
 
-    async fn workspace_release(&self, params: &Value) -> Result<Value, ServiceError> {
+    /// Ownership arbitration (R81) runs immediately after
+    /// [`crate::workspace::LeaseService::get`] resolves the lease and
+    /// before [`crate::workspace::LeaseService::release`] tears down
+    /// anything -- a caller refused here releases nothing, so the lease
+    /// is left `active` and no `LeaseReleased`/`CleanupFailed` event is
+    /// journaled. As on `workspace_acquire` (R77), this is a dedicated
+    /// domain round trip against the runs database, separate from
+    /// `LeaseService`'s own database file, so the two cannot commit
+    /// atomically: a `reconcile/omp` rebind that commits inside the
+    /// single gap between this check and `lease_service.release` below
+    /// is not observed. See [`super::query::run_owner_op`]'s doc comment.
+    async fn workspace_release(
+        &self,
+        principal: &ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
         let request: batman_protocol::ReleaseRequest = serde_json::from_value(params.clone())
             .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
         // Read the lease before releasing it: after release the row is
@@ -1433,6 +1478,13 @@ impl OrchestrationService {
             .lease_service
             .get(request.lease_id.clone())
             .map_err(|e| ServiceError::internal(e.to_string()))?;
+        self.db
+            .run_domain_op(query::run_owner_op(
+                lease.run_id,
+                principal.instance_id.clone(),
+            ))
+            .await
+            .map_err(ServiceError::from)?;
         self.lease_service
             .release(request.lease_id.clone())
             .map_err(|e| ServiceError::internal(e.to_string()))?;
@@ -1479,7 +1531,19 @@ impl OrchestrationService {
         }))
     }
 
-    async fn workspace_inspect(&self, params: &Value) -> Result<Value, ServiceError> {
+    /// Ownership arbitration (R81) runs immediately after
+    /// [`crate::workspace::LeaseService::get`] resolves the lease and
+    /// before [`Self::ensure_not_quarantined`] or any materialization: a
+    /// caller refused here never reaches a real git workspace it never
+    /// acquired, and journals nothing (`WorkspaceInspected`,
+    /// `ArtifactPublished`). As on `workspace_acquire` (R77), the same
+    /// bounded, cross-database residual applies -- see
+    /// [`super::query::run_owner_op`]'s doc comment.
+    async fn workspace_inspect(
+        &self,
+        principal: &ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
         use batman_protocol::InspectRequest;
         let request: InspectRequest = serde_json::from_value(params.clone())
             .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
@@ -1487,6 +1551,13 @@ impl OrchestrationService {
             .lease_service
             .get(request.lease_id.clone())
             .map_err(|e| ServiceError::internal(e.to_string()))?;
+        self.db
+            .run_domain_op(query::run_owner_op(
+                lease.run_id,
+                principal.instance_id.clone(),
+            ))
+            .await
+            .map_err(ServiceError::from)?;
         self.ensure_not_quarantined(lease.run_id).await?;
 
         let inspector = crate::workspace::WorkspaceInspector::with_store(
@@ -1536,7 +1607,20 @@ impl OrchestrationService {
         }))
     }
 
-    async fn workspace_apply(&self, params: &Value) -> Result<Value, ServiceError> {
+    /// Ownership arbitration (R81) runs immediately after
+    /// [`crate::workspace::LeaseService::get`] resolves the lease and
+    /// before [`Self::ensure_not_quarantined`], artifact resolution, or
+    /// the `ApplyStarted` journal entry: a caller refused here must be
+    /// refused for ownership (`-32602`), not for a not-yet-resolved
+    /// artifact (`-32603`), and must journal nothing. As on
+    /// `workspace_acquire` (R77), the same bounded, cross-database
+    /// residual applies -- see [`super::query::run_owner_op`]'s doc
+    /// comment.
+    async fn workspace_apply(
+        &self,
+        principal: &ClientPrincipal,
+        params: &Value,
+    ) -> Result<Value, ServiceError> {
         use batman_protocol::ApplyRequest;
         let request: ApplyRequest = serde_json::from_value(params.clone())
             .map_err(|e| ServiceError::invalid_params(e.to_string()))?;
@@ -1544,6 +1628,13 @@ impl OrchestrationService {
             .lease_service
             .get(request.lease_id.clone())
             .map_err(|e| ServiceError::internal(e.to_string()))?;
+        self.db
+            .run_domain_op(query::run_owner_op(
+                lease.run_id,
+                principal.instance_id.clone(),
+            ))
+            .await
+            .map_err(ServiceError::from)?;
         self.ensure_not_quarantined(lease.run_id).await?;
 
         let applier = crate::workspace::WorkspaceApplier::from_store(
