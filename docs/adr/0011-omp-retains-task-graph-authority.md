@@ -25,7 +25,8 @@ in a comment?
 ## Considered Options
 
 * Rust never mutates OMP's own task graph. It persists OMP-supplied intent (`TaskRef`'s
-  `ownerClientInstanceId` + monotonic `revision`) verbatim, and enforces *only* the invariants
+  `ownerClientInstanceId` + monotonic `revision`) verbatim (see Amendment below), and enforces
+  *only* the invariants
   that require evidence Rust alone can observe: run-lifecycle transitions (only after
   process/protocol evidence — ADR-0012) and task ownership (only via `reconcile/omp`'s
   revision-matched rebind).
@@ -36,7 +37,7 @@ in a comment?
 ## Decision Outcome
 
 Chosen option: strict separation. Every orchestration RPC method that mutates state either
-persists OMP-supplied intent unmodified (`task/upsert`) or applies a transition Rust alone has
+persists OMP-supplied intent unmodified (see Amendment below) (`task/upsert`) or applies a transition Rust alone has
 standing to make because only Rust observed the evidence for it (`run/submit`'s driver-reported
 `starting`/`working`, `approval/decide`'s callback-derived outcome). No method retries
 automatically, selects a worker, merges anything, or edits an OMP-owned field without OMP asking
@@ -80,6 +81,35 @@ for it explicitly through the wire protocol.
 * Good, because it would concentrate scheduling logic in one place (Rust) with strong types.
 * Bad, because it directly violates the project's foundational constraint and would make BATMAN
   impossible to remove without OMP losing its own scheduling capability entirely.
+
+## Amendment (2026-08-19, R76)
+
+Both annotated claims above are now partial. `task/upsert`'s guarded write
+(`DomainRepository::upsert_task`) still persists whatever revision and owner OMP presents when
+*creating* a task -- there is no prior owner to protect -- but an *existing* task's
+`ownerClientInstanceId` is no longer accepted verbatim on either side of the boundary:
+
+* At the service layer, `task_upsert` refuses `ownerClientInstanceId != principal.instance_id`
+  before the write is ever attempted. This is not new scheduling authority: it validates a
+  caller-supplied value against the identity the connection layer already authenticated at connect
+  time (ADR-0009), the same kind of check `reconcile/omp` already performed against its own
+  `new_owner`.
+* At the guarded write itself, `upsert_task`'s `ON CONFLICT` arm now conjoins R74's revision
+  predicate with an ownership predicate (`excluded.owner_client_instance_id =
+  tasks.owner_client_instance_id`) -- an existing row may only be re-upserted by its current owner.
+  A non-owner presenting even the exact stored revision is refused, classified in the same
+  transaction as `DomainError::NotOwner`.
+
+Neither change hands Rust a scheduling decision OMP didn't already make. Both close the same gap:
+before this fix, `task/upsert` was the one mutating method in this ADR's "persists intent verbatim"
+category that took no principal at all, so a second `ompExtension` connection could present someone
+else's task id, someone else's stored revision, and its own instance id, and the runtime would apply
+it as if OMP itself had asked to transfer ownership -- which OMP had not. This ADR's actual boundary
+line is unmoved: Rust still never resolves, merges, or retries anything OMP didn't ask for; it now
+also refuses to let one caller impersonate another caller's *identity* when writing a field this ADR
+always intended to reflect OMP's own intent. See `docs/journal.md` Part XXVII and `REVIEW.md`'s R76
+resolution history for the full mechanism, including the run-lifecycle gap (R77) this fix's own
+review found and that remains open.
 
 ## Links
 

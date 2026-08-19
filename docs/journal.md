@@ -3268,6 +3268,86 @@ revision, bypassing `reconcile/omp`'s arbitration and the ownership authority R7
 original review of R70: R70 → R71 → R72 → R74 → R76 down one branch, R73 → R75 down the other.
 `REVIEW.md` is updated in the same pass this Part records to move R74 into resolution history.
 
+## Part XXVII — Whoever committed first: the ownership guard that arrived in someone else's commit
+
+R76, found during Part XXVI's review of R74's fix and registered the same day, was the residual
+that review's own W4 already anticipated: `task/upsert` threaded no `principal` through `dispatch`
+at all, so the caller's own `ownerClientInstanceId` was read straight off the wire and passed into
+`upsert_task` unchanged. The guarded write R74 had just finished hardening
+(`ON CONFLICT ... WHERE excluded.revision >= tasks.revision`) arbitrated revision monotonicity and
+nothing else -- no predicate anywhere checked who currently owned the row. Any connected
+`ompExtension` client could call `task/upsert { taskId, ownerClientInstanceId: "me", revision:
+<stored> }` for a task it had never reconciled and seize it outright, bypassing `reconcile/omp`'s
+arbitration entirely.
+
+`22458e6` made that concrete. `task_upsert_cannot_seize_ownership_from_another_instance` has
+`omp-1` create a task at revision 7, then has `omp-2` -- without ever calling `reconcile/omp` --
+upsert the same task at the *stored* revision with its own instance id. RED: the upsert succeeded
+and rewrote `ownerClientInstanceId` to `"omp-2"`. The companion half of the same test pins the
+legitimate route that must keep working once the guard lands: reconcile first (which itself assigns
+the new owner under revision arbitration), then an upsert by the new owner at the stored revision.
+
+The fix landed in two pieces, and the attribution across them is worth recording honestly, because
+it happened by accident of timing rather than design. `b1d469f`, committed as R75's own fix for an
+unrelated finding (quarantine consistency inside `ViolationService`), touched `repository.rs`
+broadly enough that a concurrently-edited, not-yet-committed change to the same function --
+the R76 owner clause on `upsert_task`'s `ON CONFLICT` arm -- rode along inside it. The arm now
+additionally requires `excluded.owner_client_instance_id = tasks.owner_client_instance_id`, and a
+declined write is classified inside the same transaction with deliberate precedence: a stored
+revision higher than the one presented is `RevisionTooLow` regardless of ownership -- an owner is
+entitled to know its own upsert is stale, and it keeps R74's byte-pinned message stable -- otherwise
+the revision would have been accepted and the owner didn't match, so it's `DomainError::NotOwner`.
+Neither agent hid the accident. `b1d469f`'s own doc comment on `upsert_task` names R76 directly
+("transferring ownership goes through `reconcile/omp`, never through `task/upsert` (R76)"), and
+`a508667` -- R76's own commit, landed eighty-six seconds later at 02:35:29 -- says so in its
+message: "The repository-layer guard against ownership seizure itself landed already in `b1d469f`
+(R75, committed concurrently by a peer agent editing the same file)." Neither commit claims credit
+for the other's work.
+
+`a508667` added the half `b1d469f` couldn't have: `dispatch` now threads `principal` into
+`task_upsert`, which refuses `ownerClientInstanceId != principal.instance_id` as `INVALID_PARAMS`
+before the guarded write is ever reached. The doc comment is explicit that this is *not* the R76
+race guard -- it's param validation against an identity the connection layer already authenticated,
+the same class of check `reconcile/omp` already performs against its own `new_owner`. Task creation
+(no existing row) still binds ownership to the presented id unconditionally, since there is no prior
+owner to protect. `task_revision_race.rs`'s three R74 tests, which had contended revisions from
+*different* owners against one seeded task, were updated to contend from the *same* owner instead,
+so they keep isolating revision monotonicity from R76's now-orthogonal ownership guard.
+
+The adversarial review (`agent://ReviewR76`) returned NEEDS CHANGES on one real regression and one
+new finding, not on the mechanism itself -- its acceptance-question answers confirmed the predicate
+placement, the classification precedence, and the creation carve-out were all correct. **E1**:
+`packages/extension/src/tools/tools.test.ts`'s hand-rolled harness connected as
+`instanceId: "omp-tools-test"` while the tool under test sent
+`extCtx.sessionManager.getSessionId()` (`"test-session-id-12345"`) as `ownerClientInstanceId` -- a
+divergence the pre-fix binary never noticed and the post-fix one refused outright with `-32602`.
+`ec68e66` fixed the harness, not the tool: production already wires
+`sessionId -> instanceId -> ownerClientInstanceId` through one value end to end (`runtime.ts:262`,
+`tasks.ts:45`), so the harness now hoists that value into a single `FAKE_SESSION_ID` const used by
+both the fake connect and the fake session manager, mirroring the chain instead of hand-picking two
+different strings for what production treats as one. **W1**: three of the four branches the fix
+introduced had no test -- higher-revision-plus-non-owner (the variant that also clears R74's `>=`
+guard, so the owner clause alone must catch it), lower-revision-plus-non-owner (pinning that
+`RevisionTooLow` wins the precedence even when the owner is also wrong), and the param-validation
+branch itself (a spoofed `ownerClientInstanceId` refused before the guarded write is ever reached).
+`ec68e66` added all three to `task_upsert_cannot_seize_ownership_from_another_instance`.
+
+The review's **W4** is the sentence this Part inherits rather than softens: R76 makes ownership
+*transfer* auditable and revision-matched, not *authorized*. `instance_id` is self-declared within
+ADR-0004's same-machine trust boundary -- nothing about R76 makes it unforgeable, only consistent.
+`task/get` remains un-gated by ownership at all (any `ompExtension` client, including `display`, can
+read a task's current revision), and `reconcile/omp`'s only arbitration is equality against that
+publicly-readable revision -- deliberately "last reconciler wins," per Part XXVI. Two calls still
+move ownership to any client that wants it; R76's guard only means the move is now journaled as a
+proper `ReconcileOwnershipChanged` event and can no longer happen silently through `task/upsert`
+itself. The review's other new finding, **W2**, is the gap that same framing exposes: task
+ownership now gates *decisions* -- `approval/decide`, `policy/violation/decide`, and as of this Part
+`task/upsert` itself -- but nothing gates the run *lifecycle*: `run/submit`, `run/retry`,
+`run/cancel`, `message/send`, `workspace/acquire`, and `coordination/child/decide` are all still
+dispatched with `params` only, no `principal`, so any connected client can submit, retry, or cancel
+a run on a task it doesn't own without ever needing to seize the task first. Registered the same day
+as **R77**, still in flight as this Part is written.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start

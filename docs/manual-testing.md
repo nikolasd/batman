@@ -215,7 +215,7 @@ mkdir -p /tmp/batman-smoke && cd /tmp/batman-smoke && git init -q && git commit 
 
 ```bash
 omp --extension "$EXT" --print \
-  'Use batman_task to upsert a task with ownerClientInstanceId "smoke" and revision 1. Then use
+  'Use batman_task to upsert a task with description "smoke test". Then use
    batman_worker to create a worker with fingerprint "sha256:smoke" and adapter "fake". Then use
    batman_run to submit a run for that task against that worker. Report the taskId and workerId
    plainly.'
@@ -580,7 +580,7 @@ Create a task, then submit two runs with `workspaceMode: "isolated"`:
 
 ```bash
 omp --extension "$EXT" --print \
-  'Use batman_task to upsert a task with ownerClientInstanceId "cross-agent" and revision 0.
+  'Use batman_task to upsert a task with description "cross-agent isolation test".
    Then use batman_run to submit two runs: one for workerId "<workerId1>" and one for
    workerId "<workerId2>", both with the same taskId, workspaceMode "isolated", and prompt
    "Create a file hello.txt containing your adapter name". Report both runIds and workspacePaths

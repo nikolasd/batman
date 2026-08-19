@@ -160,6 +160,16 @@ Approval tiers (`read` / `write` / `exec`) gate whether OMP prompts before runni
 { "taskId": "5f0b6b3e-6b1a-4b8e-9c2d-1a2b3c4d5e6f", "sequence": 42 }
 ```
 
+`ownerClientInstanceId` must equal the connected principal's own instance id -- the daemon binds
+every upsert to the identity the connection already authenticated, never to whatever id the caller
+presents. Three conditions refuse with `-32602`: the presented `ownerClientInstanceId` doesn't
+match the connected instance; the presented `revision` is lower than the task's stored revision
+(staleness wins the classification even when the owner also doesn't match, since an owner is
+entitled to know its own upsert is stale); or an *existing* task is owned by a different instance (a
+non-lower revision alone is not enough to re-upsert someone else's task). Creating a new task (no
+existing row) binds ownership to the presented id unconditionally. The only way to move ownership
+from one instance to another is `reconcile/omp`, which arbitrates the rebind by revision match.
+
 ### `task/get`
 
 ```json
