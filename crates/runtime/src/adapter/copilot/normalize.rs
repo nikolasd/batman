@@ -187,10 +187,10 @@ pub fn copilot_normalize_stop_reason(stop_reason: &str) -> StopOutcome {
             }],
             failure: Some("copilot turn ended with stopReason \"max_turn_requests\"".to_string()),
         },
-        other => StopOutcome {
+        _other => StopOutcome {
             events: vec![AdapterEventPayload::ProtocolHealthChanged {
                 healthy: false,
-                detail: visible(format!("unknownStopReason: {other}")),
+                detail: visible(format!("unknownStopReason: {stop_reason}")),
             }],
             failure: Some(format!(
                 "copilot turn ended with an unrecognized stopReason {stop_reason:?}"
