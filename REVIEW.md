@@ -12,7 +12,7 @@ findings were corrected in place (R17, R20, R43, R46) where the mechanism had ch
 verified.
 
 **Resolution history moved:** everything that was Critical/High and is now resolved (R1-R11, R33, R41, R44, R47-R54, R68-R77, R81) plus the
-eleven documentation findings that were resolved or already-stale (R19, R21-R28) has been pruned from
+documentation findings that were resolved or already-stale (R19, R21-R28, and — this pass — R20, R31, R32, R43, R46, R58) has been pruned from
 this document. That history — what broke, the fix commit, the test that proved it, and which
 still-open items below exist *because* of that fix — now lives in
 [`docs/journal.md` Part X](journal.md#part-x--reviewmds-second-pass-seven-more-fixes-eleven-doc-corrections-and-the-residue-that-outlived-them)
@@ -20,7 +20,7 @@ still-open items below exist *because* of that fix — now lives in
 [Part XII](journal.md#part-xii--closing-the-last-critical-a-denylist-blind-to-its-own-vendor) (R49),
 [Part XIII](journal.md#part-xiii--two-leaks-one-lease-releasing-what-a-failed-start-acquired) (R41, R50),
 [Part XIV](journal.md#part-xiv--fixture-modes-broken-promise-a-kill-switch-only-one-caller-ever-asked-about) (R52),
-[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33), [Part XXII](journal.md#part-xxii--the-capture-pipeline-that-graded-its-own-homework) (R44), [Part XXIII](journal.md#part-xxiii--the-same-guarded-write-one-interleaving-further-the-decider-that-no-longer-owned-the-task) (R71), [Part XXIV](journal.md#part-xxiv--the-same-guarded-write-one-service-over-the-violation-that-no-longer-had-an-owner) (R72), [Part XXV](journal.md#part-xxv--not-a-conflict-either-side-detects-the-flag-write-that-clobbered-its-neighbor) (R73), [Part XXVI](journal.md#part-xxvi--a-guard-that-overreached-the-rebind-that-couldnt-be-resumed) (R74), [Part XXVII](journal.md#part-xxvii--whoever-committed-first-the-ownership-guard-that-arrived-in-someone-elses-commit) (R76), [Part XXVIII](journal.md#part-xxviii--two-clocks-one-flag-the-quarantine-race-that-closed-into-three-more-findings) (R75), [Part XXIX](journal.md#part-xxix--six-doors-one-owner-the-run-lifecycle-gets-the-same-lock-as-task-upsert) (R77), and [Part XXX](journal.md#part-xxx--four-gates-one-helper-the-chain-that-stops-here) (R81).
+[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33), [Part XXII](journal.md#part-xxii--the-capture-pipeline-that-graded-its-own-homework) (R44), [Part XXIII](journal.md#part-xxiii--the-same-guarded-write-one-interleaving-further-the-decider-that-no-longer-owned-the-task) (R71), [Part XXIV](journal.md#part-xxiv--the-same-guarded-write-one-service-over-the-violation-that-no-longer-had-an-owner) (R72), [Part XXV](journal.md#part-xxv--not-a-conflict-either-side-detects-the-flag-write-that-clobbered-its-neighbor) (R73), [Part XXVI](journal.md#part-xxvi--a-guard-that-overreached-the-rebind-that-couldnt-be-resumed) (R74), [Part XXVII](journal.md#part-xxvii--whoever-committed-first-the-ownership-guard-that-arrived-in-someone-elses-commit) (R76), [Part XXVIII](journal.md#part-xxviii--two-clocks-one-flag-the-quarantine-race-that-closed-into-three-more-findings) (R75), [Part XXIX](journal.md#part-xxix--six-doors-one-owner-the-run-lifecycle-gets-the-same-lock-as-task-upsert) (R77), [Part XXX](journal.md#part-xxx--four-gates-one-helper-the-chain-that-stops-here) (R81), and [Part XXXI](journal.md#part-xxxi--the-map-corrects-itself-six-documentation-lies-and-one-new-medium) (R20, R31, R32, R43, R46, R58).
 This document only tracks what's still broken.
 
 **Baseline, last run 2026-08-19** (after the R44/R70-R77/R81 closure pass; results apply to this
@@ -145,14 +145,6 @@ Neither script list, nor any GitHub Actions workflow, invokes `tsc`. `tsconfig.j
 
 **Priority:** Medium — an unguarded, untested gap in a safety check whose own doc comment claims unconditional coverage.
 
-#### R58. `CLAUDE.md`/`AGENTS.md`'s `audit export` example silently produces an empty export
-
-**Location:** `CLAUDE.md:64`; `AGENTS.md:93`
-
-Both read `batcave audit export --repo /path/to/repo --state-dir ~/.batman/state --output /tmp/audit.jsonl`. `docs/cli-reference.md`'s own reference explicitly warns that `audit export`'s `--state-dir` must be the actual per-repository runtime directory (`<state-root>/repos/<repository-id>/`), not a top-level state root, "or you'll silently get an empty, freshly-migrated database with zero events rather than an error." `~/.batman/state` is a flat path matching neither shape, and doesn't even use the correct `.omp/batman` state-root prefix. A contributor copy-pasting this line gets exactly the silent-empty-export footgun `cli-reference.md` was written to warn against, in the project's own primary quick-reference files.
-
-**Fix:** correct both examples to a real per-repository runtime directory, matching `docs/getting-started.md`'s already-correct example.
-
 #### R59. Approval `reason` is accepted end-to-end then silently discarded — never persisted
 
 **Location:** `crates/runtime/src/domain/repository.rs:833` (`decide_approval`)
@@ -231,14 +223,6 @@ The barrel exports 35 types; `generated/` currently has 48 files. Confirmed stil
 
 `spawn(binary.path, ..., { detached: true, stdio: "ignore" })` followed by `child.unref()` — no `.on("error", ...)` attached, so an async spawn failure (`EAGAIN`/`EMFILE`) is silently lost.
 
-#### R20. Documented bare `batcave` commands assume a `PATH` placement nothing establishes
-
-**Location:** `docs/operations.md:16,37,49,52,64,88,150`; `docs/cli-reference.md`
-
-The original mechanism this finding cited (a missing npm `bin` shim in leaf packages) no longer applies — leaf packages are entirely gitignored and `crates/xtask`'s `package_leaf` writes only `bin/batcave` + `manifest.json`, no `package.json` at all (confirmed by running the packaging command directly). Distribution moved to raw GitHub Release assets fetched to `<stateRoot>/bin/<version>/batcave` and called by absolute path — never placed on `PATH`. But `docs/operations.md` and `docs/cli-reference.md` still show every example as bare `batcave serve/stop/monitor/doctor/status ...`, and neither explains how a reader gets there from the downloaded/cached binary or a locally-built one.
-
-**Fix:** add a line to `operations.md`/`cli-reference.md` clarifying the binary's actual location (`<stateRoot>/bin/<version>/batcave` for the installed path, `target/debug/batcave`/`target/release/batcave` for a local build) and that examples assume it's been aliased or symlinked onto `PATH`.
-
 #### R29. `workspaceMode` is an open string
 
 **Location:** `packages/extension/src/tools/runs.ts:18`; `crates/runtime/src/service/orchestration.rs:648-656`
@@ -250,18 +234,6 @@ Runtime rejects an unknown value safely via `and_then(Value::as_str)`; a closed 
 **Location:** root `package.json:10,13`; `.github/workflows/ci.yml:81-82`
 
 `test`/`check` both run `bun test packages`, scoped only to `packages/`. CI's `test` job runs bare `bun test` with no path restriction, which additionally picks up `tests/conformance/assert-report.test.ts` — a contributor running local scripts doesn't exercise what CI does.
-
-#### R31. CONTRIBUTING references a cargo-features example with no real features to substitute
-
-**Location:** `CONTRIBUTING.md:45`
-
-`cargo test --features "feature1,feature2"` names placeholder features; no crate in the workspace declares a `[features]` table (confirmed via `grep -rn "^\[features\]" **/Cargo.toml`, zero hits), so this line errors if run literally. Delete or replace with a real caveat that none currently exist.
-
-#### R32. The extension header lists only six of eleven orchestration tools
-
-**Location:** `packages/extension/src/index.ts:3-4`
-
-Names `batman_task, batman_worker, batman_run, batman_message, batman_approval, batman_reconcile`; `tools/index.ts:38-48` registers all 11, missing `profile`, `workspace`, `artifact`, `child`, `violation` from the header comment.
 
 #### R38. `install_frame_tap` exported on the crate's public API surface
 
@@ -280,18 +252,6 @@ The repair path pairs `controller.stop()` with `subscribedClient = undefined`; t
 **Location:** `packages/extension/src/reconnect.test.ts:129,137`; `packages/extension/src/tools/tasks.ts:23-27`
 
 `batman_task`'s Zod schema has only `op`, `description`, `taskId` — no `revision`. The test still proves what it's named for; the field is just dead weight that could mislead a future reader. Remove it from the test's tool-call arguments.
-
-#### R43. `artifacts.ts` tool description contradicts its actual ownership-based scope
-
-**Location:** `packages/extension/src/tools/artifacts.ts:27`
-
-States artifacts are "scoped to the current task," but the real scope (`orchestration.rs:1253-1271,1307-1325`) is session/owner-based (`owned_run_ids_op` keyed on `principal.instance_id`), with `taskId` only an optional narrowing filter. (`docs/plugin-usage.md` no longer repeats this claim — that half is resolved.) Update the tool description to state session-ownership scoping with optional task narrowing.
-
-#### R46. Stale exception-table row should be deleted, not corrected
-
-**Location:** `docs/manual-testing.md:433`
-
-Lists `ompRpc/approval` as an expected fixture-mode failure. `fixtures/conformance/fixture-mode-baseline.json` already records `"ompRpc": []` — zero expected failures — and the claimed gap no longer exists in code: `omp_rpc/normalize.rs` has `extension_ui_request_to_pending_approval`, and `omp_rpc/conformance.rs:329-336`'s own doc comment says this scenario backs `ApprovalsCapability::Observable` with real, checkable state. Delete the row.
 
 #### R61. `shared.ts` references the unimported type `ExtensionContext`
 
@@ -394,10 +354,10 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 
 ## Open Item Count
 
-*(2026-08-12: every item below independently re-verified or newly discovered against current source in this pass.)*
+*(2026-08-12: every item below independently re-verified against current source; R87 added and the resolved documentation findings pruned 2026-08-19.)*
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
 - **High:** 0 — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII), R77 resolved 2026-08-19 (see docs/journal.md Part XXIX), R81 resolved 2026-08-19 (see docs/journal.md Part XXX)
-- **Medium:** 22 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review; R87 — new, found during the 2026-08-19 close-out sweep)
-- **Low:** 23 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review)
+- **Medium:** 21 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R57, R59, R60 — new; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review; R87 — new, found during the 2026-08-19 close-out sweep; R58 resolved 2026-08-19, see docs/journal.md Part XXXI)
+- **Low:** 18 (R17, R18, R29, R30, R38, R39, R40 — carried forward; R61-R67 — new; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review; R20, R31, R32, R43, R46 resolved 2026-08-19, see docs/journal.md Part XXXI)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
