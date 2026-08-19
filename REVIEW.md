@@ -55,53 +55,10 @@ None open — see the resolution-history paragraph above for what closed and whe
 
 Every isolation test hand-seeds `run_id` on its input fixture rather than asserting the value the real `WorkspaceApplier`/`WorkspaceInspector` actually stamps on production. Reverting the real stamping code to `run_id: None` leaves the whole suite green — R10's fix would silently regress with no failing test.
 
-#### R78. Quarantine RPC gates are advisory pre-checks outside the writes they guard
 
-**Location:** `crates/runtime/src/service/orchestration.rs::ensure_not_quarantined` (~290-299; callers `message_send` ~1673, `workspace_apply` ~1478, `workspace_inspect` ~1421); `crates/runtime/src/coordination/broker.rs::require_not_quarantined` (~144-167, gating `coordination/publishArtifact`)
 
-**Evidence:** both gates read the run's `policy_quarantined` flag in their own `run_domain_op` round trip, then the caller acts on that stale read in a later, separate round trip. A quarantine committing between the gate read and the gated operation admits one in-flight mutation past a run that is, by the time it lands, already quarantined. `message/send`'s check is foldable into `record_message`'s own transaction; the `workspace/apply`/`workspace/inspect` and `coordination/publishArtifact` paths gate a non-SQL operation (a working-tree mutation, or a broker-side artifact publish) with no write to fold the check into, so they need a different mechanism than the guarded-write doctrine used elsewhere. Carved out of R75's fix rather than fixed there — R75's own registered `ensure_not_quarantined` location is unchanged by that fix (see its journal Part). Found during R75's adversarial review, 2026-08-18.
 
-**Fix:** fold the `message/send` gate into `record_message`'s transaction, ordered so the fold runs *after* R77's owner re-read — a non-owner must not be able to distinguish a quarantined run from a non-quarantined one via the error code; design a lease- or applier-level gate for the workspace and broker paths that closes the same window without a SQL write to guard.
 
-**Priority:** Medium — bounded to one racing operation per gate; the quarantine still holds for everything after it lands.
-
-#### R79. Violation cancel side effects are decided from a pre-effect discriminator
-
-**Location:** `crates/runtime/src/policy/violation.rs::apply_action` (~355-408, the `Cancel`/`QuarantineAndCancel` arms consuming `already_actioned`); `::create_cancellation_intent`/`cancel_and_transition` (~433-497)
-
-**Evidence:** `already_actioned` is read inside the same call as the violation's journal commit (R75), which closes the race for the quarantine flag, but the `Cancel`/`QuarantineAndCancel` side effects are still decided from that same pre-effect discriminator: a sibling observation's cancel is only visible to `already_actioned` after that sibling's terminal transition commits, two round trips later. Two concurrent violations on one run with a cancelling action can therefore both see `already_actioned = false`, both create an audited `policyViolationCancel` intent, and both attempt `transition_run(cancelled)` — the loser's transition fails, so `record_nested_worker`/`record_cost_ceiling` returns `Err` and the event sink logs a warning instead of the documented idempotent success. The run still cancels exactly once because the terminal-transition guard is itself correct; only the audit trail (a duplicate cancellation intent) and the caller-visible result (an error instead of success) are wrong. Contradicts `violation.rs`'s own doc comment (~216-224) and `docs/journal.md`'s claim that "the quarantine/cancel action applies exactly once." Found during R75's adversarial review, 2026-08-18.
-
-**Fix:** move the cancel-side arbitration into the guarded write, mirroring R70-R76 — classify the terminal transition's refusal as an idempotent success (mirroring `AlreadyResolved`/`AlreadyDecided` elsewhere) rather than an error, or make the cancellation intent itself conditional on being the observation that actually performs the transition.
-
-**Priority:** Medium — the run still cancels exactly once; the residue is a duplicate audit-trail row and a misleading error instead of a functional double-cancel.
-
-#### R82. `runtime/shutdown` has no arbitration at all
-
-**Location:** `crates/runtime/src/ipc/connection.rs:400-409`
-
-**Evidence:** any `ompExtension` client can send `runtime/shutdown`; the handler unconditionally calls `shared.shutdown.notify_one()`, stopping the daemon that serves every connected instance's runs. The inline comment claims the method is "Role-gated to ompExtension" — exactly the disproven assumption R81 found elsewhere: role admission is not ownership. Largest blast radius of the whole class, since it affects every instance, not just one lease or run.
-
-**Fix:** this is a policy decision, not another `run_owner_op` call — either refuse the shutdown while runs owned by other live instances are still active, or require the caller to be the daemon's only connected instance.
-
-**Priority:** Medium — no ownership check exists at all; mitigated only by the fact that a legitimate `ompExtension` client rarely has a reason to call it while other instances are working.
-
-#### R83. An accepted child request is indistinguishable from the request itself
-
-**Location:** `crates/runtime/src/domain/repository.rs:1841-1848` (`request_child`) and `:1965-1971` (`decide_child`'s accept arm); `crates/protocol/src/event.rs:246-249`; `packages/extension/src/monitor/model.ts:214`
-
-**Evidence:** both `request_child` and `decide_child`'s accept arm emit `RuntimeEventKind::ChildWorkerRequested`; only two child event kinds exist in the wire protocol (`ChildWorkerRequested`, `ChildWorkerRequestDenied`), so nothing distinguishes "a child was requested" from "a child request was accepted" except by inspecting whether the child ids are populated. The monitor labels an acceptance "child worker requested" (`model.ts:214`), the same discriminator class R68 already found and fixed for a different event pair.
-
-**Fix:** add a distinct `ChildWorkerAccepted` (or equivalent) event kind, or otherwise make the accept arm's event self-describing so a consumer never has to infer "accepted" from field presence.
-
-**Priority:** Medium — cosmetic/observability defect today (the run still proceeds correctly), but it hides a real state transition from every event consumer, same class as R68.
-
-#### R87. `activeRuns` is a hardcoded placeholder, and the idle timer believes it
-
-**Location:** `crates/runtime/src/ipc/server.rs:31-33` (`Shared::active_runs`, documented as a placeholder), `:274-275` (idle-shutdown decision); `crates/runtime/src/ipc/connection.rs:375` (`RuntimeStatus` built with a literal `active_runs: 0`)
-
-`Shared::active_runs` is declared as "a placeholder at foundation scope (always `0`), but wired into the idle decision so a live run suppresses shutdown" — and nothing ever increments it. Two live consequences: `/batman-status` and `batcave status` always report zero active runs regardless of what is running, and the idle-shutdown decision treats a daemon with in-flight runs as idle, so a detached daemon whose OMP session disconnected can self-terminate mid-run. Maintain the counter honestly (increment on run submission, decrement at settlement) or compute it from the run table at both use sites; the idle check runs on a timer, so prefer the atomic. Found during the 2026-08-19 close-out sweep; R82's shutdown arbitration depends on this counter being real.
-
-**Priority:** Medium — contradicts the durable-supervision promise directly; a run can be killed by its own supervisor's idle timer.
 
 ### Low
 
@@ -127,15 +84,6 @@ Stale timestamps are pruned, but the `HashMap` key itself (the sender) is never 
 
 **Priority:** Low — the implementation fix for R47 is complete and defended by component tests; this is a coverage gap in the integration layer, not a functional defect.
 
-#### R80. No discovery surface for which violation still holds a quarantine
-
-**Location:** `packages/extension/skills/batman-approvals/SKILL.md` (deliberately no `policy/violation/list` op); no `policy/violation/list` RPC exists anywhere in `crates/runtime/src/service` (repo-wide search for `PolicyViolationList`/`policy/violation/list` returns no matches); `packages/extension/src/monitor/model.ts` has no violation handling, only `RunFlagsChanged` → `policyQuarantined`
-
-**Evidence:** `policy/violation/decide`'s response now reports whether *this* decision cleared the run's quarantine flag (`quarantineCleared`, `orchestration.rs:1874`, added by R75's `aee8e82`) — that half of this finding is resolved. What remains: when `quarantineCleared` is `false` (or absent, on `"cancel"`/an `alreadyDecided` replay), there is no way to find *which other* violation is still open short of diffing `PolicyViolationRecorded` against `PolicyViolationDecided` in the raw event stream — there is deliberately no violation-listing op, and the monitor's model tracks only the derived `policyQuarantined` flag, never violations themselves. The user-visible refusal a caller sees next (e.g. `message/send`) still reads "pending policy/violation/decide," which gives no hint how many violations remain or which they are. Found during R75's adversarial review, 2026-08-18; narrowed after R75's `aee8e82` answered the response-shape half.
-
-**Fix:** add a `policy/violation/list` op and teach the monitor to display open violations.
-
-**Priority:** Low — a real operator-visibility gap, but the run's correctness is unaffected; the operator can still recover by reading the raw event stream.
 
 #### R85. Project-scoped reads are open by design while `workspace/get` alone is gated
 
@@ -232,6 +180,6 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
 - **High:** 0 — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII), R77 resolved 2026-08-19 (see docs/journal.md Part XXIX), R81 resolved 2026-08-19 (see docs/journal.md Part XXX)
-- **Medium:** 6 (R36 — carried forward; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review; R87 — new, found during the 2026-08-19 close-out sweep; R12-R16, R34, R35, R37, R42, R45, R55-R60 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII)
-- **Low:** 13 (R38, R65, R67 — carried forward/new 2026-08-12; R80 — new, found during R75's adversarial review; R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90-R94 — new, found during R55/R12/R34/R13/R78's adversarial reviews; R17, R18, R20, R29-R32, R39, R40, R43, R46, R61-R64, R66, R84 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII)
+- **Medium:** 1 (R36 — carried forward; R12-R16, R34, R35, R37, R42, R45, R55-R60 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII; R78, R79, R82, R87 resolved 2026-08-19, see docs/journal.md Part XXXIX; R83 resolved 2026-08-19, see docs/journal.md Part XL)
+- **Low:** 12 (R38, R65, R67 — carried forward/new 2026-08-12; R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90-R94 — new, found during R55/R12/R34/R13/R78's adversarial reviews; R17, R18, R20, R29-R32, R39, R40, R43, R46, R61-R64, R66, R84 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII; R80 resolved 2026-08-19, see docs/journal.md Part XL)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
