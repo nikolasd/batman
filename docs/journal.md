@@ -3938,6 +3938,44 @@ operator — the `batcave status` row mapping collapses the event to the constan
 monitor work is where that lands. Full suite after the batch: 818 passed, one known-environment
 Copilot real-binary failure, clippy and fmt clean.
 
+## Part XXXVII — The audit trail that threw away its own rationale
+
+Two data-loss bugs shared one `UPDATE` in `decide_approval`, so they shared one RED test and one
+migration. R34: `decided_by` was written via `serde_json::to_string`, persisting the JSON-quoted
+token — `"human"` with quotes — so `WHERE decided_by = 'human'` matched zero rows, permanently,
+and the column that exists to make `human_required` decisions auditable was unqueryable by the
+token it documented. R59: `decide_approval` contained `let _ = reason;` — the rationale was
+threaded from the RPC boundary through the service layer and thrown away, on every decision,
+with no column to land in. The RED test (`a5b63c2`) decides an approval with a reason and reads
+the row back with raw SQL — the only formulation that could fail, since no RPC read surface
+returns either column (that gap is now **R92**).
+
+`9e82c28` fixed both in the one guarded write: `DecidedBy::as_str` mirrors the serde rename
+exactly (now pinned to it by a `crates/protocol` contract test, so a future `#[serde(rename)]`
+cannot silently re-create R34), the UPDATE persists the bare token and the reason together, and
+`MIGRATION_9` adds the column plus a data repair that strips the quotes from rows the bug left
+behind — exhaustively analyzed by the review as safe for every possible stored value, idempotent,
+and defended by a migration test that seeds a quoted row at v8 and asserts the bare token at v9.
+The decision's rationale also rides the wire now: `ApprovalDecided` events carry an optional
+`reason` (`serde(default, skip_serializing_if)` + `ts(optional)`, so every pre-R59 journal
+replays and the field never appears on request events). One deliberate residue, recorded here as
+the review asked: the change is downgrade-unsafe — a pre-R59 binary replaying a post-R59 journal
+fails on the unknown field, the same forward-only property every additive event change in this
+codebase has.
+
+`agent://ReviewBatch6` returned one Error and three Warnings. The Error was not in either fix:
+the committed extension bundle still embedded the pre-R59 schema, under which an
+`approvalDecided` event carrying `reason` matches zero arms of the `RuntimeEvent` `oneOf` — the
+shipped monitor would validate-reject every such event and, once one existed in the journal,
+never subscribe at all. `e21b151` rebuilt and committed the bundle; the lesson is that a schema
+change makes the bundle refresh load-bearing, not cosmetic. Warnings closed in place: the
+token-pinning contract test (W-1, `3ec2b7a`), an empty `reason` now refused at the RPC boundary
+rather than persisted as a rationale that does not exist (W-2, `ecdc580`), and the monitor's
+decided row now renders the rationale (S-1). The hand-rolled `decidedBy` parser collapsed into
+serde's canonical deserialization (S-3). W-3 became **R92**: decision provenance — both
+`decided_by` and the new `reason` — is persisted and journaled but `approval/list` returns
+neither, the same read-surface class R80 registered for policy violations.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
