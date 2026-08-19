@@ -1231,7 +1231,7 @@ async fn policy_violation_list_reports_decision_state_for_every_violation() {
     // Total both-ways check: the query op's hand-built rows must
     // round-trip through the canonical deny_unknown_fields type the
     // extension Ajv-validates against -- a renamed PolicyViolationSummary
-    // field fails here at build time, not as a live ValidationError.
+    // field fails here at test time, not as a live ValidationError.
     serde_json::from_value::<batman_protocol::PolicyViolationListResult>(list["result"].clone())
         .expect("the wire shape must deserialize as the canonical PolicyViolationListResult");
     // Pin the exact wire key set: the query op's hand-built rows must stay

@@ -353,7 +353,7 @@ async fn emit_pane_detached(
 /// still reads non-terminal. `Err` from `settled` means the run's sink was
 /// dropped without any process exit ever being observed -- the terminal
 /// adapter, which supervises no process of its own and emits none (a
-/// pre-existing gap with a different root cause, tracked separately); that
+/// pre-existing gap with a different root cause, registered as R95); that
 /// path therefore leaves the run non-terminal until the boot recovery sweep.
 /// Never release or journal a detach on that path: there is no settlement to
 /// record, and a release without one would hand this run's slot to another.
@@ -819,9 +819,10 @@ mod settlement_tests {
     /// the receiver [`watch_settlement`] holds, and settling through a
     /// real ceiling-1 [`crate::policy::PolicyEvaluator`] -- the production
     /// `AdapterAuthorization` -- must free the booked slot so the next
-    /// `authorize()` clears the ceiling. Breaking either handoff
-    /// (`SettlementSink` not firing on exit, or `watch_settlement` not
-    /// releasing through the trait object) fails this test.
+    /// `authorize()` clears the ceiling. Breaking either handoff fails
+    /// this test: a sink that stops firing on exit leaves the dropped
+    /// sender to error the receiver (no release, final authorize fails),
+    /// and a watcher that stops releasing fails the same assert.
     #[tokio::test]
     async fn a_process_exited_through_the_settlement_sink_frees_the_policy_ceiling() {
         use super::super::event_sink::{AdapterEvent, AdapterEventPayload};
@@ -905,6 +906,11 @@ mod settlement_tests {
         })
         .await
         .expect("emit exit");
+        // Drop the sink so a SettlementSink that stopped firing on exit
+        // yields Err (a clean test failure) instead of pending forever --
+        // a oneshot that already sent still delivers after its sender
+        // drops, so the positive path is untouched.
+        drop(sink);
 
         watch_settlement(
             settled,
