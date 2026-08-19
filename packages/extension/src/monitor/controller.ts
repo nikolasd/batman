@@ -145,6 +145,9 @@ export function registerMonitor(pi: ExtensionAPI, ctx: MonitorControllerContext)
         cmdCtx.ui.notify(details ?? `No BATMAN run found for ${runId}.`, details === undefined ? "warning" : "info");
         return;
       }
+      // Deliberately asymmetric with session_start's guarded refresh: an
+      // explicit user command renders unconditionally, so /batman against a
+      // dead runtime still shows the (empty) monitor box rather than nothing.
       await connect(cmdCtx);
       refresh(cmdCtx);
     },
