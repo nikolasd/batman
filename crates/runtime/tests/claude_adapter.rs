@@ -508,6 +508,15 @@ fn initialize_fixture_normalizes_session_id_text_tools_and_final_result() {
             .count(),
         0
     );
+    // A successful result (`is_error` absent) must not emit the R12
+    // terminal-failure event.
+    assert_eq!(
+        payloads
+            .iter()
+            .filter(|p| matches!(p, ProtocolHealthChanged { .. }))
+            .count(),
+        0
+    );
 }
 
 #[test]
@@ -624,7 +633,7 @@ fn approval_fixture_normalizes_hook_lifecycle_without_ever_touching_the_sink() {
 }
 
 #[test]
-fn result_fixture_error_arm_reports_usage_without_a_final_message() {
+fn result_fixture_error_arm_reports_usage_and_an_explicit_terminal_failure() {
     use batman_runtime::adapter::AdapterEventPayload::*;
 
     let mut normalizer = ClaudeNormalizer::new();
@@ -635,10 +644,16 @@ fn result_fixture_error_arm_reports_usage_without_a_final_message() {
     }
     let payloads = emitted_payloads(&all_events);
 
+    // R12: the vendor reported `is_error: true` with `subtype:
+    // "error_max_turns"`; normalizing that as usage-only hid the failure
+    // from every event consumer. The error arm must emit usage AND an
+    // explicit unhealthy-protocol event naming the vendor's subtype, in
+    // that order, and still no final message (there is no `result` text
+    // on an error arm).
     assert_eq!(
         payloads.len(),
-        1,
-        "expected only UsageReported: {payloads:?}"
+        2,
+        "expected UsageReported then ProtocolHealthChanged: {payloads:?}"
     );
     match payloads[0] {
         UsageReported {
@@ -652,6 +667,23 @@ fn result_fixture_error_arm_reports_usage_without_a_final_message() {
         }
         other => panic!("expected UsageReported, got {other:?}"),
     }
+    match payloads[1] {
+        ProtocolHealthChanged { healthy, detail } => {
+            assert!(!healthy, "an is_error result is not healthy");
+            assert!(
+                detail.value.contains("error_max_turns"),
+                "detail must name the vendor subtype: {:?}",
+                detail.value
+            );
+        }
+        other => panic!("expected ProtocolHealthChanged, got {other:?}"),
+    }
+    assert!(
+        !payloads
+            .iter()
+            .any(|p| matches!(p, MessageFinal { .. })),
+        "an error arm has no final message"
+    );
 }
 
 #[test]
