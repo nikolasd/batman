@@ -74,7 +74,7 @@ test("an adapterUsageEvent reports token counts, and its bigints survive interpo
   const row = state.rows["run-1"];
   expect(row?.latestActivity).toBe("usage 1234 in / 56 out");
   expect(row?.taskId).toBe("task-1");
-  expect(state.rows["run-1"]?.pendingApprovalCount).toBe(0);
+  expect(row?.pendingApprovalCount).toBe(0);
 });
 
 test("an adapterUsageEvent appends cost only when the vendor reported one", () => {

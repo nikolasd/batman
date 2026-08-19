@@ -81,6 +81,7 @@ cargo test --test <test_name>          # specific test suite
 # TypeScript tests
 bun test
 bun test packages/extension/src/...     # specific file
+bun run typecheck                       # TypeScript compiler gate (own CI job)
 
 # Manual testing with local changes
 OMP_BATMAN_BINARY="$PWD/target/debug/batcave" \

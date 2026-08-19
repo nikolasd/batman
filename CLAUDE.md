@@ -48,6 +48,7 @@ cargo test --workspace                       # all Rust tests
 cargo test --test <test_name>                # e.g. cargo test --test adapter_contract
 bun test                                     # all TypeScript tests
 bun test packages/extension/src/runtime.test.ts   # one TS file
+bun run typecheck                            # TypeScript compiler gate (own CI job)
 
 # Conformance tests (golden-frame protocol checks, crates/runtime/src/conformance/ + tests/conformance/)
 BATMAN_DISABLE_VENDOR_CLI=1 cargo test --test conformance   # fixture mode (what CI runs)

@@ -6,8 +6,13 @@
     "noEmit": true,
     "verbatimModuleSyntax": true,
     "strict": true,
+    // Solely for three unfixable third-party .d.ts errors (pi-catalog's
+    // models.json import, pi-coding-agent's wrapper.d.ts variance,
+    // pi-mnemopi's optional fastembed peer). First-party errors are never
+    // silenced: `tsc --noEmit --skipLibCheck false` shows exactly those
+    // three, all under node_modules. Re-test when bumping @oh-my-pi deps.
     "skipLibCheck": true,
     "types": ["bun"]
   },
-  "exclude": ["packages/extension/dist", "node_modules"]
+  "exclude": ["packages/extension/dist"]
 }

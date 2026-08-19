@@ -374,10 +374,11 @@ bun test packages/extension/src/client.test.ts -t "frame"              # TS test
 
 - `crates/protocol/bindings/` fills with `.ts` files when you run `cargo test` (ts-rs side
   effect). It is gitignored scratch; the real bindings are `packages/protocol-ts/src/generated/`.
-- The installed `typescript@7` CLI rejects the root tsconfig's `"module": "Bundler"` casing, so
-  plain `tsc -p tsconfig.json` fails on config, not on code. Bun handles the config fine; for
-  strict type-checks of extension files, use a scoped `bunx tsc --noEmit` invocation with explicit
-  flags (see `.superpowers` history) or fix the casing repo-wide when convenient.
+- Type-checking is a real gate: `bun run typecheck` (`tsc --noEmit` against the root
+  `tsconfig.json`) runs locally, inside `bun run check`, and as its own CI job. `skipLibCheck` is
+  on solely for three unfixable third-party `.d.ts` errors (pi-catalog's `models.json` import,
+  pi-coding-agent's `wrapper.d.ts` variance, pi-mnemopi's optional `fastembed` peer); first-party
+  errors are never silenced.
 - `batcave schema` prints the schema **embedded at compile time** (`include_str!`). After changing
   protocol types, `bun run generate` *and* rebuild the binary, or the printed schema lags the
   types. `generate --check` in CI catches the committed-file half of this.
