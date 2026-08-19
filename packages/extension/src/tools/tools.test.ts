@@ -46,7 +46,7 @@ function fakeExtensionContext(cwd: string): ExtensionContext {
   };
   return {
     cwd,
-    sessionManager: sessionManager as any,
+    sessionManager: sessionManager as unknown as ExtensionContext["sessionManager"],
   } as unknown as ExtensionContext;
 }
 
@@ -273,7 +273,7 @@ test("batman_task upsert creates a task with auto-generated ID and session owner
   if (taskTool === undefined) throw new Error("unreachable");
 
   // Create a new task - extension auto-generates taskId and uses session ID as owner
-  const result = await taskTool.execute("call-1", { op: "upsert", description: "Test task creation" }, undefined, undefined, fakeExtensionContext(repoDir));
+  const result = await taskTool.execute("call-1", { op: "upsert" }, undefined, undefined, fakeExtensionContext(repoDir));
 
   // Should succeed with a valid taskId
   expect(result.isError).toBeUndefined();
