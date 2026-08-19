@@ -3,7 +3,7 @@
 //! *whole* `RunFlags` struct it read into `ApprovalSnapshot` before the
 //! decision write and the vendor callback await. If anything else -- most
 //! plausibly `ViolationService::apply_action`'s read-modify-write shape
-//! (`crates/runtime/src/policy/violation.rs`, e.g. `set_quarantined`) --
+//! (`crates/runtime/src/policy/violation.rs`, e.g. `quarantine`) --
 //! mutated a different flag on the same run during that callback window,
 //! `decide`'s write-back would silently revert it: a lost update, not a
 //! conflict either side detects. The fix: `decide`'s callback-failure path
@@ -16,7 +16,7 @@
 //! without touching flags, so `decide`'s write is the *only* writer and
 //! `protocolUnhealthy` lands correctly. `QuarantineDuringCallback::acknowledge`
 //! plays the concurrent-mutation case: while `decide` awaits it, it performs
-//! the same guarded `set_run_flag` call `ViolationService::set_quarantined`
+//! the same guarded `set_run_flag` call `ViolationService::quarantine`
 //! performs in production, flipping `policy_quarantined`, and then fails,
 //! so `decide`'s subsequent guarded write of `protocol_unhealthy` has
 //! something it must not clobber.
@@ -195,7 +195,7 @@ impl ApprovalCallback for FailingCallback {
 }
 
 /// Fails every callback, but first performs the exact guarded flag flip
-/// `ViolationService::set_quarantined` performs post-R73
+/// `ViolationService::quarantine` performs post-R73
 /// (`crates/runtime/src/policy/violation.rs`): call
 /// `DomainRepository::set_run_flag(run_id, RunFlag::PolicyQuarantined, true)`,
 /// which reads the run's current flags, flips this one, and writes the
