@@ -717,3 +717,38 @@ async fn an_approval_without_decided_by_defaults_to_model_and_fails_human_requir
         "missing decidedBy defaults to model, which must be rejected: {result:?}"
     );
 }
+
+#[tokio::test]
+async fn a_decision_persists_the_bare_decided_by_token_and_the_reason() {
+    // R34: `decided_by` was written via serde_json::to_string, storing the
+    // JSON-quoted token `"human"` -- `WHERE decided_by = 'human'` matched
+    // zero rows forever. R59: `reason` was accepted end-to-end and then
+    // discarded (`let _ = reason;`) -- permanent audit-trail loss.
+    let harness = Harness::start(|_| {}).await;
+    let mut owner = omp_client(&harness, "omp-owner").await;
+    let (approval_id, _run_id, _task_id) =
+        seed_pending_approval(&harness, &mut owner, "omp-owner").await;
+
+    let result = owner
+        .call(
+            5,
+            "approval/decide",
+            json!({ "approvalId": approval_id.to_string(), "decision": "approve", "reason": "looks good", "decidedBy": "human" }),
+        )
+        .await;
+    assert_eq!(result["result"]["outcome"], "decided");
+
+    let conn = rusqlite::Connection::open(&harness.database).unwrap();
+    let (decided_by, reason): (String, Option<String>) = conn
+        .query_row(
+            "SELECT decided_by, reason FROM approvals WHERE approval_id = ?1",
+            rusqlite::params![approval_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        decided_by, "human",
+        "decided_by must be the bare token, not a JSON-quoted string"
+    );
+    assert_eq!(reason.as_deref(), Some("looks good"));
+}
