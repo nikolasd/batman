@@ -3751,6 +3751,123 @@ tests passing across 57 suites with the one environment-specific Copilot failure
 1.0.80 not yet in `COPILOT_KNOWN_CLI_VERSIONS` — it now fails rather than skips, same cause as
 recorded on 2026-08-19), and 139 TS tests passing.
 
+## Part XXXII — strict: true was a decoration: wiring the compiler gate
+
+The workspace declared `"strict": true` from day one and never ran the compiler. No local script
+and no CI job invoked `tsc`; `bun build` transpiles without type-checking, so two real compile
+errors shipped in tracked source and sat there — `model.test.ts` reading a `pendingApprovalCount`
+field `MonitorState` never had and omitting the required `decidedBy` from two approval-event
+fixtures (R37), and `shared.ts` typing its load-bearing `OrchestrationToolContext` interface
+against an `ExtensionContext` name the file never imported (R61). The config that would have
+caught both couldn't even parse: `"module": "Bundler"` is not a value any TypeScript release has
+accepted (`Bundler` is a `moduleResolution` value; the legal bundler-style `module` is
+`"Preserve"`), and `packages/extension`'s `"typescript": "latest"` resolved to the 7.x Corsa port
+this repo has a recorded tooling incompatibility with — against `bunfig.toml`'s own
+`exact = true` convention.
+
+`a202cca` wired the gate: typescript pinned to 5.9.3 (root and, initially, the extension),
+`module: "Preserve"`, an `exclude` for the committed bundle, a root `typecheck` script folded
+into `check`, and an independent `typecheck` CI job whose comment names the two findings it
+exists to prevent. `skipLibCheck` went in exactly as far as the plan's contingency allowed:
+`tsc --noEmit --skipLibCheck false` shows exactly three errors, all in third-party `.d.ts` files
+(pi-catalog's `models.json` import, pi-coding-agent's `wrapper.d.ts` variance, pi-mnemopi's
+optional `fastembed` peer), zero first-party. `5e336a4` fixed R37 by moving the test to the
+contract — the generated union was not touched — and `b3ccbff` fixed R61 on the existing
+`import type` line. `3198849` corrected four more first-party test typings the new gate exposed
+the moment it could run (`Bun.spawn` subprocess signatures, an untyped fake-tool return shape, a
+sync `getClient` where the interface demands a promise). `4d8401a` closed R30 by making local
+`test`/`check` run bare `bun test`, what CI runs — which added the conformance assert-report
+suite to every local run (149 tests, up from 139).
+
+`agent://ReviewBatch1` returned one Error and three Warnings, all closed in place (`85c7e45`,
+`55ae4c0`): the Error was `docs/code-walkthrough.md` still teaching the typescript@7 workaround
+this batch obsoleted — steering a contributor away from the new gate at exactly the moment they'd
+hit it; the Warnings were the two agent-facing command blocks omitting `bun run typecheck`, the
+workspace's only `as any` (in a test fake, doubly erased by an adjacent cast), and three
+different fake `execute` return typings for one concept. The review also proved the gate
+load-bearing rather than decorative: Batch 3's `satisfies` drift assertions in `workspaces.ts`
+already name `bun run typecheck` as the thing that breaks when a wire union drifts.
+
+## Part XXXIII — Tool contracts that lied about themselves
+
+Seven findings, all in `packages/extension/src/`, all the same species: the surface the model or
+the operator sees promising something the code doesn't do. Two schema contracts accepted what the
+runtime rejects — `batman_violation.resolution` was an open string against a runtime that accepts
+exactly `release`|`cancel` (R16, `e6bba53`), and `batman_run.workspaceMode` was an open string
+against `shared`|`isolated`|`copy` (R29, `3ce9bee`); both now fail at the schema with the token
+list in the description, saving the model a doomed round trip. One contract advertised what the
+wire discards: `batman_task.description` never left the extension — `task/upsert`'s payload has
+no field for it — so `ec360e8` deleted the parameter rather than plumbing it end-to-end
+(a protocol field, a `tasks` column, a migration, and binding churn for a value nothing reads,
+against invariant 6's placement of task-text authority in OMP), and the tool description now says
+where task text actually goes: `batman_run.prompt`. R40 (`3d9d56e`) removed a `revision` argument
+a test passed to a schema that never defined it.
+
+The monitor pair shipped RED-first (`c3be76c`): `session_start` connected but never rendered, so
+a healthy runtime showed nothing until the first event fired (R56), and `session_shutdown`
+stopped the subscription without clearing `subscribedClient`, leaving `connect()` to early-return
+into a dead monitor (R39). `8b86080` fixed both — render-once-after-connect, guarded so an
+unreachable runtime stays silent rather than lying "No BATMAN runs yet.", and the shutdown
+handler now pairs `stop()` with the clear exactly as the repair path does. `da48a67` closed R18:
+the detached daemon spawn now attaches an `error` listener before `unref()`, so an async
+`EAGAIN`/`EMFILE`/vanished-binary failure logs instead of being silently lost (`console.error`
+deliberate — the file has no logger seam).
+
+`agent://ReviewBatch2` returned one Error and five Warnings. The Error was this batch's own
+defect class reflected back: two `docs/manual-testing.md` prompts still told the model to pass
+`description` to `batman_task` (`3c0e749`). Warnings closed in place: the stale `description` in
+`tools.test.ts` (`55ae4c0`), a spawn-failure regression test for R18 (a shebang pointing at a
+nonexistent interpreter — passes every `selectBinary` check, fails async at exec; `eed1b91`), a
+faithful-fake test pinning the closed-client repair path (`eed1b91`), and a comment recording the
+deliberate `/batman`-versus-`session_start` render asymmetry (`25da1a0`). The review also
+corrected R39's severity: in production, `index.ts` closes the cached client at shutdown, so
+`connect()`'s pre-existing `isClosed` repair branch already saved the monitor — the real defect
+was the monitor's correctness depending on an unrelated handler's cleanup, not a reachable dead
+monitor. Two new findings were registered rather than folded in (`8d19ad7`): **R88**
+(`batman_message.kind` is R16's class one door over — the only remaining open-string enum among
+the eleven tools) and **R89** (`run/submit` echoes `workspaceMode: "isolated"` for a `copy`
+workspace — the request vocabulary closed while the response side still collapses two kinds).
+
+## Part XXXIV — The generator that only generates what it's told
+
+R60's root cause was a belief this journal itself once stated: that `bun run generate` "walks
+every `#[ts(export)]` type". It never has. `export_bindings` is an explicit allowlist, and a type
+carrying the derive but absent from the list — and unreferenced by anything in it — emits
+nothing, silently, forever: `generate --check` passes because the generator's steady state *is*
+the omission. That was exactly `Artifact`/`ArtifactKind` and the four canonical result types:
+`artifacts.ts`'s hand-rolled kind enum had no generated source of truth to drift against at all.
+`4c424cd` added the artifact and workspace result types to the allowlist and to
+`ProtocolDocument`, so their bindings and schema `$defs` now exist — which is also what Batch 4
+builds its validators on. The follow-up (`4c7540f`) went further on the review's push: the
+workspace *request* types joined the list (the sharp edge was exporting `InspectResult` while
+`InspectRequest` stayed invisible), and `export_bindings`' doc comment now states the honest
+contract — the list, not the derive, decides.
+
+`56465fb` closed R17's two halves. The barrel now re-exports all 56 (now 60) generated files
+instead of 35 — twelve wire types, `RunFlags` and `RuntimeEventKind` among them, were generated
+but unimportable. And the three hand-copied enum tuples in `workspaces.ts` plus the one in
+`artifacts.ts` are now tied to their generated unions with `as const satisfies readonly X[]`
+plus a consumed exhaustiveness constant, so drift in either direction breaks
+`bun run typecheck`: a variant removed in Rust fails the `satisfies`, a variant added makes the
+conditional alias `never` and the `= true` assignment fail. Both directions were proven live
+against a scratch-edited generated file (TS2322 at the exact expected lines), which is why
+Batch 1's compiler gate had to land first. `cfec902`/`4c424cd` closed R64: `generate --check`
+now fails on any drift between `.claude-plugin/marketplace.json`'s two version fields and the
+extension version, with error messages naming the file and both values — proven live in both
+drift directions — and the manual release-checklist bullet it replaces now points at the gate.
+
+`agent://ReviewBatch3` returned **PASS WITH WARNINGS** — zero Errors, and its warnings all became
+in-place hardening (`4c7540f`): the barrel's completeness is no longer a convention but a
+`generate --check` failure (`check_barrel_completeness` — proven by the four new request bindings
+failing the gate until the barrel learned them), and `check_version_coherence`'s marketplace
+branches gained fixture tests for both drift directions plus the coherent case. One warning was
+already closed by the time the review landed (the stale `code-walkthrough.md` typescript@7
+paragraph — Batch 1's review had caught the same lines hours earlier), and one is deferred to
+this Part's own correction: the Part-3 claim that the generator walks every `#[ts(export)]` type
+was aspirational, not descriptive — the generator has always been an allowlist, and that mistaken
+belief is precisely how R60 lived this long. The `MonitorFlags`-mirrors-`RunFlags` suggestion is
+left for Batch 9, which touches the monitor model anyway.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
