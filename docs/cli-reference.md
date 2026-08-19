@@ -118,6 +118,24 @@ the recorded pid and polls for up to 10 seconds for `runtime.sock` to disappear.
 `runtime stopped` and exits **0** on success; exits nonzero with a timeout error if the daemon
 doesn't shut down in time.
 
+### `batcave lease release`
+
+Force-releases a workspace lease by id, directly against the lease database — no daemon required.
+
+```bash
+batcave lease release --repo <path> --lease-id <id> [--state-dir <path>]
+```
+
+The operator remedy for a lease whose owning session correlation was never persisted (the extension
+crashed before the upsert that would have recorded it): `workspace/release` is owner-gated and a new
+session is a different principal, so such a lease is unreleasable over RPC until `reconcile/omp`
+rebinds its task — and unreleasable, full stop, when no correlation survives to rebind.
+`batcave doctor` reports these as stale and names this command as the remedy.
+
+Prints `lease <id> released` and exits **0**. When the lease's materialized directory still exists,
+prints its path and states that it is now unmanaged — the runtime will no longer tear it down.
+An already-released lease or an unknown id exits **1** with a message naming which case it was.
+
 ### `batcave monitor`
 
 Replays journaled events, then keeps tailing live events until interrupted (`Ctrl-C`) — there is no

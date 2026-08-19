@@ -502,7 +502,8 @@ impl Doctor {
             .collect::<Vec<_>>()
             .join(", ");
         Err(DoctorError::StateDirError(format!(
-            "{} stale workspace lease(s): {detail}",
+            "{} stale workspace lease(s): {detail} -- release one with \
+             `batcave lease release --repo <repo> --lease-id <id>`",
             stale.len()
         )))
     }

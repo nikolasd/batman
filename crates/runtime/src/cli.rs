@@ -157,6 +157,11 @@ enum Command {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    /// Inspect or force-release workspace leases for a repository.
+    Lease {
+        #[command(subcommand)]
+        command: LeaseCommand,
+    },
     /// Re-record adapter fixtures from a real vendor CLI.
     Capture {
         /// Adapter name: claude, codex, copilot, or ompRpc. No "all" --
@@ -169,6 +174,28 @@ enum Command {
         /// Print scrubbed output instead of overwriting the committed files.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum LeaseCommand {
+    /// Force-release a workspace lease by id.
+    ///
+    /// The operator remedy for a lease whose owning session correlation
+    /// was never persisted (extension crashed before the recording
+    /// upsert): such a lease is unreleasable over RPC, because
+    /// `workspace/release` is owner-gated and a new session is a
+    /// different principal. `batcave doctor` reports these as stale.
+    Release {
+        /// The BATMAN state root. Defaults to the resolved state root.
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+        /// The repository whose lease to release.
+        #[arg(long)]
+        repo: PathBuf,
+        /// The lease to release (full id, as `batcave doctor` prints it).
+        #[arg(long)]
+        lease_id: String,
     },
 }
 
@@ -257,6 +284,14 @@ pub async fn run() -> ExitCode {
                     output,
                 },
         } => run_audit_export(state_dir, repo, from, to, output).await,
+        Command::Lease {
+            command:
+                LeaseCommand::Release {
+                    state_dir,
+                    repo,
+                    lease_id,
+                },
+        } => run_lease_release(state_dir, repo, lease_id),
         Command::Doctor {
             state_dir,
             repo,
@@ -395,6 +430,61 @@ async fn run_stop(state_dir: Option<PathBuf>, repo: PathBuf) -> ExitCode {
         }
         Ok(batman_runtime::lifecycle::StopOutcome::NotRunning) => {
             println!("no runtime running for this repository");
+            ExitCode::from(1)
+        }
+        Err(err) => fail(&err),
+    }
+}
+
+/// Runs `batcave lease release`: force-releases a workspace lease by id,
+/// directly against the lease database -- no daemon required. Prints the
+/// released lease's materialized path (when one exists) so the operator
+/// can remove a leaked worktree the runtime will no longer tear down.
+fn run_lease_release(state_dir: Option<PathBuf>, repo: PathBuf, lease_id: String) -> ExitCode {
+    use batman_runtime::paths::RuntimePaths;
+    use batman_runtime::workspace::{LeaseError, LeaseService};
+
+    let state_root = match resolve_state_dir(state_dir) {
+        Ok(dir) => dir,
+        Err(err) => return fail(&err),
+    };
+    let paths = match RuntimePaths::resolve(&state_root, &repo) {
+        Ok(paths) => paths,
+        Err(err) => return fail(&err),
+    };
+    let leases = match LeaseService::open(paths.project_id, &paths.root.join("workspace-leases.db"))
+    {
+        Ok(service) => service,
+        Err(err) => return fail(&err),
+    };
+
+    // Read the lease first so the operator learns the materialized path;
+    // a failure here still reports NotFound before any write.
+    let info = match leases.get(lease_id.clone()) {
+        Ok(info) => Some(info),
+        Err(LeaseError::NotFound { lease_id }) => {
+            eprintln!("no lease {lease_id} exists for this repository");
+            return ExitCode::from(1);
+        }
+        Err(_) => None,
+    };
+
+    match leases.release(lease_id.clone()) {
+        Ok(()) => {
+            println!("lease {lease_id} released");
+            if let Some(info) = info
+                && !info.path.is_empty()
+                && std::path::Path::new(&info.path).exists()
+            {
+                println!(
+                    "its materialized directory still exists and is now unmanaged: {}",
+                    info.path
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(LeaseError::AlreadyReleased { lease_id }) => {
+            println!("lease {lease_id} was already released");
             ExitCode::from(1)
         }
         Err(err) => fail(&err),
