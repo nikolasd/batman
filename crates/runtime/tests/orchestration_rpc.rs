@@ -2029,6 +2029,91 @@ impl RunDriver for StartCapturingRunDriver {
     }
 }
 
+/// A [`RunDriver`] whose kill genuinely fails: `cancel_run` returns `Err`,
+/// which since R13 always means a live vendor process the kill failed
+/// against -- never an absent adapter.
+#[derive(Default)]
+struct KillFailingRunDriver {
+    inner: FakeRunDriver,
+}
+
+impl RunDriver for KillFailingRunDriver {
+    fn active_run_count(&self) -> usize {
+        0
+    }
+
+    fn start(&self, ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
+        self.inner.start(ctx)
+    }
+
+    fn send_follow_up(
+        &self,
+        run_id: RunId,
+        task_id: TaskId,
+        worker_id: WorkerId,
+        prompt: String,
+    ) -> AdapterFuture<'static, Result<(), String>> {
+        self.inner
+            .send_follow_up(run_id, task_id, worker_id, prompt)
+    }
+
+    fn running_adapter(&self, run_id: RunId) -> Option<Arc<dyn Adapter>> {
+        self.inner.running_adapter(run_id)
+    }
+
+    fn cancel_run(
+        &self,
+        _run_id: RunId,
+        _scope: CancelScope,
+    ) -> AdapterFuture<'static, Result<batman_runtime::service::CancelOutcome, String>> {
+        Box::pin(async { Err("SIGKILL delivery failed".to_string()) })
+    }
+}
+
+/// RED (R93): since R13, `cancel_run`'s `Err` always means a live vendor
+/// process a kill actually failed against -- the policy-violation path
+/// raises `flags.degradedControl` on that condition, but `run/cancel`
+/// only warns and reports unqualified success. The kill failure must
+/// become visible to `run/get` and the monitor via the same guarded,
+/// journaled, broadcast `degradedControl` flag write.
+#[tokio::test]
+async fn run_cancel_raises_degraded_control_when_the_kill_fails() {
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::new(KillFailingRunDriver::default()));
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+    let (_task_id, _worker_id, run_id) = submit_run_with_driver(&mut client, "omp-1").await;
+
+    let cancel = client
+        .call(5, "run/cancel", json!({ "runId": run_id }))
+        .await;
+    assert!(
+        cancel.get("error").is_none(),
+        "the cancel transition itself succeeded and must report so: {cancel:?}"
+    );
+
+    let get = client.call(6, "run/get", json!({ "runId": run_id })).await;
+    assert_eq!(
+        get["result"]["flags"]["degradedControl"], true,
+        "a genuine kill failure must be visible as degradedControl, \
+         not only a warn log: {get:?}"
+    );
+
+    let replay = client
+        .call(7, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    let has_flag_event = replay["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["event"]["payload"]["flags"]["degradedControl"] == true);
+    assert!(
+        has_flag_event,
+        "the flag write must be journaled, not projection-only: {replay:?}"
+    );
+}
+
 #[tokio::test]
 async fn retry_starts_the_adapter_with_the_supplied_prompt() {
     let driver = Arc::new(StartCapturingRunDriver::default());
