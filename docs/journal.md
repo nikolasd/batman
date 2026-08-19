@@ -3492,6 +3492,127 @@ same pass this Part records to move R75 into resolution history, narrow R80 to t
 discovery-surface gap, and refresh R79's and R77's citations for the line drift this Part's own
 commits caused.
 
+## Part XXIX — Six doors, one owner: the run lifecycle gets the same lock as task upsert
+
+Part XXVII's own adversarial review (`agent://ReviewR76`, W2) named this gap the day it closed R76:
+task ownership by then gated *decisions* -- `approval/decide`, `policy/violation/decide`,
+`task/upsert` itself -- but nothing gated the run *lifecycle*. `OrchestrationService::dispatch`
+still routed `run/submit`, `run/retry`, `run/cancel`, `message/send`, `workspace/acquire`, and
+`coordination/child/decide` with `params` only, no `principal`, so any connected `ompExtension`
+instance could submit, retry, cancel, message, lease, or answer a child-spawn request against a
+task it had never reconciled -- without ever needing to seize the task first through `task/upsert`.
+`faac2ee`'s six RED integration tests made that concrete one method at a time: a second instance
+(`omp-2`) submitting a run against `omp-1`'s task, cancelling `omp-1`'s in-flight run, retrying
+`omp-1`'s terminal run under its own worker, injecting a message into `omp-1`'s run, acquiring a
+workspace lease scoped to `omp-1`'s run, and answering a pending child-spawn request on `omp-1`'s
+run -- all six observed *succeeding* against the pre-fix binary, each asserted instead to refuse
+`-32602` and leave both run state and the event journal (`events/replay`'s count) untouched. A
+seventh test, `owner_can_perform_every_guarded_run_lifecycle_mutation_on_its_own_task`, chained all
+six as the genuine owner and stayed GREEN throughout, so the eventual fix could not pass by
+universally refusing.
+
+`8bb17b7` threaded ownership into the four repository methods those six RPCs bottom out in --
+`submit_run`, `transition_run`, `record_message`, `decide_child` -- each gaining an
+`Option<&str> principal_instance_id` re-read from `tasks.owner_client_instance_id` from *inside*
+its own guarded write, immediately before the mutating `INSERT`/`UPDATE`: the same in-tx re-read
+pattern `decide_approval` established for R70, because the database actor interleaves whole
+`run_domain_op` closures, so only a read from inside that same closure can observe a
+`reconcile/omp` rebind landing between a caller's snapshot and this write. `record_message` derives
+the run's *actual* owning task from `runs.task_id`, never from the caller-supplied `taskId` field,
+so a caller cannot dodge the check by asserting a task it does own for a run it does not. `None` is
+passed at exactly seven production call sites, and the fix's own doc comments justify each one by
+name rather than leaving it to be inferred: crash recovery and driver-observed lifecycle
+transitions (`recovery.rs`, `adapter/run_lifecycle.rs`, `service/run_driver.rs`) act on the
+runtime's own authority with no connected caller to arbitrate against; approval/violation
+resolution returning a run to `working` is already owner-arbitrated one call up, in
+`decide_approval`/`resolve_policy_violation`; and `coordination/send`/`coordination/publishArtifact`
+(`coordination/broker.rs`, twice) pass `None` because a `workerMcp` principal's authority *is* its
+scope token, already verified against the run at connection time -- it is never the task-owning
+`ompExtension` instance, so an ownership check there would refuse every legitimate worker message.
+`workspace/acquire` is the one guarded operation that isn't a runs-DB write at all -- its lease
+lives in `LeaseService`'s own database file -- so `8bb17b7` added `service::query::run_owner_op`, a
+dedicated read-only round trip, for `e416dd7` to call as close to `LeaseService::acquire` as
+possible in the next commit.
+
+`e416dd7` threaded `principal` through `dispatch` into all six handlers. `run_retry`'s task to
+arbitrate is read from the *prior run's own stored row* (`query::run_get_op(prior_run_id)` →
+`prior["taskId"]`), never from a client-supplied field -- `run_retry`'s body parses exactly
+`priorRunId`, `workerId`, `prompt`, `workspaceMode`, `displayPreference` and no `taskId` at all, so
+a caller cannot launder ownership by asserting a task it happens to own for a different run's
+retry. `workspace_acquire` calls `run_owner_op` as the first statement after parsing its request,
+with `lease_service.acquire` the very next call and no I/O between them; its doc comment names the
+resulting residual honestly rather than claiming atomicity the two separate SQLite files cannot
+deliver: a `reconcile/omp` rebind landing in that one gap is not observed, though a caller refused
+there allocates nothing, since the check runs before any lease exists to unwind.
+
+`agent://ReviewR77` returned **PASS WITH WARNINGS** -- no Errors. Its **q2** answer audited all
+seven `None` call sites individually and confirmed each is genuine runtime authority with no
+external caller able to reach it, and its **splice-through-dispatch** check (part of the same
+answer) confirmed `dispatch` has exactly two callers, both passing the principal `authenticate`
+constructed at connect time; no code builds a `ClientPrincipal` any other way; `ClientRole::Display`'s
+method table contains zero mutating methods; and `workerMcp`'s scoped run id comes from
+`principal.scoped_run_id`, minted only by `worker_verifier.verify`, never from client params -- so
+`None` could not have silently become reachable from an unauthorized branch. Three warnings
+followed: **W1**, the `coordination/child/decide` RED test drove only the deny arm, leaving the
+accept arm's ownership check independently deletable; **W2**, the `workspace/acquire` RED test
+proved no workspace *event* was journaled but could not distinguish "checked before acquiring" from
+"checked after acquiring, with the leaked lease never journaled" (leases live in a separate
+database and emit nothing until `record_workspace_event`); and **W3**, `transition_run` and
+`decide_child` ran `check_transition` -- a plain pre-transaction read -- *before* the owner re-read,
+so a non-owner's illegal-edge attempt classified as `ILLEGAL_TRANSITION` instead of `NotOwner`,
+inconsistent with `submit_run`/`record_message`, which have no pre-write validity check to outrank
+ownership. Two suggestions: **S1**, that `Option<&str>` makes "trusted, no principal" the shape a
+new call site falls into by writing `None`, with the compiler unable to distinguish a deliberate
+runtime-authority `None` from a forgotten one; **S2**, a stale "cross-project rejection" comment.
+And one new High finding, registered the same day as **R81**: `workspace/get`, `workspace/release`,
+`workspace/inspect`, and `workspace/apply` take no principal at all and resolve their target purely
+from a caller-supplied `leaseId` -- gating `acquire` makes lease *creation* owner-safe, not the rest
+of the workspace surface, and the `leaseId` needed is disclosed by the already-ungated `run/get`'s
+`workspacePath` and by `events/replay`'s `LeaseAcquired` payloads.
+
+`1ce50c9` closed W3 with an explicit precedence decision rather than a silent reordering:
+authorization-first for `transition_run`/`decide_child`, the opposite of `upsert_task`'s
+revision-before-ownership precedence from R76 -- and it states why, in both doc comments, instead
+of leaving the divergence for a future reader to reconcile. R76's ordering reads: "a stored revision
+higher than the one presented is `RevisionTooLow` regardless of ownership -- an owner is entitled to
+know its own upsert is stale, and it keeps R74's byte-pinned message stable." R77's reads the
+opposite way on purpose: "This is the opposite precedence from `Self::upsert_task`'s
+revision-before-ownership check (R76): there, the only way to present a stale revision is to already
+be the task's actual owner racing itself, so disclosing staleness first tells a legitimate caller
+something it is entitled to know. Here the caller is, by construction, not yet known to have any
+standing over the run at all, so it must clear ownership before this method will say anything about
+the run's current state." The fix adds a second, plain `self.conn` ownership read immediately before
+`check_transition`, purely to fix error-code precedence for the ordinary case; the authoritative,
+race-safe re-read inside `append_and_apply`'s closure is unchanged and is still the only one that
+actually protects the mutation, so a race between the two reads can only ever make the early one
+agree or disagree with the later one, never let a mutation through without the later read's
+independent approval. `b72c975` then pinned all three review gaps against the existing RED tests
+rather than adding new ones: an accept-arm case for `coordination/child/decide` with the attacker's
+own fabricated child ids (closing W1); a `run/get` assertion that `workspacePath` stays `null` after
+a refused `workspace/acquire`, since `run/get` reads the lease database directly (closing W2); and a
+terminal-run cancel from a non-owner now asserted to classify as `NotOwner` (`-32602`), not
+`ILLEGAL_TRANSITION` (`-32100`) -- the observable contract authorization-first actually promises,
+pinned rather than merely stated (closing W3).
+
+S1's `Authority` enum was read, weighed, and deliberately not built: the seven current `None` sites
+are all correct and doc-justified today, and the review's own words on it are the record --
+"this bites on the next adapter or recovery path added," not on anything shipped in this fix. Adding
+a two-variant type purely to future-proof a call-site shape that is currently unambiguous was judged
+not worth the churn this pass; the next site that needs `None` is where that trade re-opens.
+
+Measured for the fix and its polish together: `cargo test --test orchestration_rpc --test approval
+--test policy_violation --test coordination --test run_lifecycle --test recovery --test monitor_cli
+--test adapter_contract` -- 44/44 in `orchestration_rpc` (the six formerly-RED tests, the GREEN
+owner guard, and every pre-existing case) plus every other named suite green; `cargo test --lib` --
+208 passed (`batman-runtime`), 105 passed (`batman-protocol`); `cargo fmt --all -- --check` clean.
+`REVIEW.md` is updated in the same pass this Part records: R77 moves into resolution history, and
+the review's own new finding becomes **R81** (High) -- `workspace/get`/`release`/`inspect`/`apply`
+still take no principal, the identical defect class one method over, registered 2026-08-19 and still
+in flight as this Part is written. The chain of findings this doctrine has now produced runs
+R70 → R71 → R72 → R74 → R76 → R77 → R81, each one the same guarded-write ownership check, found one
+guarded write -- or one sibling of a just-fixed one -- further down the stack than the review before
+it looked.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start

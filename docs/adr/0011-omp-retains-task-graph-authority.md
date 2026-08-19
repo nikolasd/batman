@@ -108,8 +108,12 @@ it as if OMP itself had asked to transfer ownership -- which OMP had not. This A
 line is unmoved: Rust still never resolves, merges, or retries anything OMP didn't ask for; it now
 also refuses to let one caller impersonate another caller's *identity* when writing a field this ADR
 always intended to reflect OMP's own intent. See `docs/journal.md` Part XXVII and `REVIEW.md`'s R76
-resolution history for the full mechanism, including the run-lifecycle gap (R77) this fix's own
-review found and that remains open.
+resolution history for the full mechanism, including the run-lifecycle gap this fix's own review
+found (R77) -- since closed by threading the same ownership check into `run/submit`, `run/retry`,
+`run/cancel`, `message/send`, `workspace/acquire`, and `coordination/child/decide` (`docs/journal.md`
+Part XXIX). The workspace-lease surface (`workspace/get`/`release`/`inspect`/`apply`, R81) is the
+remaining registered successor, found the same way one review later: ownership gates lease
+*creation* but not yet the rest of that surface.
 
 ## Links
 

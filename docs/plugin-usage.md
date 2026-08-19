@@ -170,6 +170,18 @@ non-lower revision alone is not enough to re-upsert someone else's task). Creati
 existing row) binds ownership to the presented id unconditionally. The only way to move ownership
 from one instance to another is `reconcile/omp`, which arbitrates the rebind by revision match.
 
+The same connection-bound identity check -- never a caller-presented value -- also gates six
+run-lifecycle methods once a task has an owner: `run/submit`, `run/retry`, `run/cancel`,
+`message/send`, `workspace/acquire`, and `child/decide` (R77). Each is refused `-32602` if the
+connected instance does not own the run's task; `run/retry` and `message/send` derive the task to
+check from the *target run's own stored row* (the prior run's `taskId`, or the message's `runId`'s
+owning task), never from a client-supplied field, so a caller cannot launder ownership by asserting
+a task it does happen to own. Because ownership is bound to the connection's own authenticated
+identity rather than to anything the caller asserts, a stale or rotated `ownerClientInstanceId` --
+a session that reconnects under a new `instanceId` without a matching `reconcile/omp` call -- makes
+every one of these six methods, and `task/upsert` itself, refuse `-32602` against a task that same
+session originally created, until `reconcile/omp` rebinds ownership to the new instance id.
+
 ### `task/get`
 
 ```json

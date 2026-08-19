@@ -803,5 +803,6 @@ Generated from [`crates/runtime/src/ipc/mod.rs`](crates/runtime/src/ipc/mod.rs)'
 | Profile and policy fingerprints are key-order independent | `crates/runtime/tests/config.rs`, `crates/runtime/tests/adapter_contract.rs` |
 | Every capture-managed fixture is a scrub/render fixed point | `manifest_fixtures_are_scrub_render_fixed_points` |
 | Capture's `unchanged` flag reflects pre-write bytes, never the write it guards | `crates/runtime/src/conformance/capture.rs` (`persist_fixture_content_*` inline tests) |
+| Run-lifecycle mutations are gated by task ownership | `crates/runtime/tests/orchestration_rpc.rs` |
 
 Run with a test-runner timeout if you suspect a new mutation has regressed the broadcast invariant — the bug manifests as an infinite hang, not a clean failure.
