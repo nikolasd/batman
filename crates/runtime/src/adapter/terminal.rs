@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+use batman_protocol::{RunId, TaskId, WorkerId};
+
 use super::AdapterFuture;
 use super::capability::{
     AdapterCapabilities, ApprovalsCapability, DurabilityCapability, NativeViewCapability,
@@ -15,6 +17,7 @@ use super::capability::{
 };
 use super::error::AdapterError;
 use super::event_sink::AdapterEventSink;
+use super::event_sink::{AdapterEvent, AdapterEventPayload};
 use super::r#trait::{
     Adapter, AdapterMessage, AdapterSnapshot, CancelScope, ProbeResult, StartSpec, VendorSessionRef,
 };
@@ -42,6 +45,13 @@ pub struct TerminalAdapter {
     harness: String,
     /// Optional injected command runner for testing.
     command_runner: Option<Arc<dyn CommandRunner>>,
+    /// The sink and run identity captured at `start` (R95): this adapter
+    /// supervises no process of its own and so never observes a real
+    /// exit; `cancel` emits a synthetic `ProcessExited` through this so
+    /// the registry's settlement watcher frees the run's slot -- without
+    /// it, a terminal-adapter run pinned its slot, the idle timer, and
+    /// unforced shutdown for the life of the process.
+    session: parking_lot::Mutex<Option<(Arc<dyn AdapterEventSink>, RunId, TaskId, WorkerId)>>,
 }
 
 impl TerminalAdapter {
@@ -50,6 +60,7 @@ impl TerminalAdapter {
         TerminalAdapter {
             harness,
             command_runner: None,
+            session: parking_lot::Mutex::new(None),
         }
     }
 
@@ -58,6 +69,7 @@ impl TerminalAdapter {
         TerminalAdapter {
             harness,
             command_runner: Some(command_runner),
+            session: parking_lot::Mutex::new(None),
         }
     }
 }
@@ -93,10 +105,14 @@ impl Adapter for TerminalAdapter {
         })
     }
 
-    fn start(&self, spec: StartSpec, _sink: Arc<dyn AdapterEventSink>) -> AdapterFuture<'_, ()> {
+    fn start(&self, spec: StartSpec, sink: Arc<dyn AdapterEventSink>) -> AdapterFuture<'_, ()> {
         let harness = self.harness.clone();
         let session_name = format!("batman-{}", spec.run_id);
         let command_runner = self.command_runner.clone();
+        // Capture the sink and run identity for `cancel`'s synthetic
+        // settlement (R95) before the fallible spawn: a failed start
+        // never reaches the registry map, so a stale capture is inert.
+        *self.session.lock() = Some((sink, spec.run_id, spec.task_id, spec.worker_id));
         Box::pin(async move {
             // Dispatch based on backend name
             match harness.as_str() {
@@ -206,7 +222,36 @@ impl Adapter for TerminalAdapter {
     }
 
     fn cancel(&self, _scope: CancelScope) -> AdapterFuture<'_, ()> {
-        Box::pin(async move { Err(AdapterError::capability_unsupported("terminal", "cancel")) })
+        // There is no supervised vendor process to kill -- the "worker"
+        // is a terminal pane a human drives. Cancelling means settling:
+        // emit a synthetic ProcessExited so the registry's settlement
+        // watcher evicts this adapter and frees its concurrency slot
+        // (R95). `take()` makes a second cancel a clean no-op.
+        let session = self.session.lock().take();
+        Box::pin(async move {
+            let Some((sink, run_id, task_id, worker_id)) = session else {
+                return Err(AdapterError::capability_unsupported("terminal", "cancel"));
+            };
+            sink.emit(AdapterEvent {
+                run_id,
+                task_id,
+                worker_id,
+                payload: AdapterEventPayload::ProcessExited {
+                    exit_code: None,
+                    signal: Some("cancelled".to_string()),
+                },
+            })
+            .await
+            .map_err(|e| {
+                AdapterError::new(
+                    super::error::AdapterErrorCode::Process,
+                    "terminal",
+                    "cancel",
+                    format!("failed to journal the synthetic exit: {e}"),
+                )
+            })?;
+            Ok(())
+        })
     }
 
     fn snapshot(&self) -> AdapterFuture<'_, AdapterSnapshot> {

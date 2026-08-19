@@ -228,6 +228,63 @@ async fn terminal_adapter_capabilities() {
     assert_eq!(caps.protocol, ProtocolKind::Terminal);
 }
 
+/// R95: this adapter supervises no process of its own and never emits a
+/// real `ProcessExited`, so a terminal-adapter run used to pin its
+/// concurrency slot, the idle timer, and unforced `runtime/shutdown` for
+/// the life of the daemon -- `watch_settlement`'s receiver never fired.
+/// `cancel` must emit a synthetic exit through the sink captured at
+/// `start`, exactly once, and stay a clean unsupported error when the
+/// adapter never started.
+#[tokio::test]
+async fn terminal_adapter_cancel_settles_the_run_with_a_synthetic_exit() {
+    use batman_runtime::adapter::{AdapterEventPayload, CancelScope};
+
+    struct CollectingSink {
+        events: parking_lot::Mutex<Vec<AdapterEvent>>,
+    }
+    impl AdapterEventSink for CollectingSink {
+        fn emit(&self, event: AdapterEvent) -> batman_runtime::adapter::AdapterFuture<'_, u64> {
+            self.events.lock().push(event);
+            Box::pin(async { Ok(0) })
+        }
+    }
+
+    let mut mock = MockCommandRunner::new();
+    mock.push_success();
+    let adapter = TerminalAdapter::with_command_runner("tmux".to_string(), Arc::new(mock));
+    let sink = Arc::new(CollectingSink {
+        events: parking_lot::Mutex::new(Vec::new()),
+    });
+
+    let spec = make_spec();
+    let run_id = spec.run_id;
+    adapter
+        .start(spec, Arc::clone(&sink) as Arc<dyn AdapterEventSink>)
+        .await
+        .expect("start succeeds");
+
+    adapter
+        .cancel(CancelScope::Worker)
+        .await
+        .expect("cancel settles instead of refusing");
+    let events = sink.events.lock().clone();
+    assert_eq!(events.len(), 1, "exactly one synthetic exit: {events:?}");
+    assert_eq!(events[0].run_id, run_id);
+    assert!(
+        matches!(
+            &events[0].payload,
+            AdapterEventPayload::ProcessExited { exit_code: None, signal: Some(signal) }
+                if signal == "cancelled"
+        ),
+        "the synthetic exit must be visibly synthetic: {events:?}"
+    );
+
+    // A second cancel is a clean no-op refusal, never a second exit.
+    let again = adapter.cancel(CancelScope::Worker).await;
+    assert!(again.is_err(), "a settled adapter has nothing to cancel");
+    assert_eq!(sink.events.lock().len(), 1);
+}
+
 /// Null event sink for testing.
 struct NullSink;
 
