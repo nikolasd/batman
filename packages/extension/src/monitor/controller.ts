@@ -129,6 +129,11 @@ export function registerMonitor(pi: ExtensionAPI, ctx: MonitorControllerContext)
 
   pi.on("session_start", async (_event, extCtx) => {
     await connect(extCtx);
+    // Render immediately: a healthy runtime with no runs must show
+    // "No BATMAN runs yet." rather than nothing until an event fires (R56).
+    if (subscribedClient !== undefined) {
+      refresh(extCtx);
+    }
   });
 
   pi.registerCommand(MONITOR_COMMAND_NAME, {
@@ -147,5 +152,9 @@ export function registerMonitor(pi: ExtensionAPI, ctx: MonitorControllerContext)
 
   pi.on("session_shutdown", async () => {
     controller.stop();
+    // Drop the client reference too, exactly as the dead-subscription repair
+    // path in connect() does -- otherwise a later connect() early-returns
+    // into a monitor whose subscription no longer exists (R39).
+    subscribedClient = undefined;
   });
 }

@@ -55,11 +55,30 @@ function createFakeClient(): FakeClient {
   return fake;
 }
 
+function fakeTheme(): unknown {
+  return {
+    boxRound: {
+      topLeft: "╭",
+      topRight: "╮",
+      bottomLeft: "╰",
+      bottomRight: "╯",
+      horizontal: "─",
+      vertical: "│",
+      cross: "┼",
+      teeDown: "┬",
+      teeUp: "┴",
+      teeRight: "├",
+      teeLeft: "┤",
+    },
+    fg: (_color: unknown, text: string) => text,
+  };
+}
+
 function fakeExtensionContext(widgetCalls: unknown[][]): ExtensionContext {
   return {
     sessionManager: { getEntries: () => [] },
     ui: {
-      theme: undefined,
+      theme: fakeTheme(),
       setWidget(...args: unknown[]) {
         widgetCalls.push(args);
       },
