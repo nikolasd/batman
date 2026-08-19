@@ -182,11 +182,17 @@ pub struct RawTextDelta {
 
 /// `SDKResultMessage`. `result` (the run's final answer text) is present
 /// only on the `subtype: "success"` arm; `total_cost_usd`/`usage` are
-/// present on every arm.
+/// present on every arm. `subtype`/`is_error` discriminate the error
+/// arms (`error_max_turns`, `error_during_execution`, ...) — both are
+/// optional because a success arm may omit them (R12).
 #[derive(Debug, Clone, Deserialize)]
 pub struct RawResult {
     #[serde(default)]
     pub result: Option<String>,
+    #[serde(default)]
+    pub subtype: Option<String>,
+    #[serde(default)]
+    pub is_error: Option<bool>,
     pub total_cost_usd: f64,
     pub usage: RawUsage,
 }

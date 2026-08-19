@@ -256,6 +256,23 @@ fn normalize_result(result: RawResult) -> Vec<ClaudeEvent> {
         output_tokens: result.usage.output_tokens,
         cost_usd: Some(result.total_cost_usd),
     })];
+    // A vendor-reported failure (`is_error: true`, subtype
+    // `error_max_turns`/`error_during_execution`/...) must surface as an
+    // explicit unhealthy-protocol event naming the subtype, not be
+    // silently reduced to a usage report -- the same shape the Copilot
+    // adapter emits for a failed stop reason (R12).
+    if result.is_error == Some(true) {
+        let subtype = result.subtype.as_deref().unwrap_or("unreported");
+        events.push(ClaudeEvent::Emit(
+            AdapterEventPayload::ProtocolHealthChanged {
+                healthy: false,
+                detail: Classified {
+                    class: ContentClass::Visible,
+                    value: format!("claude result reported an error: {subtype}"),
+                },
+            },
+        ));
+    }
     if let Some(text) = result.result {
         events.push(ClaudeEvent::Emit(AdapterEventPayload::MessageFinal {
             role: "result".to_string(),
