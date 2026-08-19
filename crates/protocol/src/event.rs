@@ -398,6 +398,12 @@ pub enum RuntimeEvent {
         task_id: TaskId,
         action: String,
         decided_by: Option<DecidedBy>,
+        /// The decision's rationale; present only on `ApprovalDecided`
+        /// events written after R59. Optional in both directions so
+        /// events persisted before the field existed still deserialize.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reason: Option<String>,
     },
     /// A child worker was requested or denied.
     ChildEvent {

@@ -206,6 +206,20 @@ DROP TABLE policy_violations;
 ALTER TABLE policy_violations_new RENAME TO policy_violations;
 ";
 
+/// Migration 9: persists the approval decision's rationale (R59) and
+/// repairs rows R34 left behind: `decided_by` was written via
+/// `serde_json::to_string`, storing the JSON-quoted token (`"human"` with
+/// quotes), so equality against the bare token matched nothing. The
+/// `UPDATE` strips exactly one leading and trailing quote from affected
+/// rows; `reason` stays nullable -- decisions recorded before this
+/// migration have no rationale and are never backfilled with a
+/// fabricated one.
+const MIGRATION_9: &str = "
+ALTER TABLE approvals ADD COLUMN reason TEXT;
+UPDATE approvals SET decided_by = SUBSTR(decided_by, 2, LENGTH(decided_by) - 2)
+  WHERE decided_by LIKE '\"%\"';
+";
+
 /// Opens `path` as a private (mode `0600`) SQLite database, configures its
 /// PRAGMAs (`journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout=5000`,
 /// `synchronous=FULL`), and migrates it to the latest schema. Migrations
@@ -241,6 +255,7 @@ fn migration_list() -> Migrations<'static> {
         M::up(MIGRATION_6),
         M::up(MIGRATION_7),
         M::up(MIGRATION_8),
+        M::up(MIGRATION_9),
     ])
 }
 
@@ -450,5 +465,90 @@ mod tests {
             fk_violations.is_empty(),
             "foreign_key_check must report no violations after migration 8: {fk_violations:?}"
         );
+    }
+
+    /// Exercises migration 9: a pre-existing approval row whose
+    /// `decided_by` was written JSON-quoted by R34's bug is rewritten to
+    /// the bare token, and the new `reason` column exists and is NULL for
+    /// pre-migration rows.
+    #[test]
+    fn migration_9_adds_reason_and_repairs_quoted_decided_by() {
+        let mut conn = Connection::open_in_memory().expect("in-memory db");
+
+        migration_list()
+            .to_version(&mut conn, 8)
+            .expect("migrate to v8");
+
+        // Seed parents (FK order) and two approvals: one quoted (the bug),
+        // one undecided.
+        conn.execute(
+            "INSERT INTO worker_profiles (id, fingerprint, adapter, model, permission_envelope)
+             VALUES ('wp-1', 'sha256:fake', 'fake', 'test', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (task_id, project_id, owner_client_instance_id, revision, created_at, updated_at)
+             VALUES ('t-1', 'p-1', 'omp-1', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO workers (worker_id, project_id, profile_id, created_at)
+             VALUES ('w-1', 'p-1', 'wp-1', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO runs (run_id, task_id, worker_id, state, flags_degraded_control, flags_needs_reconciliation,
+               flags_protocol_unhealthy, flags_policy_quarantined, flags_workspace_dirty, flags_children_active,
+               vendor_session_id, created_at)
+             VALUES ('r-1', 't-1', 'w-1', 'queued', 0, 0, 0, 0, 0, 0, NULL, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO approvals (approval_id, run_id, task_id, action, arguments, human_required,
+               policy_reason, created_at, decided_at, decision, decided_by)
+             VALUES ('a-decided', 'r-1', 't-1', 'write', '{}', 1, 'policy',
+               '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z', 'approve', '\"human\"')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO approvals (approval_id, run_id, task_id, action, arguments, human_required,
+               policy_reason, created_at)
+             VALUES ('a-pending', 'r-1', 't-1', 'write', '{}', 0, 'policy', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        migration_list()
+            .to_version(&mut conn, 9)
+            .expect("migrate to v9");
+
+        // The quoted token was repaired to the bare form.
+        let (decided_by, reason): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT decided_by, reason FROM approvals WHERE approval_id = 'a-decided'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(decided_by.as_deref(), Some("human"));
+        assert!(
+            reason.is_none(),
+            "pre-migration rows are never backfilled with a fabricated reason"
+        );
+
+        // The undecided row is untouched (NULL decided_by stays NULL).
+        let decided_by: Option<String> = conn
+            .query_row(
+                "SELECT decided_by FROM approvals WHERE approval_id = 'a-pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(decided_by.is_none());
     }
 }

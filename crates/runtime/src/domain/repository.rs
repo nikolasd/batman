@@ -1240,6 +1240,7 @@ impl<'c> DomainRepository<'c> {
             task_id: approval.task_id,
             action: approval.action.clone(),
             decided_by: None,
+            reason: None,
         };
         let approval = approval.clone();
         self.append_and_apply(
@@ -1337,13 +1338,13 @@ impl<'c> DomainRepository<'c> {
             task_id,
             action,
             decided_by: Some(decided_by),
+            reason: Some(reason.to_string()),
         };
         let decision = decision.to_string();
         let reason = reason.to_string();
         let principal_instance_id = principal_instance_id.to_string();
         self.append_and_apply(&event, Some(task_id), None, Some(run_id), move |tx| {
             let now = Timestamp::now();
-            let _ = reason;
             // Ownership is arbitrated here, inside the guarded transaction,
             // not by a caller-side snapshot read: the database actor
             // interleaves whole `run_domain_op` closures, so a
@@ -1373,12 +1374,14 @@ impl<'c> DomainRepository<'c> {
                 }
             }
             let affected = tx.execute(
-                "UPDATE approvals SET decision = ?1, decided_at = ?2, decided_by = ?3
-                 WHERE approval_id = ?4 AND decision IS NULL",
+                "UPDATE approvals SET decision = ?1, decided_at = ?2, decided_by = ?3, reason = ?4
+                 WHERE approval_id = ?5 AND decision IS NULL",
                 rusqlite::params![
                     decision,
                     now.as_str(),
-                    serde_json::to_string(&decided_by).expect("DecidedBy always serializes"),
+                    // The bare wire token, never the JSON-quoted form (R34).
+                    decided_by.as_str(),
+                    reason,
                     approval_id.to_string(),
                 ],
             )?;
