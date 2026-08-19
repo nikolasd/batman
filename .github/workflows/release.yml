@@ -15,31 +15,54 @@ permissions:
   contents: read
 
 jobs:
-  # Fails fast on a mismatched tag before any build or conformance work. A
-  # workflow_dispatch run can name a tag in its `ref` input -- that case asserts
-  # the same agreement a tag push does; a dispatch on a branch has no tag to match.
+  # Fails fast on a mismatched tag before any build or conformance work. It also
+  # decides whether this run publishes a release:
+  #   - a tag push always publishes;
+  #   - a workflow_dispatch run publishes iff its `ref` input is a v* release tag
+  #     whose name matches the checked-out version; a branch ref is a dry run.
+  # It outputs the effective tag so the `release` job can create and upload it.
   version-gate:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.read.outputs.version }}
+      is_tag: ${{ steps.read.outputs.is_tag }}
+      tag: ${{ steps.read.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
       - id: read
-        name: Read the release version and check the tag
+        name: Read the release version and decide if this is a tag release
         run: |
-          # workflow_dispatch has no ref of its own -- it checks out the ref the
-          # dispatcher named. Only assert tag-version agreement when that ref is a
-          # tag; a branch run (e.g. a CI check against main) has no tag to match.
-          REF="${{ inputs.ref }}"
-          if [ "${GITHUB_REF_TYPE}" != "tag" ] && [ -n "$REF" ] && [ "$REF" = "v${VERSION}" ]; then
-            echo "GITHUB_REF_TYPE=tag" >> "$GITHUB_ENV"
-            echo "GITHUB_REF_NAME=v${VERSION}" >> "$GITHUB_ENV"
+          VERSION=$(jq -r .version packages/extension/package.json)
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "packages/extension/package.json has no version" >&2
+            exit 1
           fi
-          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
-            echo "tag ${GITHUB_REF_NAME} does not match packages/extension/package.json version ${VERSION} (expected v${VERSION})" >&2
+          # The ref we are releasing from: the dispatcher's input on a manual
+          # run, otherwise the pushed ref (always a tag, given the trigger above).
+          EVENT="${{ github.event_name }}"
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            REF="${{ inputs.ref }}"
+          else
+            REF="${{ github.ref_name }}"
+          fi
+          # A run is a tag release if it is a tag push, or a dispatch whose ref is
+          # a v* release tag. A branch ref (e.g. main or v2-dev) is a dry run.
+          TAG_RE='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          IS_TAG="false"
+          TAG=""
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] || [[ "$REF" =~ $TAG_RE ]]; then
+            IS_TAG="true"
+            TAG="$REF"
+          fi
+          if [ "$IS_TAG" = "true" ] && [ "$REF" != "v${VERSION}" ]; then
+            echo "tag ${REF} does not match packages/extension/package.json version ${VERSION} (expected v${VERSION})" >&2
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_tag=$IS_TAG" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
   # `release/targets.json` is the single source of truth for the target set.
   # The matrix is derived from it so a target can never be added here and
@@ -51,6 +74,8 @@ jobs:
       matrix: ${{ steps.read.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
       - id: read
         name: Read release/targets.json
         run: |
@@ -64,6 +89,8 @@ jobs:
       matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -117,6 +144,8 @@ jobs:
       BATMAN_DISABLE_VENDOR_CLI: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -157,6 +186,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -192,14 +223,15 @@ jobs:
   release:
     needs: [build, conformance, package-set, version-gate]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: ${{ needs.version-gate.outputs.is_tag == 'true' }}
     permissions:
       # Uploading release assets needs a write-scoped token; the workflow
-      # default is `contents: read`, same pattern `build` uses above for
-      # attestations.
+      # default is `contents: read`.
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
 
       - name: Download all leaf packages
         uses: actions/download-artifact@v4
@@ -234,9 +266,10 @@ jobs:
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version-gate.outputs.tag }}
         run: |
           # The tag push that triggers this workflow does not itself create a
           # GitHub Release, so ensure one exists before uploading assets to it.
-          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" ||
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
-          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber release-assets/*
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" ||
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber release-assets/*
