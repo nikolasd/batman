@@ -242,19 +242,21 @@ impl ScopeTokenStore {
     /// the vendor process or a descendant of it (including when this
     /// platform cannot report trustworthy ancestry at all).
     pub fn verify(&self, token: &str, peer_pid: Option<i32>) -> Result<ScopedRun, VerifyError> {
+        let now = Timestamp::now();
         let record = {
-            let tokens = self
+            let mut tokens = self
                 .tokens
                 .lock()
                 .expect("scope token mutex is never poisoned");
+            // Sweep every expired record while we hold the lock: a run
+            // whose adapter died before its settlement hook would
+            // otherwise leak its record for the process lifetime (R96) --
+            // `revoke_for_run` only fires from settlement paths. Mirrors
+            // `RateLimiter::check`'s sweep; self-limiting the same way.
+            tokens.retain(|_, record| now <= record.expires_at);
             tokens.get(token).cloned()
         };
         let record = record.ok_or(VerifyError::InvalidToken)?;
-
-        let now = Timestamp::now();
-        if now > record.expires_at {
-            return Err(VerifyError::InvalidToken);
-        }
 
         let Some(peer_pid) = peer_pid else {
             return Err(VerifyError::OutsideAncestry);
@@ -312,6 +314,18 @@ impl ScopeTokenVerifier {
 impl WorkerCredentialVerifier for ScopeTokenVerifier {
     fn verify(&self, scope_token: &str, peer_pid: Option<i32>) -> Result<ScopedRun, VerifyError> {
         self.store.verify(scope_token, peer_pid)
+    }
+}
+
+impl ScopeTokenStore {
+    /// The number of live records. Test-only: exists so the expiry sweep
+    /// is observable.
+    #[cfg(test)]
+    pub(crate) fn tracked_records(&self) -> usize {
+        self.tokens
+            .lock()
+            .expect("scope token mutex is never poisoned")
+            .len()
     }
 }
 
@@ -386,6 +400,35 @@ mod tests {
 
         let err = store.verify(&token, Some(100)).unwrap_err();
         assert!(matches!(err, VerifyError::InvalidToken));
+    }
+
+    /// R96: a run whose adapter died before its settlement hook never
+    /// gets `revoke_for_run`, so its expired record would leak for the
+    /// process lifetime. Any later `verify` -- for any token -- must
+    /// sweep drained records, mirroring `RateLimiter::check` (R65).
+    #[test]
+    fn an_expired_record_is_swept_by_any_later_verify() {
+        let store = store_with(vec![]);
+        let _leaked = store.mint(binding(
+            RunId::new(),
+            100,
+            Timestamp::parse("2000-01-01T00:00:00Z").unwrap(),
+        ));
+        let live = store.mint(binding(
+            RunId::new(),
+            200,
+            Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
+        ));
+        assert_eq!(store.tracked_records(), 2);
+
+        store
+            .verify(&live, Some(200))
+            .expect("the live token still verifies");
+        assert_eq!(
+            store.tracked_records(),
+            1,
+            "the expired record must be swept, not leaked"
+        );
     }
 
     #[test]
