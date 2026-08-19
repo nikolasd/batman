@@ -7731,6 +7731,13 @@ ever see a plain string.`,
                       type: "null"
                     }
                   ]
+                },
+                reason: {
+                  description: "The decision's rationale; present only on `ApprovalDecided`\nevents written after R59. Optional in both directions so\nevents persisted before the field existed still deserialize.",
+                  type: [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               additionalProperties: false,
