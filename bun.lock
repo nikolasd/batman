@@ -8,25 +8,9 @@
         "@biomejs/biome": "2.5.7",
       },
     },
-    "packages/batman-darwin-arm64": {
-      "name": "@nikolasd/batman-darwin-arm64",
-      "version": "0.1.0",
-    },
-    "packages/batman-darwin-x64": {
-      "name": "@nikolasd/batman-darwin-x64",
-      "version": "0.1.0",
-    },
-    "packages/batman-linux-arm64-gnu": {
-      "name": "@nikolasd/batman-linux-arm64-gnu",
-      "version": "0.1.0",
-    },
-    "packages/batman-linux-x64-gnu": {
-      "name": "@nikolasd/batman-linux-x64-gnu",
-      "version": "0.1.0",
-    },
     "packages/extension": {
       "name": "@nikolasd/batman",
-      "version": "0.1.0",
+      "version": "0.4.0",
       "devDependencies": {
         "@nikolasd/batman-protocol": "workspace:*",
         "@oh-my-pi/pi-coding-agent": ">=17.0.7 <18",
@@ -34,12 +18,6 @@
         "ajv": "8.17.1",
         "typescript": "latest",
         "zod": "^4",
-      },
-      "optionalDependencies": {
-        "@nikolasd/batman-darwin-arm64": "workspace:*",
-        "@nikolasd/batman-darwin-x64": "workspace:*",
-        "@nikolasd/batman-linux-arm64-gnu": "workspace:*",
-        "@nikolasd/batman-linux-x64-gnu": "workspace:*",
       },
       "peerDependencies": {
         "@oh-my-pi/pi-coding-agent": ">=17.0.7 <18",
@@ -163,14 +141,6 @@
     "@mozilla/readability": ["@mozilla/readability@0.6.0", "", {}, "sha512-juG5VWh4qAivzTAeMzvY9xs9HY5rAcr2E4I7tiSSCokRFi7XIZCAu92ZkSTsIj1OPceCifL3cpfteP3pDT9/QQ=="],
 
     "@nikolasd/batman": ["@nikolasd/batman@workspace:packages/extension"],
-
-    "@nikolasd/batman-darwin-arm64": ["@nikolasd/batman-darwin-arm64@workspace:packages/batman-darwin-arm64"],
-
-    "@nikolasd/batman-darwin-x64": ["@nikolasd/batman-darwin-x64@workspace:packages/batman-darwin-x64"],
-
-    "@nikolasd/batman-linux-arm64-gnu": ["@nikolasd/batman-linux-arm64-gnu@workspace:packages/batman-linux-arm64-gnu"],
-
-    "@nikolasd/batman-linux-x64-gnu": ["@nikolasd/batman-linux-x64-gnu@workspace:packages/batman-linux-x64-gnu"],
 
     "@nikolasd/batman-protocol": ["@nikolasd/batman-protocol@workspace:packages/protocol-ts"],
 
