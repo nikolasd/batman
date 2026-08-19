@@ -11,13 +11,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use batman_protocol::{
-    ApprovalId, ArtifactId, BatmanMethod, BinarySource, Classified, ClientAuth, ClientCapabilities,
-    ClientInfo, ClientPrincipalSummary, ClientRole, ContentClass, DiagnosticLevel, DisplayBackend,
-    DisplayConfig, DisplayStatus, EventEnvelope, EventSource, InitializeParams, InitializeResult,
-    JsonRpcError, JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
-    MessageId, OperationId, ProjectId, ProtocolVersion, RepositoryIdentity, RequestId, RunId,
-    RuntimeCapabilities, RuntimeEvent, RuntimeInfo, RuntimeStatus, TaskId, Timestamp, VersionRange,
-    WorkerId,
+    ApplyResult, ApprovalId, Artifact, ArtifactFetchRequest, ArtifactFetchResult, ArtifactId,
+    ArtifactKind, ArtifactListRequest, ArtifactListResult, BatmanMethod, BinarySource, Classified,
+    ClientAuth, ClientCapabilities, ClientInfo, ClientPrincipalSummary, ClientRole, ContentClass,
+    DiagnosticLevel, DisplayBackend, DisplayConfig, DisplayStatus, EventEnvelope, EventSource,
+    InitializeParams, InitializeResult, InspectResult, JsonRpcError, JsonRpcErrorResponse,
+    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, MessageId, OperationId, ProjectId,
+    ProtocolVersion, RepositoryIdentity, RequestId, RunId, RuntimeCapabilities, RuntimeEvent,
+    RuntimeInfo, RuntimeStatus, TaskId, Timestamp, VersionRange, WorkerId,
 };
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
@@ -243,6 +244,14 @@ fn export_bindings(dir: &Path) -> Result<()> {
         DisplayBackend,
         DisplayConfig,
         DisplayStatus,
+        Artifact,
+        ArtifactKind,
+        ArtifactListRequest,
+        ArtifactListResult,
+        ArtifactFetchRequest,
+        ArtifactFetchResult,
+        InspectResult,
+        ApplyResult,
     );
 
     Ok(())
@@ -476,6 +485,61 @@ fn check_version_coherence(root: &Path) -> Result<()> {
              packages/extension/package.json declares {:?}; \
              update crates/protocol/Cargo.toml to match",
             protocol_version,
+            expected,
+        );
+    }
+
+    // The OMP marketplace catalog is what users actually install from; a
+    // stale version here ships silently because nothing else reads it.
+    // Both `metadata.version` and the `batman` plugin entry's `version`
+    // must equal the extension version (R64).
+    let marketplace_path = root.join(".claude-plugin/marketplace.json");
+    let raw = fs::read_to_string(&marketplace_path)
+        .with_context(|| format!("reading {}", marketplace_path.display()))?;
+    let marketplace: serde_json::Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing {}", marketplace_path.display()))?;
+    let metadata_version = marketplace
+        .pointer("/metadata/version")
+        .and_then(serde_json::Value::as_str)
+        .with_context(|| {
+            format!(
+                "{} has no string `metadata.version` field",
+                marketplace_path.display()
+            )
+        })?;
+    if metadata_version != expected {
+        bail!(
+            "version drift: {} declares metadata.version {:?} but \
+             packages/extension/package.json declares {:?}; \
+             update .claude-plugin/marketplace.json to match",
+            marketplace_path.display(),
+            metadata_version,
+            expected,
+        );
+    }
+    let plugin_version = marketplace
+        .pointer("/plugins")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|plugins| {
+            plugins
+                .iter()
+                .find(|p| p.get("name").and_then(serde_json::Value::as_str) == Some("batman"))
+        })
+        .and_then(|p| p.get("version"))
+        .and_then(serde_json::Value::as_str)
+        .with_context(|| {
+            format!(
+                "{} has no `batman` plugin entry with a string `version` field",
+                marketplace_path.display()
+            )
+        })?;
+    if plugin_version != expected {
+        bail!(
+            "version drift: {}'s `batman` plugin entry declares version {:?} but \
+             packages/extension/package.json declares {:?}; \
+             update .claude-plugin/marketplace.json to match",
+            marketplace_path.display(),
+            plugin_version,
             expected,
         );
     }

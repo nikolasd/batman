@@ -15,9 +15,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DisplayBackend, DisplayConfig, DisplayStatus, EventEnvelope, InitializeParams,
-    InitializeResult, JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
-    RuntimeEvent, RuntimeStatus,
+    ApplyResult, ArtifactFetchResult, ArtifactListResult, DisplayBackend, DisplayConfig,
+    DisplayStatus, EventEnvelope, InitializeParams, InitializeResult, InspectResult,
+    JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, RuntimeEvent,
+    RuntimeStatus,
 };
 
 /// Root schema document referencing every exported request/result/event
@@ -38,6 +39,10 @@ pub struct ProtocolDocument {
     json_rpc_error_response: JsonRpcErrorResponse,
     json_rpc_notification: JsonRpcNotification<serde_json::Value>,
     runtime_status: RuntimeStatus,
+    artifact_list_result: ArtifactListResult,
+    artifact_fetch_result: ArtifactFetchResult,
+    inspect_result: InspectResult,
+    apply_result: ApplyResult,
 }
 
 /// Renders the [`ProtocolDocument`] schema as pretty JSON with a trailing

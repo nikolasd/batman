@@ -39,6 +39,18 @@
     },
     "runtimeStatus": {
       "$ref": "#/$defs/RuntimeStatus"
+    },
+    "artifactListResult": {
+      "$ref": "#/$defs/ArtifactListResult"
+    },
+    "artifactFetchResult": {
+      "$ref": "#/$defs/ArtifactFetchResult"
+    },
+    "inspectResult": {
+      "$ref": "#/$defs/InspectResult"
+    },
+    "applyResult": {
+      "$ref": "#/$defs/ApplyResult"
     }
   },
   "required": [
@@ -53,7 +65,11 @@
     "jsonRpcResponse",
     "jsonRpcErrorResponse",
     "jsonRpcNotification",
-    "runtimeStatus"
+    "runtimeStatus",
+    "artifactListResult",
+    "artifactFetchResult",
+    "inspectResult",
+    "applyResult"
   ],
   "$defs": {
     "InitializeParams": {
@@ -2562,6 +2578,196 @@
         "override",
         "package",
         "unknown"
+      ]
+    },
+    "ArtifactListResult": {
+      "description": "Result of listing artifacts.",
+      "type": "object",
+      "properties": {
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Artifact"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "artifacts"
+      ]
+    },
+    "Artifact": {
+      "description": "Metadata for a stored artifact.",
+      "type": "object",
+      "properties": {
+        "artifactId": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "byteLength": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "mediaType": {
+          "type": "string"
+        },
+        "storagePath": {
+          "description": "The relative storage path under the artifacts directory.",
+          "type": "string"
+        },
+        "runId": {
+          "description": "The run ID that produced this artifact, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "kind",
+        "sha256",
+        "byteLength",
+        "mediaType",
+        "storagePath"
+      ]
+    },
+    "ArtifactKind": {
+      "description": "The kind of an artifact.",
+      "type": "string",
+      "enum": [
+        "patch",
+        "commitList",
+        "conflictReport",
+        "workspaceManifest"
+      ]
+    },
+    "ArtifactFetchResult": {
+      "description": "Result of fetching an artifact.",
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/Artifact"
+        },
+        "contentBase64": {
+          "description": "Base64-encoded chunk of artifact bytes; callers decode explicitly.\nCapped at 256 KiB per call.",
+          "type": "string"
+        },
+        "nextOffset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "artifact",
+        "contentBase64",
+        "complete"
+      ]
+    },
+    "InspectResult": {
+      "description": "Evidence captured by `inspect`: a binary-safe patch, commit list, and\ndirty/untracked state summary.",
+      "type": "object",
+      "properties": {
+        "leaseId": {
+          "type": "string"
+        },
+        "patchArtifactId": {
+          "$ref": "#/$defs/ArtifactId"
+        },
+        "commitCount": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "commitIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dirtyFileCount": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "untrackedFileCount": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "baseRevision": {
+          "type": "string"
+        },
+        "currentRevision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "leaseId",
+        "patchArtifactId",
+        "commitCount",
+        "commitIds",
+        "dirtyFileCount",
+        "untrackedFileCount",
+        "baseRevision"
+      ]
+    },
+    "ApplyResult": {
+      "description": "Result of applying a workspace change.",
+      "type": "object",
+      "properties": {
+        "leaseId": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "conflictArtifactId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "targetRevisionAfter": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "errorCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "leaseId",
+        "success"
       ]
     }
   }
