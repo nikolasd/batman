@@ -10,7 +10,7 @@ mod repository;
 mod transitions;
 
 pub use repository::{
-    Committed, DomainError, DomainRepository, PolicyViolationSnapshot, RunFlag,
+    ChildDecision, Committed, DomainError, DomainRepository, PolicyViolationSnapshot, RunFlag,
     broadcast_committed, embed_envelope, take_envelope,
 };
 pub use transitions::{TransitionError, check_transition};

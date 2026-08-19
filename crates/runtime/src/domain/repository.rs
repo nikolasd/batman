@@ -162,6 +162,24 @@ impl RunFlag {
     }
 }
 
+/// OMP's answer to a pending child-worker request
+/// ([`DomainRepository::decide_child`]): acceptance binds the OMP-created
+/// child identifiers; denial carries the operator-facing reason. Making
+/// the two arms one type keeps their field requirements unrepresentable
+/// to mix up (an acceptance without child ids, a denial with them). Not a
+/// protocol type -- the journaled `ChildEvent`'s wire shape is unaffected.
+#[derive(Debug, Clone)]
+pub enum ChildDecision {
+    Accept {
+        child_task_id: batman_protocol::TaskId,
+        child_worker_id: batman_protocol::WorkerId,
+        child_run_id: RunId,
+    },
+    Deny {
+        reason: String,
+    },
+}
+
 /// Embeds `envelope` into `value` under a reserved key so it survives the
 /// `run_domain_op` boundary -- whose closures are constrained to return a
 /// plain [`Value`] -- back out to the async service layer, which broadcasts
@@ -1869,11 +1887,7 @@ impl<'c> DomainRepository<'c> {
     pub fn decide_child(
         &mut self,
         parent_run_id: RunId,
-        accepted: bool,
-        child_task_id: Option<TaskId>,
-        child_worker_id: Option<WorkerId>,
-        child_run_id: Option<RunId>,
-        reason: Option<&str>,
+        decision: ChildDecision,
         principal_instance_id: Option<&str>,
     ) -> Result<Committed, DomainError> {
         let (from_str, task_id_str, worker_id_str): (String, String, String) = self
@@ -1937,10 +1951,25 @@ impl<'c> DomainRepository<'c> {
             id: worker_id_str.clone(),
         })?;
 
-        let kind = if accepted {
-            RuntimeEventKind::ChildWorkerRequested
-        } else {
-            RuntimeEventKind::ChildWorkerRequestDenied
+        let (kind, child_task_id, child_worker_id, child_run_id, reason) = match decision {
+            ChildDecision::Accept {
+                child_task_id,
+                child_worker_id,
+                child_run_id,
+            } => (
+                RuntimeEventKind::ChildWorkerRequested,
+                Some(child_task_id),
+                Some(child_worker_id),
+                Some(child_run_id),
+                None,
+            ),
+            ChildDecision::Deny { reason } => (
+                RuntimeEventKind::ChildWorkerRequestDenied,
+                None,
+                None,
+                None,
+                Some(reason),
+            ),
         };
         let event = RuntimeEvent::ChildEvent {
             kind,
@@ -1948,7 +1977,7 @@ impl<'c> DomainRepository<'c> {
             child_task_id,
             child_worker_id,
             child_run_id,
-            reason: reason.map(str::to_string),
+            reason,
         };
         let principal_instance_id = principal_instance_id.map(str::to_string);
         self.append_and_apply(

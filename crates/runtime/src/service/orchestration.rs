@@ -2166,11 +2166,11 @@ impl OrchestrationService {
                         let mut repo = DomainRepository::new(conn, project_id);
                         repo.decide_child(
                             parent_run_id,
-                            true,
-                            Some(child_task_id),
-                            Some(child_worker_id),
-                            Some(child_run_id),
-                            None,
+                            crate::domain::ChildDecision::Accept {
+                                child_task_id,
+                                child_worker_id,
+                                child_run_id,
+                            },
                             Some(&principal_instance_id),
                         )
                         .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
@@ -2188,11 +2188,7 @@ impl OrchestrationService {
                         let mut repo = DomainRepository::new(conn, project_id);
                         repo.decide_child(
                             parent_run_id,
-                            false,
-                            None,
-                            None,
-                            None,
-                            Some(&reason),
+                            crate::domain::ChildDecision::Deny { reason },
                             Some(&principal_instance_id),
                         )
                         .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
