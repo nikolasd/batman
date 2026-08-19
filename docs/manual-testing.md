@@ -649,6 +649,7 @@ real adapter, so you'll only ever see the run id, `state` (always `queued` here)
 | `MessageEvent` | `"${kind} ${deliveryState}"` (e.g. `"messageRecorded recorded"`) |
 | `ApprovalEvent` | `"approval requested: <action>"` or `"approval decided"` |
 | `ChildEvent` | `"child worker requested"`, `"child worker accepted"`, or `"child worker request denied"` |
+| `AdapterProtocolHealthEvent` | `"protocol healthy"` or `"protocol unhealthy: <detail>"` — the vendor's own error subtype/stop reason when one was journaled |
 
 The widget caps at `MAX_WIDGET_ROWS` rows (now 7) — not 10 — because the host's `ctx.ui.setWidget`
 truncates array-content widgets at 10 total *lines*, and the border chrome (2 lines, plus a

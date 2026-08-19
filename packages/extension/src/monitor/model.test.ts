@@ -257,6 +257,38 @@ test("an approvalRequested event increments pendingApprovalCount and a decided o
 
 // ----------------------------------------- secret/thinking content never enters the model
 
+test("a protocol-health event renders its detail, not a constant label (R91)", () => {
+  const state = reduceEvent(
+    EMPTY_MONITOR_STATE,
+    envelope({
+      runId: "run-1",
+      event: {
+        type: "adapterProtocolHealthEvent",
+        payload: {
+          runId: "run-1",
+          taskId: "task-1",
+          workerId: "worker-1",
+          healthy: false,
+          detail: "error result: rate_limited",
+        },
+      },
+    } as Partial<EventEnvelope> & { event: EventEnvelope["event"] }),
+  );
+  expect(state.rows["run-1"]?.latestActivity).toBe("protocol unhealthy: error result: rate_limited");
+
+  const healthyAgain = reduceEvent(
+    state,
+    envelope({
+      runId: "run-1",
+      event: {
+        type: "adapterProtocolHealthEvent",
+        payload: { runId: "run-1", taskId: "task-1", workerId: "worker-1", healthy: true, detail: null },
+      },
+    } as Partial<EventEnvelope> & { event: EventEnvelope["event"] }),
+  );
+  expect(healthyAgain.rows["run-1"]?.latestActivity).toBe("protocol healthy");
+});
+
 test("only the sanitized fields the RuntimeEvent union carries ever reach a row -- no raw message payload, thinking, or secret content", () => {
   const messageEvent = envelope({
     runId: "run-1",

@@ -273,6 +273,18 @@ function eventPatch(envelope: EventEnvelope): EventPatch | undefined {
         latestActivity: `usage ${inputTokens} in / ${outputTokens} out${cost}`,
       };
     }
+    case "adapterProtocolHealthEvent": {
+      // R91: R12/R42/R57 invest in a precise detail (the vendor's error
+      // subtype, the raw stop reason) -- render it, not a constant label.
+      const { healthy, detail } = event.payload;
+      const label = healthy ? "protocol healthy" : "protocol unhealthy";
+      return {
+        runId: event.payload.runId,
+        taskId: event.payload.taskId,
+        workerId: event.payload.workerId,
+        latestActivity: detail === null || detail === undefined ? label : `${label}: ${detail}`,
+      };
+    }
     case "adapterArtifactEvent": {
       return {
         runId: event.payload.runId,

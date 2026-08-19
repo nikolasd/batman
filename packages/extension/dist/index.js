@@ -11683,6 +11683,16 @@ function eventPatch(envelope) {
         latestActivity: `usage ${inputTokens} in / ${outputTokens} out${cost}`
       };
     }
+    case "adapterProtocolHealthEvent": {
+      const { healthy, detail } = event.payload;
+      const label = healthy ? "protocol healthy" : "protocol unhealthy";
+      return {
+        runId: event.payload.runId,
+        taskId: event.payload.taskId,
+        workerId: event.payload.workerId,
+        latestActivity: detail === null || detail === undefined ? label : `${label}: ${detail}`
+      };
+    }
     case "adapterArtifactEvent": {
       return {
         runId: event.payload.runId,

@@ -727,8 +727,24 @@ fn apply_and_render(
         RuntimeEvent::AdapterNestedWorkerEvent { .. } => {
             (None, Some("nested worker observed".to_string()))
         }
-        RuntimeEvent::AdapterProtocolHealthEvent { .. } => {
-            (None, Some("protocol health changed".to_string()))
+        RuntimeEvent::AdapterProtocolHealthEvent {
+            healthy, detail, ..
+        } => {
+            // R12/R42/R57 invest in a precise detail (the vendor's error
+            // subtype, the raw stop reason); surface it instead of a
+            // constant label (R91).
+            let label = if *healthy {
+                "protocol healthy"
+            } else {
+                "protocol unhealthy"
+            };
+            (
+                None,
+                Some(match detail {
+                    Some(detail) => format!("{label}: {detail}"),
+                    None => label.to_string(),
+                }),
+            )
         }
         RuntimeEvent::WorkspaceEvent { kind, .. } => {
             (None, Some(format!("workspace {}", wire_str(kind))))
