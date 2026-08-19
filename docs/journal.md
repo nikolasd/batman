@@ -3348,6 +3348,150 @@ dispatched with `params` only, no `principal`, so any connected client can submi
 a run on a task it doesn't own without ever needing to seize the task first. Registered the same day
 as **R77**, still in flight as this Part is written.
 
+## Part XXVIII — Two clocks, one flag: the quarantine race that closed into three more findings
+
+R75, found during Part XXV's review of R73, was the same check-then-act shape one service over,
+but split across *two* clocks on the same flag rather than one. `ViolationService`'s
+`record_nested_worker`/`record_cost_ceiling` computed `already_actioned = flags.policy_quarantined
+|| state.is_terminal()` in their own round trip -- via the now-deleted `load_run_state_and_flags`
+-- a whole commit before `record_policy_violation`'s journal `INSERT` landed, and `apply_action`'s
+`if already_actioned { return Ok(()); }` trusted that stale read. `decide`'s `"release"` path had
+the mirror shape one level up: `resolve_policy_violation` and an unconditional
+`set_quarantined(run_id, false)` were two separate commits, so a violation that quarantined the run
+*between* them was immediately wiped by the release's second write, with no way for that write to
+know a fresh violation existed. `06c6522`'s two RED tests pinned both directions with the same
+`tokio::join!(biased; ...)` technique Part XIX introduced: the DB actor is a single-threaded, strictly
+FIFO consumer of whole closures, so declaring the racing future first fixes its round-trip-`k`
+ahead of the other's round-trip-`k` at every step, with no sleeps or spawns needed.
+`a_release_landing_mid_record_does_not_suppress_the_fresh_quarantine` RED'd the record-side hole:
+the fresh violation's own stale `already_actioned = true`, borrowed from a run an *older* violation
+had already quarantined, made `apply_action` skip re-quarantining while a concurrent release of
+that older violation cleared the flag underneath it. `a_release_does_not_unquarantine_a_violation_
+recorded_after_its_resolve` RED'd the release-side hole from the other direction: the fresh
+violation's `set_quarantined(true)` landed between the release's resolve commit and its own
+unconditional clear, which then clobbered it. A third, non-racing test,
+`a_plain_release_with_no_concurrent_violation_clears_quarantine`, stayed green throughout as the
+control. Five consecutive runs showed no flakes in either direction.
+
+`b1d469f`'s fix moved both clocks into the writes they were supposed to guard.
+`record_policy_violation` now re-reads `flags_policy_quarantined` and run state on its own
+connection immediately before the same closure's journal `INSERT` -- closure-granularity atomicity,
+the same boundary R73 established for `set_run_flag` -- and returns a `PolicyViolationRecordOutcome`
+carrying that `already_actioned` discriminator alongside the commit, instead of the service reading
+it a whole round trip earlier from the deleted helper. The release path no longer performs an
+independent second commit at all: the new `DomainRepository::release_quarantine` reads the current
+flags plus a live `COUNT(*) ... WHERE resolution IS NULL` over the run's remaining policy violations
+-- `resolve_policy_violation`'s own resolution has already committed by this point in the same
+transaction sequence, so it is never counted -- and refuses to clear the flag while another
+violation is still open. A release targeting one violation can therefore never silently
+un-quarantine a run for a different, still-open one. `set_run_flag` and `release_quarantine` now
+share extracted `read_run_flags`/`write_run_flags` helpers, so both flag-mutating paths build their
+`UPDATE`/`RunFlagsChanged` event from one place -- R73's sole-writer property is structural, not
+re-implemented. `ViolationService::set_quarantined` (called with `true` on every remaining path)
+was renamed `quarantine` and lost its now-dead bool parameter; the release call site became
+`release_quarantine`. `quarantine_race.rs` (3/3), `policy_violation.rs`, `violation_owner_race.rs`,
+`run_flags_lost_update.rs`, and `orchestration_rpc.rs` all passed, alongside the full runtime `lib`
+suite (208 tests).
+
+The adversarial review (`agent://ReviewR75`) returned **NEEDS CHANGES** -- three errors, five
+warnings, three suggestions -- though its own acceptance-question analysis (**A1**) could not
+construct a harmful ordering for the flag itself: enumerating every interleaving of the record and
+release atomic units against both starting seeds, the *only* ordering that ends with a fresh
+unresolved violation and `policy_quarantined = false` is a run going terminal between the release's
+checks and the record call's read -- and that is deliberate and harmless, since `already_actioned`
+counts a terminal run as actioned by design, a terminal run makes no further progress regardless,
+and a release landing on an already-terminal run would itself have been refused as `RunSettled`.
+Every other ordering the review enumerated ends `true`, including the ordering the record-side
+read exists specifically to protect. What blocked the verdict was closure integrity, not the
+mechanism. **E1**: R75's own registered secondary location, `orchestration.rs`'s
+`ensure_not_quarantined`, sat byte-identical to its pre-fix state, and pruning R75 without
+mentioning it would have silently dropped a location `REVIEW.md` itself named. The review found the
+same unregistered shape in `coordination/broker.rs`'s `require_not_quarantined`, and noted the fold
+is only mechanically possible for `message/send` (foldable into `record_message`'s own transaction)
+-- `workspace/apply`/`workspace/inspect` and `coordination/publishArtifact` gate a working-tree or
+broker-side mutation with no SQL write to fold the check into, so they need a different mechanism
+entirely. **E2**: `quarantine_race.rs`'s header and inline comments still narrated the defect as
+open, citing the deleted `load_run_state_and_flags`/`set_quarantined` symbols and line numbers the
+rename had already moved -- the fourth time this project's own review process has caught test
+narration lagging its own fix, after Parts XXIII, XXIV, and XXVI. **E3**: `docs/plugin-usage.md`
+still promised `"release"` unconditionally lifts quarantine, a promise the COUNT guard had just made
+conditional. **W1**: half the fix had no falsifying test -- all three original RED tests happened to
+falsify the *same* release-side COUNT guard hunk (per the review's own ordering walk, **A6**); the
+record-side read, load-bearing for the ordering where a release clears the flag and a fresh
+violation must re-quarantine underneath it, had nothing exercising it. **W2**:
+`run_flags_lost_update.rs`'s doc comments still named the deleted `set_quarantined` method. **W3**:
+`record_nested_worker`'s idempotency doc over-claimed -- true for the flag (A1 proved it), false for
+the `Cancel`/`QuarantineAndCancel` side effects, which are still decided from the same pre-effect
+`already_actioned` value one to two round trips before the terminal transition it gates actually
+commits. **W4**: a held quarantine was invisible where the operator was looking -- `decide` returned
+`"decided"` whether or not the flag actually cleared, there is deliberately no violation-listing op,
+and the monitor models the derived flag but never violations themselves. **W5**: the extension's
+own copy (`violations.ts`, `SKILL.md`) repeated E3's now-false promise.
+
+`REVIEW.md` gained three findings the same day, alongside R77 from Part XXVII's review: **R78**
+(Medium) is E1's carve-out -- the quarantine RPC gates, registered rather than folded, because two
+of the three gated operations have no write to fold the check into. **R79** (Medium) is W3's
+residue -- the cancel-side discriminator still races, so two concurrent cancelling violations can
+both journal an audited intent and both attempt the terminal transition, with the loser's failure
+logged rather than classified as idempotent success. **R80** (Low) is W4's gap -- no signal, and no
+query surface, for a quarantine a release failed to clear.
+
+Five polish commits closed the NEEDS CHANGES list. `6b43e4c` rewrote `quarantine_race.rs`'s header
+and inline comments in past tense with current symbol names, dropping every brittle absolute line
+number, and added the section E2 asked for stating which single hunk each of the three original
+tests falsifies (closing E2 and, by making the gap visible in the file itself, motivating W1's
+fix in the same commit). It also added the fourth test W1's concrete design called for --
+`a_record_landing_after_a_release_reapplies_quarantine_from_its_own_read` -- by declaring `decide`
+first and wrapping the record future in one leading no-op round trip, so biased-FIFO enqueue order
+forces `decide`'s release to clear the flag before `record_policy_violation`'s own read runs, which
+must then observe the cleared flag and re-quarantine. It was verified RED by temporarily hoisting
+that read back out into a separate round trip ahead of `load_policy_fingerprint` -- reproducing the
+exact pre-`b1d469f` shape -- then reverted, with the suite green and five consecutive clean runs.
+The same commit fixed `run_flags_lost_update.rs`'s three stale `set_quarantined` references,
+closing W2. `aee8e82` closed W4's core ask: `ViolationService::release_quarantine` now returns
+whether it actually cleared the flag, `decide`'s body moved into a new `decide_and_release_status`
+returning `(DecideOutcome, Option<bool>)` -- `Some(cleared)` only for a newly decided release,
+`None` for a cancel or an idempotent replay, since neither computes a clearing decision -- and
+`decide()` itself became a thin wrapper discarding the bool, so every one of its thirteen existing
+call sites (all in test code by this point) kept compiling unchanged.
+`policy_violation_decide`'s handler adds `"quarantineCleared": bool` to the result, present only
+for a newly decided release and absent for `"cancel"` and for an `alreadyDecided` replay, since
+neither computes a value the field could honestly report. `880bf0a` closed W3 by scoping the
+idempotency claim to the flag alone and adding an explicit paragraph naming the cancellation
+residue's mechanism and stating it is pre-existing, outside this fix, and tracked separately --
+the honest version of the claim rather than a quiet weakening. `73a9e69` closed W5's source half:
+`SKILL.md` and `violations.ts` now say quarantine lifts only when every violation on the run is
+decided, and name `quarantineCleared`'s three states; the shipped `dist` bundle needed no separate
+rebuild commit here since it ships on release, though the parallel R76 range's `61d2fbd` rebuilt it
+anyway for unrelated changes landing in the same window.
+
+A scoped re-review of `ec68e66..73a9e69` returned **PASS WITH WARNINGS**: seven of eight
+dispositions **ADDRESSED** (E1/R78, E2, W1, W2, W3, W4, S1); W5 only **PARTIALLY ADDRESSED**, since
+the tracked `dist` bundle still carried the pre-`73a9e69` text at the moment of that re-review --
+closed by the same `61d2fbd` rebuild noted above before this docs pass began. It re-verified A1's
+enumeration and A2's atomicity argument held unchanged across the whole polish range, and raised
+four new items, none blocking the mechanism: **N1**, that R80 was stale on arrival -- registered by
+`f144feb` citing a response shape `aee8e82` had already fixed in the same range, since
+`quarantineCleared` now exists at `orchestration.rs:1874` -- narrowed in place in this pass to the
+discovery-surface gap alone. **N2**, the `dist` rebuild, already resolved by `61d2fbd`. **N3**, that
+R79's and R77's line citations had already drifted -- `880bf0a` shifted `apply_action`,
+`create_cancellation_intent`, and `cancel_and_transition` down to `violation.rs:355`, `:433`, and
+`:469`, and `aee8e82` shifted `coordination_child_decide` to `orchestration.rs:1971` -- both
+refreshed in this pass. **N4**, that `ViolationService::decide` now has zero production callers:
+`orchestration.rs` calls `decide_and_release_status` exclusively, and every remaining `svc.decide(
+...)` -- across `policy_violation.rs`, `violation_owner_race.rs`, and `quarantine_race.rs` -- is a
+test. It stays as the convenience wrapper its own doc comment already names it: migrating thirteen
+call sites to a lossier win of symmetry with `ApprovalService::decide` was judged not worth the
+churn, and `decide_and_release_status` remains the one production entry point with the lossless
+return type.
+
+Measured for this fix and its polish together: `crates/runtime/tests/quarantine_race.rs` (4/4 after
+`6b43e4c`), `policy_violation.rs`, `violation_owner_race.rs`, `run_flags_lost_update.rs`, and
+`orchestration_rpc.rs` all green, plus the full runtime `lib` suite. `REVIEW.md` is updated in the
+same pass this Part records to move R75 into resolution history, narrow R80 to the surviving
+discovery-surface gap, and refresh R79's and R77's citations for the line drift this Part's own
+commits caused.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start

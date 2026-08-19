@@ -96,7 +96,7 @@ Some actions require an explicit human decision, and BATMAN never fabricates one
   present, you'll see a dialog (secrets redacted); without one, the approval simply stays pending
   until you decide — this is a fail-closed rule, not a bug.
 - **Policy violations.** If policy quarantines a run (for example, a worker tries to spawn a nested
-  child when policy forbids it), the run makes no further progress until the violation is resolved.
+  child when policy forbids it), the run makes no further progress until all violations are resolved.
   These surface through the event stream and the `/batman` monitor, not a query you poll.
 - **Nested-child requests.** A worker that wants to spawn a child records only an intent — nothing
   happens until it's accepted or denied.
@@ -437,11 +437,17 @@ ownership outranks idempotent replay.
 
 ### `violation/decide`
 
-Request takes `resolution: "release" | "cancel"` (releases the run from quarantine, or cancels it
-outright); the response's `outcome` is `"decided"` or `"alreadyDecided"`:
+Request takes `resolution: "release" | "cancel"`. `release` resolves *that* violation and lifts
+quarantine only if it was the last unresolved violation on the run -- a different, still-open
+violation on the same run keeps `flags.policyQuarantined` set even though this one is decided.
+`cancel` cancels the run outright. The response's `outcome` is `"decided"` or `"alreadyDecided"`; a
+newly decided `release` additionally carries `quarantineCleared: bool` -- `true` if this call
+actually cleared the run's quarantine flag, `false` if a different, still-unresolved violation kept
+it held. `quarantineCleared` is absent for `cancel` and for an `alreadyDecided` replay, since
+neither computes a clearing decision:
 
 ```json
-{ "violationId": "b8c9d0e1-f2a3-4b4c-5d6e-7f8a9b0c1d2e", "outcome": "decided" }
+{ "violationId": "b8c9d0e1-f2a3-4b4c-5d6e-7f8a9b0c1d2e", "outcome": "decided", "quarantineCleared": true }
 ```
 
 An identical repeat of an already-decided violation returns `outcome: "alreadyDecided"` and

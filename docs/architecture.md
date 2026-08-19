@@ -798,6 +798,7 @@ Generated from [`crates/runtime/src/ipc/mod.rs`](crates/runtime/src/ipc/mod.rs)'
 | A task cannot be seized by a non-owner upsert | `crates/runtime/tests/orchestration_rpc.rs` |
 | A policy violation is decided at most once | `crates/runtime/tests/policy_violation.rs` |
 | A concurrent flag write survives decide's callback-failure write-back | `crates/runtime/tests/run_flags_lost_update.rs` |
+| A quarantine survives a concurrent release of a different violation | `crates/runtime/tests/quarantine_race.rs` |
 | Sanitized JSON bytes are key-order independent | `crates/runtime/src/security/redaction.rs` (inline tests) |
 | Profile and policy fingerprints are key-order independent | `crates/runtime/tests/config.rs`, `crates/runtime/tests/adapter_contract.rs` |
 | Every capture-managed fixture is a scrub/render fixed point | `manifest_fixtures_are_scrub_render_fixed_points` |
