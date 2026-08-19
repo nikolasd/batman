@@ -1,10 +1,11 @@
 // The `@nikolasd/batman` OMP extension entry point. Registers `batman_status`
 // (an LLM-callable tool), `/batman-status` (a slash command), and every
 // deterministic orchestration tool (`batman_task`, `batman_worker`,
-// `batman_run`, `batman_message`, `batman_approval`, `batman_reconcile`).
-// All share the single cached-client path: OMP loading this extension
-// starts or reconnects to the per-repository `batcave` runtime once per
-// session, and every tool reuses that connection.
+// `batman_profile`, `batman_run`, `batman_workspace`, `batman_artifact`,
+// `batman_child`, `batman_violation`, `batman_message`, `batman_approval`,
+// `batman_reconcile`). All share the single cached-client path: OMP loading
+// this extension starts or reconnects to the per-repository `batcave` runtime
+// once per session, and every tool reuses that connection.
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { TASK_SUBAGENT_EVENT_CHANNEL, TASK_SUBAGENT_LIFECYCLE_CHANNEL, TASK_SUBAGENT_PROGRESS_CHANNEL, type SubagentEventPayload, type SubagentLifecyclePayload, type SubagentProgressPayload } from "@oh-my-pi/pi-coding-agent/task";
