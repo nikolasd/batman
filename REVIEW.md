@@ -20,7 +20,7 @@ still-open items below exist *because* of that fix — now lives in
 [Part XII](journal.md#part-xii--closing-the-last-critical-a-denylist-blind-to-its-own-vendor) (R49),
 [Part XIII](journal.md#part-xiii--two-leaks-one-lease-releasing-what-a-failed-start-acquired) (R41, R50),
 [Part XIV](journal.md#part-xiv--fixture-modes-broken-promise-a-kill-switch-only-one-caller-ever-asked-about) (R52),
-[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33), [Part XXII](journal.md#part-xxii--the-capture-pipeline-that-graded-its-own-homework) (R44), [Part XXIII](journal.md#part-xxiii--the-same-guarded-write-one-interleaving-further-the-decider-that-no-longer-owned-the-task) (R71), [Part XXIV](journal.md#part-xxiv--the-same-guarded-write-one-service-over-the-violation-that-no-longer-had-an-owner) (R72), [Part XXV](journal.md#part-xxv--not-a-conflict-either-side-detects-the-flag-write-that-clobbered-its-neighbor) (R73), [Part XXVI](journal.md#part-xxvi--a-guard-that-overreached-the-rebind-that-couldnt-be-resumed) (R74), [Part XXVII](journal.md#part-xxvii--whoever-committed-first-the-ownership-guard-that-arrived-in-someone-elses-commit) (R76), [Part XXVIII](journal.md#part-xxviii--two-clocks-one-flag-the-quarantine-race-that-closed-into-three-more-findings) (R75), [Part XXIX](journal.md#part-xxix--six-doors-one-owner-the-run-lifecycle-gets-the-same-lock-as-task-upsert) (R77), [Part XXX](journal.md#part-xxx--four-gates-one-helper-the-chain-that-stops-here) (R81), [Part XXXI](journal.md#part-xxxi--the-map-corrects-itself-six-documentation-lies-and-one-new-medium) (R20, R31, R32, R43, R46, R58), [Part XXXII](journal.md#part-xxxii--strict-true-was-a-decoration-wiring-the-compiler-gate) (R30, R37, R45, R61), [Part XXXIII](journal.md#part-xxxiii--tool-contracts-that-lied-about-themselves) (R15, R16, R18, R29, R39, R40, R56), and [Part XXXIV](journal.md#part-xxxiv--the-generator-that-only-generates-what-its-told) (R17, R60, R64).
+[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33), [Part XXII](journal.md#part-xxii--the-capture-pipeline-that-graded-its-own-homework) (R44), [Part XXIII](journal.md#part-xxiii--the-same-guarded-write-one-interleaving-further-the-decider-that-no-longer-owned-the-task) (R71), [Part XXIV](journal.md#part-xxiv--the-same-guarded-write-one-service-over-the-violation-that-no-longer-had-an-owner) (R72), [Part XXV](journal.md#part-xxv--not-a-conflict-either-side-detects-the-flag-write-that-clobbered-its-neighbor) (R73), [Part XXVI](journal.md#part-xxvi--a-guard-that-overreached-the-rebind-that-couldnt-be-resumed) (R74), [Part XXVII](journal.md#part-xxvii--whoever-committed-first-the-ownership-guard-that-arrived-in-someone-elses-commit) (R76), [Part XXVIII](journal.md#part-xxviii--two-clocks-one-flag-the-quarantine-race-that-closed-into-three-more-findings) (R75), [Part XXIX](journal.md#part-xxix--six-doors-one-owner-the-run-lifecycle-gets-the-same-lock-as-task-upsert) (R77), [Part XXX](journal.md#part-xxx--four-gates-one-helper-the-chain-that-stops-here) (R81), [Part XXXI](journal.md#part-xxxi--the-map-corrects-itself-six-documentation-lies-and-one-new-medium) (R20, R31, R32, R43, R46, R58), [Part XXXII](journal.md#part-xxxii--strict-true-was-a-decoration-wiring-the-compiler-gate) (R30, R37, R45, R61), [Part XXXIII](journal.md#part-xxxiii--tool-contracts-that-lied-about-themselves) (R15, R16, R18, R29, R39, R40, R56), [Part XXXIV](journal.md#part-xxxiv--the-generator-that-only-generates-what-its-told) (R17, R60, R64), [Part XXXV](journal.md#part-xxxv--making-invariant-2-true-instead-of-aspirational) (R55), and [Part XXXVI](journal.md#part-xxxvi--three-adapters-three-honesty-fixes) (R12, R42, R57).
 This document only tracks what's still broken.
 
 **Baseline, last run 2026-08-19** (after the R44/R70-R77/R81 closure pass; results apply to this
@@ -48,12 +48,6 @@ operate the system correctly.
 None open — see the resolution-history paragraph above for what closed and when.
 
 ### Medium
-
-#### R12. Claude error result subtypes are normalized as usage only
-
-**Location:** `crates/runtime/src/adapter/claude/protocol.rs:183-194`; `crates/runtime/src/adapter/claude/normalize.rs:254-269`; `crates/runtime/tests/claude_adapter.rs:606-635`
-
-`RawResult` omits `subtype`/`is_error`. The committed `error_max_turns` fixture emits only `UsageReported` — `result_fixture_error_arm_reports_usage_without_a_final_message` asserts exactly one payload. Model the failure discriminators and emit an explicit terminal failure event.
 
 #### R13. Policy cancellation records success after a process-kill failure
 
@@ -84,32 +78,6 @@ A failed cancellation (including `RegistryError::NoRunningAdapter`, which is not
 **Location:** `crates/runtime/tests/workspace_apply.rs:241,292,357,452,486`; `crates/runtime/src/workspace/apply.rs:105`; `crates/runtime/src/workspace/inspect.rs:77`
 
 Every isolation test hand-seeds `run_id` on its input fixture rather than asserting the value the real `WorkspaceApplier`/`WorkspaceInspector` actually stamps on production. Reverting the real stamping code to `run_id: None` leaves the whole suite green — R10's fix would silently regress with no failing test.
-
-#### R42. `ProtocolHealthChanged` detail interpolates the normalized string, not the raw stop reason
-
-**Location:** `crates/runtime/src/adapter/copilot/normalize.rs:153-199`
-
-The unknown-reason arm does `format!("unknownStopReason: {other}")` where `other` is the already-lowercased, `_`/`-`-stripped match binding — not the original `stop_reason` parameter, which remains correctly used two lines later in a different message. Interpolate `stop_reason` instead.
-
-#### R55. Nearly every orchestration RPC result is never Ajv-validated, contradicting the codebase's documented validation invariant
-
-**Location:** `packages/extension/src/client.ts:96-105` (`request()`); `packages/extension/src/tools/shared.ts:33`; `packages/protocol-ts/schema/batman.schema.json` (`JsonRpcResponse.result`)
-
-**Evidence:** `client.ts`'s own header comment claims every inbound message is Ajv-validated before reaching caller code, but `request()` only special-cases `runtime/status`. Every other method — `task/upsert`, `run/submit`, `workspace/acquire`, `artifact/fetch`, all 20+ others — returns `message.result` guarded only by `validateJsonRpcResponse`, whose generated schema for `result` is the JSON-Schema `true` node: always passes, no shape constraint. `packages/protocol-ts/src/validate.ts` exports validators for exactly `InitializeResult`, `RuntimeStatus`, `EventEnvelope`(+array), and the three JSON-RPC envelope shapes — none for any orchestration-method result. Root cause: most orchestration RPC results are built as ad hoc `json!({...})` in `orchestration.rs` rather than `#[derive(TS)]` structs in `crates/protocol/`, so there's no canonical type to generate a schema from.
-
-**Fix:** define real protocol types for each RPC method's result and generate/wire per-method validators, or at minimum validate structurally against a hand-written schema per method.
-
-**Priority:** Medium-High — systemic, currently masked only by daemon and extension coming from the same trusted build; a malformed result (missing `path`, truncated `contentBase64`) would reach tool logic completely unchecked.
-
-#### R57. Copilot's CLI-version verification gate is silently bypassed when the vendor omits `agentInfo.version`
-
-**Location:** `crates/runtime/src/adapter/copilot/mod.rs:202-260` (`ensure_client`)
-
-**Evidence:** `ensure_client`'s doc comment claims the version check is unconditional — there's no opt-in to skip it. But the guard is `if let Some(version) = &negotiated.agent_version && !copilot_cli_version_known(version) { ...refuse... }` — when the real `initialize` response omits `agentInfo.version` (an ordinary optional field, never required per `client.rs:497-501`), `agent_version` is `None`, the guard body never runs, and the adapter proceeds against a completely unverified CLI with no error. Contrast with `probe()` (`mod.rs:384-406`), which correctly treats `None` as unknown via `.is_some_and(copilot_cli_version_known)` and sets `inventory_incomplete: true`. No test in `copilot_adapter.rs` exercises `ensure_client` with `agent_version: None`.
-
-**Fix:** treat a missing `agentInfo.version` the same way `probe()` does — as unknown, not as implicitly verified — in `ensure_client`.
-
-**Priority:** Medium — an unguarded, untested gap in a safety check whose own doc comment claims unconditional coverage.
 
 #### R59. Approval `reason` is accepted end-to-end then silently discarded — never persisted
 
@@ -300,6 +268,6 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
 - **High:** 0 — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII), R77 resolved 2026-08-19 (see docs/journal.md Part XXIX), R81 resolved 2026-08-19 (see docs/journal.md Part XXX)
-- **Medium:** 15 (R12, R13, R14, R34, R35, R36, R42 — carried forward; R55-R57, R59 — new; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review; R87 — new, found during the 2026-08-19 close-out sweep; R15, R16, R37, R45, R56, R58, R60 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXIV)
+- **Medium:** 11 (R13, R14, R34, R35, R36 — carried forward; R59 — new; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review; R87 — new, found during the 2026-08-19 close-out sweep; R12, R15, R16, R37, R42, R45, R55, R56, R57, R58, R60 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVI)
 - **Low:** 14 (R38, R62, R63, R65, R66, R67 — carried forward/new 2026-08-12; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90, R91 — new, found during R55/R12's adversarial reviews; R17, R18, R20, R29, R30, R31, R32, R39, R40, R43, R46, R61, R64 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXIV)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
