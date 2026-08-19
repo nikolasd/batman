@@ -285,8 +285,16 @@ impl DatabaseHandle {
         let (respond, rx) = oneshot::channel();
         let sent = self.sender.send(Command::Shutdown { respond }).await;
 
+        // Never short-circuit past the join below: a dropped ack channel
+        // means the actor died abnormally (panic), which is precisely when
+        // the join must still run -- it reaps the thread and surfaces the
+        // panic instead of leaking the JoinHandle (R66). Mirrors the
+        // `sent.is_err()` branch, which already falls through.
         let result = if sent.is_ok() {
-            rx.await.map_err(|_| DbError::ActorUnavailable)?
+            match rx.await {
+                Ok(inner) => inner,
+                Err(_) => Err(DbError::ActorUnavailable),
+            }
         } else {
             Err(DbError::ActorUnavailable)
         };
@@ -297,7 +305,10 @@ impl DatabaseHandle {
             .expect("db actor worker mutex is never poisoned")
             .take();
         if let Some(worker) = worker {
-            let _ = tokio::task::spawn_blocking(move || worker.join()).await;
+            let joined = tokio::task::spawn_blocking(move || worker.join()).await;
+            if let Ok(Err(panic)) = joined {
+                tracing::error!(?panic, "database actor thread panicked before shutdown");
+            }
         }
 
         result
