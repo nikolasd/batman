@@ -195,6 +195,26 @@ Unlike `LeaseMode`/`IsolationKind`/`ApplyStrategy`/`WorkspaceEvent` (pulled in t
 
 **Priority:** Medium — the run still cancels exactly once; the residue is a duplicate audit-trail row and a misleading error instead of a functional double-cancel.
 
+#### R82. `runtime/shutdown` has no arbitration at all
+
+**Location:** `crates/runtime/src/ipc/connection.rs:400-409`
+
+**Evidence:** any `ompExtension` client can send `runtime/shutdown`; the handler unconditionally calls `shared.shutdown.notify_one()`, stopping the daemon that serves every connected instance's runs. The inline comment claims the method is "Role-gated to ompExtension" — exactly the disproven assumption R81 found elsewhere: role admission is not ownership. Largest blast radius of the whole class, since it affects every instance, not just one lease or run.
+
+**Fix:** this is a policy decision, not another `run_owner_op` call — either refuse the shutdown while runs owned by other live instances are still active, or require the caller to be the daemon's only connected instance.
+
+**Priority:** Medium — no ownership check exists at all; mitigated only by the fact that a legitimate `ompExtension` client rarely has a reason to call it while other instances are working.
+
+#### R83. An accepted child request is indistinguishable from the request itself
+
+**Location:** `crates/runtime/src/domain/repository.rs:1841-1848` (`request_child`) and `:1965-1971` (`decide_child`'s accept arm); `crates/protocol/src/event.rs:246-249`; `packages/extension/src/monitor/model.ts:214`
+
+**Evidence:** both `request_child` and `decide_child`'s accept arm emit `RuntimeEventKind::ChildWorkerRequested`; only two child event kinds exist in the wire protocol (`ChildWorkerRequested`, `ChildWorkerRequestDenied`), so nothing distinguishes "a child was requested" from "a child request was accepted" except by inspecting whether the child ids are populated. The monitor labels an acceptance "child worker requested" (`model.ts:214`), the same discriminator class R68 already found and fixed for a different event pair.
+
+**Fix:** add a distinct `ChildWorkerAccepted` (or equivalent) event kind, or otherwise make the accept arm's event self-describing so a consumer never has to infer "accepted" from field presence.
+
+**Priority:** Medium — cosmetic/observability defect today (the run still proceeds correctly), but it hides a real state transition from every event consumer, same class as R68.
+
 ### Low
 
 #### R17. Generated TypeScript exports and hand-written enums can drift
@@ -327,6 +347,38 @@ Stale timestamps are pruned, but the `HashMap` key itself (the sender) is never 
 
 **Priority:** Low — a real operator-visibility gap, but the run's correctness is unaffected; the operator can still recover by reading the raw event stream.
 
+#### R84. Unknown `leaseId` reports `-32603` while an unowned one reports `-32602`
+
+**Location:** `crates/runtime/src/workspace/lease.rs:341,354` (`LeaseError::NotFound`) → `ServiceError::internal` at the four gated handlers in `crates/runtime/src/service/orchestration.rs:1437,1480,1553,1630` (`workspace/get`, `workspace/release`, `workspace/inspect`, `workspace/apply`)
+
+**Evidence:** a caller-supplied `leaseId` that doesn't resolve to a known row is a plain caller error, but `lease_service.get`'s `LeaseError` is mapped through `ServiceError::internal(e.to_string())` at all four gated handlers, reporting `-32603` (internal error) — the same misclassification class R54's review flagged elsewhere — while an owned-by-someone-else lease reaches the R81 ownership gate and correctly reports `-32602`. The pair is also an existence oracle sitting immediately in front of the authorization gate: a caller can distinguish "no such lease" from "not yours" by error code alone. Exploitability is low because lease ids are UUIDs, making the oracle hard to use productively; the classification bug is the actionable half.
+
+**Fix:** map `LeaseError::NotFound` to `ServiceError::invalid_params` (or an equivalent caller-error code) at all four call sites instead of `internal`.
+
+**Priority:** Low — a real classification defect and a minor oracle, but bounded by UUID-space lease ids.
+
+#### R85. Project-scoped reads are open by design while `workspace/get` alone is gated
+
+**Location:** `crates/runtime/src/service/orchestration.rs:408` (`task_get`), `:573`/`:580` (`worker_list`/`worker_get`), `:902` (`run_list`), `:915` (`run_get`), `:1922` (`message_list`), `:1932` (`approval_list`); `crates/runtime/src/ipc/connection.rs:385-395` (`events/replay`)
+
+**Evidence:** none of the read handlers above take a principal; all are deliberately project-wide so any same-user `ompExtension`/`Display` client can see the whole project's state (`coordination_child_list`'s own doc makes the same intent explicit for that read). `run/get`'s `workspacePath` (`orchestration.rs:923-927`) is precisely the disclosure route R81's evidence names as the attack's entry point into the now-gated `workspace/*` mutations, and it stays open — as does `events/replay`'s `LeaseAcquired` payload. This is not a bug so much as an undocumented asymmetry: `workspace/get` is now the only ownership-gated read in the surface, beside reads that disclose the same facts.
+
+**Fix:** record the read-side policy as an explicit decision rather than leaving it implicit — project-scoped reads (task/worker/run/message/approval reads, `events/replay`) are intentionally open to any same-user client; `workspace/get` is gated for surface uniformity with the other three `workspace/*` mutations, not because it protects any confidentiality boundary the other reads don't already cross.
+
+**Priority:** Low — a documentation/decision gap, not a functional one; no read here discloses more than `run/get` already does today.
+
+#### R86. Cross-session lease cleanup has no remedy when a correlation was never persisted
+
+**Location:** `packages/extension/src/runtime.ts:262`; `crates/runtime/src/service/orchestration.rs:1479` (owner-gated `workspace/release`); `crates/runtime/src/doctor.rs:480-508` (report-only); `crates/runtime/src/cli.rs` (no lease subcommand exists); `crates/runtime/src/service/orchestration.rs:1130` (`abandon_lease`, internal-only release path)
+
+**Evidence:** `instanceId` is the OMP session id, so a new session is a different principal from whichever session acquired a lease. `workspace/release` is now owner-gated (R81), the doctor only reports stale leases without releasing them, no CLI command releases a lease directly, and nothing auto-releases at run settlement. A lease left active by a prior session is therefore unreleasable by RPC until `reconcile/omp` rebinds its task to a new session.
+
+**Mitigation:** startup reconciliation replays every persisted task/session correlation (`packages/extension/src/index.ts:213-222`; correlations are recorded on every upsert, `tools/tasks.ts:48-52`), which recovers the common case — hence Low. The residue is narrower: a lease whose correlation was never persisted (e.g. the extension crashed before the upsert that would have recorded it) leaves a worktree the doctor can only report, with no command able to clear it.
+
+**Fix:** add a CLI or RPC path to force-release a lease by id (with appropriate confirmation/audit), or have the doctor's report include a suggested remedy command once one exists.
+
+**Priority:** Low — narrow residual window behind an already-effective reconciliation mitigation.
+
 ## Known Environment Limitations
 
 **Not a bug — requires a gated live run to confirm the positive case. Reconfirmed 2026-08-12; code-side citations still match current source.**
@@ -344,6 +396,6 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
 - **High:** 1 (R81 — new, found during R77's adversarial review) — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII), R77 resolved 2026-08-19 (see docs/journal.md Part XXIX)
-- **Medium:** 19 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new; R78, R79 — new, found during R75's adversarial review)
-- **Low:** 20 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new; R80 — new, found during R75's adversarial review)
+- **Medium:** 21 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review)
+- **Low:** 23 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
