@@ -20,7 +20,7 @@ still-open items below exist *because* of that fix — now lives in
 [Part XII](journal.md#part-xii--closing-the-last-critical-a-denylist-blind-to-its-own-vendor) (R49),
 [Part XIII](journal.md#part-xiii--two-leaks-one-lease-releasing-what-a-failed-start-acquired) (R41, R50),
 [Part XIV](journal.md#part-xiv--fixture-modes-broken-promise-a-kill-switch-only-one-caller-ever-asked-about) (R52),
-[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33), [Part XXII](journal.md#part-xxii--the-capture-pipeline-that-graded-its-own-homework) (R44), [Part XXIII](journal.md#part-xxiii--the-same-guarded-write-one-interleaving-further-the-decider-that-no-longer-owned-the-task) (R71), [Part XXIV](journal.md#part-xxiv--the-same-guarded-write-one-service-over-the-violation-that-no-longer-had-an-owner) (R72), [Part XXV](journal.md#part-xxv--not-a-conflict-either-side-detects-the-flag-write-that-clobbered-its-neighbor) (R73), [Part XXVI](journal.md#part-xxvi--a-guard-that-overreached-the-rebind-that-couldnt-be-resumed) (R74), [Part XXVII](journal.md#part-xxvii--whoever-committed-first-the-ownership-guard-that-arrived-in-someone-elses-commit) (R76), [Part XXVIII](journal.md#part-xxviii--two-clocks-one-flag-the-quarantine-race-that-closed-into-three-more-findings) (R75), [Part XXIX](journal.md#part-xxix--six-doors-one-owner-the-run-lifecycle-gets-the-same-lock-as-task-upsert) (R77), [Part XXX](journal.md#part-xxx--four-gates-one-helper-the-chain-that-stops-here) (R81), [Part XXXI](journal.md#part-xxxi--the-map-corrects-itself-six-documentation-lies-and-one-new-medium) (R20, R31, R32, R43, R46, R58), [Part XXXII](journal.md#part-xxxii--strict-true-was-a-decoration-wiring-the-compiler-gate) (R30, R37, R45, R61), [Part XXXIII](journal.md#part-xxxiii--tool-contracts-that-lied-about-themselves) (R15, R16, R18, R29, R39, R40, R56), [Part XXXIV](journal.md#part-xxxiv--the-generator-that-only-generates-what-its-told) (R17, R60, R64), [Part XXXV](journal.md#part-xxxv--making-invariant-2-true-instead-of-aspirational) (R55), [Part XXXVI](journal.md#part-xxxvi--three-adapters-three-honesty-fixes) (R12, R42, R57), and [Part XXXVII](journal.md#part-xxxvii--the-audit-trail-that-threw-away-its-own-rationale) (R34, R59).
+[Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33), [Part XXII](journal.md#part-xxii--the-capture-pipeline-that-graded-its-own-homework) (R44), [Part XXIII](journal.md#part-xxiii--the-same-guarded-write-one-interleaving-further-the-decider-that-no-longer-owned-the-task) (R71), [Part XXIV](journal.md#part-xxiv--the-same-guarded-write-one-service-over-the-violation-that-no-longer-had-an-owner) (R72), [Part XXV](journal.md#part-xxv--not-a-conflict-either-side-detects-the-flag-write-that-clobbered-its-neighbor) (R73), [Part XXVI](journal.md#part-xxvi--a-guard-that-overreached-the-rebind-that-couldnt-be-resumed) (R74), [Part XXVII](journal.md#part-xxvii--whoever-committed-first-the-ownership-guard-that-arrived-in-someone-elses-commit) (R76), [Part XXVIII](journal.md#part-xxviii--two-clocks-one-flag-the-quarantine-race-that-closed-into-three-more-findings) (R75), [Part XXIX](journal.md#part-xxix--six-doors-one-owner-the-run-lifecycle-gets-the-same-lock-as-task-upsert) (R77), [Part XXX](journal.md#part-xxx--four-gates-one-helper-the-chain-that-stops-here) (R81), [Part XXXI](journal.md#part-xxxi--the-map-corrects-itself-six-documentation-lies-and-one-new-medium) (R20, R31, R32, R43, R46, R58), [Part XXXII](journal.md#part-xxxii--strict-true-was-a-decoration-wiring-the-compiler-gate) (R30, R37, R45, R61), [Part XXXIII](journal.md#part-xxxiii--tool-contracts-that-lied-about-themselves) (R15, R16, R18, R29, R39, R40, R56), [Part XXXIV](journal.md#part-xxxiv--the-generator-that-only-generates-what-its-told) (R17, R60, R64), [Part XXXV](journal.md#part-xxxv--making-invariant-2-true-instead-of-aspirational) (R55), [Part XXXVI](journal.md#part-xxxvi--three-adapters-three-honesty-fixes) (R12, R42, R57), [Part XXXVII](journal.md#part-xxxvii--the-audit-trail-that-threw-away-its-own-rationale) (R34, R59), and [Part XXXVIII](journal.md#part-xxxviii--seven-kinds-of-dishonest-error-classified-honestly) (R13, R14, R35, R62, R63, R66, R84).
 This document only tracks what's still broken.
 
 **Baseline, last run 2026-08-19** (after the R44/R70-R77/R81 closure pass; results apply to this
@@ -48,24 +48,6 @@ operate the system correctly.
 None open — see the resolution-history paragraph above for what closed and when.
 
 ### Medium
-
-#### R13. Policy cancellation records success after a process-kill failure
-
-**Location:** `crates/runtime/src/policy/violation.rs:446-472`; `crates/runtime/src/adapter/registry.rs:333-348`
-
-A failed cancellation (including `RegistryError::NoRunningAdapter`, which is not a kill failure at all) is logged via `tracing::warn!`, then the run is unconditionally transitioned to `cancelled` anyway. Distinguish "no running adapter" from "kill failed" and only the latter should avoid a clean `cancelled` transition.
-
-#### R14. Per-run redactor construction has a fail-open fallback (currently dead code, trap remains)
-
-**Location:** `crates/runtime/src/lifecycle.rs:194-205`; `crates/runtime/src/adapter/event_sink.rs:164-167`
-
-`DomainAdapterEventSink::new` falls back to `Redactor::new()` (built-in patterns only) via `unwrap_or_else` if org regex compilation fails, rather than propagating. Confirmed unreachable today — `lifecycle.rs` validates `policy.org_security_patterns` once at startup and fails closed, and the one call site (`registry.rs:480`) only ever receives that pre-validated policy — but the trap remains in source and would silently activate the moment any future path (config reload, an alternate constructor) feeds it unvalidated patterns.
-
-#### R35. `artifact/fetch` authorizes after reading and hashing content
-
-**Location:** `crates/runtime/src/service/orchestration.rs:1327-1346`
-
-`fetch_chunked` runs and hashes/reads full content before the ownership check. The shared refusal message prevents a content-based oracle, but the two paths differ in latency — a timing side-channel distinguishing "exists but not yours" from "doesn't exist." Look up metadata only, authorize against `run_id`, then fetch content.
 
 #### R36. No test asserts artifact producers actually stamp `run_id`
 
@@ -129,29 +111,11 @@ Every isolation test hand-seeds `run_id` on its input fixture rather than assert
 
 `pub use output::{..., install_frame_tap};` re-exports a raw-content capture bypass beyond the crate boundary; a comment states production never installs one, but nothing prevents an external caller in the same binary from doing so. Narrow to `pub(crate)` unless a cross-crate consumer is intended.
 
-#### R62. `LeaseService::active_for_run` silently converts genuine database errors into "no active lease"
-
-**Location:** `crates/runtime/src/workspace/lease.rs:195-217`; consumed at `crates/runtime/src/service/orchestration.rs:772`
-
-`.ok()` on the query result collapses every `rusqlite::Error` variant — not just "no rows" — into `None`. A locked/corrupted DB or a schema mismatch makes a real workspace's existence silently invisible to `run/get`/`coordination/peerWorkspace` callers instead of surfacing an error.
-
-#### R63. `LeaseError::Conflict`'s doc comment promises a same-run guard that doesn't exist
-
-**Location:** `crates/runtime/src/workspace/lease.rs:14-17` vs. `:78-169` (`acquire`)
-
-The doc comment describes `Conflict` as firing when one run requests a second workspace; the actual code only keys off isolation/mode conflicts against any run's active shared-write lease, never `run_id`. A single run can acquire unbounded concurrent `GitWorktree`/`Copy` leases for itself with no guard. No live-exploit evidence given the current single caller (OMP) — primarily a doc/code mismatch.
-
 #### R65. `RateLimiter`'s per-sender map grows unboundedly
 
 **Location:** `crates/runtime/src/coordination/rate_limit.rs:42-55`
 
 Stale timestamps are pruned, but the `HashMap` key itself (the sender) is never removed on worker/run retirement — unlike `ScopeTokenStore::revoke_for_run`. Slow, unbounded memory growth proportional to total distinct workers ever spawned over a long-running daemon's uptime.
-
-#### R66. `DatabaseHandle::shutdown()` skips joining the actor thread when the actor died abnormally
-
-**Location:** `crates/runtime/src/db/actor.rs:284-304`
-
-`rx.await.map_err(|_| DbError::ActorUnavailable)?` short-circuits via `?` when the actor's reply channel is dropped without a value (the actor panicked mid-command), skipping the `worker.join()` step below it — unlike the adjacent `sent.is_err()` branch, which still falls through to the join. Leaks the `JoinHandle` and loses the chance to observe the panic; only reachable after a prior actor crash.
 
 #### R67. No end-to-end integration test proves a Claude or Codex run releases its concurrency slot
 
@@ -172,16 +136,6 @@ Stale timestamps are pruned, but the `HashMap` key itself (the sender) is never 
 **Fix:** add a `policy/violation/list` op and teach the monitor to display open violations.
 
 **Priority:** Low — a real operator-visibility gap, but the run's correctness is unaffected; the operator can still recover by reading the raw event stream.
-
-#### R84. Unknown `leaseId` reports `-32603` while an unowned one reports `-32602`
-
-**Location:** `crates/runtime/src/workspace/lease.rs:341,354` (`LeaseError::NotFound`) → `ServiceError::internal` at the four gated handlers in `crates/runtime/src/service/orchestration.rs:1437,1480,1553,1630` (`workspace/get`, `workspace/release`, `workspace/inspect`, `workspace/apply`)
-
-**Evidence:** a caller-supplied `leaseId` that doesn't resolve to a known row is a plain caller error, but `lease_service.get`'s `LeaseError` is mapped through `ServiceError::internal(e.to_string())` at all four gated handlers, reporting `-32603` (internal error) — the same misclassification class R54's review flagged elsewhere — while an owned-by-someone-else lease reaches the R81 ownership gate and correctly reports `-32602`. The pair is also an existence oracle sitting immediately in front of the authorization gate: a caller can distinguish "no such lease" from "not yours" by error code alone. Exploitability is low because lease ids are UUIDs, making the oracle hard to use productively; the classification bug is the actionable half.
-
-**Fix:** map `LeaseError::NotFound` to `ServiceError::invalid_params` (or an equivalent caller-error code) at all four call sites instead of `internal`.
-
-**Priority:** Low — a real classification defect and a minor oracle, but bounded by UUID-space lease ids.
 
 #### R85. Project-scoped reads are open by design while `workspace/get` alone is gated
 
@@ -270,6 +224,6 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
 - **High:** 0 — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII), R77 resolved 2026-08-19 (see docs/journal.md Part XXIX), R81 resolved 2026-08-19 (see docs/journal.md Part XXX)
-- **Medium:** 9 (R13, R14, R35, R36 — carried forward; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review; R87 — new, found during the 2026-08-19 close-out sweep; R12, R15, R16, R34, R37, R42, R45, R55, R56, R57, R58, R59, R60 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVII)
-- **Low:** 16 (R38, R62, R63, R65, R66, R67 — carried forward/new 2026-08-12; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90, R91, R92, R93 — new, found during R55/R12/R34/R13's adversarial reviews; R17, R18, R20, R29, R30, R31, R32, R39, R40, R43, R46, R61, R64 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXIV)
+- **Medium:** 6 (R36 — carried forward; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review; R87 — new, found during the 2026-08-19 close-out sweep; R12-R16, R34, R35, R37, R42, R45, R55-R60 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII)
+- **Low:** 12 (R38, R65, R67 — carried forward/new 2026-08-12; R80 — new, found during R75's adversarial review; R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90, R91, R92, R93 — new, found during R55/R12/R34/R13's adversarial reviews; R17, R18, R20, R29-R32, R39, R40, R43, R46, R61-R64, R66, R84 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
