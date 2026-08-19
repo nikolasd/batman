@@ -157,7 +157,7 @@ pub struct RuntimeStatus {
     pub protocol: ProtocolVersion,
     /// The canonical project id this runtime serves.
     pub project_id: ProjectId,
-    /// Number of active runs. Always `0` at foundation scope.
+    /// Number of runs the runtime's adapter registry is actively driving.
     pub active_runs: u32,
     /// The durable database schema version currently applied.
     pub schema_version: u32,

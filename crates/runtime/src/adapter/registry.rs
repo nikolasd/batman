@@ -197,6 +197,10 @@ impl AdapterRegistry {
 }
 
 impl RunDriver for AdapterRegistry {
+    fn active_run_count(&self) -> usize {
+        self.running_count()
+    }
+
     fn start(&self, ctx: RunDriverContext) -> RunDriverFuture<'static, Result<(), String>> {
         let authorization = Arc::clone(&self.authorization);
         let repo_root = self.repo_root.clone();

@@ -92,6 +92,15 @@ pub trait RunDriver: Send + Sync {
         run_id: RunId,
         scope: CancelScope,
     ) -> AdapterFuture<'static, Result<CancelOutcome, String>>;
+
+    /// The number of runs this driver is actively driving right now.
+    /// Consumed by `runtime/status`'s `activeRuns` and the idle-shutdown
+    /// decision (R87): a daemon with in-flight adapter work must never
+    /// self-terminate as idle. Defaults to `0` for drivers that never
+    /// hold live adapters (the fake test driver).
+    fn active_run_count(&self) -> usize {
+        0
+    }
 }
 
 /// A deterministic driver for orchestration tests and fixtures: acknowledges

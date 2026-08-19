@@ -28,9 +28,6 @@ pub(crate) struct Shared {
     /// Number of connections currently admitted and being served. Used to
     /// decide whether the runtime is idle.
     pub(crate) active_connections: Arc<AtomicUsize>,
-    /// Number of active runs. A placeholder at foundation scope (always `0`),
-    /// but wired into the idle decision so a live run suppresses shutdown.
-    pub(crate) active_runs: Arc<AtomicUsize>,
     /// Fired by an in-band `runtime/shutdown` request to trigger a graceful
     /// shutdown of the accept loop.
     pub(crate) shutdown: Arc<Notify>,
@@ -39,6 +36,19 @@ pub(crate) struct Shared {
     /// Routes every worker-safe `coordination/*` method to the domain
     /// repository.
     pub(crate) coordination: Arc<crate::coordination::CoordinationBroker>,
+}
+
+impl Shared {
+    /// The number of runs the injected driver is actively driving (R87):
+    /// the adapter registry's live-adapter count in production, `0` when
+    /// no driver is wired. Consumed by `runtime/status` and the
+    /// idle-shutdown decision, so both always agree.
+    pub(crate) fn active_run_count(&self) -> usize {
+        self.config
+            .run_driver
+            .as_ref()
+            .map_or(0, |driver| driver.active_run_count())
+    }
 }
 
 /// Per-connection context derived from the accepted peer's credentials.
@@ -184,7 +194,6 @@ impl Server {
             started_at: Instant::now(),
             events_tx,
             active_connections: Arc::new(AtomicUsize::new(0)),
-            active_runs: Arc::new(AtomicUsize::new(0)),
             shutdown: Arc::new(Notify::new()),
             orchestration,
             coordination,
@@ -272,7 +281,7 @@ impl Server {
                 {
                     let limit = idle.expect("idle set when ticker present");
                     let connections = shared.active_connections.load(Ordering::Relaxed);
-                    let runs = shared.active_runs.load(Ordering::Relaxed);
+                    let runs = shared.active_run_count();
                     if connections == 0 && runs == 0 {
                         match idle_since {
                             Some(since) => {
