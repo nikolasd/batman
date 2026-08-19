@@ -4068,6 +4068,28 @@ role counts, and taught the docs the third child label). The review's verdict: t
 `json!` projection in `query.rs` deviates from Batch 4's `serde_json::to_value(&canonical)`
 convention but is now pinned from both directions.
 
+## Part XLI — Tests for the promises everyone already believed
+
+Batch 10 closed the two standing test gaps. `cca7810` (R36) added producer-side stamping tests:
+the isolation tests always hand-seeded `run_id` on their input fixtures, so nothing proved
+`WorkspaceInspector` and `WorkspaceApplier` actually stamp the producing run's id on the patch
+and conflict artifacts they store — reverting the production stamping to `run_id: None` left
+the whole suite green. Both new tests were watched failing against exactly that scratch revert
+(one stale-mtime lesson later: `cargo` trusts timestamps, `touch` after an `os.replace`
+restore). `ef53e9a` (R67) drove a synthetic `ProcessExited` through a real `SettlementSink`
+into `watch_settlement` with a real ceiling-1 `PolicyEvaluator` behind the trait object —
+booked slot, exhausted ceiling, settle, freed ceiling. Scope honesty, per the review (W2): R67
+closed at the seam its own Fix field prescribed — `SettlementSink → watch_settlement →
+PolicyEvaluator::release` — and the vendor-adapter (Claude/Codex) end-to-end settlement path
+remains untested; a live Claude run's slot release is still proven only by composition, not by
+one test. The review's W1 was real: the sink half of the test originally discriminated by
+*hanging* (the live sender pends the receiver forever), fixed in `9e54b1f` by dropping the sink
+after the emit so a non-firing sink errors the receiver and fails the final authorize cleanly.
+The review also caught the watcher doc claiming the terminal-adapter settlement gap was
+"tracked separately" when no tracker existed — now it is, as R95: a terminal-adapter run that
+settles without `ProcessExited` pins its slot, the idle timer, and unforced shutdown for the
+life of the process.
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
