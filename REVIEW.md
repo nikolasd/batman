@@ -341,6 +341,22 @@ Stale timestamps are pruned, but the `HashMap` key itself (the sender) is never 
 
 **Priority:** Low — narrow residual window behind an already-effective reconciliation mitigation.
 
+#### R88. `batman_message.kind` accepts prose the runtime rejects — R16's class, one door over
+
+**Location:** `packages/extension/src/tools/messages.ts:24`; `crates/protocol/src/message.rs:43-57` (`MessageKind`, closed serde enum); `crates/runtime/src/service/orchestration.rs` (`parse_message_kind`)
+
+`kind` is `pi.zod.string()` with a describe-string enumerating nine valid tokens; the runtime rejects anything outside the closed `MessageKind` enum. Same defect class as R16/R29 (fixed 2026-08-19): the model burns a round trip to learn what the schema already knew. Swept during R16's adversarial review: this is the only remaining open-string enum among the eleven tool schemas (`workers.ts`/`profiles.ts` `adapter` are deliberately open — the runtime accepts unknown adapters). Close with `pi.zod.enum([...])` over the nine tokens.
+
+**Priority:** Low — found during R16's adversarial review (2026-08-19).
+
+#### R89. `run/submit`'s response echoes `workspaceMode: "isolated"` for a copy workspace
+
+**Location:** `crates/runtime/src/service/orchestration.rs:897` (`json!("isolated")` literal), `:930-933` (`IsolationKind::Copy => "isolated"`), `:1050` (retry)
+
+The request side now speaks the closed vocabulary shared|isolated|copy (R29), but the response side collapses `copy` to `"isolated"` in both `run/submit` and `run/get`. A caller submitting `workspaceMode: "copy"` reads back `"isolated"`. Derive the echoed string from the resolved `IsolationKind` (Shared→"shared", GitWorktree→"isolated", Copy→"copy"), matching the `isolationKind` mapping at `:1405`/`:1470` which already distinguishes all three. Wire-shape change: needs its own commit and test.
+
+**Priority:** Low — found during R29's adversarial review (2026-08-19).
+
 ## Known Environment Limitations
 
 **Not a bug — requires a gated live run to confirm the positive case. Reconfirmed 2026-08-12; code-side citations still match current source.**
