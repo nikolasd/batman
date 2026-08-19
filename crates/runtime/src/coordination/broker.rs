@@ -67,6 +67,13 @@ impl From<crate::domain::DomainError> for CoordinationError {
                      ask OMP to decide it via policy/violation/decide"
                 ),
             },
+            // The in-transaction liveness guard (R94) must present the
+            // same error require_live_run's pre-check does, not an
+            // internal error.
+            crate::domain::DomainError::RunSettled { run_id } => Self {
+                code: error_code::INVALID_PARAMS,
+                message: format!("run {run_id} has already settled"),
+            },
             other => Self {
                 code: error_code::INTERNAL_ERROR,
                 message: other.to_string(),
@@ -298,7 +305,7 @@ impl CoordinationBroker {
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.record_message(&message, None, false)
+                repo.record_message(&message, None, false, true)
                     .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await?;
@@ -621,7 +628,7 @@ impl CoordinationBroker {
                 // quarantined worker from being charged rate budget; a
                 // quarantine landing between that read and this write is
                 // refused here, inside the guarded transaction.
-                repo.record_message(&message, None, true).map(|c| {
+                repo.record_message(&message, None, true, true).map(|c| {
                     embed_envelope(
                         json!({ "sequence": c.sequence, "artifactRef": artifact_ref }),
                         &c.envelope,

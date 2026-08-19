@@ -1955,7 +1955,12 @@ impl OrchestrationService {
                 // transaction, after the owner re-read (R78) -- the old
                 // caller-side ensure_not_quarantined pre-check read a
                 // snapshot a quarantine could land behind.
-                repo.record_message(&message, Some(&principal_instance_id), true)
+                // `message/send` deliberately passes `enforce_live: false`:
+                // OMP may journal a message against a run in any state --
+                // the delivery diagnostic path already handles a run with
+                // no live adapter (R94 gates only the worker-MCP broker
+                // writes whose doc promises liveness).
+                repo.record_message(&message, Some(&principal_instance_id), true, false)
                     .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
             }))
             .await

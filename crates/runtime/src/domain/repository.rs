@@ -1093,11 +1093,18 @@ impl<'c> DomainRepository<'c> {
     /// policy-quarantined (R78). Callers that must deliver even from a
     /// quarantined run (`coordination/reportBlocked`, `askPolicy`) pass
     /// `false`.
+    ///
+    /// When `enforce_live` is set, the write refuses (same transaction,
+    /// same ordering rationale) if the run has already settled (R94):
+    /// the broker's `require_live_run` is a caller-side pre-check in its
+    /// own round trip, so a run settling between that check and this
+    /// write would otherwise journal a message against a terminal run.
     pub fn record_message(
         &mut self,
         message: &RunMessage,
         principal_instance_id: Option<&str>,
         enforce_quarantine: bool,
+        enforce_live: bool,
     ) -> Result<Committed, DomainError> {
         let event = RuntimeEvent::MessageEvent {
             kind: RuntimeEventKind::MessageRecorded,
@@ -1147,6 +1154,27 @@ impl<'c> DomainRepository<'c> {
                                 id: owning_task_id,
                             });
                         }
+                    }
+                }
+                if enforce_live {
+                    // Re-read the run's state inside this same
+                    // transaction (R94): the broker's require_live_run
+                    // pre-check reads a snapshot the database actor can
+                    // interleave a settling transition behind.
+                    let state: String = tx.query_row(
+                        "SELECT state FROM runs WHERE run_id = ?1",
+                        [message.run_id.to_string()],
+                        |row| row.get(0),
+                    )?;
+                    let parsed =
+                        RunState::try_from(state.as_str()).map_err(|_| DomainError::NotFound {
+                            kind: "run-state",
+                            id: state.clone(),
+                        })?;
+                    if parsed.is_terminal() {
+                        return Err(DomainError::RunSettled {
+                            run_id: message.run_id.to_string(),
+                        });
                     }
                 }
                 if enforce_quarantine {
@@ -1919,6 +1947,24 @@ impl<'c> DomainRepository<'c> {
             Some(worker_id),
             Some(parent_run_id),
             move |tx| {
+                // Re-read and re-check inside this guarded write (R94):
+                // the plain-connection read above fixes error-code
+                // precedence for the ordinary case, but only this read
+                // can observe a transition the database actor interleaved
+                // behind it -- without it, a racing settle would be
+                // silently overwritten with `waitingPeer`.
+                let state: String = tx.query_row(
+                    "SELECT state FROM runs WHERE run_id = ?1",
+                    [parent_run_id.to_string()],
+                    |row| row.get(0),
+                )?;
+                let from =
+                    RunState::try_from(state.as_str()).map_err(|_| DomainError::NotFound {
+                        kind: "run-state",
+                        id: state.clone(),
+                    })?;
+                let waiting_peer = RunState::try_from("waitingPeer").expect("waitingPeer is valid");
+                check_transition(&parent_run_id.to_string(), &from, &waiting_peer)?;
                 tx.execute(
                     "UPDATE runs SET state = 'waitingPeer' WHERE run_id = ?1",
                     rusqlite::params![parent_run_id.to_string()],
