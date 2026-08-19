@@ -251,6 +251,14 @@ R12/R42/R57 all invest in a precise `detail` (the vendor's error subtype, the ra
 
 **Priority:** Low — found during R12's adversarial review (2026-08-19); observability residue of a correctly-journaled event.
 
+#### R92. Approval decision provenance is persisted but has no RPC read surface
+
+**Location:** `crates/runtime/src/service/query.rs:242-252` (`approval_list_op`'s SELECTs stop at `decision`); `crates/protocol/src/approval.rs:19-49` (`ApprovalRequest` carries no `decidedBy`/`reason` fields); `docs/plugin-usage.md` (documents the current result shape)
+
+`decided_by` has been write-only since MIGRATION_7, and R59 (2026-08-19) added `reason` to the same blind spot: both are durably persisted and carried on `ApprovalDecided` events, but `approval/list` returns neither, so the rationale is observable only via `events/replay` or `batcave audit export`. R34's user-facing scenario (querying decisions by decider) works only for someone opening `runtime.db` by hand. Fix shape: extend `approval_list_op`'s projection and `ApprovalRequest` (or the list result) with both fields — a wire-shape decision, so its own batch. Same class as R80's registered gap for policy violations.
+
+**Priority:** Low — found during R34/R59's adversarial review (2026-08-19).
+
 ## Known Environment Limitations
 
 **Not a bug — requires a gated live run to confirm the positive case. Reconfirmed 2026-08-12; code-side citations still match current source.**
@@ -269,5 +277,5 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
 - **High:** 0 — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII), R77 resolved 2026-08-19 (see docs/journal.md Part XXIX), R81 resolved 2026-08-19 (see docs/journal.md Part XXX)
 - **Medium:** 11 (R13, R14, R34, R35, R36 — carried forward; R59 — new; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review; R87 — new, found during the 2026-08-19 close-out sweep; R12, R15, R16, R37, R42, R45, R55, R56, R57, R58, R60 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVI)
-- **Low:** 14 (R38, R62, R63, R65, R66, R67 — carried forward/new 2026-08-12; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90, R91 — new, found during R55/R12's adversarial reviews; R17, R18, R20, R29, R30, R31, R32, R39, R40, R43, R46, R61, R64 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXIV)
+- **Low:** 15 (R38, R62, R63, R65, R66, R67 — carried forward/new 2026-08-12; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90, R91, R92 — new, found during R55/R12/R34's adversarial reviews; R17, R18, R20, R29, R30, R31, R32, R39, R40, R43, R46, R61, R64 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXIV)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
