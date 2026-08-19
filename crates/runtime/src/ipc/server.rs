@@ -42,7 +42,14 @@ impl Shared {
     /// The number of runs the injected driver is actively driving (R87):
     /// the adapter registry's live-adapter count in production, `0` when
     /// no driver is wired. Consumed by `runtime/status` and the
-    /// idle-shutdown decision, so both always agree.
+    /// idle-shutdown decision, so both always agree. Two deliberate
+    /// properties: a queued run with no adapter does not suppress idle
+    /// shutdown (its submitting client's connection does, and boot
+    /// recovery owns orphaned rows); and a run that settles without a
+    /// `ProcessExited` (terminal-degraded profiles) stays counted, which
+    /// fails safe -- the daemon refuses idle self-termination and
+    /// unforced in-band shutdown rather than killing something it cannot
+    /// see.
     pub(crate) fn active_run_count(&self) -> usize {
         self.config
             .run_driver

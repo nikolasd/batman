@@ -25,6 +25,11 @@ pub enum BatmanMethod {
     EventsSubscribe,
     #[serde(rename = "events/replay")]
     EventsReplay,
+    /// Gracefully stops the daemon. Arbitrated (R82): refused with
+    /// `-32602` while any run is live or another connection is being
+    /// served, unless `params.force == true` (the deliberate, logged
+    /// operator escape hatch). The out-of-band `batcave stop`/SIGTERM
+    /// path is deliberately unarbitrated.
     #[serde(rename = "runtime/shutdown")]
     RuntimeShutdown,
 

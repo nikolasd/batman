@@ -3,8 +3,11 @@
 //!
 //! `batcave serve` takes an advisory `flock(2)` on a persistent lock file
 //! recording the runtime's identity, then serves the socket protocol until it
-//! is signalled, an in-band `runtime/shutdown` arrives, or it has been idle
-//! (no connections, no active runs) for the configured interval. On any of
+//! is signalled, an accepted in-band `runtime/shutdown` arrives (refused
+//! with `-32602` while any run is live or another connection is open,
+//! unless `force: true` -- R82; the SIGTERM operator path stays
+//! deliberately unarbitrated), or it has been idle (no connections, no
+//! active runs) for the configured interval. On any of
 //! those it journals a stop record, then -- and only then -- removes the
 //! socket and releases the lock, so the socket's disappearance is proof the
 //! journal shut down first.
@@ -960,6 +963,11 @@ pub enum StopError {
 /// Gracefully stops the runtime for a repository: validates the lock holder is
 /// live, sends `SIGTERM`, and waits for the socket to disappear (which the
 /// daemon does only after its journal shutdown completes).
+///
+/// Deliberately unarbitrated, unlike the in-band `runtime/shutdown` RPC
+/// (R82): this is the operator path -- whoever can signal the process can
+/// stop it -- while the RPC path refuses when other work is live unless
+/// forced.
 ///
 /// # Errors
 /// Returns [`StopError`] if the paths cannot be resolved, the signal cannot be

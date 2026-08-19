@@ -1578,7 +1578,12 @@ impl OrchestrationService {
     /// acquired, and journals nothing (`WorkspaceInspected`,
     /// `ArtifactPublished`). The quarantine flag is read in the same
     /// domain op as the owner check (R78), so there is no gate-to-gate
-    /// window. The ownership residual window is wider than
+    /// window -- but unlike `workspace_apply`, inspect has NO in-tx
+    /// re-check on its appends: its quarantine span runs from that gate
+    /// through the git read and both journal appends. Deliberate: by
+    /// append time the disclosure (the git read) has already happened,
+    /// so refusing the journal entry would hide real activity rather
+    /// than prevent it. The ownership residual window is wider than
     /// `workspace_release`'s single gap, though: the git inspection
     /// itself and both journal entries below sit inside it, so a
     /// `reconcile/omp` rebind that commits after the gate can still let a

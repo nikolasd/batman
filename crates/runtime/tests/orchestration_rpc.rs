@@ -66,6 +66,10 @@ struct RecordingRunDriver {
 }
 
 impl RunDriver for RecordingRunDriver {
+    fn active_run_count(&self) -> usize {
+        0
+    }
+
     fn start(&self, _ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
         Box::pin(async { Ok(()) })
     }
@@ -104,6 +108,10 @@ impl RunDriver for RecordingRunDriver {
 struct FailingRunDriver;
 
 impl RunDriver for FailingRunDriver {
+    fn active_run_count(&self) -> usize {
+        0
+    }
+
     fn start(&self, _ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
         Box::pin(async { Err("boom: adapter never came up".to_string()) })
     }
@@ -176,6 +184,10 @@ impl CancelTrackingRunDriver {
 }
 
 impl RunDriver for CancelTrackingRunDriver {
+    fn active_run_count(&self) -> usize {
+        0
+    }
+
     fn start(&self, _ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
         Box::pin(async { Ok(()) })
     }
@@ -333,6 +345,10 @@ impl ViolationTriggeringRunDriver {
 }
 
 impl RunDriver for ViolationTriggeringRunDriver {
+    fn active_run_count(&self) -> usize {
+        0
+    }
+
     fn start(&self, ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
         *self.captured.lock() = Some(ctx.clone());
         Box::pin(async move {
@@ -393,6 +409,10 @@ struct ConfigurableCancelViolationDriver {
 }
 
 impl RunDriver for ConfigurableCancelViolationDriver {
+    fn active_run_count(&self) -> usize {
+        0
+    }
+
     fn start(&self, ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
         Box::pin(async move {
             let sink = batman_runtime::adapter::DomainAdapterEventSink::new(
@@ -745,6 +765,10 @@ impl CostCeilingRunDriver {
 }
 
 impl RunDriver for CostCeilingRunDriver {
+    fn active_run_count(&self) -> usize {
+        0
+    }
+
     fn start(&self, ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
         *self.captured.lock() = Some(ctx.clone());
         Box::pin(async move {
@@ -1265,6 +1289,79 @@ async fn policy_violation_list_reports_decision_state_for_every_violation() {
     assert_eq!(decided[0]["resolvedBy"], "omp-1");
 }
 
+/// R78: the quarantine gate for `workspace/apply` lives inside the same
+/// domain op as the ownership gate AND inside the `ApplyStarted` append's
+/// own transaction. A quarantined run's apply must be refused `-32101`
+/// with no `applyStarted` in the journal -- flipping either
+/// `enforce_quarantine` at the apply callsite or the guarded append back
+/// to the plain variant fails this test.
+#[tokio::test]
+async fn workspace_apply_on_a_quarantined_run_is_refused_and_journals_no_apply_start() {
+    let driver = Arc::new(ViolationTriggeringRunDriver::default());
+    let harness = Harness::start(|c| {
+        c.run_driver = Some(Arc::clone(&driver) as Arc<dyn RunDriver>);
+        c.nested_violation_action = batman_runtime::config::NestedViolationAction::Quarantine;
+    })
+    .await;
+    let mut client = omp_client(&harness, "omp-1").await;
+    let (_, _, run_id) = submit_run_with_driver(&mut client, "omp-1").await;
+
+    // Quarantined by the observation emitted from start(); the run is
+    // still live (Quarantine, not QuarantineAndCancel), so it can hold a
+    // lease.
+    let acquire = client
+        .call(
+            5,
+            "workspace/acquire",
+            json!({ "runId": run_id, "mode": "write", "requestedIsolation": "shared" }),
+        )
+        .await;
+    assert!(
+        acquire.get("error").is_none(),
+        "acquire is not quarantine-gated: {acquire:?}"
+    );
+    let lease_id = acquire["result"]["leaseId"].as_str().unwrap().to_string();
+    let base_revision = acquire["result"]["baseRevision"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let apply = client
+        .call(
+            6,
+            "workspace/apply",
+            json!({
+                "leaseId": lease_id,
+                "strategy": "applyPatch",
+                "artifactId": batman_protocol::ArtifactId::new().to_string(),
+                "expectedTargetRevision": base_revision,
+            }),
+        )
+        .await;
+    assert_eq!(
+        apply["error"]["code"], -32101,
+        "a quarantined run's apply must be refused POLICY_QUARANTINED: {apply:?}"
+    );
+
+    let inspect = client
+        .call(7, "workspace/inspect", json!({ "leaseId": lease_id }))
+        .await;
+    assert_eq!(
+        inspect["error"]["code"], -32101,
+        "a quarantined run's inspect must be refused POLICY_QUARANTINED: {inspect:?}"
+    );
+
+    let replay = client
+        .call(8, "events/replay", json!({ "afterSequence": 0 }))
+        .await;
+    assert!(
+        workspace_event_kinds_for_run(&replay, &run_id)
+            .iter()
+            .all(|k| k != "applyStarted"),
+        "a refused apply must journal no ApplyStarted: {replay:?}"
+    );
+}
+
 /// R79: two CONCURRENT cancelling observations -- both journaled before
 /// either transition commits, so both read `already_actioned = false` --
 /// must both report success. The loser's transition fails because the
@@ -1291,6 +1388,10 @@ async fn concurrent_cancelling_violations_are_both_idempotent_successes() {
     }
 
     impl RunDriver for CapturingDriver {
+        fn active_run_count(&self) -> usize {
+            0
+        }
+
         fn start(&self, ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
             *self.captured.lock() = Some(ctx);
             Box::pin(async { Ok(()) })
@@ -1364,8 +1465,12 @@ async fn concurrent_cancelling_violations_are_both_idempotent_successes() {
     // Both observations in flight together: each journals its violation
     // (reading already_actioned = false) before either transition commits.
     let (first, second) = tokio::join!(emit("child-a", "parent-a"), emit("child-b", "parent-b"));
-    first.expect("the winning observation reports success");
-    second.expect("the losing observation must be an idempotent success, not an error (R79)");
+    // NOTE: the sink swallows record_nested_worker errors into a warn log
+    // (event_sink.rs), so these two expects cannot fail for R79's reason;
+    // the real idempotency proof is the two-outcome operations-table
+    // assertion below, which fails when the loser's ack never lands.
+    first.expect("the sink never errors");
+    second.expect("the sink never errors");
 
     // Exactly one cancelled transition.
     let get = client.call(6, "run/get", json!({ "runId": run_id })).await;
@@ -1885,6 +1990,10 @@ struct StartCapturingRunDriver {
 }
 
 impl RunDriver for StartCapturingRunDriver {
+    fn active_run_count(&self) -> usize {
+        0
+    }
+
     fn start(&self, ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
         self.started.lock().push(ctx.clone());
         self.inner.start(ctx)
@@ -3165,6 +3274,10 @@ impl RealAdapterRunDriver {
 }
 
 impl RunDriver for RealAdapterRunDriver {
+    fn active_run_count(&self) -> usize {
+        0
+    }
+
     fn start(&self, ctx: RunDriverContext) -> AdapterFuture<'static, Result<(), String>> {
         let adapter = Arc::new(OmpRpcAdapter::with_binary(
             fake_worker_path().to_string_lossy().into_owned(),
@@ -4456,10 +4569,12 @@ async fn workspace_inspect_against_another_instances_lease_is_refused() {
 /// harder (`seed_artifact` above), but would not distinguish "refused for
 /// ownership" from "refused because the artifact could not be resolved
 /// yet" -- the two errors this test's message assertion tells apart.
-/// Today, absent any ownership check, the handler runs
-/// `ensure_not_quarantined`, journals `ApplyStarted`, and only then fails
-/// resolving the artifact -- a mutation reaches the journal from an
-/// unauthorized caller before the request is refused at all.
+/// Pre-R81, absent any ownership check, the handler ran the (since
+/// deleted) caller-side quarantine pre-check, journaled `ApplyStarted`,
+/// and only then failed resolving the artifact -- a mutation reached the
+/// journal from an unauthorized caller before the request was refused at
+/// all. The gate now refuses first; the quarantine read lives inside the
+/// same domain op (R78).
 #[tokio::test]
 async fn workspace_apply_against_another_instances_lease_is_refused() {
     let harness = Harness::start(|c| {

@@ -738,8 +738,39 @@ async fn runtime_shutdown_is_refused_while_another_connection_is_live() {
         refused["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("connection"),
-        "the refusal must name what is live: {refused:?}"
+            .contains("0 active run(s) and 1 other live connection(s)"),
+        "the refusal must name the real counts: {refused:?}"
+    );
+}
+
+/// R82's accept leg: a single connection with zero live runs must be
+/// allowed to stop the daemon WITHOUT force -- an inverted gate ("always
+/// refuse unless forced") must fail here.
+#[tokio::test]
+async fn runtime_shutdown_is_accepted_unforced_when_nothing_else_is_live() {
+    let harness = Harness::start(|c| {
+        c.credential_reader = matching_reader();
+        c.run_driver = Some(Arc::new(FixedCountDriver { count: 0 }));
+    })
+    .await;
+    let mut client = Client::connect(&harness.socket).await;
+    client
+        .send(&omp_init(
+            harness.owned_dir.to_str().unwrap(),
+            1024 * 1024,
+            (1, 0),
+            (1, 0),
+        ))
+        .await;
+    client.recv().await.unwrap();
+
+    client
+        .send(&request(2, "runtime/shutdown", json!(null)))
+        .await;
+    let stopped = client.recv().await.unwrap();
+    assert_eq!(
+        stopped["result"]["stopping"], true,
+        "the sole idle connection must be allowed to stop the daemon unforced: {stopped:?}"
     );
 }
 

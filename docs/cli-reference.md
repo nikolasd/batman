@@ -78,7 +78,9 @@ the kernel-held `flock` is released, on clean shutdown or process death). If ano
 already holds it, the new process prints the live holder's identity (`pid`, `instance_token`,
 `runtime_version`, `project_id`, `socket_path`) as JSON on stdout and exits **73** (`EX_TEMPFAIL`).
 
-**Shutdown sequence** on `SIGINT`/`SIGTERM`, in-band `runtime/shutdown`, or idle timeout: journal a
+**Shutdown sequence** on `SIGINT`/`SIGTERM`, an accepted in-band `runtime/shutdown` (refused with
+`-32602` while any run is live or another connection is open, unless the request carries
+`force: true`), or idle timeout: journal a
 `RuntimeStopping` event → close the database actor → remove `runtime.sock` → release the flock. The
 socket's disappearance is therefore proof the journal already shut down cleanly.
 

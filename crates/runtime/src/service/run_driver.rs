@@ -96,11 +96,14 @@ pub trait RunDriver: Send + Sync {
     /// The number of runs this driver is actively driving right now.
     /// Consumed by `runtime/status`'s `activeRuns` and the idle-shutdown
     /// decision (R87): a daemon with in-flight adapter work must never
-    /// self-terminate as idle. Defaults to `0` for drivers that never
-    /// hold live adapters (the fake test driver).
-    fn active_run_count(&self) -> usize {
-        0
-    }
+    /// self-terminate as idle. Required, not defaulted: a driver that
+    /// silently reported `0` would reintroduce R87 into a safety
+    /// decision. Deliberately counts live adapters only -- a
+    /// queued/starting run with no adapter yet does not suppress idle
+    /// shutdown, which is safe because such a run's submitting client is
+    /// still connected (connections suppress idle independently) and an
+    /// orphaned queued row is owned by boot recovery.
+    fn active_run_count(&self) -> usize;
 }
 
 /// A deterministic driver for orchestration tests and fixtures: acknowledges
@@ -143,6 +146,10 @@ impl RunDriver for FakeRunDriver {
         // The fake driver never spawns an adapter, so there is never
         // anything to kill: the clean no-adapter outcome, not an error.
         Box::pin(async move { Ok(CancelOutcome::NoRunningAdapter) })
+    }
+
+    fn active_run_count(&self) -> usize {
+        0
     }
 }
 
