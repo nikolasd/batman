@@ -24,7 +24,7 @@ export function registerArtifactTool(pi: ExtensionAPI, ctx: OrchestrationToolCon
     name: BATMAN_ARTIFACT_TOOL_NAME,
     label: "BATMAN Artifact",
     description:
-      "Use to read the evidence a worker produced: patches, commit lists, conflict reports, and workspace manifests. Use op: 'list' to see what a run published (optionally filtered by kind), then op: 'fetch' with an artifactId to read its bytes. Fetches are chunked -- the response carries nextOffset, so pass it back as offset to continue reading a large artifact. Artifacts are scoped to the current task; a run on another task is never visible.",
+      "Use to read the evidence a worker produced: patches, commit lists, conflict reports, and workspace manifests. Use op: 'list' to see what a run published (optionally filtered by kind), then op: 'fetch' with an artifactId to read its bytes. Fetches are chunked -- the response carries nextOffset, so pass it back as offset to continue reading a large artifact. Artifacts are scoped to runs this session owns; taskId only narrows further within them.",
     parameters: params,
     approval: "read",
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
