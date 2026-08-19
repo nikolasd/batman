@@ -209,6 +209,14 @@ Unlike `LeaseMode`/`IsolationKind`/`ApplyStrategy`/`WorkspaceEvent` (pulled in t
 
 **Priority:** Medium — cosmetic/observability defect today (the run still proceeds correctly), but it hides a real state transition from every event consumer, same class as R68.
 
+#### R87. `activeRuns` is a hardcoded placeholder, and the idle timer believes it
+
+**Location:** `crates/runtime/src/ipc/server.rs:31-33` (`Shared::active_runs`, documented as a placeholder), `:274-275` (idle-shutdown decision); `crates/runtime/src/ipc/connection.rs:375` (`RuntimeStatus` built with a literal `active_runs: 0`)
+
+`Shared::active_runs` is declared as "a placeholder at foundation scope (always `0`), but wired into the idle decision so a live run suppresses shutdown" — and nothing ever increments it. Two live consequences: `/batman-status` and `batcave status` always report zero active runs regardless of what is running, and the idle-shutdown decision treats a daemon with in-flight runs as idle, so a detached daemon whose OMP session disconnected can self-terminate mid-run. Maintain the counter honestly (increment on run submission, decrement at settlement) or compute it from the run table at both use sites; the idle check runs on a timer, so prefer the atomic. Found during the 2026-08-19 close-out sweep; R82's shutdown arbitration depends on this counter being real.
+
+**Priority:** Medium — contradicts the durable-supervision promise directly; a run can be killed by its own supervisor's idle timer.
+
 ### Low
 
 #### R17. Generated TypeScript exports and hand-written enums can drift
@@ -390,6 +398,6 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
 - **High:** 0 — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII), R77 resolved 2026-08-19 (see docs/journal.md Part XXIX), R81 resolved 2026-08-19 (see docs/journal.md Part XXX)
-- **Medium:** 21 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review)
+- **Medium:** 22 (R12, R13, R14, R15, R16, R34, R35, R36, R37, R42, R45 — carried forward; R55-R60 — new; R78, R79 — new, found during R75's adversarial review; R82, R83 — new, found during R81's adversarial review; R87 — new, found during the 2026-08-19 close-out sweep)
 - **Low:** 23 (R17, R18, R20, R29, R30, R31, R32, R38, R39, R40, R43, R46 — carried forward, four corrected in place this pass; R61-R67 — new; R80 — new, found during R75's adversarial review; R84, R85, R86 — new, found during R81's adversarial review)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
