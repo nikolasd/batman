@@ -74,7 +74,7 @@ test("an adapterUsageEvent reports token counts, and its bigints survive interpo
   const row = state.rows["run-1"];
   expect(row?.latestActivity).toBe("usage 1234 in / 56 out");
   expect(row?.taskId).toBe("task-1");
-  expect(state.pendingApprovalCount).toBe(EMPTY_MONITOR_STATE.pendingApprovalCount);
+  expect(state.rows["run-1"]?.pendingApprovalCount).toBe(0);
 });
 
 test("an adapterUsageEvent appends cost only when the vendor reported one", () => {
@@ -237,14 +237,14 @@ test("an approvalRequested event increments pendingApprovalCount and a decided o
     runId: "run-1",
     event: {
       type: "approvalEvent",
-      payload: { kind: "approvalRequested", approvalId: "approval-1", runId: "run-1", taskId: "task-1", action: "write file" },
+      payload: { kind: "approvalRequested", approvalId: "approval-1", runId: "run-1", taskId: "task-1", action: "write file", decidedBy: null },
     },
   });
   const decided = envelope({
     runId: "run-1",
     event: {
       type: "approvalEvent",
-      payload: { kind: "approvalDecided", approvalId: "approval-1", runId: "run-1", taskId: "task-1", action: "write file" },
+      payload: { kind: "approvalDecided", approvalId: "approval-1", runId: "run-1", taskId: "task-1", action: "write file", decidedBy: "human" },
     },
   });
 
