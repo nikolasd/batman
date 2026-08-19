@@ -14,6 +14,12 @@ Every subcommand's built-in `--help` is generated from the same `clap` definitio
 was written from ([`crates/runtime/src/cli.rs`](../crates/runtime/src/cli.rs)) — if the two ever
 disagree, trust `--help` and file a bug against this file.
 
+Examples below invoke `batcave` bare. Nothing puts it on your `PATH`: an installed runtime lives
+at `<stateRoot>/bin/<version>/batcave` (default `~/.omp/batman/bin/<version>/batcave`, fetched by
+`/batman-runtime-install` and invoked by absolute path from the extension) and a local build at
+`target/debug/batcave` or `target/release/batcave`. Alias or symlink it, or substitute the full
+path in every command.
+
 ## Before you start: state directories
 
 Almost every subcommand takes `--state-dir` and `--repo`. Getting `--state-dir` wrong is the most
