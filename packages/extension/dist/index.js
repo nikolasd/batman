@@ -9741,7 +9741,7 @@ var package_default = {
     "@nikolasd/batman-protocol": "workspace:*",
     "@types/bun": "latest",
     ajv: "8.17.1",
-    typescript: "latest",
+    typescript: "5.9.3",
     zod: "^4"
   }
 };
