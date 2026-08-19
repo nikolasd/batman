@@ -55,93 +55,15 @@ None open — see the resolution-history paragraph above for what closed and whe
 
 
 
-#### R86. Cross-session lease cleanup has no remedy when a correlation was never persisted
 
-**Location:** `packages/extension/src/runtime.ts:262`; `crates/runtime/src/service/orchestration.rs:1479` (owner-gated `workspace/release`); `crates/runtime/src/doctor.rs:480-508` (report-only); `crates/runtime/src/cli.rs` (no lease subcommand exists); `crates/runtime/src/service/orchestration.rs:1130` (`abandon_lease`, internal-only release path)
 
-**Evidence:** `instanceId` is the OMP session id, so a new session is a different principal from whichever session acquired a lease. `workspace/release` is now owner-gated (R81), the doctor only reports stale leases without releasing them, no CLI command releases a lease directly, and nothing auto-releases at run settlement. A lease left active by a prior session is therefore unreleasable by RPC until `reconcile/omp` rebinds its task to a new session.
 
-**Mitigation:** startup reconciliation replays every persisted task/session correlation (`packages/extension/src/index.ts:213-222`; correlations are recorded on every upsert, `tools/tasks.ts:48-52`), which recovers the common case — hence Low. The residue is narrower: a lease whose correlation was never persisted (e.g. the extension crashed before the upsert that would have recorded it) leaves a worktree the doctor can only report, with no command able to clear it.
 
-**Fix:** add a CLI or RPC path to force-release a lease by id (with appropriate confirmation/audit), or have the doctor's report include a suggested remedy command once one exists.
 
-**Priority:** Low — narrow residual window behind an already-effective reconciliation mitigation.
 
-#### R88. `batman_message.kind` accepts prose the runtime rejects — R16's class, one door over
 
-**Location:** `packages/extension/src/tools/messages.ts:24`; `crates/protocol/src/message.rs:43-57` (`MessageKind`, closed serde enum); `crates/runtime/src/service/orchestration.rs` (`parse_message_kind`)
 
-`kind` is `pi.zod.string()` with a describe-string enumerating nine valid tokens; the runtime rejects anything outside the closed `MessageKind` enum. Same defect class as R16/R29 (fixed 2026-08-19): the model burns a round trip to learn what the schema already knew. Swept during R16's adversarial review: this is the only remaining open-string enum among the eleven tool schemas (`workers.ts`/`profiles.ts` `adapter` are deliberately open — the runtime accepts unknown adapters). Close with `pi.zod.enum([...])` over the nine tokens.
 
-**Priority:** Low — found during R16's adversarial review (2026-08-19).
-
-#### R89. `run/submit`'s response echoes `workspaceMode: "isolated"` for a copy workspace
-
-**Location:** `crates/runtime/src/service/orchestration.rs:897` (`json!("isolated")` literal), `:930-933` (`IsolationKind::Copy => "isolated"`), `:1050` (retry)
-
-The request side now speaks the closed vocabulary shared|isolated|copy (R29), but the response side collapses `copy` to `"isolated"` in both `run/submit` and `run/get`. A caller submitting `workspaceMode: "copy"` reads back `"isolated"`. Derive the echoed string from the resolved `IsolationKind` (Shared→"shared", GitWorktree→"isolated", Copy→"copy"), matching the `isolationKind` mapping at `:1405`/`:1470` which already distinguishes all three. Wire-shape change: needs its own commit and test.
-
-**Priority:** Low — found during R29's adversarial review (2026-08-19).
-
-#### R90. Generated TS bindings and the JSON Schema disagree on numeric width and Option presence
-
-**Location:** `packages/protocol-ts/src/generated/Artifact.ts` (`byteLength: bigint`, `runId: string | null` required), `ArtifactFetchResult.ts` (`nextOffset: bigint | null`); `packages/protocol-ts/schema/batman.schema.json` (same fields as `{"type":"integer","format":"uint64"}` numbers, `runId` absent from `required`)
-
-ts-rs maps Rust `u64` to TypeScript `bigint` while schemars types the same field as a JSON integer that `JSON.parse` yields as a `number`, and ts-rs emits every `Option<T>` as a required `T | null` property while schemars leaves it out of `required`. No validation failure is possible (the Ajv formats are registered as always-passing and both null-and-absent pass), but `result as ArtifactFetchResult` casts now advertise static types that are wrong at runtime (`typeof byteLength === "number"`). Pre-existing generator convention (`EventEnvelope.sequence`, `RuntimeStatus.uptimeSeconds` were already `bigint`), surfaced now because R55's validators are the first code acting on these defs. Fix shape: `#[ts(type = "number")]` on `u64` wire fields (or a documented bigint reviver), and reconcile the Option-presence asymmetry between the two generators.
-
-**Priority:** Low — found during R55's adversarial review (2026-08-19); static-type trap only, no runtime defect.
-
-#### R91. `ProtocolHealthChanged`'s detail never reaches an operator surface
-
-**Location:** `crates/runtime/src/lifecycle.rs:~725` (status-row mapping collapses the event to the constant string "protocol health changed"); `packages/extension/src/monitor/model.ts` (no `adapterProtocolHealthEvent` handler at all)
-
-R12/R42/R57 all invest in a precise `detail` (the vendor's error subtype, the raw stop reason), and the event reaches the journal and `events/subscribe` — but the `batcave status` row mapping discards the detail for a constant label, and the `/batman` monitor model has no handler for the event kind, so an operator sees neither which run's protocol went unhealthy nor why. Bind and render the detail in the status-row mapping, and teach the monitor model the event. Related open question (no repo evidence either way): whether a Claude `is_error: true` run terminalizes as `succeeded` or `failed` from OMP's perspective — the CLI's exit code for error result arms is not pinned by any test or fixture.
-
-**Priority:** Low — found during R12's adversarial review (2026-08-19); observability residue of a correctly-journaled event.
-
-#### R92. Approval decision provenance is persisted but has no RPC read surface
-
-**Location:** `crates/runtime/src/service/query.rs:242-252` (`approval_list_op`'s SELECTs stop at `decision`); `crates/protocol/src/approval.rs:19-49` (`ApprovalRequest` carries no `decidedBy`/`reason` fields); `docs/plugin-usage.md` (documents the current result shape)
-
-`decided_by` has been write-only since MIGRATION_7, and R59 (2026-08-19) added `reason` to the same blind spot: both are durably persisted and carried on `ApprovalDecided` events, but `approval/list` returns neither, so the rationale is observable only via `events/replay` or `batcave audit export`. R34's user-facing scenario (querying decisions by decider) works only for someone opening `runtime.db` by hand. Fix shape: extend `approval_list_op`'s projection and `ApprovalRequest` (or the list result) with both fields — a wire-shape decision, so its own batch. Same class as R80's registered gap for policy violations.
-
-**Priority:** Low — found during R34/R59's adversarial review (2026-08-19).
-
-#### R93. `run/cancel` still reports success after a genuine kill failure
-
-**Location:** `crates/runtime/src/service/orchestration.rs:1087-1091` (`run_cancel`'s `cancel_run` error arm)
-
-R13 (2026-08-19) made `RunDriver::cancel_run`'s `Err` unambiguous — an absent adapter is the clean `CancelOutcome::NoRunningAdapter`, so `Err` now always means a live vendor process a kill actually failed against. The policy-violation path raises `flags.degradedControl` on that condition; `run_cancel` still only `tracing::warn!`s and returns unqualified success to the caller. Apply the same ten-line `set_run_flag(DegradedControl)` treatment (guarded write, journaled, broadcast).
-
-**Priority:** Low — found during R13's adversarial review (2026-08-19); same defect class one door over.
-
-#### R94. `require_live_run` is an advisory pre-check outside the writes it guards — R78's class, one door over
-
-**Location:** `crates/runtime/src/coordination/broker.rs:134-149` (`require_live_run`), `:235-255` (the same-task check with the identical shape); `crates/runtime/src/domain/repository.rs::record_message` (no in-tx run-state guard)
-
-`require_live_run` reads the run's terminal state in its own `run_domain_op`, then the caller writes in a later round trip — a run settling between the check and the write journals a message against a terminal run, across `coordination/send`, `publishArtifact`, `requestChild`, `reportBlocked`, and `askPolicy`. The broker's own doc claims a live-token connection must "never be able to mutate ... state for a run that is no longer active". R78's `enforce_quarantine` parameter (2026-08-19) is the ready-made pattern: an `enforce_live` sibling checked inside `record_message`'s guarded transaction.
-
-**Priority:** Low — found during R78's adversarial review (2026-08-19); bounded to one racing write per settling run.
-
-#### R95. A terminal-adapter run that settles without `ProcessExited` pins its slot and the daemon's idle state forever
-
-**Location:** `crates/runtime/src/adapter/registry.rs:353-359` (`watch_settlement`'s `Err` arm), `crates/runtime/src/adapter/terminal.rs` (emits no `ProcessExited` of its own); `crates/runtime/src/ipc/server.rs:45-52` (`active_run_count` consumers)
-
-**Evidence:** `watch_settlement` deliberately never releases on a dropped-sink `Err` — releasing without a settlement would hand the run's slot to another run (fails safe, correct direction). But the consequence is unbounded: the run stays in the registry map, so `active_run_count()` never drops, the daemon can never idle-shut-down again, and unforced `runtime/shutdown` is refused permanently. The boot recovery sweep fixes the *run state* on the next start, but nothing inside the live process ever frees the slot. `force: true` and `batcave stop`'s SIGTERM remain as operator escapes.
-
-**Fix:** either make the terminal adapter emit a synthetic `ProcessExited` when its run reaches a terminal state, or teach the recovery sweep's live-process arm to evict registry entries whose runs the journal already shows terminal.
-
-**Priority:** Low — terminal adapter only, operator escapes exist; found during R67's adversarial review (2026-08-19).
-
-#### R96. Expired scope-token records leak when an adapter dies before its settlement hook
-
-**Location:** `crates/runtime/src/coordination/scope_token.rs:236-257` (`verify` detects expiry without removing), `:228-234` (`revoke_for_run`, the only remover); settlement-guarded call sites `crates/runtime/src/adapter/claude/mod.rs:447,694`, `codex/mod.rs:257,634,684`, `copilot/mod.rs:325,655`
-
-**Evidence:** R65's defect class, one door over: `revoke_for_run` fires solely from adapter settlement paths guarded by `if let Some(mcp)`, and `verify` returns `InvalidToken` for an expired record without removing it, so any run whose adapter task dies before its settlement hook leaks one `ScopeTokenRecord` for the process lifetime.
-
-**Fix:** sweep expired records inside `bind` or `verify` (`tokens.retain(|_, r| now <= r.expires_at)`), mirroring `RateLimiter::check`'s sweep.
-
-**Priority:** Low — found during R65's adversarial review (2026-08-19).
 
 #### R97. `concurrent_cancelling_violations_are_both_idempotent_successes` flaked once under full-workspace parallel load
 
@@ -171,5 +93,5 @@ Prove these via `BATMAN_LIVE_CODEX=1`/`BATMAN_LIVE_COPILOT=1` conformance runs w
 - **Critical:** 0 — R48 resolved 2026-08-13 (see docs/journal.md Part XI), R49 resolved 2026-08-13 (see docs/journal.md Part XII), R69 resolved 2026-08-16 (see docs/journal.md Part XVI)
 - **High:** 0 — R41, R50 resolved 2026-08-13 (see docs/journal.md Part XIII), R52 resolved 2026-08-14 (see docs/journal.md Part XIV), R51 resolved 2026-08-14 (see docs/journal.md Part XV), R68 resolved 2026-08-16 (see docs/journal.md Part XVII), R53 resolved 2026-08-16 (see docs/journal.md Part XVIII), R54 resolved 2026-08-17 (see docs/journal.md Part XIX), R70 resolved 2026-08-18 (see docs/journal.md Part XX), R33 resolved 2026-08-18 (see docs/journal.md Part XXI), R44 resolved 2026-08-18 (see docs/journal.md Part XXII), R71 resolved 2026-08-18 (see docs/journal.md Part XXIII), R72 resolved 2026-08-18 (see docs/journal.md Part XXIV), R73 resolved 2026-08-18 (see docs/journal.md Part XXV), R74 resolved 2026-08-18 (see docs/journal.md Part XXVI), R76 resolved 2026-08-18 (see docs/journal.md Part XXVII), R75 resolved 2026-08-18 (see docs/journal.md Part XXVIII), R77 resolved 2026-08-19 (see docs/journal.md Part XXIX), R81 resolved 2026-08-19 (see docs/journal.md Part XXX)
 - **Medium:** 0 (R36 resolved 2026-08-19, see docs/journal.md Part XLI; R12-R16, R34, R35, R37, R42, R45, R55-R60 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII; R78, R79, R82, R87 resolved 2026-08-19, see docs/journal.md Part XXXIX; R83 resolved 2026-08-19, see docs/journal.md Part XL)
-- **Low:** 11 (R38, R65 — carried forward/new 2026-08-12; R67 resolved 2026-08-19, see docs/journal.md Part XLI; R85, R86 — new, found during R81's adversarial review; R88, R89 — new, found during R16/R29's adversarial review; R90-R96 — new, found during R55/R12/R34/R13/R78/R67/R65's adversarial reviews; R97 — new, flake watch from the 2026-08-19 full-suite run; R17, R18, R20, R29-R32, R39, R40, R43, R46, R61-R64, R66, R84 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII; R80 resolved 2026-08-19, see docs/journal.md Part XL)
+- **Low:** 1 (R97 — flake watch from the 2026-08-19 full-suite run; R38, R65, R85 resolved 2026-08-19, see docs/journal.md Part XLII; R67 resolved 2026-08-19, see docs/journal.md Part XLI; R86, R88-R96 resolved 2026-08-19, see docs/journal.md Parts XLII-XLIII; R80 resolved 2026-08-19, see docs/journal.md Part XL; R17, R18, R20, R29-R32, R39, R40, R43, R46, R61-R64, R66, R84 resolved 2026-08-19, see docs/journal.md Parts XXXI-XXXVIII)
 - **Environment (not actionable in-repo):** Codex account credits, Copilot ACP v1 protocol wall — reconfirmed, unchanged
