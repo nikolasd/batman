@@ -258,7 +258,7 @@ Same as one `worker/list` entry, plus `projectId` and `profileRef.permissionEnve
 { "runId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e", "taskId": "5f0b6b3e-6b1a-4b8e-9c2d-1a2b3c4d5e6f", "sequence": 44 }
 ```
 
-Plus `workspacePath` and `workspaceMode: "isolated"` when a workspace was materialized, plus
+Plus `workspacePath` and `workspaceMode` (`"isolated"` or `"copy"`, matching the mode submitted) when a workspace was materialized, plus
 `display` when a monitor pane was selected:
 
 ```json
