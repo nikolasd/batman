@@ -488,7 +488,38 @@ impl ViolationService {
     }
 
     /// `policy/violation/decide`: resolves `violation_id` as `resolution`
-    /// (`"release"` or `"cancel"`).
+    /// (`"release"` or `"cancel"`), discarding whether a winning
+    /// `"release"` actually cleared `flags.policyQuarantined` -- see
+    /// [`Self::decide_and_release_status`] for a version that reports it.
+    /// This wrapper exists only because `DecideOutcome` and this return
+    /// type predate that reporting need and every other caller (including
+    /// this crate's own concurrency-race test suites) already matches on
+    /// a bare [`DecideOutcome`].
+    ///
+    /// # Errors
+    /// See [`Self::decide_and_release_status`].
+    pub async fn decide(
+        &self,
+        violation_id: PolicyViolationId,
+        principal_instance_id: &str,
+        resolution: &str,
+    ) -> Result<DecideOutcome, ViolationError> {
+        self.decide_and_release_status(violation_id, principal_instance_id, resolution)
+            .await
+            .map(|(outcome, _)| outcome)
+    }
+
+    /// Same arbitration as [`Self::decide`], but for a winning `"release"`
+    /// also reports whether it actually cleared `flags.policyQuarantined`
+    /// -- `None` for a `"cancel"` resolution or an idempotent
+    /// [`DecideOutcome::AlreadyDecided`] replay, since neither computes a
+    /// clearing decision. Used by `policy/violation/decide`'s RPC handler
+    /// (`crate::service::orchestration::OrchestrationService::policy_violation_decide`)
+    /// so an operator who just released a violation can tell, in the same
+    /// response, whether the run actually left quarantine or a different,
+    /// still-open violation kept it held (R75 follow-up, `agent://ReviewR75`
+    /// W4) -- without a second `run/get` and without the response's
+    /// `"decided"` outcome silently meaning either.
     ///
     /// Ownership is not pre-checked here: `reconcile/omp` can rebind a
     /// task's `owner_client_instance_id` at any time via
@@ -513,7 +544,8 @@ impl ViolationService {
     /// refuses to if a *different* policy violation on the run is still
     /// unresolved (R75), so `DecideOutcome::Decided` here means the
     /// resolution was recorded, not that the run necessarily left
-    /// quarantine.
+    /// quarantine -- that is exactly what the returned `Option<bool>`
+    /// disambiguates.
     ///
     /// # Errors
     /// Returns [`ViolationError::Forbidden`] if `principal_instance_id`
@@ -522,12 +554,12 @@ impl ViolationService {
     /// `resolution` is `"release"` and the run has already reached a
     /// terminal state, and [`ViolationError::InvalidResolution`] if
     /// `resolution` is neither `"release"` nor `"cancel"`.
-    pub async fn decide(
+    pub async fn decide_and_release_status(
         &self,
         violation_id: PolicyViolationId,
         principal_instance_id: &str,
         resolution: &str,
-    ) -> Result<DecideOutcome, ViolationError> {
+    ) -> Result<(DecideOutcome, Option<bool>), ViolationError> {
         if resolution != "release" && resolution != "cancel" {
             return Err(ViolationError::InvalidResolution {
                 resolution: resolution.to_string(),
@@ -584,7 +616,7 @@ impl ViolationService {
             }
             Err(DomainError::AlreadyResolved { existing, .. }) => {
                 return if existing == resolution {
-                    Ok(DecideOutcome::AlreadyDecided)
+                    Ok((DecideOutcome::AlreadyDecided, None))
                 } else {
                     Err(ViolationError::Conflict { violation_id })
                 };
@@ -599,13 +631,14 @@ impl ViolationService {
         };
         self.broadcast(&mut result);
 
-        if resolution == "release" {
-            self.release_quarantine(run_id).await?;
+        let quarantine_cleared = if resolution == "release" {
+            Some(self.release_quarantine(run_id).await?)
         } else {
             self.cancel_and_transition(run_id).await?;
-        }
+            None
+        };
 
-        Ok(DecideOutcome::Decided)
+        Ok((DecideOutcome::Decided, quarantine_cleared))
     }
 
     /// Clears `flags.policy_quarantined` after a `"release"` decision, via
@@ -613,29 +646,33 @@ impl ViolationService {
     /// the flag if a *different* policy violation on this run is still
     /// unresolved, so a release targeting one violation can never silently
     /// un-quarantine a run for another, still-open one (R75). Called only
-    /// after [`Self::decide`]'s [`DomainRepository::resolve_policy_violation`]
-    /// commit has already resolved the violation being released, so that
-    /// row is never the one this method's own unresolved-count sees.
+    /// after [`Self::decide_and_release_status`]'s
+    /// [`DomainRepository::resolve_policy_violation`] commit has already
+    /// resolved the violation being released, so that row is never the
+    /// one this method's own unresolved-count sees.
     ///
-    /// A no-op (no write, no broadcast) if the flag was already clear or
-    /// another violation remains open -- unlike the pre-R75
-    /// `set_quarantined(run_id, false)` this replaced, a release is no
-    /// longer guaranteed to change the flag it targets.
-    async fn release_quarantine(&self, run_id: RunId) -> Result<(), ViolationError> {
+    /// Returns whether the flag was actually cleared. No write and no
+    /// broadcast if it was already clear or another violation remains
+    /// open -- unlike the pre-R75 `set_quarantined(run_id, false)` this
+    /// replaced, a release is no longer guaranteed to change the flag it
+    /// targets, and [`Self::decide_and_release_status`] reports that back
+    /// to its caller instead of discarding it (R75 follow-up).
+    async fn release_quarantine(&self, run_id: RunId) -> Result<bool, ViolationError> {
         let project_id = self.project_id;
         let mut result = self
             .db
             .run_domain_op(Box::new(move |conn| {
                 let mut repo = DomainRepository::new(conn, project_id);
-                repo.release_quarantine(run_id).map(|maybe_committed| {
-                    maybe_committed
-                        .map(|c| embed_envelope(json!({ "sequence": c.sequence }), &c.envelope))
-                        .unwrap_or_else(|| json!({}))
-                })
+                repo.release_quarantine(run_id)
+                    .map(|maybe_committed| match maybe_committed {
+                        Some(c) => embed_envelope(json!({ "cleared": true }), &c.envelope),
+                        None => json!({ "cleared": false }),
+                    })
             }))
             .await
             .map_err(ViolationError::Domain)?;
+        let cleared = result["cleared"].as_bool().unwrap_or(false);
         self.broadcast(&mut result);
-        Ok(())
+        Ok(cleared)
     }
 }

@@ -320,13 +320,19 @@ async fn a_release_landing_mid_record_does_not_suppress_the_fresh_quarantine() {
     let (record_result, release_result) = tokio::join!(
         biased;
         svc.record_nested_worker(run_id, task_id, worker_id, "child-new", "parent-new", 42),
-        svc.decide(old_violation_id, "omp-1", "release"),
+        svc.decide_and_release_status(old_violation_id, "omp-1", "release"),
     );
 
     record_result.expect("recording the fresh violation must succeed");
+    let (outcome, quarantine_cleared) =
+        release_result.expect("releasing the old violation must succeed");
+    assert_eq!(outcome, DecideOutcome::Decided);
     assert_eq!(
-        release_result.expect("releasing the old violation must succeed"),
-        DecideOutcome::Decided,
+        quarantine_cleared,
+        Some(false),
+        "the concurrent fresh violation's own INSERT lands before the \
+         release's unresolved-count read, so the release must report it \
+         did not clear the flag it targeted"
     );
 
     let fresh_violation_id = unresolved_violation_id(&db, run_id)
@@ -417,12 +423,18 @@ async fn a_plain_release_with_no_concurrent_violation_clears_quarantine() {
     let (violation_id, run_id, ..) = seed_quarantined_violation(&db, project_id).await;
     let svc = service(Arc::clone(&db), project_id);
 
-    let outcome = svc
-        .decide(violation_id, "omp-1", "release")
+    let (outcome, quarantine_cleared) = svc
+        .decide_and_release_status(violation_id, "omp-1", "release")
         .await
         .expect("releasing the only violation must succeed");
 
     assert_eq!(outcome, DecideOutcome::Decided);
+    assert_eq!(
+        quarantine_cleared,
+        Some(true),
+        "releasing the only unresolved violation on the run must report \
+         that it cleared the flag"
+    );
     assert_eq!(
         violation_resolution(&db, violation_id).await,
         Some("release".to_string())

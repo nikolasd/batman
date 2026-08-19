@@ -1829,7 +1829,19 @@ impl OrchestrationService {
     /// `policy/violation/decide`: resolves a mid-run nested-worker policy
     /// violation as `"release"` or `"cancel"`, restricted to the owning
     /// `ompExtension` client (the violation's task's
-    /// `owner_client_instance_id`) by [`crate::policy::ViolationService::decide`].
+    /// `owner_client_instance_id`) by
+    /// [`crate::policy::ViolationService::decide_and_release_status`].
+    ///
+    /// The result carries `"quarantineCleared": bool` only for a newly
+    /// decided (`outcome: "decided"`) `"release"`: `true` if this call
+    /// actually cleared `Run.flags.policyQuarantined`, `false` if a
+    /// *different*, still-unresolved violation on the run kept it held
+    /// (R75) -- the run then still refuses `message/send`/`workspace/apply`
+    /// until that other violation is also decided. The field is absent for
+    /// a `"cancel"` resolution (the run is ending; quarantine state is
+    /// moot) and for an idempotent `"alreadyDecided"` replay (no clearing
+    /// decision was made this call) -- both cases where computing a value
+    /// would imply information this call does not have.
     async fn policy_violation_decide(
         &self,
         principal: &crate::ipc::ClientPrincipal,
@@ -1845,19 +1857,23 @@ impl OrchestrationService {
             })?;
         let resolution = str_field(params, "resolution")?;
 
-        let outcome = self
+        let (outcome, quarantine_cleared) = self
             .violation
-            .decide(violation_id, &principal.instance_id, &resolution)
+            .decide_and_release_status(violation_id, &principal.instance_id, &resolution)
             .await
             .map_err(ServiceError::from)?;
 
-        Ok(json!({
+        let mut response = json!({
             "violationId": violation_id.to_string(),
             "outcome": match outcome {
                 crate::policy::DecideOutcome::Decided => "decided",
                 crate::policy::DecideOutcome::AlreadyDecided => "alreadyDecided",
             },
-        }))
+        });
+        if let Some(cleared) = quarantine_cleared {
+            response["quarantineCleared"] = json!(cleared);
+        }
+        Ok(response)
     }
 
     /// Rebinds a task from a disconnected OMP client instance to the
