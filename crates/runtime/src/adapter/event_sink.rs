@@ -147,7 +147,17 @@ pub struct DomainAdapterEventSink {
 }
 
 impl DomainAdapterEventSink {
-    #[must_use]
+    /// Builds the sink, compiling the org redaction patterns. Fails
+    /// closed: a sink that cannot build its redactor must not exist,
+    /// because content is redacted before it becomes durable (invariant
+    /// 4). Unreachable from today's startup path -- `lifecycle.rs`
+    /// validates `policy.org_security_patterns` and refuses to serve --
+    /// but a future path (config reload, an alternate constructor) that
+    /// feeds unvalidated patterns must get an error, not a silently
+    /// weaker built-in-rules-only redactor (R14).
+    ///
+    /// # Errors
+    /// Returns the pattern-compilation error verbatim.
     pub fn new(
         db: Arc<DatabaseHandle>,
         project_id: ProjectId,
@@ -156,21 +166,19 @@ impl DomainAdapterEventSink {
         nested_not_managed: bool,
         violation_service: Arc<crate::policy::ViolationService>,
         cost_ceiling_per_run_usd: Option<f64>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, String> {
+        let redactor = Arc::new(Redactor::with_org_rules(&org_security_patterns)?);
+        Ok(Self {
             db,
             project_id,
             events_tx,
-            redactor: Arc::new(Redactor::with_org_rules(&org_security_patterns).unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "org security patterns failed to compile; using built-in rules only");
-                Redactor::new()
-            })),
+            redactor,
             nested_not_managed,
             violation_service,
             cost_ceiling_per_run_usd,
             accumulated_cost_usd: std::sync::Mutex::new(0.0),
             cost_violation_recorded: std::sync::atomic::AtomicBool::new(false),
-        }
+        })
     }
 
     /// Adds `cost_usd` to this run's running total and reports whether that

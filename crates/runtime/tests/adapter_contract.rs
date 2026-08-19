@@ -391,7 +391,8 @@ async fn nested_worker_observed_emits_without_upgrading_declared_capability() {
         false,
         violation_service,
         None,
-    );
+    )
+    .expect("built-in patterns always compile");
 
     let sequence = sink
         .emit(AdapterEvent {
@@ -718,5 +719,38 @@ async fn changing_the_source_profile_after_worker_creation_never_mutates_the_sto
     assert_eq!(
         get_after["result"]["profileRef"]["fingerprint"], original_fingerprint,
         "the already-created worker's stored profile snapshot must never change"
+    );
+}
+
+/// R14: a sink whose org redaction patterns do not compile must not be
+/// constructed at all -- the old fallback silently degraded to built-in
+/// rules only, one config-reload away from journaling text the org's
+/// redaction rules were meant to remove (invariant 4).
+#[tokio::test]
+async fn a_sink_with_invalid_org_patterns_fails_closed() {
+    let harness = Harness::start().await;
+    let (events_tx, _events_rx) = tokio::sync::broadcast::channel(16);
+    let violation_service = std::sync::Arc::new(ViolationService::new(
+        harness.db.clone(),
+        harness.project_id,
+        events_tx.clone(),
+        None,
+        batman_runtime::config::NestedViolationAction::default(),
+    ));
+    let result = batman_runtime::adapter::DomainAdapterEventSink::new(
+        harness.db.clone(),
+        harness.project_id,
+        events_tx,
+        vec!["[invalid-regex".to_string()],
+        false,
+        violation_service,
+        None,
+    );
+    let err = result
+        .err()
+        .expect("an invalid org pattern must refuse construction");
+    assert!(
+        err.contains("[invalid-regex") || err.to_lowercase().contains("regex"),
+        "the error must name the failing pattern: {err}"
     );
 }

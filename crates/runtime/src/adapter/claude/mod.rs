@@ -984,15 +984,18 @@ mod run_state_tests {
             None,
             NestedViolationAction::default(),
         ));
-        let domain_sink = Arc::new(DomainAdapterEventSink::new(
-            Arc::clone(db),
-            project_id,
-            events_tx.clone(),
-            Vec::new(),
-            false,
-            violation,
-            None,
-        ));
+        let domain_sink = Arc::new(
+            DomainAdapterEventSink::new(
+                Arc::clone(db),
+                project_id,
+                events_tx.clone(),
+                Vec::new(),
+                false,
+                violation,
+                None,
+            )
+            .expect("built-in patterns always compile"),
+        );
         RunLifecycleSink::wrap(domain_sink, Arc::clone(db), project_id, events_tx, run_id)
     }
 
