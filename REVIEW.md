@@ -23,16 +23,18 @@ still-open items below exist *because* of that fix — now lives in
 [Part XV](journal.md#part-xv--crash-recoverys-five-minute-blind-spot-the-one-crash-it-could-not-see) (R51), [Part XVI](journal.md#part-xvi--a-state-machine-with-no-production-writer-closing-the-last-critical) (R69), [Part XVII](journal.md#part-xvii--skipped-is-not-fail-the-discriminator-r68-asked-for) (R68), [Part XVIII](journal.md#part-xviii--one-guard-three-doors-the-two-coordination-calls-that-journaled-unmetered) (R53), [Part XIX](journal.md#part-xix--two-decisions-one-violation-the-guard-that-lived-outside-the-transaction) (R54), [Part XX](journal.md#part-xx--the-same-race-one-service-over-the-approval-that-could-be-decided-twice) (R70), [Part XXI](journal.md#part-xxi--a-feature-flag-for-one-tool-three-broken-content-addresses) (R33), [Part XXII](journal.md#part-xxii--the-capture-pipeline-that-graded-its-own-homework) (R44), [Part XXIII](journal.md#part-xxiii--the-same-guarded-write-one-interleaving-further-the-decider-that-no-longer-owned-the-task) (R71), [Part XXIV](journal.md#part-xxiv--the-same-guarded-write-one-service-over-the-violation-that-no-longer-had-an-owner) (R72), [Part XXV](journal.md#part-xxv--not-a-conflict-either-side-detects-the-flag-write-that-clobbered-its-neighbor) (R73), [Part XXVI](journal.md#part-xxvi--a-guard-that-overreached-the-rebind-that-couldnt-be-resumed) (R74), [Part XXVII](journal.md#part-xxvii--whoever-committed-first-the-ownership-guard-that-arrived-in-someone-elses-commit) (R76), [Part XXVIII](journal.md#part-xxviii--two-clocks-one-flag-the-quarantine-race-that-closed-into-three-more-findings) (R75), [Part XXIX](journal.md#part-xxix--six-doors-one-owner-the-run-lifecycle-gets-the-same-lock-as-task-upsert) (R77), and [Part XXX](journal.md#part-xxx--four-gates-one-helper-the-chain-that-stops-here) (R81).
 This document only tracks what's still broken.
 
-**Baseline, last run 2026-08-12** (during an unrelated state-root rename; results apply to this
+**Baseline, last run 2026-08-19** (after the R44/R70-R77/R81 closure pass; results apply to this
 snapshot):
 
-- `cargo test --workspace` (`BATMAN_DISABLE_VENDOR_CLI=1`) — all suites pass except one pre-existing,
-  environment-specific failure unrelated to any item below: `copilot_adapter::real_binary_initialize_and_session_list_never_invoke_a_model`
-  fails because the local machine's installed Copilot CLI (1.0.79) isn't in `COPILOT_KNOWN_CLI_VERSIONS`
-  yet — a local-environment gap, not a code defect (see R57 for a related but distinct gap in the same
-  version-check machinery).
+- `cargo test --workspace` (`BATMAN_DISABLE_VENDOR_CLI=1`) — 813 passed across 56 suites; the one
+  skipped test is the pre-existing, environment-specific
+  `copilot_adapter::real_binary_initialize_and_session_list_never_invoke_a_model`, which fails
+  because the local machine's installed Copilot CLI (1.0.80) isn't in `COPILOT_KNOWN_CLI_VERSIONS`
+  yet — a local-environment gap, not a code defect (see R57 for a related but distinct gap in the
+  same version-check machinery).
 - `bun test packages` — 139 passed, 0 failed.
-- `cargo fmt --all --check`, `biome format .`, `bun run generate --check` — all clean.
+- `cargo fmt --all --check`, `cargo clippy --all-targets --all-features -- -D warnings`,
+  `biome format .`, `bun run generate --check` — all clean.
 
 **How to read priority:** ranked against end-to-end functionality completeness — the full task →
 run → worker → adapter → events → completion lifecycle across all four adapters, plus the
