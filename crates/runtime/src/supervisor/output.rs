@@ -32,7 +32,7 @@ static FRAME_TAP: std::sync::OnceLock<mpsc::UnboundedSender<Vec<u8>>> = std::syn
 /// # Errors
 /// Returns `Err` if a tap was already installed -- one capture session
 /// per process, never two competing recorders.
-pub fn install_frame_tap(tx: mpsc::UnboundedSender<Vec<u8>>) -> Result<(), &'static str> {
+pub(crate) fn install_frame_tap(tx: mpsc::UnboundedSender<Vec<u8>>) -> Result<(), &'static str> {
     FRAME_TAP
         .set(tx)
         .map_err(|_| "a frame tap is already installed")
