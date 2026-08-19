@@ -175,11 +175,33 @@ fn lease_release_refuses_an_unknown_lease_id() {
 
 #[test]
 fn lease_release_refuses_while_a_runtime_is_serving() {
+    use nix::fcntl::{Flock, FlockArg};
+
     let (state_dir, repo, lease_id, _run_id) = seed_orphan_lease();
     let paths = RuntimePaths::resolve(state_dir.path(), &repo).expect("resolve runtime paths");
-    // The daemon removes its socket only after journal shutdown completes,
-    // so the file's existence is the CLI's liveness signal.
-    std::fs::write(&paths.socket, b"").expect("simulate a live socket");
+
+    // Liveness is the held advisory flock -- exactly what a serving
+    // daemon owns and what `batcave stop` probes -- NOT the socket file.
+    std::fs::write(
+        &paths.lock,
+        serde_json::json!({
+            "pid": std::process::id(),
+            "instanceToken": "test-token",
+            "runtimeVersion": "0.0.0-test",
+            "projectId": paths.project_id.to_string(),
+            "socketPath": paths.socket.display().to_string(),
+        })
+        .to_string(),
+    )
+    .expect("write lock metadata");
+    let lock_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&paths.lock)
+        .expect("open lock file");
+    let _held = Flock::lock(lock_file, FlockArg::LockExclusiveNonblock)
+        .map_err(|(_, errno)| errno)
+        .expect("hold the advisory lock like a live daemon");
 
     let output = release_cmd(state_dir.path(), &repo, &lease_id)
         .arg("--yes")
@@ -202,5 +224,27 @@ fn lease_release_refuses_while_a_runtime_is_serving() {
             .acquire(RunId::new(), LeaseMode::Write, Some(IsolationKind::Shared))
             .is_err(),
         "the refused release must leave the exclusive claim in place"
+    );
+}
+
+/// R86 review W1: an unclean crash (SIGKILL, machine crash) leaves
+/// `runtime.sock` on disk with no live flock holder -- the exact case
+/// this command exists for. A stale socket alone must NOT refuse, or the
+/// no-remedy condition is reinstated for crashes and the operator is
+/// sent to a `batcave stop` that reports NotRunning and removes nothing.
+#[test]
+fn lease_release_proceeds_past_a_stale_socket_left_by_a_crash() {
+    let (state_dir, repo, lease_id, _run_id) = seed_orphan_lease();
+    let paths = RuntimePaths::resolve(state_dir.path(), &repo).expect("resolve runtime paths");
+    std::fs::write(&paths.socket, b"").expect("simulate a crash-orphaned socket");
+
+    let output = release_cmd(state_dir.path(), &repo, &lease_id)
+        .arg("--yes")
+        .output()
+        .expect("run batcave lease release");
+    assert!(
+        output.status.success(),
+        "a stale socket with no flock holder must not block the remedy: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }

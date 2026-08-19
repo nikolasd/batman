@@ -234,7 +234,12 @@ impl Adapter for TerminalAdapter {
         let session = self.session.lock().take();
         Box::pin(async move {
             let Some((sink, run_id, task_id, worker_id)) = session else {
-                return Err(AdapterError::capability_unsupported("terminal", "cancel"));
+                // Already settled (or never started): a second cancel is
+                // genuinely a no-op, the same judgement R13 made for an
+                // absent adapter -- an Err here would read as "a live
+                // vendor process a kill failed against" and raise a false
+                // degradedControl (R93) on a run that settled cleanly.
+                return Ok(());
             };
             sink.emit(AdapterEvent {
                 run_id,
@@ -388,12 +393,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_terminal_adapter_cancel_returns_capability_unsupported() {
+    async fn test_terminal_adapter_cancel_without_a_session_is_a_no_op_success() {
+        // A never-started adapter is unreachable from the registry; a
+        // settled one is not. Err here would read as a real kill failure
+        // and raise a false degradedControl (R93).
         let adapter = TerminalAdapter::new("test".to_string());
-        let result = adapter.cancel(CancelScope::Worker).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.code(), "capability_unsupported");
+        adapter
+            .cancel(CancelScope::Worker)
+            .await
+            .expect("cancel with nothing to settle is a no-op");
     }
 
     #[tokio::test]

@@ -202,10 +202,15 @@ impl ScopeTokenStore {
     /// a live record -- never overwrites one, since that would silently
     /// rebind (and thus hijack) whatever run currently owns it.
     pub fn bind(&self, token: String, binding: ScopeBinding) -> Result<(), BindError> {
+        let now = Timestamp::now();
         let mut tokens = self
             .tokens
             .lock()
             .expect("scope token mutex is never poisoned");
+        // Sweep here too (R96): `verify` sweeps, but a workload that
+        // binds tokens for runs whose MCP client never calls verify
+        // would still grow monotonically.
+        tokens.retain(|_, record| now <= record.expires_at);
         if tokens.contains_key(&token) {
             return Err(BindError::AlreadyBound);
         }
@@ -409,15 +414,17 @@ mod tests {
     #[test]
     fn an_expired_record_is_swept_by_any_later_verify() {
         let store = store_with(vec![]);
-        let _leaked = store.mint(binding(
-            RunId::new(),
-            100,
-            Timestamp::parse("2000-01-01T00:00:00Z").unwrap(),
-        ));
+        // Live first: `bind` sweeps too (batch-12 review S1), so minting
+        // the expired record second leaves both present.
         let live = store.mint(binding(
             RunId::new(),
             200,
             Timestamp::parse("2099-01-01T00:00:00Z").unwrap(),
+        ));
+        let _leaked = store.mint(binding(
+            RunId::new(),
+            100,
+            Timestamp::parse("2000-01-01T00:00:00Z").unwrap(),
         ));
         assert_eq!(store.tracked_records(), 2);
 

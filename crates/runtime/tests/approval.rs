@@ -671,14 +671,21 @@ async fn approval_list_projects_decision_provenance() {
     let (approval_id, run_id, _task_id) =
         seed_pending_approval(&harness, &mut client, "omp-1").await;
 
-    // Pending: provenance keys absent (skip_serializing_if), not null.
+    // Pending: provenance keys PRESENT and null (the projection emits
+    // them like decidedAt/decision) -- a serde Index would answer Null
+    // for a missing key too, so pin presence explicitly.
     let pending = client
         .call(5, "approval/list", json!({ "runId": run_id.to_string() }))
         .await;
     let row = &pending["result"]["approvals"].as_array().unwrap()[0];
+    let obj = row.as_object().unwrap();
     assert!(
-        row["decidedBy"].is_null() && row["reason"].is_null(),
-        "an undecided approval carries no provenance: {row:?}"
+        obj.contains_key("decidedBy") && obj["decidedBy"].is_null(),
+        "decidedBy must be present and null while pending: {row:?}"
+    );
+    assert!(
+        obj.contains_key("reason") && obj["reason"].is_null(),
+        "reason must be present and null while pending: {row:?}"
     );
 
     let decided = client

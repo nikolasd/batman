@@ -592,7 +592,7 @@ impl OrchestrationService {
         policy: Option<Arc<crate::config::RuntimePolicy>>,
         display: Option<batman_protocol::DisplaySelection>,
         display_placement: batman_protocol::DisplayPlacement,
-    ) -> Result<Option<std::path::PathBuf>, ServiceError> {
+    ) -> Result<Option<(std::path::PathBuf, IsolationKind)>, ServiceError> {
         // A pane is journaled only once the run row exists, so a replayer
         // never sees a pane attach to a run it has not seen created. No
         // available backend means no event at all -- headless is a normal
@@ -721,7 +721,7 @@ impl OrchestrationService {
                         .await?;
                     return Err(err);
                 }
-                (Some(lease), Some(real_path))
+                (Some(lease), Some((real_path, isolation)))
             }
             None => (None, None),
         };
@@ -736,7 +736,7 @@ impl OrchestrationService {
             prompt,
             events_tx: self.events_tx.clone(),
             violation_service: Arc::clone(&self.violation),
-            workspace_path: workspace_path.clone(),
+            workspace_path: workspace_path.as_ref().map(|(path, _)| path.clone()),
             policy,
             display,
         };
@@ -750,13 +750,30 @@ impl OrchestrationService {
             // same `LeaseReleased`/`CleanupFailed` pair every other
             // abandonment past that point emits.
             if let Some(lease) = &lease {
-                self.abandon_and_announce(lease, run_id, workspace_path.as_deref())
-                    .await?;
+                self.abandon_and_announce(
+                    lease,
+                    run_id,
+                    workspace_path.as_ref().map(|(path, _)| path.as_path()),
+                )
+                .await?;
             }
             return Err(err);
         }
 
         Ok(workspace_path)
+    }
+
+    /// The `workspaceMode` string a run response echoes for a resolved
+    /// isolation kind -- derived from the resolved kind, never the raw
+    /// request string, so a future resolution fallback cannot make the
+    /// echo lie again (R89). One authority for `run/submit`, `run/retry`,
+    /// and `run/get`.
+    fn workspace_mode_echo(kind: IsolationKind) -> &'static str {
+        match kind {
+            IsolationKind::Shared => "shared",
+            IsolationKind::GitWorktree => "isolated",
+            IsolationKind::Copy => "copy",
+        }
     }
 
     /// `principal` arbitrates ownership of `taskId` against
@@ -873,15 +890,9 @@ impl OrchestrationService {
             "taskId": task_id.to_string(),
             "sequence": submit_result["sequence"],
         });
-        if let Some(path) = &workspace_path {
+        if let Some((path, kind)) = &workspace_path {
             result["workspacePath"] = json!(path.to_string_lossy().to_string());
-            // Echo the caller's resolved mode: a path only exists for
-            // isolated and copy, and copy must read back as copy (R89).
-            result["workspaceMode"] = json!(if workspace_mode.as_deref() == Some("copy") {
-                "copy"
-            } else {
-                "isolated"
-            });
+            result["workspaceMode"] = json!(Self::workspace_mode_echo(*kind));
         }
         if let Some(selection) = &display {
             result["display"] = serde_json::to_value(selection)
@@ -920,11 +931,7 @@ impl OrchestrationService {
             .map_err(|e| ServiceError::internal(e.to_string()))?
         {
             result["workspacePath"] = json!(info.path);
-            result["workspaceMode"] = json!(match info.isolation_kind {
-                IsolationKind::Shared => "shared",
-                IsolationKind::GitWorktree => "isolated",
-                IsolationKind::Copy => "copy",
-            });
+            result["workspaceMode"] = json!(Self::workspace_mode_echo(info.isolation_kind));
         }
         Ok(result)
     }
@@ -1038,15 +1045,9 @@ impl OrchestrationService {
             "priorRunId": prior_run_id.to_string(),
             "sequence": sequence["sequence"],
         });
-        if let Some(path) = &workspace_path {
+        if let Some((path, kind)) = &workspace_path {
             result["workspacePath"] = json!(path.to_string_lossy().to_string());
-            // Echo the caller's resolved mode: a path only exists for
-            // isolated and copy, and copy must read back as copy (R89).
-            result["workspaceMode"] = json!(if workspace_mode.as_deref() == Some("copy") {
-                "copy"
-            } else {
-                "isolated"
-            });
+            result["workspaceMode"] = json!(Self::workspace_mode_echo(*kind));
         }
         if let Some(selection) = &display {
             result["display"] = serde_json::to_value(selection)

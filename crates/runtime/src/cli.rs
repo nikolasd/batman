@@ -476,10 +476,11 @@ async fn run_lease_release(
 
     // A live daemon owns this state: its subscribers would never see an
     // out-of-band mutation (invariant 7), and the lease may belong to an
-    // in-flight run it is supervising. The socket's existence is the
-    // daemon's own liveness proof -- it is removed only after journal
-    // shutdown completes.
-    if paths.socket.exists() {
+    // in-flight run it is supervising. Liveness is proven by the advisory
+    // flock, the same probe `batcave stop` uses -- NOT by the socket
+    // file, which an unclean crash (the exact case this command exists
+    // for) leaves behind.
+    if batman_runtime::lifecycle::runtime_is_live(&paths.lock) {
         eprintln!(
             "a runtime is serving this repository; release the lease over RPC \
              (workspace/release) or run `batcave stop` first"

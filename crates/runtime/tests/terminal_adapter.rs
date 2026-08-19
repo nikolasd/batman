@@ -279,9 +279,13 @@ async fn terminal_adapter_cancel_settles_the_run_with_a_synthetic_exit() {
         "the synthetic exit must be visibly synthetic: {events:?}"
     );
 
-    // A second cancel is a clean no-op refusal, never a second exit.
-    let again = adapter.cancel(CancelScope::Worker).await;
-    assert!(again.is_err(), "a settled adapter has nothing to cancel");
+    // A second cancel is a clean no-op success, never a second exit --
+    // an Err would read as a real kill failure and raise a false
+    // degradedControl (R93 x R95, batch-12 review W2).
+    adapter
+        .cancel(CancelScope::Worker)
+        .await
+        .expect("a settled adapter's cancel is a no-op success");
     assert_eq!(sink.events.lock().len(), 1);
 }
 

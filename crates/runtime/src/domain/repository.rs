@@ -1091,8 +1091,9 @@ impl<'c> DomainRepository<'c> {
     /// the same guarded transaction, after the owner re-read so a
     /// non-owner cannot probe quarantine state) if the run is
     /// policy-quarantined (R78). Callers that must deliver even from a
-    /// quarantined run (`coordination/reportBlocked`, `askPolicy`) pass
-    /// `false`.
+    /// quarantined run (`coordination/send`, `reportBlocked`, `askPolicy`
+    /// -- everything routed through the broker's `send_internal`; the
+    /// quarantine gate is `publishArtifact`-only by design) pass `false`.
     ///
     /// When `enforce_live` is set, the write refuses (same transaction,
     /// same ordering rationale) if the run has already settled (R94):

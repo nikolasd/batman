@@ -1021,6 +1021,18 @@ pub async fn stop(opts: &StopOptions) -> Result<StopOutcome, StopError> {
     Err(StopError::Timeout)
 }
 
+/// Whether a live daemon currently holds this repository's runtime lock.
+///
+/// The advisory flock is the liveness proof, exactly as [`stop`] uses it:
+/// the socket file alone is not one -- an unclean crash (SIGKILL, machine
+/// crash) leaves `runtime.sock` on disk, and only the graceful shutdown
+/// path removes it. Used by `batcave lease release` to refuse out-of-band
+/// writes only when a daemon is genuinely serving (R86 review W1).
+#[must_use]
+pub fn runtime_is_live(lock_path: &Path) -> bool {
+    read_lock(lock_path).is_some() && !lock_file_is_free(lock_path)
+}
+
 // ---------------------------------------------------------------- logging
 
 /// A [`tracing_subscriber`] `MakeWriter` over a shared append-mode file.
@@ -1080,4 +1092,58 @@ fn init_logging(foreground: bool, log_path: &Path) -> Result<(), ServeError> {
             .try_init();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use batman_protocol::{
+        EventSource, ProjectId, RunId, RuntimeEvent, TaskId, Timestamp, WorkerId,
+    };
+
+    fn health_envelope(healthy: bool, detail: Option<&str>) -> EventEnvelope {
+        let run_id = RunId::new();
+        EventEnvelope {
+            sequence: 1,
+            timestamp: Timestamp::now(),
+            project_id: ProjectId::new(),
+            task_id: None,
+            worker_id: None,
+            run_id: Some(run_id),
+            parent_worker_id: None,
+            source: EventSource::Runtime,
+            event: RuntimeEvent::AdapterProtocolHealthEvent {
+                run_id,
+                task_id: TaskId::new(),
+                worker_id: WorkerId::new(),
+                healthy,
+                detail: detail.map(str::to_string),
+            },
+            vendor_event_ref: None,
+        }
+    }
+
+    /// R91: the status row must render the journaled detail -- the
+    /// vendor's error subtype / raw stop reason -- not a constant label.
+    /// Mirrors the two cases model.test.ts pins for the embedded monitor.
+    #[test]
+    fn status_row_renders_the_protocol_health_detail() {
+        let mut rows = HashMap::new();
+        let line = apply_and_render(
+            &mut rows,
+            &health_envelope(false, Some("error result: rate_limited")),
+        )
+        .expect("a health event contributes an activity");
+        assert!(
+            line.contains("protocol unhealthy: error result: rate_limited"),
+            "the detail must reach the operator, not a constant label: {line}"
+        );
+
+        let healthy = apply_and_render(&mut rows, &health_envelope(true, None))
+            .expect("a healthy event contributes an activity");
+        assert!(
+            healthy.contains("protocol healthy"),
+            "the healthy edge renders its bare label: {healthy}"
+        );
+    }
 }
