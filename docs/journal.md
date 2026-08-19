@@ -4090,6 +4090,31 @@ The review also caught the watcher doc claiming the terminal-adapter settlement 
 settles without `ProcessExited` pins its slot, the idle timer, and unforced shutdown for the
 life of the process.
 
+## Part XLII — The lease nobody could release, and the release that had to be earned
+
+Batch 11 was lifecycle hygiene. `3c5d9ac` (R38) narrowed `install_frame_tap` to `pub(crate)` —
+the frame tap is a process-global, single-slot side channel for conformance capture, and a
+public export would let an embedder silently siphon every supervised worker's stdout; the
+reason now lives at the declaration. `1318f0c`/`ed28ab2` (R65) closed the rate limiter's
+retired-sender leak with a lazy full-map sweep under the existing lock — deliberately not the
+plan's `forget_run` hook, because a sweep cannot be forgotten at a new retirement site — and a
+test that watches `tracked_senders()` drop. `6d43eab` (R85) recorded ADR-0024: project-scoped
+reads are open to any same-user client by design; ownership gates *mutation*; `workspace/get`'s
+gate is uniform-refusal hygiene, not confidentiality. `fbc319a` (R86) added `batcave lease
+release`, the operator remedy for a lease whose owning session correlation was never persisted
+— and the adversarial review rejected it with three Errors, all real: the forced release
+journaled nothing (a permanent `LeaseAcquired` with no terminating event), guarded nothing (an
+active lease of a live run released cleanly, and a live daemon's monitors could never see the
+out-of-band write), and turned the doctor's `cleanupFailed` report into a way to *lose* a
+leaked directory. The rework (`2a1f715`) made the command earn its power: refused while the
+runtime's socket exists, `--yes` required for an `active` lease, intent persisted to the
+audited `operations` table before the release, `LeaseReleased`/`CleanupFailed` journaled after,
+the worktree torn down exactly as `abandon_lease` does with teardown failure keeping the row in
+`cleanupFailed`, distinct exits (1 unknown, 2 already-released), both refusals on stderr — all
+proven against the compiled binary, including the journal row and the acknowledged intent. The
+review also found R65's class one door over (expired scope-token records, registered and fixed
+as R96 in `db6eee9`) and required ADR-0009's back-reference (`33e5fc3`).
+
 ## Reading order, if you're new here
 
 If you're going to *use* BATMAN, not build or maintain it, skip this journal entirely and start
