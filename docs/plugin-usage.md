@@ -128,6 +128,100 @@ Every BATMAN tool failure has the same shape: text `"<method> failed: <message>"
 | `connection-failed` | Run `/batman-doctor` for a detailed check without needing a live daemon. |
 | `http-error` (from `/batman-runtime-install`) | **This repository is private.** Set `GITHUB_TOKEN`/`GH_TOKEN`, or run `gh auth login`, then retry the install. |
 
+## 7. Run three workers end to end
+
+The §3 row above — "run these three on separate workers" — is the whole story in one line. Here's
+what's underneath it, from three workers to the work merged back into `main`.
+
+### Kick it off
+
+You say something like:
+
+> Run the auth refactor, the billing fix, and the infra hardening in parallel — three workers, each
+> in its own worktree.
+
+BATMAN, per piece of work:
+
+1. `worker/create` (or reuses an existing worker for that adapter/model).
+2. `task/upsert` — one durable task per piece of work.
+3. `run/submit` with `workspaceMode: "isolated"`. Each submission gets its own detached `git
+   worktree`, checked out from the same base commit (see `workspacePath` in the `run/submit`
+   example in Appendix A) — three workers, three real working directories, one shared `.git`
+   object database. The isolation isn't faked: it's a worktree any ordinary `git` command works
+   against.
+
+Because all three worktrees start from the same commit and, in this example, touch different
+files, none of them can collide with each other or with your own working tree — that's what
+`workspaceMode: "isolated"` buys you.
+
+### Watching them
+
+`/batman` now shows three rows, one per run, each with its own state, adapter/model, and
+`workspaceMode: isolated` (§4). If one worker's action needs a decision, that row surfaces a
+pending approval or a quarantine independently of the other two (§5); deciding it only affects that
+run.
+
+### Collecting the work
+
+A `gitWorktree` isolation is a real git worktree, not a copy — commits made inside it are already
+reachable from your main checkout, because they share the same object database. Once a run's done
+(or partway through, if you just want to check in), there are two ways to get at the work:
+
+- **Directly, with git.** `run/get` (or the `run/submit` response) carries `workspacePath` — the
+  worktree's directory. There's nothing stopping the model from running `git -C <workspacePath>
+  log`/`diff` there, or `git cherry-pick <sha>` those commits straight into `main`, exactly as it
+  would for any other worktree of the same repository. This is the simplest path, and it needs no
+  lease id.
+- **Through BATMAN, audited.** `batman_workspace { op: "inspect" }` turns a worktree's dirty/
+  untracked state and diverged commits into a durable `patch` artifact (Appendix A,
+  `workspace/inspect`) that `workspace/apply` can then land with a revision check — useful when you
+  want the merge itself recorded, and a conflict to come back as evidence instead of a live git
+  conflict. It needs the run's own `leaseId`, though, and `run/submit` doesn't hand that back by
+  design (see the workspace-lease note under `task/upsert` in Appendix A) — the model would need it
+  from you or from the event journal (`batcave audit export`, see
+  [`cli-reference.md`](cli-reference.md)).
+
+`workspaceMode: "copy"` is the exception: a copy excludes `.git` entirely, so neither of the above
+applies — there's no repository in it for either plain git or BATMAN's own (git-backed) `inspect`/
+`apply` to work against. Reach for `copy` only when you want a worker fully outside git's reach;
+reach for `isolated` whenever you'll want the work back.
+
+### Merging back into `main`
+
+For a `gitWorktree` run, the direct-git route above is usually all you need. If you want BATMAN to
+mediate the merge instead:
+
+1. `batman_workspace { op: "acquire", runId: <any of the three>, mode: "write" }` — a shared-mode
+   write lease on the repository root itself. Unlike a run's own isolated lease, this call returns
+   its `leaseId` directly (Appendix A, `workspace/acquire`).
+2. For each worker's patch artifact: `batman_workspace { op: "apply", leaseId: <the one from step
+   1>, strategy: "applyPatch", artifactId: <its patchArtifactId>, expectedTargetRevision: <main's
+   current HEAD> }`. `applyPatch` lands the diff as uncommitted changes in `main`'s working tree,
+   ready to review and commit; `cherryPick` (when the artifact is a commit list) creates real
+   commits instead.
+3. A conflict is never an RPC error — `workspace/apply` answers `success: false` with a
+   `conflictArtifactId` (fetch it with `batman_artifact { op: "fetch" }`) and an `errorCode` of
+   `"CONFLICT"` (the patch didn't apply cleanly) or `"STALE_REVISION"` (`main` moved since you read
+   its head). Either way: look at the conflict, fix it, and retry `apply` with a fresh
+   `expectedTargetRevision` — BATMAN never guesses a resolution for you.
+4. Repeat for the next worker's patch, re-reading `main`'s head each time.
+
+### Cleaning up
+
+A run finishing — even successfully — doesn't release its workspace lease or remove its worktree;
+BATMAN never deletes work you haven't collected yet. Once you're done with one,
+`batman_workspace { op: "release", leaseId: ... }` tears it down — and because that removal is
+forced (`git worktree remove --force`, needed since a worked-in worktree is never clean), it also
+deletes any uncommitted changes still sitting in it. Collect what you need first. If the daemon
+can't start and a lease is orphaned, `batcave lease release <lease-id>` (see
+[`cli-reference.md`](cli-reference.md)) does the same release from a terminal and prints the leaked
+path if teardown itself fails, so you can clean it up by hand.
+
+All of that — three workers, three isolated runs, approvals and violations handled independently,
+three patches merged back with conflicts surfaced instead of hidden — is still just "run these
+three on separate workers" from §3. BATMAN does the bookkeeping; you only ever decide the things a
+git merge would ask you to decide anyway.
+
 ## Appendix A — tool reference
 
 For advanced users, and for the model's own use: the extension registers **11 orchestration
