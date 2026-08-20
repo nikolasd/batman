@@ -4,8 +4,14 @@
 //! usage, and artifact events, all correlated to one run, with hidden
 //! `reasoning` content dropped before it ever reaches an event), and
 //! approval-request normalization from a dedicated fixture.
+//!
+//! The tests that require the real `codex` binary degrade gracefully --
+//! printing a message and returning early -- when `codex` isn't
+//! resolvable on `PATH`, e.g. on CI runners that don't have it installed.
+//! See `real_codex_binary` below.
 
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use batman_protocol::{ContentClass, RunId, TaskId, WorkerId};
@@ -21,6 +27,27 @@ use batman_runtime::adapter::codex::client::CodexRpcClient;
 use batman_runtime::adapter::codex::normalize;
 use batman_runtime::adapter::codex::schema::{SchemaManifest, verify_against_installed_binary};
 use batman_runtime::adapter::mcp_config::McpLaunchContext;
+
+// ------------------------------------------------------------ real binary
+
+/// The real `codex` CLI, when it's installed and resolvable on `PATH`
+/// (e.g. on a developer's machine). `None` on machines without it -- a CI
+/// runner never installs the vendor CLI -- where the real-binary tests
+/// print a note and return early instead of failing. Same posture as
+/// `real_claude_binary` in `claude_adapter.rs` and `real_copilot_binary`
+/// in `copilot_adapter.rs`.
+fn real_codex_binary() -> Option<PathBuf> {
+    let output = Command::new("which").arg("codex").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path))
+    }
+}
 
 // --------------------------------------------------------------- fixtures
 
@@ -68,6 +95,10 @@ impl AdapterEventSink for RecordingSink {
 
 #[test]
 fn schema_manifest_required_surface_is_present_on_the_installed_binary() {
+    if real_codex_binary().is_none() {
+        eprintln!("skipping: `codex` is not on PATH");
+        return;
+    }
     let manifest = SchemaManifest::load(&fixture_path("schema-version.json"))
         .expect("committed schema-version.json manifest must parse");
     verify_against_installed_binary(&manifest, "codex")
@@ -291,6 +322,10 @@ async fn capabilities_match_the_verified_protocol_surface() {
 
 #[tokio::test]
 async fn probe_reports_the_installed_codex_version_without_a_model_call() {
+    if real_codex_binary().is_none() {
+        eprintln!("skipping: `codex` is not on PATH");
+        return;
+    }
     let adapter = CodexAdapter::with_binary(
         "codex",
         std::env::temp_dir(),
@@ -319,6 +354,10 @@ async fn real_transport_completes_initialize_and_thread_start_with_zero_model_ca
     // reach the model -- Codex only calls out to the model once a turn
     // actually starts with input (`turn/start`), which this test
     // deliberately never issues.
+    if real_codex_binary().is_none() {
+        eprintln!("skipping: `codex` is not on PATH");
+        return;
+    }
     let current_env: std::collections::HashMap<String, String> = std::env::vars().collect();
     let env = EnvironmentPolicy::baseline().build(&current_env, &[]);
     let spec = SpawnSpec {
