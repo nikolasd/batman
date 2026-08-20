@@ -40,7 +40,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=gcc-aarch64-linux-gnu" >> "$GITHUB_ENV"
+          # The apt package installs fine, but it provides no binary named
+          # `gcc-aarch64-linux-gnu` -- the executable is
+          # `aarch64-linux-gnu-gcc`, the name the release.yml arm64 leg uses.
+          # The old wording made rustc fail at the link step with
+          # "linker `gcc-aarch64-linux-gnu` not found" on every push.
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc-ar" >> "$GITHUB_ENV"
 
       - name: Build batcave
         run: cargo build --release --target ${{ matrix.rust_target }} --bin batcave
