@@ -68,6 +68,7 @@ hint from you. Some examples of what to say, and what happens:
 | "...on a copy instead" | Same, plus `workspaceMode: "copy"` — a per-run copy of the repository |
 | "run these three on separate workers" | Creates (or reuses) three workers, then submits three runs — each with its own `workspaceMode: "isolated"` so they don't collide on the same files |
 | "how's that run doing?" | Polls `run/get`, or points you at `/batman` to watch it live |
+| "what did that run say?" | Reads the finished run's final output with batman_run op "result" |
 | "that failed, try again" | Retries with the original prompt restated (BATMAN doesn't remember it for you) |
 | "stop it" | Cancels the run |
 
@@ -245,7 +246,7 @@ Approval tiers (`read` / `write` / `exec`) gate whether OMP prompts before runni
 | `batman_profile` | register | `exec` | Register a reusable (adapter, model, startup options) profile |
 | `batman_worker` | create, list, get | `exec`/`read` | Provision or look up a worker identity for a harness/model |
 | `batman_task` | upsert, get | `write`/`read` | Create or read the durable, cross-session unit of work |
-| `batman_run` | submit, list, get, retry, cancel | `exec`/`read` | Execute, monitor, retry, or cancel a task on a worker |
+| `batman_run` | submit, list, get, retry, cancel, result | `exec`/`read` | Execute, monitor, retry, or cancel a task on a worker |
 | `batman_workspace` | acquire, get, inspect, apply, release | `exec`/`read` | Manage the git worktree/copy a run executes in |
 | `batman_artifact` | list, fetch | `read` | Read patches, commit lists, conflict reports a run published |
 | `batman_child` | list, decide | `read`/`exec` | Approve or deny a worker's request to spawn a nested child |
@@ -413,6 +414,24 @@ Same as `run/submit`, plus `priorRunId`:
 
 ```json
 { "sequence": 46 }
+```
+
+### `run/result`
+
+Only answers for a **terminal** run — a run still in flight is refused with `-32602`
+(`run <id> is not finished`), never given a partial answer. `resultText` is the run's final
+journaled message (redacted; `null` when the run produced no visible final message). `usage`
+is `null` when the adapter reports none (Copilot under ACP v1); Codex reports tokens but never
+cost.
+
+```json
+{
+  "runId": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+  "state": "succeeded",
+  "resultText": "all done: pomegranate",
+  "usage": { "inputTokens": 1000, "outputTokens": 2000, "costUsd": 2.5 },
+  "completedAt": "2026-08-10T14:09:03Z"
+}
 ```
 
 ### `workspace/acquire`

@@ -4173,3 +4173,17 @@ contributing to or maintaining the codebase itself.
 10. **operations.md** / **cli-reference.md** / **compatibility.md** — day-to-day references once
     you're past onboarding: running `batcave` by hand, its full flag set, and what's actually
     proven to work against which platform/adapter version.
+
+## Part XLIV — run/result: the first run method with a canonical result type
+
+Gap 2 of the multiagent-cooperation design (spec: docs/superpowers/specs/
+2026-08-21-multiagent-cooperation-gaps-design.md). Before this, a worker's final answer was
+journaled but unreachable from the tool surface — `run/get` returns state and flags only, so
+OMP could not chain one worker's output into another's prompt. `run/result` reads the journal
+for a terminal run: last `adapterMessageFinal` with non-null text (role-agnostic — Claude
+finals are `role: "result"`, OMP-RPC is `role: "system"`; a role filter was the design's
+original, wrong, selection rule), plus an adapter-aware usage fold (Claude sums per-invocation
+deltas; Codex/OMP-RPC cumulative totals are last-wins; Copilot honestly `null`). Guarded by
+crates/runtime/tests/run_result.rs (refusal for non-terminal/unknown runs, chunk fallback,
+redaction, per-adapter fold) and a client-side ValidationError test; manual scenario:
+docs/manual-testing.md §6.

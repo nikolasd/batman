@@ -778,7 +778,7 @@ Generated from [`crates/runtime/src/ipc/mod.rs`](crates/runtime/src/ipc/mod.rs)'
 | Role | Allowed Methods |
 |---|---|
 | `ompExtension` | All 31 mutation/read methods, including `policy/violation/decide`, `policy/violation/list`, `reconcile/omp`, `profile/register`, and the full `workspace/*`/`artifact/*` surface |
-| `display` | 12 read-only methods: `runtime/status`, `events/subscribe`, `events/replay`, `task/get`, `worker/list`, `worker/get`, `run/list`, `run/get`, `message/list`, `approval/list`, `coordination/child/list`, `policy/violation/list` |
+| `display` | 13 read-only methods: `runtime/status`, `events/subscribe`, `events/replay`, `task/get`, `worker/list`, `worker/get`, `run/list`, `run/get`, `run/result`, `message/list`, `approval/list`, `coordination/child/list`, `policy/violation/list` |
 | `workerMcp` | 12 methods: `runtime/status` plus 11 `coordination/*` tool-backing methods (`coordination/task`, `coordination/peers`, `coordination/send`, `coordination/requestChild`, `coordination/publishArtifact`, `coordination/reportBlocked`, `coordination/askPolicy`, `coordination/child/list`, `coordination/peerWorkspace`, `coordination/artifactList`, `coordination/artifactFetch`) |
 
 **Note:** A cached connection shared across callers must authenticate as the *union* of all roles (see [Engineering Lessons](engineering-lessons.md#cached-client-must-authenticate-with-the-union-of-all-roles)).

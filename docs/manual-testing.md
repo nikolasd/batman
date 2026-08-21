@@ -624,6 +624,50 @@ The worktrees should no longer appear. Clean up the scratch directory:
 ```bash
 rm -rf /tmp/batman-cross-agent
 ```
+
+## 6. Reading a finished run's output (`run/result` — needs a real model call)
+
+Verifies Gap 2 of the multiagent-cooperation design: the model can read a worker's final
+answer and chain it into a second run. Work in a scratch repository:
+
+```bash
+mkdir -p /tmp/batman-result-smoke && cd /tmp/batman-result-smoke && git init -q && git commit -q --allow-empty -m init
+```
+
+### 6a. One run, one answer
+
+```bash
+omp --extension "$EXT" --print \
+  'Use batman_profile to register a Claude profile (adapter "claude", a model of your choice,
+   startupOptions {"claude":{}}, source "manual-test"), batman_worker to create a worker from
+   that profileId, batman_task to upsert a task, and batman_run to submit a run with prompt
+   "Reply with exactly the word pomegranate and nothing else". Poll batman_run op "get" until
+   the state is terminal, then call batman_run op "result" and report resultText and usage
+   plainly.'
+```
+
+Expect: `resultText` containing exactly `pomegranate`; `usage.inputTokens` and
+`usage.outputTokens` both > 0; `state: "succeeded"`. Calling `op: "result"` while the run is
+still `working` is refused with `run <id> is not finished (state: working)` — that refusal is
+correct behavior, not a bug: a partial answer is never returned.
+
+### 6b. Chaining: A's answer becomes B's prompt
+
+```bash
+omp --extension "$EXT" --print \
+  'Call batman_run op "result" for runId "<runId from 6a>". Then submit a second run on the
+   same worker and task whose prompt embeds that resultText: "The previous worker said:
+   <resultText>. Reply with the fruit it named, uppercased." Poll it to terminal, read its
+   result, and report it plainly.'
+```
+
+Expect the second run's `resultText` to contain `POMEGRANATE`.
+
+**What this verifies:** the full read-back path — journaled `adapterMessageFinal` → redaction
+boundary → `run/result` fold → Ajv-validated result → the model composing the next prompt from
+it. This is the chaining primitive every multi-worker synthesis flow builds on. Clean up as in
+§3's "Clean up".
+
 ## Reading the widget line
 
 The `/batman` widget is a rounded border (drawn by

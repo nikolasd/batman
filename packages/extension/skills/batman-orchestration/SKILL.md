@@ -39,8 +39,13 @@ Any other value is rejected by the runtime.
 
 ## Monitoring runs
 
-- **Preferred approach:** Tell the user to open `/batman` — the live monitor shows all runs, their state, flags, and output in real time.
+- **Preferred approach:** Tell the user to open `/batman` — the live monitor shows all runs, their state, flags, and latest activity in real time.
 - **Programmatic polling:** Call `batman_run { op: "get", runId }` and report `state` plus any `true` entries in `flags` (like `degradedControl`, `needsReconciliation`, `policyQuarantined`, `workspaceDirty`, `childrenActive`).
+- **Reading a finished run's output:** Call `batman_run { op: "result", runId }` once the run is
+  terminal — it returns `resultText` (the worker's final message), `usage` (tokens; `null` when
+  the adapter reports none, e.g. Copilot), and `completedAt`. To chain work, pass `resultText`
+  into the next run's `prompt`. A run that isn't finished is refused — poll `op: "get"` until
+  `state` is terminal first.
 
 ## Parallel work
 
