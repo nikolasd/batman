@@ -309,6 +309,7 @@ impl OrchestrationService {
             BatmanMethod::RunSubmit => self.run_submit(principal, params).await,
             BatmanMethod::RunList => self.run_list(params).await,
             BatmanMethod::RunGet => self.run_get(params).await,
+            BatmanMethod::RunResult => self.run_result(params).await,
             BatmanMethod::RunRetry => self.run_retry(principal, params).await,
             BatmanMethod::RunCancel => self.run_cancel(principal, params).await,
             BatmanMethod::MessageSend => self.message_send(principal, params).await,
@@ -934,6 +935,41 @@ impl OrchestrationService {
             result["workspaceMode"] = json!(Self::workspace_mode_echo(info.isolation_kind));
         }
         Ok(result)
+    }
+
+    /// `run/result`: a terminal run's final journaled output. Refuses a
+    /// run that is still in flight -- a partial answer is never returned.
+    async fn run_result(&self, params: &Value) -> Result<Value, ServiceError> {
+        let run_id = parse_run_id(params.get("runId"))?;
+        let run = self
+            .db
+            .run_domain_op(query::run_get_op(run_id))
+            .await
+            .map_err(ServiceError::from)?;
+
+        let state = run["state"].as_str().unwrap_or_default().to_string();
+        let is_terminal = RunState::try_from(state.as_str())
+            .map(|s| s.is_terminal())
+            .unwrap_or(false);
+        if !is_terminal {
+            return Err(ServiceError::invalid_params(format!(
+                "run {run_id} is not finished (state: {state})"
+            )));
+        }
+
+        let residue = self
+            .db
+            .run_domain_op(query::run_result_events_op(run_id))
+            .await
+            .map_err(ServiceError::from)?;
+
+        Ok(json!({
+            "runId": run_id.to_string(),
+            "state": state,
+            "resultText": residue["resultText"],
+            "usage": residue["usage"],
+            "completedAt": run["completedAt"],
+        }))
     }
 
     /// `run/retry` takes a prior `RunId` (must be terminal) and a `WorkerId`,

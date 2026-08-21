@@ -455,3 +455,100 @@ pub fn run_owner_not_quarantined_op(run_id: RunId, expected_instance_id: String)
         Ok(json!({}))
     })
 }
+
+/// Reads a terminal run's journal residue for `run/result`: the final
+/// visible message text and the folded usage totals. The usage fold is
+/// adapter-dependent -- Claude journals per-invocation deltas (sum);
+/// every other reporting adapter journals cumulative totals (last wins).
+/// Returns `{"resultText": ..., "usage": ...}`; the caller merges the
+/// run-row fields it already holds.
+pub fn run_result_events_op(run_id: RunId) -> DomainClosure {
+    Box::new(move |conn| {
+        let adapter: Option<String> = conn
+            .query_row(
+                "SELECT p.adapter
+                   FROM runs r
+                   JOIN workers w ON r.worker_id = w.worker_id
+                   JOIN worker_profiles p ON w.profile_id = p.id
+                  WHERE r.run_id = ?1",
+                [run_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(DomainError::Sqlite)?;
+        let sum_deltas = adapter.as_deref() == Some("claude");
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT event_json FROM events
+                  WHERE run_id = ?1
+                    AND (event_json LIKE '%adapterMessageEvent%'
+                         OR event_json LIKE '%adapterUsageEvent%')
+                  ORDER BY sequence",
+            )
+            .map_err(DomainError::Sqlite)?;
+        let rows = stmt
+            .query_map([run_id.to_string()], |row| row.get::<_, String>(0))
+            .map_err(DomainError::Sqlite)?;
+
+        let mut final_text: Option<String> = None;
+        let mut chunk_text: Option<String> = None;
+        let mut usage: Option<(u64, u64, Option<f64>)> = None;
+
+        for row in rows {
+            let raw = row.map_err(DomainError::Sqlite)?;
+            let Ok(event) = serde_json::from_str::<Value>(&raw) else {
+                continue;
+            };
+            // Re-verify the type tag: the LIKE prefilter alone would
+            // false-positive on message text that mentions these strings
+            // (same two-step as policy/evaluate.rs:154-196).
+            match event.get("type").and_then(Value::as_str) {
+                Some("adapterMessageEvent") => {
+                    let payload = &event["payload"];
+                    let Some(text) = payload.get("text").and_then(Value::as_str) else {
+                        continue; // fully-redacted fragment, journaled as null
+                    };
+                    match payload.get("kind").and_then(Value::as_str) {
+                        Some("adapterMessageFinal") => final_text = Some(text.to_string()),
+                        Some("adapterMessageChunk") => chunk_text = Some(text.to_string()),
+                        _ => {}
+                    }
+                }
+                Some("adapterUsageEvent") => {
+                    let payload = &event["payload"];
+                    let input = payload
+                        .get("inputTokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    let output = payload
+                        .get("outputTokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    let cost = payload.get("costUsd").and_then(Value::as_f64);
+                    usage = Some(match (sum_deltas, usage) {
+                        (true, Some((i, o, c))) => (
+                            i + input,
+                            o + output,
+                            match (c, cost) {
+                                (Some(a), Some(b)) => Some(a + b),
+                                (a, b) => a.or(b),
+                            },
+                        ),
+                        _ => (input, output, cost),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        Ok(json!({
+            "resultText": final_text.or(chunk_text),
+            "usage": usage.map(|(input, output, cost)| json!({
+                "inputTokens": input,
+                "outputTokens": output,
+                "costUsd": cost,
+            })),
+        }))
+    })
+}
