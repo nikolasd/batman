@@ -87,8 +87,10 @@ No BATMAN runs yet.
 model, flags, pending approvals, workspace mode, latest activity, first-seen and last-event
 timestamps.
 
-If the daemon is unreachable, the monitor degrades to inactive rather than blocking session
-startup — running `/batman` again retries the connection.
+On session start the monitor connects on its own: if the daemon is unreachable it degrades to
+inactive rather than blocking session startup — running `/batman` again retries the connection.
+The widget itself appears only when the journal has runs, so a session with nothing to show stays
+widget-free until the first run event arrives.
 
 ## 5. When BATMAN needs you
 

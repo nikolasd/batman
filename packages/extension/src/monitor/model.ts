@@ -70,6 +70,12 @@ export interface MonitorState {
 /** The initial, empty monitor state. */
 export const EMPTY_MONITOR_STATE: MonitorState = { rows: {}, lastSequence: 0 };
 
+/** Whether `state` has at least one run row — the widget's show/hide
+ *  decision (the box is only shown when there is something to show). */
+export function hasVisibleRows(state: MonitorState): boolean {
+  return Object.keys(state.rows).length > 0;
+}
+
 /**
  * Applies one durable event envelope to `state`, returning the next state.
  * Never mutates `state`. An event whose `sequence` is not newer than the

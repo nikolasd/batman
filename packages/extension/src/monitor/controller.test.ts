@@ -1,14 +1,16 @@
-// Tests for the monitor controller's session lifecycle: the widget must
-// render immediately on session start (R56), and a `session_shutdown`
-// followed by a new session must resubscribe rather than early-return into
-// a dead monitor (R39). Both drive `registerMonitor` through a fake
-// ExtensionAPI, mirroring tools.test.ts's fake-API pattern.
+// Tests for the monitor controller's session lifecycle: the widget shows
+// when the journal has runs and stays hidden when it doesn't (R56,
+// revised), and a `session_shutdown` followed by a new session must
+// resubscribe rather than early-return into a dead monitor (R39). Both
+// drive `registerMonitor` through a fake ExtensionAPI, mirroring
+// tools.test.ts's fake-API pattern.
 
 import { expect, test } from "bun:test";
 
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import type { BatmanClient } from "../client";
+import type { EventEnvelope } from "@nikolasd/batman-protocol";
 import { registerMonitor } from "./controller";
 
 type SessionHandler = (event: unknown, extCtx: ExtensionContext) => Promise<void>;
@@ -38,6 +40,7 @@ function createFakeApi(): FakeHarness {
 interface FakeClient {
   subscribeCalls: number;
   closed: boolean;
+  onEvent: ((event: EventEnvelope) => void) | undefined;
   client: BatmanClient;
 }
 
@@ -45,6 +48,7 @@ function createFakeClient(): FakeClient {
   const fake: FakeClient = {
     subscribeCalls: 0,
     closed: false,
+    onEvent: undefined,
     client: undefined as unknown as BatmanClient,
   };
   fake.client = {
@@ -53,10 +57,14 @@ function createFakeClient(): FakeClient {
     },
     close() {
       fake.closed = true;
+      fake.onEvent = undefined;
     },
-    subscribe(_fromSequence: number, _onEvent: unknown) {
+    subscribe(_fromSequence: number, onEvent: (event: EventEnvelope) => void) {
       fake.subscribeCalls += 1;
-      return () => {};
+      fake.onEvent = onEvent;
+      return () => {
+        fake.onEvent = undefined;
+      };
     },
   } as unknown as BatmanClient;
   return fake;
@@ -94,7 +102,7 @@ function fakeExtensionContext(widgetCalls: unknown[][]): ExtensionContext {
   } as unknown as ExtensionContext;
 }
 
-test("session_start renders the widget immediately, before any event arrives (R56)", async () => {
+test("session_start keeps the widget hidden when the journal has no runs (R56, revised)", async () => {
   const { api, handlers } = createFakeApi();
   const fake = createFakeClient();
   registerMonitor(api, { getClient: async () => fake.client });
@@ -104,11 +112,67 @@ test("session_start renders the widget immediately, before any event arrives (R5
 
   await handlers.get("session_start")?.(undefined, extCtx);
 
-  // A healthy runtime with no runs must still render "No BATMAN runs yet."
-  // instead of nothing at all.
+  // A healthy runtime with no runs: the widget is explicitly removed, not
+  // shown with an empty box.
   expect(fake.subscribeCalls).toBe(1);
   expect(widgetCalls.length).toBe(1);
+  expect(widgetCalls[0]?.[0]).toBe("batman-monitor");
+  expect(widgetCalls[0]?.[1]).toBeUndefined();
+  expect(widgetCalls[0]?.[2]).toEqual({ placement: "aboveEditor" });
 });
+
+test("the widget appears the moment a run row is created, and stays hidden before it (R56, revised)", async () => {
+  const { api, handlers } = createFakeApi();
+  const fake = createFakeClient();
+  registerMonitor(api, { getClient: async () => fake.client });
+
+  const widgetCalls: unknown[][] = [];
+  const extCtx = fakeExtensionContext(widgetCalls);
+
+  await handlers.get("session_start")?.(undefined, extCtx);
+  expect(widgetCalls.length).toBe(1);
+  expect(Array.isArray(widgetCalls[0]?.[1])).toBe(false);
+
+  fake.onEvent?.(runEventEnvelope(1));
+
+  expect(widgetCalls.length).toBe(2);
+  expect(Array.isArray(widgetCalls[1]?.[1])).toBe(true);
+});
+
+test("/batman renders the box even when empty (explicit command overrides the auto-hide)", async () => {
+  const { api, commands } = createFakeApi();
+  const fake = createFakeClient();
+  registerMonitor(api, { getClient: async () => fake.client });
+
+  const widgetCalls: unknown[][] = [];
+  const cmdCtx = fakeExtensionContext(widgetCalls);
+
+  await commands.get("batman")?.handler("", cmdCtx);
+
+  // The user explicitly asked for the monitor, so the (empty) box renders
+  // even with no runs — the asymmetry with session_start.
+  expect(widgetCalls.length).toBe(1);
+  expect(Array.isArray(widgetCalls[0]?.[1])).toBe(true);
+});
+
+/** A working runEvent envelope, shaped like the runtime's (mirrors model.test.ts). */
+function runEventEnvelope(sequence: number): EventEnvelope {
+  return {
+    sequence,
+    timestamp: "2026-01-01T00:00:00Z",
+    projectId: "018f0000-0000-7000-8000-000000000000",
+    taskId: "task-1",
+    workerId: null,
+    runId: "run-1",
+    parentWorkerId: null,
+    source: "runtime",
+    vendorEventRef: null,
+    event: {
+      type: "runEvent",
+      payload: { kind: "runWorking", runId: "run-1", taskId: "task-1", workerId: "worker-1", state: "working" },
+    },
+  };
+}
 
 test("a session_shutdown followed by a new session_start resubscribes instead of early-returning into a dead monitor (R39)", async () => {
   const { api, handlers } = createFakeApi();

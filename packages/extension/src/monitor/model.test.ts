@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { EventEnvelope } from "@nikolasd/batman-protocol";
 
-import { EMPTY_MONITOR_STATE, reduceEvent, reduceEvents } from "./model";
+import { EMPTY_MONITOR_STATE, hasVisibleRows, reduceEvent, reduceEvents } from "./model";
 
 let sequenceCounter = 0;
 function envelope(overrides: Partial<EventEnvelope> & { event: EventEnvelope["event"] }): EventEnvelope {
@@ -37,6 +37,11 @@ function runEvent(runId: string, taskId: string, workerId: string, state: string
 test("starts from empty state", () => {
   expect(EMPTY_MONITOR_STATE.rows).toEqual({});
   expect(EMPTY_MONITOR_STATE.lastSequence).toBe(0);
+});
+test("hasVisibleRows is false for empty state and true once a row exists", () => {
+  expect(hasVisibleRows(EMPTY_MONITOR_STATE)).toBe(false);
+  const withRow = reduceEvent(EMPTY_MONITOR_STATE, runEvent("run-1", "task-1", "worker-1", "working"));
+  expect(hasVisibleRows(withRow)).toBe(true);
 });
 
 test("a runEvent creates a row with task/worker/state", () => {

@@ -180,8 +180,9 @@ renders "No BATMAN runs yet."
 **What this verifies:** The monitor controller subscribes to the daemon's event stream via
 `BatmanClient.subscribe(fromSequence, cb)`, persists `lastSequence` via a custom
 `pi.appendEntry('batman-monitor', {sequence})` session entry for replay-on-restart, and updates
-the widget on every event. The controller handles `session_start` (connect, degrade silently if
-daemon unreachable) and `session_shutdown` (unsubscribe).
+the widget on every event. The controller handles `session_start` (connect, then show the widget
+only if the journal has runs — a run-free session stays hidden until the first run event, and a
+dead daemon stays silent) and `session_shutdown` (unsubscribe).
 
 ### Direct CLI monitor (alternative to extension)
 

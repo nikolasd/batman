@@ -6,7 +6,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 import type { BatmanClient } from "../client";
-import { EMPTY_MONITOR_STATE, reduceEvent, type MonitorState } from "./model";
+import { EMPTY_MONITOR_STATE, hasVisibleRows, reduceEvent, type MonitorState } from "./model";
 import { renderRowDetails, renderWidgetBox } from "./render";
 
 /** The custom session-entry type the last-rendered sequence is persisted under. */
@@ -97,9 +97,19 @@ export function registerMonitor(pi: ExtensionAPI, ctx: MonitorControllerContext)
   const controller = new MonitorController();
   let subscribedClient: BatmanClient | undefined;
 
-  function refresh(extCtx: ExtensionContext): void {
-    extCtx.ui.setWidget(WIDGET_KEY, renderWidgetBox(controller.getState(), extCtx.ui.theme), { placement: "aboveEditor" });
-    pi.appendEntry(MONITOR_ENTRY_TYPE, { sequence: Number(controller.getState().lastSequence) });
+  /**
+   * Syncs the widget with the current state: renders the box when there are
+   * rows to show, removes the widget when there are none. `force` renders
+   * the box even when empty — the explicit `/batman` command uses it, so a
+   * healthy-but-empty runtime still answers with the "No BATMAN runs yet."
+   * box rather than silence; the session-start and live-event paths stay
+   * hidden when there is nothing to show.
+   */
+  function refresh(extCtx: ExtensionContext, force = false): void {
+    const state = controller.getState();
+    const content = force || hasVisibleRows(state) ? renderWidgetBox(state, extCtx.ui.theme) : undefined;
+    extCtx.ui.setWidget(WIDGET_KEY, content, { placement: "aboveEditor" });
+    pi.appendEntry(MONITOR_ENTRY_TYPE, { sequence: Number(state.lastSequence) });
   }
 
   async function connect(extCtx: ExtensionContext): Promise<void> {
@@ -129,8 +139,9 @@ export function registerMonitor(pi: ExtensionAPI, ctx: MonitorControllerContext)
 
   pi.on("session_start", async (_event, extCtx) => {
     await connect(extCtx);
-    // Render immediately: a healthy runtime with no runs must show
-    // "No BATMAN runs yet." rather than nothing until an event fires (R56).
+    // Render immediately: a healthy runtime with runs shows the widget; one
+    // with no runs keeps it hidden until the first run event (R56, revised:
+    // only show the box when there is something to show).
     if (subscribedClient !== undefined) {
       refresh(extCtx);
     }
@@ -145,11 +156,11 @@ export function registerMonitor(pi: ExtensionAPI, ctx: MonitorControllerContext)
         cmdCtx.ui.notify(details ?? `No BATMAN run found for ${runId}.`, details === undefined ? "warning" : "info");
         return;
       }
-      // Deliberately asymmetric with session_start's guarded refresh: an
-      // explicit user command renders unconditionally, so /batman against a
+      // Deliberately asymmetric with session_start's auto-hide: an explicit
+      // user command renders unconditionally, so /batman against an empty or
       // dead runtime still shows the (empty) monitor box rather than nothing.
       await connect(cmdCtx);
-      refresh(cmdCtx);
+      refresh(cmdCtx, true);
     },
   });
 
