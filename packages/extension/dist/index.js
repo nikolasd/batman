@@ -10126,7 +10126,7 @@ function isObject(value) {
 // package.json
 var package_default = {
   name: "@nikolasd/batman",
-  version: "0.4.0",
+  version: "0.4.1",
   type: "module",
   exports: { ".": "./dist/index.js" },
   omp: { extensions: ["./dist/index.js"] },
@@ -11543,6 +11543,9 @@ var EMPTY_FLAGS = {
   childrenActive: false
 };
 var EMPTY_MONITOR_STATE = { rows: {}, lastSequence: 0 };
+function hasVisibleRows(state) {
+  return Object.keys(state.rows).length > 0;
+}
 function reduceEvent(state, envelope) {
   const lastSequence = envelope.sequence > state.lastSequence ? envelope.sequence : state.lastSequence;
   const patch = eventPatch(envelope);
@@ -11905,9 +11908,11 @@ class MonitorController {
 function registerMonitor(pi, ctx) {
   const controller = new MonitorController;
   let subscribedClient;
-  function refresh(extCtx) {
-    extCtx.ui.setWidget(WIDGET_KEY, renderWidgetBox(controller.getState(), extCtx.ui.theme), { placement: "aboveEditor" });
-    pi.appendEntry(MONITOR_ENTRY_TYPE, { sequence: Number(controller.getState().lastSequence) });
+  function refresh(extCtx, force = false) {
+    const state = controller.getState();
+    const content = force || hasVisibleRows(state) ? renderWidgetBox(state, extCtx.ui.theme) : undefined;
+    extCtx.ui.setWidget(WIDGET_KEY, content, { placement: "aboveEditor" });
+    pi.appendEntry(MONITOR_ENTRY_TYPE, { sequence: Number(state.lastSequence) });
   }
   async function connect(extCtx) {
     if (subscribedClient !== undefined && !subscribedClient.isClosed) {
@@ -11944,7 +11949,7 @@ function registerMonitor(pi, ctx) {
         return;
       }
       await connect(cmdCtx);
-      refresh(cmdCtx);
+      refresh(cmdCtx, true);
     }
   });
   pi.on("session_shutdown", async () => {
