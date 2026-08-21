@@ -28,6 +28,7 @@ import {
   validateJsonRpcNotification,
   validateJsonRpcResponse,
   validatePolicyViolationListResult,
+  validateRunResultResult,
   validateRuntimeStatus,
   validateWorkspaceInfo,
   type ValidateFunction,
@@ -52,6 +53,7 @@ const RESULT_VALIDATORS: Record<string, ValidateFunction> = {
   "workspace/apply": validateApplyResult,
   "workspace/get": validateWorkspaceInfo,
   "policy/violation/list": validatePolicyViolationListResult,
+  "run/result": validateRunResultResult,
 };
 
 /** Removes a subscription registered with {@link BatmanClient.subscribe}. */

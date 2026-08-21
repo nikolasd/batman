@@ -85,6 +85,7 @@ test("read-only ops resolve to tier read, mutating worker/run ops resolve to tie
   expect(runApproval({ op: "list" })).toBe("read");
   expect(runApproval({ op: "get" })).toBe("read");
   expect(runApproval({ op: "retry" })).toBe("exec");
+  expect(runApproval({ op: "result" })).toBe("read");
 });
 
 test("every op's approval tier matches whether it mutates", () => {
@@ -203,6 +204,36 @@ test("batman_run rejects a workspaceMode outside shared/isolated/copy (R29)", ()
     expect(schema.safeParse({ op: "submit", taskId: "t", workerId: "w", prompt: "p", workspaceMode: mode }).success).toBe(true);
   }
   expect(schema.safeParse({ op: "submit", taskId: "t", workerId: "w", prompt: "p", workspaceMode: "worktree" }).success).toBe(false);
+});
+
+test("batman_run accepts the result op and calls run/result with the runId", async () => {
+  const { api, tools } = createFakeApi();
+  const calls: Array<{ method: string; params: unknown }> = [];
+  const stubClient = {
+    request: async (method: string, params: unknown) => {
+      calls.push({ method, params });
+      if (method === "run/result") {
+        return {
+          runId: "00000000-0000-4000-8000-000000000000",
+          state: "succeeded",
+          resultText: "all done",
+          usage: { inputTokens: 10, outputTokens: 20, costUsd: null },
+          completedAt: "2026-08-21T00:00:00Z",
+        };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    },
+  };
+  registerOrchestrationTools(api, { getClient: async () => stubClient as unknown as BatmanClient });
+  const run = tools.get("batman_run");
+  expect(run).toBeDefined();
+  const schema = run?.parameters as zod.ZodObject;
+  expect(schema.safeParse({ op: "result", runId: "r-1" }).success).toBe(true);
+  const result = await run?.execute("call-1", { op: "result", runId: "r-1" }, undefined, undefined, fakeExtensionContext("/tmp"));
+  expect(result?.isError).toBeUndefined();
+  expect(calls).toEqual([{ method: "run/result", params: { runId: "r-1" } }]);
+  const details = result?.details as { resultText: string };
+  expect(details.resultText).toBe("all done");
 });
 
 // -------------------------------------------------- live-daemon round trip

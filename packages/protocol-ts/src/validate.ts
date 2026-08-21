@@ -70,6 +70,8 @@ export const validateJsonRpcResponse = def("JsonRpcResponse");
 export const validateJsonRpcErrorResponse = def("JsonRpcErrorResponse");
 /** Validates a JSON-RPC notification envelope. */
 export const validateJsonRpcNotification = def("JsonRpcNotification");
+/** Validates a `run/result` result payload. */
+export const validateRunResultResult = def("RunResultResult");
 
 /** Validates the array of event envelopes returned by `events/replay`. */
 export const validateEventEnvelopeArray = ajv.compile({

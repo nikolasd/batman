@@ -6924,6 +6924,10 @@ var batman_schema_default = {
     },
     policyViolationListResult: {
       $ref: "#/$defs/PolicyViolationListResult"
+    },
+    runResultResult: {
+      description: "`run/result` result payload.",
+      $ref: "#/$defs/RunResultResult"
     }
   },
   required: [
@@ -6944,7 +6948,8 @@ var batman_schema_default = {
     "inspectResult",
     "applyResult",
     "workspaceInfo",
-    "policyViolationListResult"
+    "policyViolationListResult",
+    "runResultResult"
   ],
   $defs: {
     InitializeParams: {
@@ -7302,6 +7307,7 @@ Serialized as the literal method name string used on the wire.`,
             "run/get",
             "run/retry",
             "run/cancel",
+            "run/result",
             "message/send",
             "message/list",
             "approval/list",
@@ -9836,6 +9842,77 @@ child at all (a cost ceiling does not).`,
         "action",
         "createdAt"
       ]
+    },
+    RunResultResult: {
+      description: "Result of `run/result`: a terminal run's final journaled output.\n\n`result_text: None` means the run journaled no visible final message\n(or it was fully redacted) -- distinct from an error. `usage: None`\nmeans the adapter never reported usage (e.g. Copilot under ACP v1).",
+      type: "object",
+      properties: {
+        runId: {
+          $ref: "#/$defs/RunId"
+        },
+        state: {
+          $ref: "#/$defs/RunState"
+        },
+        resultText: {
+          type: [
+            "string",
+            "null"
+          ]
+        },
+        usage: {
+          anyOf: [
+            {
+              $ref: "#/$defs/RunUsage"
+            },
+            {
+              type: "null"
+            }
+          ]
+        },
+        completedAt: {
+          type: [
+            "string",
+            "null"
+          ]
+        }
+      },
+      additionalProperties: false,
+      required: [
+        "runId",
+        "state"
+      ]
+    },
+    RunState: {
+      description: "The lifecycle state of a run.\n\nOnly the runtime applies a transition after process/protocol evidence.\nTerminal states (`succeeded`, `failed`, `cancelled`, `lost`) have no\noutgoing edges.",
+      type: "string"
+    },
+    RunUsage: {
+      description: "Token usage folded from a run's journaled `AdapterUsageEvent`s.\n\nThe runtime applies the adapter-correct fold before this leaves the\ndaemon: Claude journals per-invocation deltas (summed); every other\nreporting adapter journals cumulative totals (last one wins). Codex\nnever reports cost, so `cost_usd` is `null` there.",
+      type: "object",
+      properties: {
+        inputTokens: {
+          type: "integer",
+          format: "uint64",
+          minimum: 0
+        },
+        outputTokens: {
+          type: "integer",
+          format: "uint64",
+          minimum: 0
+        },
+        costUsd: {
+          type: [
+            "number",
+            "null"
+          ],
+          format: "double"
+        }
+      },
+      additionalProperties: false,
+      required: [
+        "inputTokens",
+        "outputTokens"
+      ]
     }
   }
 };
@@ -9872,6 +9949,7 @@ var validateEventEnvelope = def("EventEnvelope");
 var validateJsonRpcResponse = def("JsonRpcResponse");
 var validateJsonRpcErrorResponse = def("JsonRpcErrorResponse");
 var validateJsonRpcNotification = def("JsonRpcNotification");
+var validateRunResultResult = def("RunResultResult");
 var validateEventEnvelopeArray = ajv.compile({
   $id: "https://schema.batman.satorianalytics.com/event-envelope-array.json",
   type: "array",
@@ -9904,7 +9982,8 @@ var RESULT_VALIDATORS = {
   "workspace/inspect": validateInspectResult,
   "workspace/apply": validateApplyResult,
   "workspace/get": validateWorkspaceInfo,
-  "policy/violation/list": validatePolicyViolationListResult
+  "policy/violation/list": validatePolicyViolationListResult,
+  "run/result": validateRunResultResult
 };
 
 class JsonRpcRemoteError extends Error {
@@ -11307,19 +11386,19 @@ function registerReconcileTool(pi, ctx) {
 var BATMAN_RUN_TOOL_NAME = "batman_run";
 function registerRunTool(pi, ctx) {
   const params = pi.zod.object({
-    op: pi.zod.enum(["submit", "list", "get", "retry", "cancel"]).describe("Which run operation to perform."),
+    op: pi.zod.enum(["submit", "list", "get", "retry", "cancel", "result"]).describe("Which run operation to perform."),
     prompt: pi.zod.string().optional().describe("Required for submit and retry: the instruction the worker executes. BATMAN stores no task text, so the task's description must be passed here."),
     taskId: pi.zod.string().optional().describe("Required for submit: the task to execute. Optional filter for list."),
     workerId: pi.zod.string().optional().describe("Required for submit and retry: the worker to execute with."),
     workspaceMode: pi.zod.enum(["shared", "isolated", "copy"]).optional().describe("Optional workspace mode for submit and retry: 'shared' (the repository itself, the default), 'isolated' (a per-run git worktree), or 'copy' (a per-run copy of the repository)."),
     priority: pi.zod.number().int().optional().describe("Optional priority for submit."),
-    runId: pi.zod.string().optional().describe("Required for get and cancel: the run id."),
+    runId: pi.zod.string().optional().describe("Required for get, cancel, and result: the run id."),
     priorRunId: pi.zod.string().optional().describe("Required for retry: the terminal run id to retry.")
   });
   pi.registerTool({
     name: BATMAN_RUN_TOOL_NAME,
     label: "BATMAN Run",
-    description: "Use to execute, monitor, or manage task execution by external workers. Use op: 'submit' to start execution (requires taskId from batman_task, workerId from batman_worker, and prompt -- the instruction text the worker executes), op: 'get' to check progress/status of a run, op: 'list' to list runs for a task, op: 'retry' to re-execute a terminal run (creates a new runId and starts a fresh worker process; pass prompt again), or op: 'cancel' to stop a running run. After submitting, monitor with op: 'get'. If the run fails, retry with op: 'retry' (new runId). If stuck, cancel with op: 'cancel'.",
+    description: "Use to execute, monitor, or manage task execution by external workers. Use op: 'submit' to start execution (requires taskId from batman_task, workerId from batman_worker, and prompt -- the instruction text the worker executes), op: 'get' to check progress/status of a run, op: 'result' to read a finished run's final output text and token usage (requires runId; refused until the run reaches a terminal state -- chain work by passing resultText into the next submit's prompt), op: 'list' to list runs for a task, op: 'retry' to re-execute a terminal run (creates a new runId and starts a fresh worker process; pass prompt again), or op: 'cancel' to stop a running run. After submitting, monitor with op: 'get'. If the run fails, retry with op: 'retry' (new runId). If stuck, cancel with op: 'cancel'.",
     parameters: params,
     approval: (args) => typeof args === "object" && args !== null && ("op" in args) && (args.op === "submit" || args.op === "retry" || args.op === "cancel") ? "exec" : "read",
     async execute(_toolCallId, input, _signal, _onUpdate, extCtx) {
@@ -11337,6 +11416,8 @@ function registerRunTool(pi, ctx) {
           return callOrchestration(client, "run/list", { taskId: input.taskId });
         case "get":
           return callOrchestration(client, "run/get", { runId: input.runId });
+        case "result":
+          return callOrchestration(client, "run/result", { runId: input.runId });
         case "retry":
           return callOrchestration(client, "run/retry", {
             priorRunId: input.priorRunId,
