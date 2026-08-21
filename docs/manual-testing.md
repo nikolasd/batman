@@ -634,6 +634,15 @@ answer and chain it into a second run. Work in a scratch repository:
 mkdir -p /tmp/batman-result-smoke && cd /tmp/batman-result-smoke && git init -q && git commit -q --allow-empty -m init
 ```
 
+> **Known limitation (verified live 2026-08-21, Claude Code 2.1.238):** the Claude adapter keeps
+> the vendor CLI process alive after its final answer (stdin stays open for follow-up steering),
+> and run completion is keyed solely on process exit — so a live Claude run never reaches
+> `succeeded` on its own, and both scenarios below, as written, hang at the "poll until terminal"
+> step after making their billed call. Until the grace-window completion fix lands (see the
+> multiagent-cooperation spec's decision log), settle the run with `batman_run { op: "cancel" }`
+> once the answer has arrived; `op: "result"` then returns the journaled `resultText` and `usage`
+> with `state: "cancelled"` — that read-back path is proven working.
+
 ### 6a. One run, one answer
 
 ```bash
