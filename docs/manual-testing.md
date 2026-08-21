@@ -61,12 +61,13 @@ Configuration files are YAML with strict unknown-key rejection (fails closed wit
 ```yaml
 # ~/.batman/config.yaml
 max_workers: 4
-concurrency_ceiling: 8
+concurrency:
+  ceiling: 8
 retention: "30d"
 display:
   backend: auto
 models:
-  allowed:
+  allowlist:
     - "gpt-4"
     - "claude-3-opus"
 security:

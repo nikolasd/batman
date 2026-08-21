@@ -89,11 +89,23 @@ fn doctor_json_mode_with_missing_db() {
 
 #[test]
 fn doctor_with_nonexistent_state_dir() {
+    // A `--state-dir` that doesn't exist yet is not an error condition:
+    // `RuntimePaths::resolve` provisions it (mode 0700) before `Doctor` ever
+    // runs a check, the same way `serve` would. This pins that provisioning
+    // behavior rather than treating "didn't exist at the command line" as
+    // a failure the way a genuinely unwritable path would be.
     let fixture = Fixture::new();
+    let state_dir = fixture.state_dir().join("does/not/exist/yet");
+    assert!(
+        !state_dir.exists(),
+        "fixture precondition: must start absent"
+    );
+
     let mut cmd = Command::new(BATCAVE);
     cmd.arg("doctor")
+        .arg("--json")
         .arg("--state-dir")
-        .arg("/tmp/does/not/exist")
+        .arg(&state_dir)
         .arg("--repo")
         .arg(fixture.repo_dir())
         .stdout(Stdio::piped())
@@ -101,14 +113,24 @@ fn doctor_with_nonexistent_state_dir() {
 
     let output = cmd.output().expect("failed to execute doctor");
 
-    // Should fail with helpful error
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("does not exist")
-            || stderr.contains("state directory")
-            || stderr.contains("No such file"),
-        "Expected state directory or file error, got: {stderr}"
+        state_dir.exists(),
+        "doctor should have provisioned the missing state dir, same as `serve`"
+    );
+
+    // Still unhealthy overall (no database, no rollout-gate config were
+    // supplied), but never because the state dir itself was missing.
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: Value = serde_json::from_str(&stdout).expect("doctor --json prints valid JSON");
+    let failed_checks = json["failed_checks"]
+        .as_array()
+        .expect("failed_checks is an array");
+    assert!(
+        failed_checks
+            .iter()
+            .all(|check| check["check_name"] != "state_dir_writable"),
+        "a freshly-provisioned state dir must not fail state_dir_writable: {failed_checks:?}"
     );
 }
 
@@ -403,6 +425,42 @@ async fn schema_compatibility_fails_when_the_committed_schema_drifts() {
     assert!(
         error_for(&result, "schema_compatibility").is_some_and(|e| e.contains("stale")),
         "expected a staleness failure: {:?}",
+        result.failed_checks
+    );
+}
+
+#[tokio::test]
+async fn schema_compatibility_passes_when_repo_has_no_schema_file() {
+    let state = tempfile::tempdir().unwrap();
+    // `--repo` is an ordinary project with no `packages/protocol-ts/schema/`
+    // at all -- the common case, since `--repo` is the project BATMAN runs
+    // against, not a checkout of BATMAN's own source.
+    let ordinary_repo = tempfile::tempdir().unwrap();
+
+    let db = Arc::new(
+        DatabaseHandle::start(state.path().join("runtime.db"))
+            .await
+            .expect("database opens"),
+    );
+    let doctor = Doctor::new(
+        Some(db),
+        Some(state.path().to_path_buf()),
+        Some(default_policy()),
+    )
+    .with_runtime_context(
+        state.path().join("runtime.sock"),
+        ordinary_repo.path().to_path_buf(),
+        ProjectId::new(),
+    );
+
+    let result = doctor.check().await.expect("catalog runs");
+
+    assert!(
+        result
+            .passed_checks
+            .iter()
+            .any(|name| name == "schema_compatibility"),
+        "a repo with no schema document is not applicable, not broken: {:?}",
         result.failed_checks
     );
 }

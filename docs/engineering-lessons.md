@@ -360,3 +360,36 @@ greatest source key win. The config and adapter-contract tests vary YAML and per
 key order before asserting equal fingerprints, and an unsorted benign envelope remains valid.
 These tests vary the order each contract claims to ignore instead of repeating one construction and
 calling the result deterministic.
+
+---
+
+## Health Checks (`doctor`)
+
+### A check scoped to the BATMAN source tree must not run against `--repo`
+
+**Location:** `crates/runtime/src/doctor.rs::check_schema_compatibility`
+
+`schema_compatibility` compared the binary's own rendered protocol schema against
+`<repo_root>/packages/protocol-ts/schema/batman.schema.json` — but `repo_root` is `--repo`, the
+arbitrary project BATMAN is running against, not necessarily a checkout of BATMAN's own source.
+That schema document is only ever committed inside the BATMAN monorepo itself.
+
+**The bug:** For every ordinary `--repo` (which is the entire point of the flag — ADR-none, this
+was just never exercised against a non-BATMAN repo), the file is absent, and the check failed
+unconditionally with a "no such file" `ConfigError` — a permanently-red check on every real-world
+install. It masked a second, unrelated latent bug: `crates/runtime/tests/doctor.rs`'s
+`doctor_with_nonexistent_state_dir` asserted stderr contained "No such file", which this
+check's own failure text happened to satisfy for the wrong reason — the test wasn't exercising
+the state-dir path it claimed to at all.
+
+**The fix:** A missing schema document at `--repo` now means "not applicable" (`Ok`), not
+"broken" — this check only fires when the document exists and disagrees with the binary,
+i.e., only inside a BATMAN dev checkout where drift is real. Fixed the masked test to assert
+what nonexistent-but-creatable state dirs actually do (get provisioned, same as `serve`) instead
+of a coincidental error string.
+
+**The lesson:** A health check that reads a path relative to the *target* the daemon operates on
+must not assume that target is the daemon's own source tree, even when writing/testing the check
+only ever happens inside that source tree. And a test asserting on a substring of an error message
+should treat a coincidental match as a red flag to investigate, not a green light — it can hide
+an entirely different bug behind the one being tested.

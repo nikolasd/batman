@@ -183,7 +183,7 @@ Check catalog, in run order:
 | `platform_supported` | OS/arch is one of the four supported targets; on Linux, that a glibc (not musl) loader is present |
 | `binary_integrity` | `current_exe()` resolves |
 | `socket_permissions` | If `runtime.sock` exists: it's actually a socket, owned by the current uid, mode `0600` |
-| `schema_compatibility` | The committed `packages/protocol-ts/schema/batman.schema.json` matches the binary's own rendered schema |
+| `schema_compatibility` | If `--repo` is a BATMAN source checkout, its committed `packages/protocol-ts/schema/batman.schema.json` matches the binary's own rendered schema; passes trivially (not applicable) for any other `--repo` |
 | `adapter_claude_available`, `adapter_codex_available`, `adapter_copilot_available`, `adapter_omp_rpc_available` | Each vendor CLI is reachable |
 | `display_available` | At least one of Herdr/tmux/terminal display backends reports available |
 | `disk_space` | State dir's filesystem has ≥ 512 MiB free |

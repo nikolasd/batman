@@ -70,12 +70,13 @@ point those flags at, not defaults BATMAN looks for on its own.
 ```yaml
 # ~/.batman/config.yaml
 max_workers: 4
-concurrency_ceiling: 8
+concurrency:
+  ceiling: 8
 retention: "30d"
 display:
   backend: auto
 models:
-  allowed:
+  allowlist:
     - "gpt-4"
     - "claude-3-opus"
 security:

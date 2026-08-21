@@ -63,6 +63,36 @@ Implement when any of the above scenarios becomes real (a third-party client is 
 
 ---
 
+## Real Pane/Window Creation for Worker Visibility
+
+**References:** `crates/runtime/src/display/tmux.rs` (`TmuxDisplay::create_pane`), `crates/runtime/src/display/herdr.rs` (`HerdrDisplay::create_pane`), `crates/runtime/src/display/terminal.rs`, `crates/runtime/src/service/orchestration.rs` (`start_queued_run`), `crates/runtime/src/adapter/registry.rs`
+
+### What it is
+
+Every worker run should be visibly started for the user, in whichever display backend is in play: a new tmux pane/window when the tmux backend is selected, a new Herdr pane when Herdr is selected, a new terminal window when falling back to the plain terminal backend. A worker should never just be a silent background process the user has no window onto.
+
+### Current state (verified 2026-08-21)
+
+`TmuxDisplay::create_pane` and `HerdrDisplay::create_pane` are fully implemented and unit-tested — they genuinely call `tmux split-window`/`new-window -P -F` and `herdr pane split`/`run`/`report-agent` respectively, and would open a real pane if invoked. But neither is called anywhere in the orchestration path — the only call sites in the whole `crates/runtime/src` tree are inside `HerdrDisplay`'s own `#[cfg(test)]` module.
+
+`start_queued_run` (`orchestration.rs`) only calls `DisplayRegistry::resolve`, which checks backend *availability* and picks a name — it explicitly never activates one: "the registry resolves availability without activating a backend, so no vendor pane id exists yet." It then journals a `DisplayPaneAttached` event with an empty pane-id placeholder, for bookkeeping/replay only.
+
+`TerminalDisplay` has no pane/window-opening capability at all today — no `create_pane` equivalent exists for it, so there is currently no code path that opens a new terminal window either.
+
+The worker process itself is always spawned by the supervisor (`crates/runtime/src/supervisor/process.rs`) with fully piped stdio, in its own process group, regardless of which display backend was selected. The only thing a user can currently see live is the embedded read-only `/batman` monitor inside OMP, which tails the event journal — not a real pane or window running the worker. Checked the TypeScript extension (`packages/extension/src/`) too: nothing there shells out to `tmux`/`herdr` or opens a terminal either.
+
+### Why this hasn't been wired up
+
+- The event-stream model (`events/replay` + `events/subscribe`, surfaced via the embedded monitor) already gives a working way to watch a run, so nothing forced this further.
+- Wiring `create_pane` into `start_queued_run` requires design decisions that haven't been made yet: what actually runs inside the opened pane/window (the raw vendor CLI directly, or `batcave monitor --run-id <id>` tailing that run's events), who closes the pane/window when the run settles vs. when the daemon restarts mid-run, and what happens if pane creation itself fails partway through a run that's already started.
+- `TerminalDisplay` additionally needs real window-spawning logic added (an OS-specific "open a new terminal emulator running X" command) — it currently does nothing beyond reporting itself as always-available.
+
+### Decision trigger
+
+This is the maintainer's stated expectation for how BATMAN should behave — every worker visibly started in a pane (tmux/Herdr) or a new terminal window (plain-terminal fallback) — so treat this entry as scoping outstanding wiring work, not as an indefinitely-deferred nice-to-have. Revisit as soon as the pane-lifecycle questions above are settled.
+
+---
+
 ## Copilot Adapter: Token Usage / Cost Reporting
 
 **Blocked by:** ACP protocol version 1 (Copilot CLI)

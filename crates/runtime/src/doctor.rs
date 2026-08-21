@@ -391,7 +391,12 @@ impl Doctor {
 
     /// Asserts the committed schema document matches what this binary's
     /// linked `batman-protocol` generates -- the same comparison
-    /// `xtask generate --check` performs.
+    /// `xtask generate --check` performs. This only applies when `--repo`
+    /// happens to be a checkout of the BATMAN source tree itself (the only
+    /// place this file is ever committed); `--repo` is ordinarily an
+    /// unrelated project BATMAN is running against, so a missing schema
+    /// document there means "not applicable", not "broken" -- unlike a
+    /// present-but-mismatched document, which is always a real drift.
     fn check_schema_compatibility(&self) -> Result<(), DoctorError> {
         let Some(repo_root) = &self.repo_root else {
             return Err(DoctorError::ConfigError(
@@ -399,8 +404,16 @@ impl Doctor {
             ));
         };
         let schema_path = repo_root.join("packages/protocol-ts/schema/batman.schema.json");
-        let committed = std::fs::read(&schema_path)
-            .map_err(|e| DoctorError::ConfigError(format!("{}: {e}", schema_path.display())))?;
+        let committed = match std::fs::read(&schema_path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                return Err(DoctorError::ConfigError(format!(
+                    "{}: {e}",
+                    schema_path.display()
+                )));
+            }
+        };
         let generated = batman_protocol::render_schema()
             .map_err(|e| DoctorError::ConfigError(format!("rendering schema: {e}")))?;
         if committed != generated {
