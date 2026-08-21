@@ -57,6 +57,10 @@
     },
     "policyViolationListResult": {
       "$ref": "#/$defs/PolicyViolationListResult"
+    },
+    "runResultResult": {
+      "description": "`run/result` result payload.",
+      "$ref": "#/$defs/RunResultResult"
     }
   },
   "required": [
@@ -77,7 +81,8 @@
     "inspectResult",
     "applyResult",
     "workspaceInfo",
-    "policyViolationListResult"
+    "policyViolationListResult",
+    "runResultResult"
   ],
   "$defs": {
     "InitializeParams": {
@@ -428,6 +433,7 @@
             "run/get",
             "run/retry",
             "run/cancel",
+            "run/result",
             "message/send",
             "message/list",
             "approval/list",
@@ -2932,6 +2938,77 @@
         "workerId",
         "action",
         "createdAt"
+      ]
+    },
+    "RunResultResult": {
+      "description": "Result of `run/result`: a terminal run's final journaled output.\n\n`result_text: None` means the run journaled no visible final message\n(or it was fully redacted) -- distinct from an error. `usage: None`\nmeans the adapter never reported usage (e.g. Copilot under ACP v1).",
+      "type": "object",
+      "properties": {
+        "runId": {
+          "$ref": "#/$defs/RunId"
+        },
+        "state": {
+          "$ref": "#/$defs/RunState"
+        },
+        "resultText": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunUsage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "completedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "state"
+      ]
+    },
+    "RunState": {
+      "description": "The lifecycle state of a run.\n\nOnly the runtime applies a transition after process/protocol evidence.\nTerminal states (`succeeded`, `failed`, `cancelled`, `lost`) have no\noutgoing edges.",
+      "type": "string"
+    },
+    "RunUsage": {
+      "description": "Token usage folded from a run's journaled `AdapterUsageEvent`s.\n\nThe runtime applies the adapter-correct fold before this leaves the\ndaemon: Claude journals per-invocation deltas (summed); every other\nreporting adapter journals cumulative totals (last one wins). Codex\nnever reports cost, so `cost_usd` is `null` there.",
+      "type": "object",
+      "properties": {
+        "inputTokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "outputTokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "costUsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "inputTokens",
+        "outputTokens"
       ]
     }
   }

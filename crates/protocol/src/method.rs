@@ -58,6 +58,8 @@ pub enum BatmanMethod {
     RunRetry,
     #[serde(rename = "run/cancel")]
     RunCancel,
+    #[serde(rename = "run/result")]
+    RunResult,
 
     // Orchestration: message
     #[serde(rename = "message/send")]

@@ -51,7 +51,7 @@ pub use rpc::{
     JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, RepositoryIdentity,
     RequestId, RuntimeCapabilities, RuntimeInfo, RuntimeStatus, error_code,
 };
-pub use run::{Run, RunSpec, RunState};
+pub use run::{Run, RunResultResult, RunSpec, RunState, RunUsage};
 pub use task::TaskRef;
 pub use version::{
     PROTOCOL_VERSION, ProtocolVersion, VersionRange, supported_range_text, supported_versions,

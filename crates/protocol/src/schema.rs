@@ -18,7 +18,7 @@ use crate::{
     ApplyResult, ArtifactFetchResult, ArtifactListResult, DisplayBackend, DisplayConfig,
     DisplayStatus, EventEnvelope, InitializeParams, InitializeResult, InspectResult,
     JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
-    PolicyViolationListResult, RuntimeEvent, RuntimeStatus, WorkspaceInfo,
+    PolicyViolationListResult, RunResultResult, RuntimeEvent, RuntimeStatus, WorkspaceInfo,
 };
 
 /// Root schema document referencing every exported request/result/event
@@ -45,6 +45,8 @@ pub struct ProtocolDocument {
     apply_result: ApplyResult,
     workspace_info: WorkspaceInfo,
     policy_violation_list_result: PolicyViolationListResult,
+    /// `run/result` result payload.
+    run_result_result: RunResultResult,
 }
 
 /// Renders the [`ProtocolDocument`] schema as pretty JSON with a trailing

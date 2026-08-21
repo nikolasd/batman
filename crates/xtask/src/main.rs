@@ -19,8 +19,8 @@ use batman_protocol::{
     JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, LeaseRequest,
     MessageId, MessageKind, OperationId, PolicyViolationListResult, PolicyViolationSummary,
     ProjectId, ProtocolVersion, ReleaseRequest, RepositoryIdentity, RequestId, RunId,
-    RuntimeCapabilities, RuntimeEvent, RuntimeInfo, RuntimeStatus, TaskId, Timestamp, VersionRange,
-    WorkerId, WorkspaceInfo,
+    RunResultResult, RunUsage, RuntimeCapabilities, RuntimeEvent, RuntimeInfo, RuntimeStatus,
+    TaskId, Timestamp, VersionRange, WorkerId, WorkspaceInfo,
 };
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
@@ -216,6 +216,8 @@ fn export_bindings(dir: &Path) -> Result<()> {
         OperationId,
         ProjectId,
         RunId,
+        RunResultResult,
+        RunUsage,
         TaskId,
         WorkerId,
         BatmanMethod,

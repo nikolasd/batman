@@ -155,3 +155,46 @@ pub struct Run {
     #[serde(rename = "completedAt", skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<Timestamp>,
 }
+
+// ---------------------------------------------------------------------------
+// RunResultResult
+// ---------------------------------------------------------------------------
+
+/// Token usage folded from a run's journaled `AdapterUsageEvent`s.
+///
+/// The runtime applies the adapter-correct fold before this leaves the
+/// daemon: Claude journals per-invocation deltas (summed); every other
+/// reporting adapter journals cumulative totals (last one wins). Codex
+/// never reports cost, so `cost_usd` is `null` there.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export)]
+pub struct RunUsage {
+    #[serde(rename = "inputTokens")]
+    #[ts(type = "number")]
+    pub input_tokens: u64,
+    #[serde(rename = "outputTokens")]
+    #[ts(type = "number")]
+    pub output_tokens: u64,
+    #[serde(rename = "costUsd")]
+    pub cost_usd: Option<f64>,
+}
+
+/// Result of `run/result`: a terminal run's final journaled output.
+///
+/// `result_text: None` means the run journaled no visible final message
+/// (or it was fully redacted) -- distinct from an error. `usage: None`
+/// means the adapter never reported usage (e.g. Copilot under ACP v1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export)]
+pub struct RunResultResult {
+    #[serde(rename = "runId")]
+    pub run_id: RunId,
+    pub state: RunState,
+    #[serde(rename = "resultText")]
+    pub result_text: Option<String>,
+    pub usage: Option<RunUsage>,
+    #[serde(rename = "completedAt")]
+    pub completed_at: Option<String>,
+}

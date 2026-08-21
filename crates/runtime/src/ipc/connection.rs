@@ -455,6 +455,7 @@ async fn dispatch(
         | BatmanMethod::RunSubmit
         | BatmanMethod::RunList
         | BatmanMethod::RunGet
+        | BatmanMethod::RunResult
         | BatmanMethod::RunRetry
         | BatmanMethod::RunCancel
         | BatmanMethod::MessageSend

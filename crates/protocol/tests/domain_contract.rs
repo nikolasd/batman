@@ -360,6 +360,10 @@ fn all_orchestration_methods_exist() {
     assert_eq!(serde_json::to_string(&RunRetry).unwrap(), "\"run/retry\"",);
     assert_eq!(serde_json::to_string(&RunCancel).unwrap(), "\"run/cancel\"",);
     assert_eq!(
+        serde_json::to_string(&batman_protocol::BatmanMethod::RunResult).unwrap(),
+        "\"run/result\"",
+    );
+    assert_eq!(
         serde_json::to_string(&MessageSend).unwrap(),
         "\"message/send\"",
     );
