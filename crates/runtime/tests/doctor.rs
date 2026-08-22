@@ -482,6 +482,28 @@ async fn schema_compatibility_passes_against_the_committed_schema() {
     );
 }
 
+/// The catalog's `display_available` check used to construct
+/// `TerminalDisplay`, which hardcodes `is_available() -> true`, into the
+/// same "any backend available" `.any()` -- so the check could never fail.
+/// Forcing a specific backend that isn't actually usable (no tmux, no
+/// session) must surface as a failure naming that backend, not be masked
+/// by the terminal fallback.
+#[tokio::test]
+async fn display_available_fails_when_the_forced_backend_is_unavailable() {
+    let state = tempfile::tempdir().unwrap();
+    let mut policy = default_policy();
+    policy.display_backend = "tmux".to_string();
+    let (doctor, _db) = doctor_over(state.path(), policy).await;
+
+    let result = doctor.check().await.expect("catalog runs");
+
+    assert!(
+        error_for(&result, "display_available").is_some_and(|e| e.contains("tmux")),
+        "expected the forced-but-unavailable backend to be named: {:?}",
+        result.failed_checks
+    );
+}
+
 /// 14b's regression: `doctor` used to hand `--repo` to the config loader,
 /// which read a directory as a file and failed before running any check.
 /// With no config flags the default policy must merge and the catalog must

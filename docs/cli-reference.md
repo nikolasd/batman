@@ -185,7 +185,7 @@ Check catalog, in run order:
 | `socket_permissions` | If `runtime.sock` exists: it's actually a socket, owned by the current uid, mode `0600` |
 | `schema_compatibility` | If `--repo` is a Crew source checkout, its committed `packages/protocol-ts/schema/crew.schema.json` matches the binary's own rendered schema; passes trivially (not applicable) for any other `--repo` |
 | `adapter_claude_available`, `adapter_codex_available`, `adapter_copilot_available`, `adapter_omp_rpc_available` | Each vendor CLI is reachable |
-| `display_available` | At least one of Herdr/tmux/terminal display backends reports available |
+| `display_available` | If `display.backend` forces a specific backend, that backend reports available; otherwise a real backend (Herdr or tmux) is available -- the always-available terminal fallback never satisfies this on its own |
 | `disk_space` | State dir's filesystem has ≥ 512 MiB free |
 | `stale_workspaces` | Counts workspace leases whose worktree vanished, failed cleanup, or have sat `allocating` past a 10-minute grace period (abandoned before materialization completed) |
 | `stale_runs` | Counts runs stuck in a non-terminal state with no live adapter |
