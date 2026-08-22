@@ -33,6 +33,21 @@ backed by a git credential helper). `/crew-runtime-install` additionally needs a
 `GH_TOKEN` environment variable, or that same `gh auth login` session, to download and verify the
 release asset.
 
+**Skills and rules load automatically — no extra manifest entry needed.** `packages/extension/`
+ships `skills/` (three skills, §3) and `rules/` (`crew-delegation-guard.md`) as plain sibling
+directories next to `dist/`, and `packages/extension/package.json` declares only `omp.extensions`
+— nothing skill- or rule-specific. That's sufficient: OMP's `omp-plugins` provider (priority 90)
+discovers `skills/` and `rules/*.{md,mdc}` by directory convention for any extension package it
+loads, whether that's via `extensions:`/`--extension`/`-e` or an installed plugin under
+`~/.omp/plugins/node_modules` (where a marketplace install like this one is symlinked — see
+`docs/marketplace.md`). Source: `oh-my-pi` docs
+[`docs/skills.md`](https://github.com/can1357/oh-my-pi/blob/main/docs/skills.md) ("`omp-plugins`
+(priority 90) — `skills/` bundled next to extension packages loaded through `extensions:`,
+`--extension`/`-e`, or installed plugins under `~/.omp/plugins/node_modules`") and
+[`docs/rulebook-matching-pipeline.md`](https://github.com/can1357/oh-my-pi/blob/main/docs/rulebook-matching-pipeline.md)
+("`omp-plugins` (priority `90`) — `rules/*.{md,mdc}` inside configured extension package roots").
+No `package.json` change is required.
+
 ## 2. Confirm it works
 
 Run `/crew-status`. A healthy runtime answers with exactly this shape (`formatStatus` in
