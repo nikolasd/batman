@@ -7,7 +7,7 @@
 
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { detectLibc, resolveBatcave } from "./platform";
+import { detectLibc, resolveCrewd } from "./platform";
 import { resolveStateRoot } from "./state";
 
 /** A single failed check from the doctor output. */
@@ -75,7 +75,7 @@ export interface DoctorContext {
   /** Absolute repository path. */
   readonly repository: string;
   /** Path to the `crewd` binary. */
-  readonly batcavePath: string;
+  readonly crewdPath: string;
 }
 
 /**
@@ -89,11 +89,11 @@ export interface DoctorContext {
  */
 export function buildDoctorContext(cwd: string, env: NodeJS.ProcessEnv = process.env): DoctorContext {
   const stateDir = resolveStateRoot(env, homedir());
-  const binary = resolveBatcave(process.platform, process.arch, detectLibc(), env, stateDir);
+  const binary = resolveCrewd(process.platform, process.arch, detectLibc(), env, stateDir);
   return {
     stateDir,
     repository: cwd,
-    batcavePath: binary.path,
+    crewdPath: binary.path,
   };
 }
 
@@ -105,7 +105,7 @@ export function buildDoctorContext(cwd: string, env: NodeJS.ProcessEnv = process
  */
 export async function runDoctorCommand(ctx: DoctorContext): Promise<DoctorCommandResult> {
   return new Promise<DoctorCommandResult>((resolve) => {
-    const proc = spawn(ctx.batcavePath, ["doctor", "--json", "--state-dir", ctx.stateDir, "--repo", ctx.repository], {
+    const proc = spawn(ctx.crewdPath, ["doctor", "--json", "--state-dir", ctx.stateDir, "--repo", ctx.repository], {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -122,7 +122,7 @@ export async function runDoctorCommand(ctx: DoctorContext): Promise<DoctorComman
 
     proc.on("close", (code) => {
       const exitCode = code ?? 1;
-      const doctorCommand = `${ctx.batcavePath} doctor --state-dir ${ctx.stateDir} --repo ${ctx.repository}`;
+      const doctorCommand = `${ctx.crewdPath} doctor --state-dir ${ctx.stateDir} --repo ${ctx.repository}`;
 
       if (exitCode !== 0) {
         // `crewd doctor --json` reports two distinct shapes on a
@@ -177,7 +177,7 @@ export async function runDoctorCommand(ctx: DoctorContext): Promise<DoctorComman
     });
 
     proc.on("error", (err) => {
-      const doctorCommand = `${ctx.batcavePath} doctor --state-dir ${ctx.stateDir} --repo ${ctx.repository}`;
+      const doctorCommand = `${ctx.crewdPath} doctor --state-dir ${ctx.stateDir} --repo ${ctx.repository}`;
       resolve(failureResult(ctx, "spawn-error", err.message, doctorCommand));
     });
   });
@@ -190,7 +190,7 @@ function failureResult(ctx: DoctorContext, code: string, message: string, doctor
     details: {
       code,
       message,
-      doctorCommand: doctorCommand ?? `${ctx.batcavePath} doctor --state-dir ${ctx.stateDir} --repo ${ctx.repository}`,
+      doctorCommand: doctorCommand ?? `${ctx.crewdPath} doctor --state-dir ${ctx.stateDir} --repo ${ctx.repository}`,
     },
   };
 }

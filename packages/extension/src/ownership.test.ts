@@ -22,7 +22,7 @@ import extension from "./index";
 import { repositoryId } from "./runtime";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
-const BATCAVE = join(REPO_ROOT, "target", "debug", "crewd");
+const CREWD = join(REPO_ROOT, "target", "debug", "crewd");
 
 // ---- Daemon lifecycle (self-contained) ----
 
@@ -43,7 +43,7 @@ beforeAll(async () => {
 
   // Real spawn wait required: the daemon must bind its socket before tests can connect.
   // eslint-disable-next-line no-setTimeout
-  daemonProcess = Bun.spawn([BATCAVE, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir], {
+  daemonProcess = Bun.spawn([CREWD, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir], {
     stdout: "ignore",
     stderr: "pipe",
   });

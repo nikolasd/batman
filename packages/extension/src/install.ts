@@ -1,6 +1,6 @@
 // The shared install action behind both the `crew_runtime_install` tool
 // and the `/crew-runtime-install` command: download and verify the
-// `crewd` binary for this platform, so subsequent `resolveBatcave` calls
+// `crewd` binary for this platform, so subsequent `resolveCrewd` calls
 // (`platform.ts`) find a populated cache instead of throwing
 // `runtime-not-installed`.
 

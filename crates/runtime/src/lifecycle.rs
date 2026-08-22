@@ -230,10 +230,10 @@ pub async fn serve(opts: &ServeOptions) -> Result<(), ServeError> {
     // just without worker-coordination MCP tools -- rather than failing
     // the whole daemon. Never guessed: only a real resolved path is used.
     let mcp = match std::env::current_exe() {
-        Ok(batcave_path) => Some(AdapterMcpConfig {
+        Ok(crewd_path) => Some(AdapterMcpConfig {
             scope_tokens: Arc::clone(&scope_tokens),
             project_id: paths.project_id,
-            batcave_path,
+            crewd_path,
             state_dir: paths.root.clone(),
             repository: repo_root.clone(),
         }),

@@ -7,7 +7,7 @@
 
 import { homedir } from "node:os";
 
-import { detectLibc, resolveBatcave } from "./platform";
+import { detectLibc, resolveCrewd } from "./platform";
 import type { EnsureRuntimeOptions } from "./runtime";
 import { resolveStateRoot } from "./state";
 
@@ -32,7 +32,7 @@ export interface BuildStatusContextOptions {
   readonly home?: string;
   /**
    * Resolves the packaged `crewd` binary when no `OMP_CREW_BINARY`
-   * (or legacy `OMP_BATMAN_BINARY`) override is set. Defaults to {@link resolveBatcave} against the current
+   * (or legacy `OMP_BATMAN_BINARY`) override is set. Defaults to {@link resolveCrewd} against the current
    * process's platform/arch/libc; tests inject a stand-in here to stay
    * hermetic.
    */
@@ -63,7 +63,7 @@ export function buildStatusContext(options: BuildStatusContextOptions = {}): Sta
       repository,
       idleSeconds: DEFAULT_IDLE_SECONDS,
       env,
-      packagedBinaryResolver: options.packagedBinaryResolver ?? (() => resolveBatcave(process.platform, process.arch, detectLibc(), env, stateDir).path),
+      packagedBinaryResolver: options.packagedBinaryResolver ?? (() => resolveCrewd(process.platform, process.arch, detectLibc(), env, stateDir).path),
       sessionId: options.sessionId,
     },
   };

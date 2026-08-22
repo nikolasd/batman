@@ -134,7 +134,7 @@ binary into a leaf package with a deterministic manifest).
 | `src/client.ts` | `CrewClient` — NDJSON framing, byte-exact caps, request correlation, Ajv validation, and `isClosed` liveness flag for cache invalidation
 | `src/runtime.ts` | `ensureRuntime` (connect-or-spawn, authenticates as `ompExtension`), `buildServeArgs`, `resolveOverride` (`OMP_CREW_BINARY` validation), `repositoryIdFromRoot` |
 | `src/state.ts` | `resolveStateRoot(env, home)` — must stay semantically identical to Rust's `StateRoot::resolve` |
-| `src/platform.ts` | `resolveBatcave` tuple mapping, integrity/version checks, typed errors, `detectLibc` |
+| `src/platform.ts` | `resolveCrewd` tuple mapping, integrity/version checks, typed errors, `detectLibc` |
 | `src/integrity.ts` | `sha256File` |
 | `src/approval-ui.ts` | Approval UI components |
 | `src/tools/index.ts` | Registers all 11 tools with OMP |
@@ -176,7 +176,7 @@ Follow this once with the files open and you will have seen every layer.
    `runtime.ts:ensureRuntime` to reconnect.
 3. **Connect-or-spawn** — `ensureRuntime` computes the socket path
    (`resolveStateRoot` + `repositoryId`) and tries to connect. If nothing answers: `selectBinary`
-   validates `OMP_CREW_BINARY` (or asks `platform.ts:resolveBatcave` for a packaged binary),
+   validates `OMP_CREW_BINARY` (or asks `platform.ts:resolveCrewd` for a packaged binary),
    spawns `crewd serve --state-dir … --repo … --idle-seconds …` detached, and retries with
    backoff (≤5 s).
 4. **Daemon startup** — `cli.rs` parses args → `lifecycle.rs:serve` resolves `RuntimePaths`, takes

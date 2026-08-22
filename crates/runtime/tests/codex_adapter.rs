@@ -500,7 +500,7 @@ fn spawn_spec_injects_crew_mcp_overrides_alongside_existing_config_overrides() {
         None,
     );
     let context = McpLaunchContext {
-        batcave_path: PathBuf::from("/opt/crew/bin/crewd"),
+        crewd_path: PathBuf::from("/opt/crew/bin/crewd"),
         state_dir: std::env::temp_dir(),
         repository: std::env::temp_dir(),
         run_id: RunId::new(),
@@ -553,7 +553,7 @@ fn spawn_spec_with_mcp_config_leaves_native_discovery_flags_untouched() {
         None,
     );
     let context = McpLaunchContext {
-        batcave_path: PathBuf::from("/opt/crew/bin/crewd"),
+        crewd_path: PathBuf::from("/opt/crew/bin/crewd"),
         state_dir: std::env::temp_dir(),
         repository: std::env::temp_dir(),
         run_id: RunId::new(),

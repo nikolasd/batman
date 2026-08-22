@@ -664,7 +664,7 @@ fn mcp_config_for_test() -> AdapterMcpConfig {
     AdapterMcpConfig {
         scope_tokens: std::sync::Arc::new(ScopeTokenStore::new()),
         project_id: batman_protocol::ProjectId::new(),
-        batcave_path: PathBuf::from("/opt/crew/bin/crewd"),
+        crewd_path: PathBuf::from("/opt/crew/bin/crewd"),
         state_dir: PathBuf::from("/tmp/crew-state"),
         repository: PathBuf::from("/tmp/my-repo"),
     }
@@ -703,7 +703,7 @@ fn spawn_plan_injects_additional_mcp_config_matching_the_shared_document_shape()
         .expect("--additional-mcp-config value must be well-formed JSON");
 
     let context = McpLaunchContext {
-        batcave_path: PathBuf::from("/opt/crew/bin/crewd"),
+        crewd_path: PathBuf::from("/opt/crew/bin/crewd"),
         state_dir: PathBuf::from("/tmp/crew-state"),
         repository: PathBuf::from("/tmp/my-repo"),
         run_id,

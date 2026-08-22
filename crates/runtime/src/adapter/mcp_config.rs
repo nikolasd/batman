@@ -39,7 +39,7 @@ use crate::coordination::{BindError, ScopeBinding, ScopeTokenStore, VendorProces
 /// scoped to.
 #[derive(Debug, Clone)]
 pub struct McpLaunchContext {
-    pub batcave_path: PathBuf,
+    pub crewd_path: PathBuf,
     pub state_dir: PathBuf,
     pub repository: PathBuf,
     pub run_id: RunId,
@@ -56,7 +56,7 @@ pub struct McpLaunchContext {
 pub struct AdapterMcpConfig {
     pub scope_tokens: Arc<ScopeTokenStore>,
     pub project_id: ProjectId,
-    pub batcave_path: PathBuf,
+    pub crewd_path: PathBuf,
     pub state_dir: PathBuf,
     pub repository: PathBuf,
 }
@@ -68,7 +68,7 @@ impl AdapterMcpConfig {
     #[must_use]
     pub fn launch_context(&self, run_id: RunId) -> McpLaunchContext {
         McpLaunchContext {
-            batcave_path: self.batcave_path.clone(),
+            crewd_path: self.crewd_path.clone(),
             state_dir: self.state_dir.clone(),
             repository: self.repository.clone(),
             run_id,
@@ -178,7 +178,7 @@ pub fn coordination_mcp_env(scope_token: &str) -> HashMap<String, String> {
 #[must_use]
 fn coordination_mcp_server_config(context: &McpLaunchContext) -> Value {
     json!({
-        "command": context.batcave_path.display().to_string(),
+        "command": context.crewd_path.display().to_string(),
         "args": coordination_mcp_argv(context),
     })
 }
@@ -199,7 +199,7 @@ pub fn coordination_mcp_config_document(context: &McpLaunchContext) -> Value {
 /// strings for args.
 #[must_use]
 pub fn codex_mcp_overrides(context: &McpLaunchContext) -> Vec<String> {
-    let command_value = toml_basic_string(&context.batcave_path.display().to_string());
+    let command_value = toml_basic_string(&context.crewd_path.display().to_string());
     let args_value = toml_basic_string_array(&coordination_mcp_argv(context));
     vec![
         "-c".to_string(),
@@ -250,7 +250,7 @@ mod tests {
 
     fn context() -> McpLaunchContext {
         McpLaunchContext {
-            batcave_path: PathBuf::from("/opt/crew/bin/crewd"),
+            crewd_path: PathBuf::from("/opt/crew/bin/crewd"),
             state_dir: PathBuf::from("/tmp/crew-state"),
             repository: PathBuf::from("/tmp/my-repo"),
             run_id: RunId::new(),
@@ -261,7 +261,7 @@ mod tests {
         AdapterMcpConfig {
             scope_tokens: Arc::new(ScopeTokenStore::new()),
             project_id: ProjectId::new(),
-            batcave_path: PathBuf::from("/opt/crew/bin/crewd"),
+            crewd_path: PathBuf::from("/opt/crew/bin/crewd"),
             state_dir: PathBuf::from("/tmp/crew-state"),
             repository: PathBuf::from("/tmp/my-repo"),
         }
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn codex_overrides_escape_toml_special_characters_in_paths() {
         let context = McpLaunchContext {
-            batcave_path: PathBuf::from("/opt/crew \"quoted\"/bin/crewd"),
+            crewd_path: PathBuf::from("/opt/crew \"quoted\"/bin/crewd"),
             state_dir: PathBuf::from("/tmp/crew-state"),
             repository: PathBuf::from("/tmp/my-repo"),
             run_id: RunId::new(),
@@ -347,7 +347,7 @@ mod tests {
     #[test]
     fn codex_overrides_escape_control_characters_not_just_backslash_and_quote() {
         let context = McpLaunchContext {
-            batcave_path: PathBuf::from("/opt/crew\n\t/bin/crewd"),
+            crewd_path: PathBuf::from("/opt/crew\n\t/bin/crewd"),
             state_dir: PathBuf::from("/tmp/crew-state"),
             repository: PathBuf::from("/tmp/my-repo"),
             run_id: RunId::new(),
@@ -435,7 +435,7 @@ mod tests {
         let config = adapter_mcp_config();
         let run_id = RunId::new();
         let context = config.launch_context(run_id);
-        assert_eq!(context.batcave_path, config.batcave_path);
+        assert_eq!(context.crewd_path, config.crewd_path);
         assert_eq!(context.state_dir, config.state_dir);
         assert_eq!(context.repository, config.repository);
         assert_eq!(context.run_id, run_id);

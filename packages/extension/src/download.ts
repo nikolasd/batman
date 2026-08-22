@@ -1,6 +1,6 @@
 // Downloads and verifies the `crewd` binary GitHub Release asset for a
 // given version/target, caching it under the Crew state root at the exact
-// path `resolveBatcave` (`platform.ts`) later reads from.
+// path `resolveCrewd` (`platform.ts`) later reads from.
 //
 // Modelled on `doctor.ts`'s split: this module is the pure worker; `install.ts`
 // builds its context and shapes the tool/command result.
@@ -81,7 +81,7 @@ interface ReleaseAsset {
  * Ordering invariant: the manifest is validated before any binary bytes are
  * fetched, the binary is verified before it is renamed into place, and the
  * manifest is written to the cache only after the binary has landed --
- * `resolveBatcave` relies on a present manifest always implying an
+ * `resolveCrewd` relies on a present manifest always implying an
  * already-verified sibling binary.
  *
  * Compatibility note: this looks for `crewd-<target>` assets, which exist

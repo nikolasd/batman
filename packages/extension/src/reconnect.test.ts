@@ -16,7 +16,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import extension from "./index";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
-const BATCAVE = join(REPO_ROOT, "target", "debug", "crewd");
+const CREWD = join(REPO_ROOT, "target", "debug", "crewd");
 
 // ---- Daemon lifecycle (self-contained, restartable) ----
 
@@ -27,7 +27,7 @@ let repoDir = "";
 function startDaemon(): Promise<void> {
   const reposDir = join(stateDir, "repos");
 
-  daemonProcess = Bun.spawn([BATCAVE, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir], {
+  daemonProcess = Bun.spawn([CREWD, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir], {
     stdout: "ignore",
     stderr: "pipe",
   });

@@ -195,7 +195,7 @@ graph LR
 - **Doctor tool** ([`packages/extension/src/doctor.ts`](packages/extension/src/doctor.ts)): `crew_doctor` tool and `/crew-doctor` command — runs `crewd doctor` without needing a live connection
 - **Runtime client** ([`packages/extension/src/client.ts`](packages/extension/src/client.ts)): JSON-RPC client with correlation table and `isClosed` liveness flag
 - **Runtime launcher** ([`packages/extension/src/runtime.ts`](packages/extension/src/runtime.ts)): `ensureRuntime()` with binary selection and connection retry
-- **Platform resolver** ([`packages/extension/src/platform.ts`](packages/extension/src/platform.ts)): `resolveBatcave()` for platform-specific binaries
+- **Platform resolver** ([`packages/extension/src/platform.ts`](packages/extension/src/platform.ts)): `resolveCrewd()` for platform-specific binaries
 - **Integrity** ([`packages/extension/src/integrity.ts`](packages/extension/src/integrity.ts)): `sha256File` — verifies packaged binaries against their manifest checksum
 - **State root resolver** ([`packages/extension/src/state.ts`](packages/extension/src/state.ts)): `resolveStateRoot(env, home)` — must stay semantically identical to Rust's `StateRoot::resolve`
 - **Approval UI** ([`packages/extension/src/approval-ui.ts`](packages/extension/src/approval-ui.ts)): Approval UI components

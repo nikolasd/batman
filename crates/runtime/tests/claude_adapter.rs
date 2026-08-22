@@ -43,14 +43,14 @@ fn new_adapter() -> ClaudeAdapter {
     )
 }
 
-/// A worker-MCP config pointing at a fake `batcave_path` -- fine for
+/// A worker-MCP config pointing at a fake `crewd_path` -- fine for
 /// every test that only inspects the argv/env/file this module builds
 /// and never actually spawns the resulting `coordination-mcp` command.
 fn mcp_config() -> AdapterMcpConfig {
     AdapterMcpConfig {
         scope_tokens: Arc::new(ScopeTokenStore::new()),
         project_id: ProjectId::new(),
-        batcave_path: PathBuf::from("/opt/crew/bin/crewd"),
+        crewd_path: PathBuf::from("/opt/crew/bin/crewd"),
         state_dir: std::env::temp_dir(),
         repository: std::env::temp_dir(),
     }

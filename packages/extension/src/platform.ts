@@ -5,7 +5,7 @@
 // locally, verified by SHA-256 checksum and extension-version match before
 // it is ever spawned.
 //
-// `resolveBatcave` takes `platform`/`arch`/`libc`/`env`/`stateRoot` explicitly
+// `resolveCrewd` takes `platform`/`arch`/`libc`/`env`/`stateRoot` explicitly
 // (rather than reading `process.platform`/`process.arch`/`process.env`
 // itself) so it stays pure and hermetically testable; production wiring
 // lives in `context.ts` and `doctor.ts`.
@@ -115,7 +115,7 @@ export function runtimeCacheDir(stateRoot: string, version: string): string {
  *    manifest's `target` and `version` must match, before returning --
  *    source `"package"`.
  */
-export function resolveBatcave(platform: string, arch: string, libc: string | undefined, env: Readonly<Record<string, string | undefined>>, stateRoot: string): SelectedBinary {
+export function resolveCrewd(platform: string, arch: string, libc: string | undefined, env: Readonly<Record<string, string | undefined>>, stateRoot: string): SelectedBinary {
   const override = resolveOverride(env);
   if (override !== undefined) {
     return override;
@@ -199,7 +199,7 @@ function mapTarget(platform: string, arch: string, libc: string | undefined): Su
 
 /**
  * Best-effort Linux libc detection: `"glibc"`, `"musl"`, or `undefined` when
- * undetermined (which `resolveBatcave` treats as unsupported). Not meaningful
+ * undetermined (which `resolveCrewd` treats as unsupported). Not meaningful
  * off Linux. Foundation-scope heuristic: checks Node's build report for a
  * glibc runtime version, then falls back to checking for musl's well-known
  * dynamic loader paths.

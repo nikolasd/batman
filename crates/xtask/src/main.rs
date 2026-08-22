@@ -444,7 +444,7 @@ fn leaf_package_dir(root: &Path, target: &str) -> PathBuf {
 }
 
 /// Reads the `version` field out of `packages/extension/package.json`; every
-/// leaf manifest's `version` must equal it so `resolveBatcave` (the
+/// leaf manifest's `version` must equal it so `resolveCrewd` (the
 /// TypeScript loader) can require an exact match before running a packaged
 /// binary.
 fn read_extension_version(root: &Path) -> Result<String> {

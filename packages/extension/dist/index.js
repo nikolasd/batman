@@ -7339,7 +7339,7 @@ Serialized as the literal method name string used on the wire.`,
           ]
         },
         {
-          description: "Gracefully stops the daemon. Arbitrated (R82): refused with\n`-32602` while any run is live or another connection is being\nserved, unless `params.force == true` (the deliberate, logged\noperator escape hatch). The out-of-band `batcave stop`/SIGTERM\npath is deliberately unarbitrated.",
+          description: "Gracefully stops the daemon. Arbitrated (R82): refused with\n`-32602` while any run is live or another connection is being\nserved, unless `params.force == true` (the deliberate, logged\noperator escape hatch). The out-of-band `crewd stop`/SIGTERM\npath is deliberately unarbitrated.",
           type: "string",
           const: "runtime/shutdown"
         },
@@ -9514,7 +9514,7 @@ range (a self-check that always holds for a live, negotiated session).`,
       ]
     },
     BinarySource: {
-      description: "Where the running `batcave` binary was loaded from. `override` means a\ndeveloper override path, `package` a bundled/installed binary, and\n`unknown` that the source could not be determined.",
+      description: "Where the running `crewd` binary was loaded from. `override` means a\ndeveloper override path, `package` a bundled/installed binary, and\n`unknown` that the source could not be determined.",
       type: "string",
       enum: [
         "override",
@@ -10416,7 +10416,7 @@ function resolveTarget(platform, arch, libc) {
 function runtimeCacheDir(stateRoot, version) {
   return join2(stateRoot, "bin", version);
 }
-function resolveBatcave(platform, arch, libc, env, stateRoot) {
+function resolveCrewd(platform, arch, libc, env, stateRoot) {
   const override = resolveOverride(env);
   if (override !== undefined) {
     return override;
@@ -10536,7 +10536,7 @@ function buildStatusContext(options = {}) {
       repository,
       idleSeconds: DEFAULT_IDLE_SECONDS,
       env,
-      packagedBinaryResolver: options.packagedBinaryResolver ?? (() => resolveBatcave(process.platform, process.arch, detectLibc(), env, stateDir).path),
+      packagedBinaryResolver: options.packagedBinaryResolver ?? (() => resolveCrewd(process.platform, process.arch, detectLibc(), env, stateDir).path),
       sessionId: options.sessionId
     }
   };
@@ -10794,16 +10794,16 @@ import { spawn as spawn2 } from "child_process";
 import { homedir as homedir2 } from "os";
 function buildDoctorContext(cwd, env = process.env) {
   const stateDir = resolveStateRoot(env, homedir2());
-  const binary = resolveBatcave(process.platform, process.arch, detectLibc(), env, stateDir);
+  const binary = resolveCrewd(process.platform, process.arch, detectLibc(), env, stateDir);
   return {
     stateDir,
     repository: cwd,
-    batcavePath: binary.path
+    crewdPath: binary.path
   };
 }
 async function runDoctorCommand(ctx) {
   return new Promise((resolve) => {
-    const proc = spawn2(ctx.batcavePath, ["doctor", "--json", "--state-dir", ctx.stateDir, "--repo", ctx.repository], {
+    const proc = spawn2(ctx.crewdPath, ["doctor", "--json", "--state-dir", ctx.stateDir, "--repo", ctx.repository], {
       stdio: ["ignore", "pipe", "pipe"]
     });
     let stdout = "";
@@ -10816,7 +10816,7 @@ async function runDoctorCommand(ctx) {
     });
     proc.on("close", (code) => {
       const exitCode = code ?? 1;
-      const doctorCommand = `${ctx.batcavePath} doctor --state-dir ${ctx.stateDir} --repo ${ctx.repository}`;
+      const doctorCommand = `${ctx.crewdPath} doctor --state-dir ${ctx.stateDir} --repo ${ctx.repository}`;
       if (exitCode !== 0) {
         let parsed;
         try {
@@ -10859,7 +10859,7 @@ async function runDoctorCommand(ctx) {
       }
     });
     proc.on("error", (err) => {
-      const doctorCommand = `${ctx.batcavePath} doctor --state-dir ${ctx.stateDir} --repo ${ctx.repository}`;
+      const doctorCommand = `${ctx.crewdPath} doctor --state-dir ${ctx.stateDir} --repo ${ctx.repository}`;
       resolve(failureResult2(ctx, "spawn-error", err.message, doctorCommand));
     });
   });
@@ -10871,7 +10871,7 @@ function failureResult2(ctx, code, message, doctorCommand) {
     details: {
       code,
       message,
-      doctorCommand: doctorCommand ?? `${ctx.batcavePath} doctor --state-dir ${ctx.stateDir} --repo ${ctx.repository}`
+      doctorCommand: doctorCommand ?? `${ctx.crewdPath} doctor --state-dir ${ctx.stateDir} --repo ${ctx.repository}`
     }
   };
 }

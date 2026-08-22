@@ -9,7 +9,7 @@ import { CrewClient } from "../client";
 import { registerOrchestrationTools } from "./index";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..");
-const BATCAVE = join(REPO_ROOT, "target", "debug", "crewd");
+const CREWD = join(REPO_ROOT, "target", "debug", "crewd");
 
 // ---------------------------------------------------------------- fake API
 
@@ -280,7 +280,7 @@ beforeAll(async () => {
   repoDir = mkdtempSync("/tmp/bat-tools-r-");
   mkdirSync(join(repoDir, ".git"));
 
-  daemon = Bun.spawn([BATCAVE, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir], { stdout: "ignore", stderr: "pipe" });
+  daemon = Bun.spawn([CREWD, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir], { stdout: "ignore", stderr: "pipe" });
 
   await waitForSocket(stateDir);
 }, 180_000);

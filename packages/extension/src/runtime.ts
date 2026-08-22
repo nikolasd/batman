@@ -205,7 +205,7 @@ function pathExists(path: string): boolean {
  * throws a {@link BinarySelectionError} before any spawn.
  *
  * Shared by {@link ensureRuntime}'s binary selection and by
- * `platform.ts`'s `resolveBatcave`, so override precedence and validation
+ * `platform.ts`'s `resolveCrewd`, so override precedence and validation
  * behave identically wherever a `crewd` binary is selected.
  */
 export function resolveOverride(env: Readonly<Record<string, string | undefined>>): SelectedBinary | undefined {

@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use serde_json::Value;
 use tempfile::TempDir;
 
-const BATCAVE: &str = env!("CARGO_BIN_EXE_crewd");
+const CREWD: &str = env!("CARGO_BIN_EXE_crewd");
 
 struct Fixture {
     state: TempDir,
@@ -43,7 +43,7 @@ impl Fixture {
     }
 
     fn doctor(&self, json: bool) -> Command {
-        let mut cmd = Command::new(BATCAVE);
+        let mut cmd = Command::new(CREWD);
         cmd.arg("doctor")
             .arg("--state-dir")
             .arg(self.state_dir())
@@ -101,7 +101,7 @@ fn doctor_with_nonexistent_state_dir() {
         "fixture precondition: must start absent"
     );
 
-    let mut cmd = Command::new(BATCAVE);
+    let mut cmd = Command::new(CREWD);
     cmd.arg("doctor")
         .arg("--json")
         .arg("--state-dir")
@@ -137,7 +137,7 @@ fn doctor_with_nonexistent_state_dir() {
 #[test]
 fn doctor_with_nonexistent_repo() {
     let fixture = Fixture::new();
-    let mut cmd = Command::new(BATCAVE);
+    let mut cmd = Command::new(CREWD);
     cmd.arg("doctor")
         .arg("--state-dir")
         .arg(fixture.state_dir())

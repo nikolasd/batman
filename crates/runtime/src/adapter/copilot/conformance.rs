@@ -573,7 +573,7 @@ fn mcp_config_for_conformance() -> AdapterMcpConfig {
     AdapterMcpConfig {
         scope_tokens: Arc::new(ScopeTokenStore::new()),
         project_id: batman_protocol::ProjectId::new(),
-        batcave_path: PathBuf::from("/opt/crew/bin/crewd"),
+        crewd_path: PathBuf::from("/opt/crew/bin/crewd"),
         state_dir: PathBuf::from("/tmp/crew-state"),
         repository: PathBuf::from("/tmp/my-repo"),
     }

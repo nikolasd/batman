@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { sha256File } from "./integrity";
-import { BinaryIntegrityError, resolveBatcave, resolveTarget, runtimeCacheDir, UnsupportedPlatformError } from "./platform";
+import { BinaryIntegrityError, resolveCrewd, resolveTarget, runtimeCacheDir, UnsupportedPlatformError } from "./platform";
 import { BinarySelectionError } from "./runtime";
 
 import pkg from "../package.json" with { type: "json" };
@@ -22,9 +22,9 @@ interface CacheFixtureOptions {
  * Materializes `<stateRoot>/bin/<EXTENSION_VERSION>/{crewd,manifest.json}`
  * in a fresh temp state root, so integrity tests never depend on a real
  * committed binary. The cache directory is always keyed by
- * `EXTENSION_VERSION` -- exactly as `resolveBatcave` computes it -- so a
+ * `EXTENSION_VERSION` -- exactly as `resolveCrewd` computes it -- so a
  * mismatched `version` option only corrupts the manifest's own `version`
- * field, which is what `resolveBatcave` actually validates.
+ * field, which is what `resolveCrewd` actually validates.
  */
 function makeCache(options: CacheFixtureOptions = {}): string {
   const stateRoot = mkdtempSync(join(tmpdir(), "bat-state-"));
@@ -117,15 +117,15 @@ describe("resolveTarget: unsupported platforms", () => {
     }
   });
 
-  test("resolveBatcave surfaces the same UnsupportedPlatformError before ever touching the cache", () => {
-    expect(() => resolveBatcave("win32", "x64", undefined, {}, "/does/not/matter")).toThrow(UnsupportedPlatformError);
+  test("resolveCrewd surfaces the same UnsupportedPlatformError before ever touching the cache", () => {
+    expect(() => resolveCrewd("win32", "x64", undefined, {}, "/does/not/matter")).toThrow(UnsupportedPlatformError);
   });
 });
 
-describe("resolveBatcave: cache resolution", () => {
+describe("resolveCrewd: cache resolution", () => {
   test("resolves to source package when the cache is populated and checksum/version/target match", () => {
     const stateRoot = makeCache();
-    const result = resolveBatcave("darwin", "arm64", undefined, {}, stateRoot);
+    const result = resolveCrewd("darwin", "arm64", undefined, {}, stateRoot);
     expect(result).toEqual({ path: join(runtimeCacheDir(stateRoot, EXTENSION_VERSION), "crewd"), source: "package" });
   });
 
@@ -133,8 +133,8 @@ describe("resolveBatcave: cache resolution", () => {
     const stateRoot = mkdtempSync(join(tmpdir(), "bat-state-empty-"));
 
     try {
-      resolveBatcave("darwin", "arm64", undefined, {}, stateRoot);
-      throw new Error("expected resolveBatcave to throw");
+      resolveCrewd("darwin", "arm64", undefined, {}, stateRoot);
+      throw new Error("expected resolveCrewd to throw");
     } catch (err) {
       expect(err).toBeInstanceOf(BinarySelectionError);
       expect((err as BinarySelectionError).code).toBe("runtime-not-installed");
@@ -142,7 +142,7 @@ describe("resolveBatcave: cache resolution", () => {
   });
 });
 
-describe("resolveBatcave: integrity", () => {
+describe("resolveCrewd: integrity", () => {
   test("flipping one byte of the binary causes BinaryIntegrityError before spawn", () => {
     const stateRoot = makeCache();
     const binPath = join(runtimeCacheDir(stateRoot, EXTENSION_VERSION), "crewd");
@@ -151,8 +151,8 @@ describe("resolveBatcave: integrity", () => {
     writeFileSync(binPath, bytes);
 
     try {
-      resolveBatcave("darwin", "arm64", undefined, {}, stateRoot);
-      throw new Error("expected resolveBatcave to throw");
+      resolveCrewd("darwin", "arm64", undefined, {}, stateRoot);
+      throw new Error("expected resolveCrewd to throw");
     } catch (err) {
       expect(err).toBeInstanceOf(BinaryIntegrityError);
       expect((err as BinaryIntegrityError).code).toBe("checksum-mismatch");
@@ -163,8 +163,8 @@ describe("resolveBatcave: integrity", () => {
     const stateRoot = makeCache({ version: "0.0.1-does-not-match" });
 
     try {
-      resolveBatcave("darwin", "arm64", undefined, {}, stateRoot);
-      throw new Error("expected resolveBatcave to throw");
+      resolveCrewd("darwin", "arm64", undefined, {}, stateRoot);
+      throw new Error("expected resolveCrewd to throw");
     } catch (err) {
       expect(err).toBeInstanceOf(BinaryIntegrityError);
       expect((err as BinaryIntegrityError).code).toBe("version-mismatch");
@@ -175,8 +175,8 @@ describe("resolveBatcave: integrity", () => {
     const stateRoot = makeCache({ target: "linux-x64-gnu" });
 
     try {
-      resolveBatcave("darwin", "arm64", undefined, {}, stateRoot);
-      throw new Error("expected resolveBatcave to throw");
+      resolveCrewd("darwin", "arm64", undefined, {}, stateRoot);
+      throw new Error("expected resolveCrewd to throw");
     } catch (err) {
       expect(err).toBeInstanceOf(BinaryIntegrityError);
       expect((err as BinaryIntegrityError).code).toBe("manifest-invalid");
@@ -184,7 +184,7 @@ describe("resolveBatcave: integrity", () => {
   });
 });
 
-describe("resolveBatcave: override precedence", () => {
+describe("resolveCrewd: override precedence", () => {
   test("a valid absolute executable override wins before cache resolution, source override, no checksum performed", () => {
     // A deliberately corrupt manifest (wrong sha256) that would fail
     // integrity validation if the cache were ever consulted.
@@ -197,7 +197,7 @@ describe("resolveBatcave: override precedence", () => {
 
     // Does not throw despite the corrupt cache manifest: the override
     // check happens first and returns before the cache is ever read.
-    const result = resolveBatcave("darwin", "arm64", undefined, { OMP_CREW_BINARY: overridePath }, stateRoot);
+    const result = resolveCrewd("darwin", "arm64", undefined, { OMP_CREW_BINARY: overridePath }, stateRoot);
 
     expect(result).toEqual({ path: overridePath, source: "override" });
   });
@@ -210,7 +210,7 @@ describe("resolveBatcave: override precedence", () => {
     writeFileSync(overridePath, "#!/bin/sh\nexit 0\n");
     chmodSync(overridePath, 0o755);
 
-    const result = resolveBatcave("darwin", "arm64", undefined, { OMP_BATMAN_BINARY: overridePath }, stateRoot);
+    const result = resolveCrewd("darwin", "arm64", undefined, { OMP_BATMAN_BINARY: overridePath }, stateRoot);
 
     expect(result).toEqual({ path: overridePath, source: "override" });
   });

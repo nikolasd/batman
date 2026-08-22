@@ -15,7 +15,7 @@ import { BinaryIntegrityError } from "./platform";
 import statusResultFixture from "../../../fixtures/omp/status-result.json" with { type: "json" };
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
-const BATCAVE = join(REPO_ROOT, "target", "debug", "crewd");
+const CREWD = join(REPO_ROOT, "target", "debug", "crewd");
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -152,7 +152,7 @@ beforeAll(async () => {
   repoDir = mkdtempSync("/tmp/bat-omp-r-");
   mkdirSync(join(repoDir, ".git"));
 
-  daemon = Bun.spawn([BATCAVE, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir], { stdout: "ignore", stderr: "pipe" });
+  daemon = Bun.spawn([CREWD, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir], { stdout: "ignore", stderr: "pipe" });
 
   await waitForSocket(stateDir);
 }, 180_000);

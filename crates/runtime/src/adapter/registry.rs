@@ -617,7 +617,7 @@ mod build_adapter_tests {
         AdapterMcpConfig {
             scope_tokens: Arc::new(ScopeTokenStore::new()),
             project_id: batman_protocol::ProjectId::new(),
-            batcave_path: PathBuf::from("/opt/crew/bin/crewd"),
+            crewd_path: PathBuf::from("/opt/crew/bin/crewd"),
             state_dir: std::env::temp_dir(),
             repository: std::env::temp_dir(),
         }

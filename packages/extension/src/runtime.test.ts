@@ -47,7 +47,7 @@ test("a broken .git symlink still counts as a VCS marker (matches Rust lstat sem
 });
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
-const BATCAVE = join(REPO_ROOT, "target", "debug", "crewd");
+const CREWD = join(REPO_ROOT, "target", "debug", "crewd");
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -72,7 +72,7 @@ function baseOptions(stateDir: string, repository: string): EnsureRuntimeOptions
     stateDir,
     repository,
     idleSeconds: 30,
-    env: { OMP_CREW_BINARY: BATCAVE },
+    env: { OMP_CREW_BINARY: CREWD },
   };
 }
 
@@ -155,7 +155,7 @@ test("foreground startup writes the runtime_started record to stderr instead", a
   const stateDir = newStateDir();
   const repository = newRepo();
 
-  const proc = Bun.spawn([BATCAVE, "serve", "--foreground", "--state-dir", stateDir, "--repo", repository, "--idle-seconds", "30"], { stdout: "ignore", stderr: "pipe" });
+  const proc = Bun.spawn([CREWD, "serve", "--foreground", "--state-dir", stateDir, "--repo", repository, "--idle-seconds", "30"], { stdout: "ignore", stderr: "pipe" });
 
   try {
     // Read stderr until the runtime_started record shows up.
@@ -282,7 +282,7 @@ test("a valid override is selected verbatim, bypassing the package resolver", as
     stateDir,
     repository,
     idleSeconds: 30,
-    env: { OMP_CREW_BINARY: BATCAVE },
+    env: { OMP_CREW_BINARY: CREWD },
     packagedBinaryResolver: () => {
       resolverCalled = true;
       return "/should/not/be/used";

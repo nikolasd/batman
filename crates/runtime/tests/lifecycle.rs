@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use batman_runtime::lifecycle::should_idle_shutdown;
 use serde_json::Value;
 
-const BATCAVE: &str = env!("CARGO_BIN_EXE_crewd");
+const CREWD: &str = env!("CARGO_BIN_EXE_crewd");
 
 /// A repository + state dir rooted under `/tmp` so socket paths stay well
 /// within the platform `SUN_LEN` bound.
@@ -47,7 +47,7 @@ impl Fixture {
     }
 
     fn serve(&self, idle_seconds: Option<u64>) -> Command {
-        let mut cmd = Command::new(BATCAVE);
+        let mut cmd = Command::new(CREWD);
         cmd.arg("serve")
             .arg("--state-dir")
             .arg(self.state_dir())
@@ -60,7 +60,7 @@ impl Fixture {
     }
 
     fn stop(&self) -> Command {
-        let mut cmd = Command::new(BATCAVE);
+        let mut cmd = Command::new(CREWD);
         cmd.arg("stop")
             .arg("--state-dir")
             .arg(self.state_dir())

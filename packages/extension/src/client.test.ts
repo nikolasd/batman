@@ -7,7 +7,7 @@ import type { InitializeParams, InitializeResult, RuntimeStatus } from "@nikolas
 import { CrewClient, JsonRpcRemoteError, ValidationError } from "./client";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
-const BATCAVE = join(REPO_ROOT, "target", "debug", "crewd");
+const CREWD = join(REPO_ROOT, "target", "debug", "crewd");
 
 let serverProc: Bun.Subprocess | undefined;
 let stateDir: string;
@@ -65,7 +65,7 @@ beforeAll(async () => {
   repoDir = mkdtempSync("/tmp/bat-ts-r-");
   mkdirSync(join(repoDir, ".git"));
 
-  serverProc = Bun.spawn([BATCAVE, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir], { stdout: "pipe", stderr: "pipe" });
+  serverProc = Bun.spawn([CREWD, "serve", "--foreground", "--state-dir", stateDir, "--repo", repoDir], { stdout: "pipe", stderr: "pipe" });
 
   socketPath = await waitForSocket(stateDir);
 }, 180_000);

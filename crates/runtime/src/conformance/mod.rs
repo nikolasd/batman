@@ -1,7 +1,7 @@
 //! The adapter conformance runner: fixture (default, always safe, zero
 //! model calls) and live scenario suites that decide which of an adapter's
 //! *declared* capabilities are actually *effective* -- the only set
-//! `crate::adapter::registry::AdapterRegistry` and `batcave adapters --json`
+//! `crate::adapter::registry::AdapterRegistry` and `crewd adapters --json`
 //! may ever expose to OMP.
 //!
 //! Each adapter owns its own scenario implementations in a `conformance`
