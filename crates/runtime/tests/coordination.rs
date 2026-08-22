@@ -360,7 +360,7 @@ async fn execute_tool_call_fulfills_every_tool_against_the_real_broker() {
         )
         .await;
     assert_eq!(send["isError"], false, "{send:?}");
-    assert_eq!(send["structuredContent"]["deliveryState"], "sent");
+    assert_eq!(send["structuredContent"]["deliveryState"], "recorded");
 
     let request_child = broker
         .execute_tool_call(
@@ -393,7 +393,7 @@ async fn execute_tool_call_fulfills_every_tool_against_the_real_broker() {
         )
         .await;
     assert_eq!(blocked["isError"], false, "{blocked:?}");
-    assert_eq!(blocked["structuredContent"]["deliveryState"], "sent");
+    assert_eq!(blocked["structuredContent"]["deliveryState"], "recorded");
 
     let policy = broker
         .execute_tool_call(
@@ -403,7 +403,7 @@ async fn execute_tool_call_fulfills_every_tool_against_the_real_broker() {
         )
         .await;
     assert_eq!(policy["isError"], false, "{policy:?}");
-    assert_eq!(policy["structuredContent"]["deliveryState"], "sent");
+    assert_eq!(policy["structuredContent"]["deliveryState"], "recorded");
 }
 
 #[tokio::test]
@@ -681,7 +681,7 @@ async fn coordination_send_accepts_a_payload_at_the_limit() {
         )
         .await;
     assert!(result.get("error").is_none(), "{result:?}");
-    assert_eq!(result["result"]["deliveryState"], "sent");
+    assert_eq!(result["result"]["deliveryState"], "recorded");
 }
 
 #[tokio::test]
@@ -1186,7 +1186,7 @@ async fn sweep_unacknowledged_as_unknown_settles_recorded_and_sent_messages() {
             }),
         )
         .await;
-    assert_eq!(sent["result"]["deliveryState"], "sent");
+    assert_eq!(sent["result"]["deliveryState"], "recorded");
 
     // Simulate crash recovery: a fresh broker over the same database sweeps
     // every non-terminal delivery state to `unknown`, never resending.

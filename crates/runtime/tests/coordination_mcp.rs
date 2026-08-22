@@ -381,7 +381,7 @@ async fn coordination_mcp_fulfills_crew_task_and_crew_send_against_the_real_brok
         .await;
     let result = &send_call["result"];
     assert_eq!(result["isError"], false, "{send_call:?}");
-    assert_eq!(result["structuredContent"]["deliveryState"], "sent");
+    assert_eq!(result["structuredContent"]["deliveryState"], "recorded");
 
     // Verify against the real database directly: the message the
     // subprocess sent is journaled with the *bound* worker id, never one
