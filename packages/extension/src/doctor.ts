@@ -1,6 +1,6 @@
-// The `batcave doctor` CLI command wrapper: spawn the binary with `--json`
-// and parse the structured output. Used by both the `batman_doctor` tool and
-// the `/batman-doctor` command.
+// The `crewd doctor` CLI command wrapper: spawn the binary with `--json`
+// and parse the structured output. Used by both the `crew_doctor` tool and
+// the `/crew-doctor` command.
 //
 // Unlike `status.ts`, this does not connect to a running runtime — it invokes
 // the CLI directly, so it works even when no runtime is serving the repo.
@@ -70,11 +70,11 @@ export type DoctorCommandResult = DoctorSuccess | DoctorErrorResult;
 
 /** Context needed to run the doctor command. */
 export interface DoctorContext {
-  /** Absolute BATMAN state root. */
+  /** Absolute Crew state root. */
   readonly stateDir: string;
   /** Absolute repository path. */
   readonly repository: string;
-  /** Path to the `batcave` binary. */
+  /** Path to the `crewd` binary. */
   readonly batcavePath: string;
 }
 
@@ -84,7 +84,7 @@ export interface DoctorContext {
  * Resolves the state root through {@link resolveStateRoot} -- the same
  * function the launcher uses to spawn the daemon -- so the doctor always
  * diagnoses the directory a daemon actually writes. A second resolution
- * path here was the defect: it produced `<cwd>/.batman`, which no daemon
+ * path here was the defect: it produced `<cwd>/.crew`, which no daemon
  * ever used.
  */
 export function buildDoctorContext(cwd: string, env: NodeJS.ProcessEnv = process.env): DoctorContext {
@@ -98,7 +98,7 @@ export function buildDoctorContext(cwd: string, env: NodeJS.ProcessEnv = process
 }
 
 /**
- * Runs `batcave doctor --json` and parses the structured output.
+ * Runs `crewd doctor --json` and parses the structured output.
  *
  * This is a synchronous spawn (no network, no runtime connection), so it
  * works even when no runtime is serving the repository.
@@ -125,7 +125,7 @@ export async function runDoctorCommand(ctx: DoctorContext): Promise<DoctorComman
       const doctorCommand = `${ctx.batcavePath} doctor --state-dir ${ctx.stateDir} --repo ${ctx.repository}`;
 
       if (exitCode !== 0) {
-        // `batcave doctor --json` reports two distinct shapes on a
+        // `crewd doctor --json` reports two distinct shapes on a
         // non-zero exit: a full result whose checks failed, and an abort
         // envelope `{ healthy: false, error }` for a condition that
         // stopped the catalog from running at all. Both carry the real

@@ -19,7 +19,7 @@ interface CacheFixtureOptions {
 }
 
 /**
- * Materializes `<stateRoot>/bin/<EXTENSION_VERSION>/{batcave,manifest.json}`
+ * Materializes `<stateRoot>/bin/<EXTENSION_VERSION>/{crewd,manifest.json}`
  * in a fresh temp state root, so integrity tests never depend on a real
  * committed binary. The cache directory is always keyed by
  * `EXTENSION_VERSION` -- exactly as `resolveBatcave` computes it -- so a
@@ -30,13 +30,13 @@ function makeCache(options: CacheFixtureOptions = {}): string {
   const stateRoot = mkdtempSync(join(tmpdir(), "bat-state-"));
   const dir = runtimeCacheDir(stateRoot, EXTENSION_VERSION);
   mkdirSync(dir, { recursive: true });
-  const binaryBytes = options.binaryBytes ?? Buffer.from("fake-batcave-binary-fixture-bytes");
-  const binPath = join(dir, "batcave");
+  const binaryBytes = options.binaryBytes ?? Buffer.from("fake-crewd-binary-fixture-bytes");
+  const binPath = join(dir, "crewd");
   writeFileSync(binPath, binaryBytes);
   chmodSync(binPath, 0o755);
 
   const manifest = {
-    name: "batcave",
+    name: "crewd",
     version: options.version ?? EXTENSION_VERSION,
     target: options.target ?? "darwin-arm64",
     sha256: options.sha256 ?? sha256File(binPath),
@@ -126,7 +126,7 @@ describe("resolveBatcave: cache resolution", () => {
   test("resolves to source package when the cache is populated and checksum/version/target match", () => {
     const stateRoot = makeCache();
     const result = resolveBatcave("darwin", "arm64", undefined, {}, stateRoot);
-    expect(result).toEqual({ path: join(runtimeCacheDir(stateRoot, EXTENSION_VERSION), "batcave"), source: "package" });
+    expect(result).toEqual({ path: join(runtimeCacheDir(stateRoot, EXTENSION_VERSION), "crewd"), source: "package" });
   });
 
   test("an absent cache directory throws BinarySelectionError with code runtime-not-installed", () => {
@@ -145,7 +145,7 @@ describe("resolveBatcave: cache resolution", () => {
 describe("resolveBatcave: integrity", () => {
   test("flipping one byte of the binary causes BinaryIntegrityError before spawn", () => {
     const stateRoot = makeCache();
-    const binPath = join(runtimeCacheDir(stateRoot, EXTENSION_VERSION), "batcave");
+    const binPath = join(runtimeCacheDir(stateRoot, EXTENSION_VERSION), "crewd");
     const bytes = readFileSync(binPath);
     bytes[0] = (bytes[0]! ^ 0xff) & 0xff;
     writeFileSync(binPath, bytes);
@@ -191,12 +191,25 @@ describe("resolveBatcave: override precedence", () => {
     const stateRoot = makeCache({ sha256: "0".repeat(64) });
 
     const overrideDir = mkdtempSync(join(tmpdir(), "bat-override-"));
-    const overridePath = join(overrideDir, "batcave");
+    const overridePath = join(overrideDir, "crewd");
     writeFileSync(overridePath, "#!/bin/sh\nexit 0\n");
     chmodSync(overridePath, 0o755);
 
     // Does not throw despite the corrupt cache manifest: the override
     // check happens first and returns before the cache is ever read.
+    const result = resolveBatcave("darwin", "arm64", undefined, { OMP_CREW_BINARY: overridePath }, stateRoot);
+
+    expect(result).toEqual({ path: overridePath, source: "override" });
+  });
+
+  test("the legacy OMP_BATMAN_BINARY name still works when OMP_CREW_BINARY is unset", () => {
+    const stateRoot = makeCache({ sha256: "0".repeat(64) });
+
+    const overrideDir = mkdtempSync(join(tmpdir(), "bat-override-"));
+    const overridePath = join(overrideDir, "crewd");
+    writeFileSync(overridePath, "#!/bin/sh\nexit 0\n");
+    chmodSync(overridePath, 0o755);
+
     const result = resolveBatcave("darwin", "arm64", undefined, { OMP_BATMAN_BINARY: overridePath }, stateRoot);
 
     expect(result).toEqual({ path: overridePath, source: "override" });
