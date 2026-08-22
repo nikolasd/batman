@@ -224,22 +224,19 @@ Exports journaled events to a JSONL file.
 crewd audit export --repo <path> --state-dir <path> --output <path> [--from <ts>] [--to <ts>]
 ```
 
-**This is the one command where `--state-dir` means something different from every other
-subcommand.** `serve`/`status`/`stop`/`monitor`/`doctor` treat `--state-dir` as a *state root* and
-derive the per-repository runtime directory themselves. `audit export` does not — it opens
-`<state-dir>/runtime.db` directly, and `--repo` won't rescue a wrong path: it is recorded in the
-export's metadata only, never used to locate the database
-([`run_audit_export`](../crates/runtime/src/cli.rs)). Pass the actual per-repository runtime
-directory (what the other commands would compute as `<state-root>/repos/<repository-id>/`), not
-the top-level state root, or you'll silently get an empty, freshly-migrated database with zero
-events rather than an error.
+`--state-dir` here means the same *state root* as every other subcommand: `audit export` resolves
+the per-repository runtime directory via `RuntimePaths::resolve(state_root, repo)` — exactly what
+`serve`/`status`/`stop`/`monitor`/`doctor` do
+([`run_audit_export`](../crates/runtime/src/cli.rs)). If the resolved database does not exist (e.g.
+this repository was never served under this state root), the command refuses with an error rather
+than silently opening — and thereby creating — an empty one.
 
 Other details:
 - `--from`/`--to` should be RFC3339 timestamps. They are **not validated** — the raw strings go into
   a lexicographic SQL comparison against RFC3339-formatted values, so a malformed timestamp produces
   a wrong (usually empty) result set rather than an error.
-- `--output` is **required**, despite what `--help` says. The export always writes to the given
-  file path; it never writes to stdout.
+- `--output` is **required**. The export always writes to the given file path; it never writes to
+  stdout.
 - An empty result still writes an empty file (so a consumer can tell "nothing in range" apart from
   "the export never ran").
 - Data is exported exactly as journaled — it was already redacted at write time, so there's no

@@ -204,13 +204,13 @@ crewd stop --repo "$PWD" --state-dir "$HOME/.omp/batman"
 
 ### Audit Export
 
-Export audit events to JSONL format. Note that `--state-dir` here must be the repository's actual
-runtime directory (what `serve`/`status`/`doctor` would derive internally from a state root plus
-`--repo`), not a top-level state root — `audit export` opens `<state-dir>/runtime.db` directly and
-does not derive it from `--repo` itself (see [`cli-reference.md`](cli-reference.md#crewd-audit-export)):
+Export audit events to JSONL format. `--state-dir` here is the same state root every other
+subcommand takes — `audit export` derives the per-repository runtime directory from it plus
+`--repo`, exactly like `serve`/`status`/`doctor` (see
+[`cli-reference.md`](cli-reference.md#crewd-audit-export)):
 
 ```bash
-crewd audit export --repo "$PWD" --state-dir "$HOME/.omp/batman/repos/<repository-id>" --output /tmp/audit.jsonl
+crewd audit export --repo "$PWD" --state-dir "$HOME/.omp/batman" --output /tmp/audit.jsonl
 ```
 
 ## Security Features

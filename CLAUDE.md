@@ -62,7 +62,7 @@ OMP_CREW_BINARY="$PWD/target/debug/crewd" \
 crewd serve --repo /path/to/repo [--org-config ... --repo-config ... --user-config ...]
 crewd status --repo /path/to/repo
 crewd stop --repo /path/to/repo
-crewd audit export --repo "$PWD" --state-dir "$HOME/.omp/batman/repos/<repository-id>" --output /tmp/audit.jsonl
+crewd audit export --repo "$PWD" --state-dir "$HOME/.omp/batman" --output /tmp/audit.jsonl
 ```
 
 `CREW_DISABLE_VENDOR_CLI=1` skips live vendor CLI calls — set it for any local test run to avoid

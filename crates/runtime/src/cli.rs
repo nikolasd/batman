@@ -219,7 +219,8 @@ enum AuditCommand {
         /// Export events up to this timestamp (ISO 8601).
         #[arg(long)]
         to: Option<String>,
-        /// The output file path (defaults to stdout).
+        /// The output file path. Required -- the export always writes to
+        /// this file, never to stdout.
         #[arg(long)]
         output: PathBuf,
     },
@@ -690,21 +691,39 @@ async fn run_audit_export(
     // A failed resolve must not silently fall back to `.crew`: the
     // export would then report success against a directory that may not
     // exist.
-    let state_dir_resolved = match resolve_state_dir(state_dir) {
+    let state_root = match resolve_state_dir(state_dir) {
         Ok(dir) => dir,
         Err(err) => return fail(&err),
     };
 
-    let db = match batman_runtime::db::DatabaseHandle::start(state_dir_resolved.join("runtime.db"))
-        .await
-    {
+    // `--state-dir` is the state ROOT here, exactly like every other
+    // subcommand -- `RuntimePaths::resolve` derives the per-repository
+    // runtime directory from it plus `--repo`, rather than treating
+    // `--state-dir` itself as that directory.
+    let paths = match batman_runtime::paths::RuntimePaths::resolve(&state_root, &repo) {
+        Ok(paths) => paths,
+        Err(err) => return fail(&format!("failed to resolve runtime paths: {err}")),
+    };
+
+    // `DatabaseHandle::start` migrates a missing file into an empty,
+    // freshly-initialized database rather than erroring -- which would
+    // make this export silently "succeed" with zero events against a repo
+    // that was never actually served. Refuse before that happens.
+    if !paths.database.exists() {
+        return fail(&format!(
+            "no database at {}; this repository has never been served under this state root",
+            paths.database.display()
+        ));
+    }
+
+    let db = match batman_runtime::db::DatabaseHandle::start(paths.database.clone()).await {
         Ok(handle) => handle,
         Err(err) => return fail(&format!("failed to open database: {err}")),
     };
 
     let mut export = batman_runtime::audit::Export::new(
         repo.to_string_lossy().to_string(),
-        state_dir_resolved.to_string_lossy().to_string(),
+        paths.root.to_string_lossy().to_string(),
         output.to_string_lossy().to_string(),
     );
     export.from = from;
@@ -1184,5 +1203,94 @@ mod tests {
         assert_eq!(capture_status(true, false), "unchanged");
         assert_eq!(capture_status(false, false), "rewritten");
         assert_eq!(capture_status(false, true), "would rewrite");
+    }
+
+    /// `run_audit_export` must resolve the database the same way every
+    /// other subcommand does: `RuntimePaths::resolve(state_root, repo)`,
+    /// not a direct join of `runtime.db` onto `--state-dir`.
+    #[tokio::test]
+    async fn audit_export_resolves_the_db_via_runtime_paths_like_every_other_subcommand() {
+        let state_root = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+
+        // Seed events at the location `RuntimePaths::resolve` computes for
+        // this repo -- the correct per-repository database -- not at
+        // `<state-root>/runtime.db`, which is what the old buggy code read.
+        let paths =
+            batman_runtime::paths::RuntimePaths::resolve(state_root.path(), repo.path()).unwrap();
+        {
+            let db = batman_runtime::db::DatabaseHandle::start(paths.database.clone())
+                .await
+                .unwrap();
+            let redactor = batman_runtime::security::redaction::Redactor::new();
+            for text in ["first", "second", "third"] {
+                let event = batman_runtime::security::redaction::RawRuntimeEvent {
+                    timestamp: batman_protocol::Timestamp::now(),
+                    project_id: batman_protocol::ProjectId::new(),
+                    run_id: None,
+                    kind: batman_runtime::security::redaction::RawEventKind::Diagnostic {
+                        level: batman_protocol::DiagnosticLevel::Info,
+                        code: "fixture".to_string(),
+                        fragments: vec![batman_protocol::Classified {
+                            class: batman_protocol::ContentClass::Visible,
+                            value: text.to_string(),
+                        }],
+                    },
+                };
+                db.append_event(redactor.sanitize(event)).await.unwrap();
+            }
+        }
+
+        let output = state_root.path().join("audit.jsonl");
+        let code = run_audit_export(
+            Some(state_root.path().to_path_buf()),
+            repo.path().to_path_buf(),
+            None,
+            None,
+            output.clone(),
+        )
+        .await;
+
+        assert_eq!(code, ExitCode::SUCCESS);
+        let lines: Vec<_> = std::fs::read_to_string(&output)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(lines.len(), 3, "expected all 3 seeded events exported");
+    }
+
+    /// A `--state-dir`/`--repo` pair whose resolved database was never
+    /// created must be refused -- opening it would silently migrate an
+    /// empty database into existence and export zero events with no
+    /// indication anything was wrong.
+    #[tokio::test]
+    async fn audit_export_refuses_a_nonexistent_database_without_creating_one() {
+        let state_root = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        let output = state_root.path().join("audit.jsonl");
+
+        let code = run_audit_export(
+            Some(state_root.path().to_path_buf()),
+            repo.path().to_path_buf(),
+            None,
+            None,
+            output.clone(),
+        )
+        .await;
+
+        assert_eq!(code, ExitCode::FAILURE);
+        assert!(
+            !output.exists(),
+            "a refused export must not write an output file"
+        );
+        let paths =
+            batman_runtime::paths::RuntimePaths::resolve(state_root.path(), repo.path()).unwrap();
+        assert!(
+            !paths.database.exists(),
+            "a refused export must not have silently created the database either"
+        );
     }
 }
