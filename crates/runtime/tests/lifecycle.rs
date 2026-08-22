@@ -1,7 +1,7 @@
-//! End-to-end lifecycle tests for the `batcave` daemon: single-instance
+//! End-to-end lifecycle tests for the `crewd` daemon: single-instance
 //! locking, stale-lock recovery, graceful stop, and idle shutdown.
 //!
-//! These drive the *compiled* binary (`env!("CARGO_BIN_EXE_batcave")`) as
+//! These drive the *compiled* binary (`env!("CARGO_BIN_EXE_crewd")`) as
 //! real processes over real Unix domain sockets, with tempdirs for state.
 //! Idle timings are kept tight (1s) so the suite stays fast, and every test
 //! reaps or kills the processes it spawns so no orphans survive.
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use batman_runtime::lifecycle::should_idle_shutdown;
 use serde_json::Value;
 
-const BATCAVE: &str = env!("CARGO_BIN_EXE_batcave");
+const BATCAVE: &str = env!("CARGO_BIN_EXE_crewd");
 
 /// A repository + state dir rooted under `/tmp` so socket paths stay well
 /// within the platform `SUN_LEN` bound.
@@ -236,7 +236,7 @@ fn concurrent_serve_over_stale_lock_one_wins() {
         "instanceToken": "stale-token",
         "runtimeVersion": "0.0.0",
         "projectId": "00000000-0000-0000-0000-000000000000",
-        "socketPath": "/tmp/does-not-exist-batman.sock",
+        "socketPath": "/tmp/does-not-exist-crew.sock",
     });
     std::fs::write(&lock_path, serde_json::to_vec(&stale).unwrap()).unwrap();
     if let Some(socket) = find_socket(fixture.state_dir()) {
@@ -324,7 +324,7 @@ fn stale_lock_is_recovered() {
         "instanceToken": "stale-token",
         "runtimeVersion": "0.0.0",
         "projectId": "00000000-0000-0000-0000-000000000000",
-        "socketPath": "/tmp/does-not-exist-batman.sock",
+        "socketPath": "/tmp/does-not-exist-crew.sock",
     });
     std::fs::write(&lock_path, serde_json::to_vec(&stale).unwrap()).unwrap();
     // Also remove any leftover socket so connectability genuinely fails.
@@ -355,7 +355,7 @@ fn graceful_stop_removes_socket_only_after_journal_shutdown() {
     let socket = wait_for_socket(fixture.state_dir(), Duration::from_secs(10));
 
     let status = fixture.stop().status().unwrap();
-    assert!(status.success(), "batcave stop should exit 0");
+    assert!(status.success(), "crewd stop should exit 0");
 
     // `stop` returns only after the socket is removed, which the daemon does
     // only after the journal shutdown record is durably committed.

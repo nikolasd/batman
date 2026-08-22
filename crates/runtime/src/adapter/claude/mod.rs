@@ -26,7 +26,7 @@
 //! own pre-start guard clauses. The optional, `#[ignore]`d
 //! `claude_live.rs` end-to-end test is what actually exercises the
 //! spawn+stdin+reader-task path; it is skipped unless explicitly run
-//! with `--ignored` and `BATMAN_DISABLE_VENDOR_CLI` is unset.
+//! with `--ignored` and `CREW_DISABLE_VENDOR_CLI` is unset.
 
 pub mod command;
 pub mod conformance;
@@ -337,7 +337,7 @@ pub fn build_mcp_injection(mcp: &AdapterMcpConfig, run_id: RunId) -> std::io::Re
     let context = mcp.launch_context(run_id);
     let token = mcp.reserve();
     let extra_env = coordination_mcp_env(&token);
-    let config_path = std::env::temp_dir().join(format!("batman-mcp-{run_id}.json"));
+    let config_path = std::env::temp_dir().join(format!("crew-mcp-{run_id}.json"));
     let document = coordination_mcp_config_document(&context);
     write_mcp_config_file(&config_path, &document)?;
     Ok(McpInjection {

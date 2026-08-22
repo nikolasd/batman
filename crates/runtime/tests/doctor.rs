@@ -1,4 +1,4 @@
-//! Integration tests for `batcave doctor` CLI command.
+//! Integration tests for `crewd doctor` CLI command.
 //!
 //! These tests verify the doctor command's behavior with various inputs:
 //! - Valid repository with proper state directory
@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use serde_json::Value;
 use tempfile::TempDir;
 
-const BATCAVE: &str = env!("CARGO_BIN_EXE_batcave");
+const BATCAVE: &str = env!("CARGO_BIN_EXE_crewd");
 
 struct Fixture {
     state: TempDir,
@@ -402,7 +402,7 @@ async fn schema_compatibility_fails_when_the_committed_schema_drifts() {
     let fake_repo = tempfile::tempdir().unwrap();
     let schema_dir = fake_repo.path().join("packages/protocol-ts/schema");
     std::fs::create_dir_all(&schema_dir).unwrap();
-    std::fs::write(schema_dir.join("batman.schema.json"), b"{}\n").unwrap();
+    std::fs::write(schema_dir.join("crew.schema.json"), b"{}\n").unwrap();
 
     let db = Arc::new(
         DatabaseHandle::start(state.path().join("runtime.db"))
@@ -433,8 +433,8 @@ async fn schema_compatibility_fails_when_the_committed_schema_drifts() {
 async fn schema_compatibility_passes_when_repo_has_no_schema_file() {
     let state = tempfile::tempdir().unwrap();
     // `--repo` is an ordinary project with no `packages/protocol-ts/schema/`
-    // at all -- the common case, since `--repo` is the project BATMAN runs
-    // against, not a checkout of BATMAN's own source.
+    // at all -- the common case, since `--repo` is the project Crew runs
+    // against, not a checkout of Crew's own source.
     let ordinary_repo = tempfile::tempdir().unwrap();
 
     let db = Arc::new(

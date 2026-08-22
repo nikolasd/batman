@@ -1,4 +1,4 @@
-//! The `batcave` command-line interface: `serve`, `status`, `stop`,
+//! The `crewd` command-line interface: `serve`, `status`, `stop`,
 //! `version`, `schema`, `monitor`, `audit`, `doctor`, and
 //! `coordination-mcp`. This layer only
 //! parses arguments, resolves the state root when `--state-dir` is omitted,
@@ -20,9 +20,9 @@ struct FixtureBaseline {
     expected_failures: std::collections::HashMap<String, Vec<String>>,
 }
 
-/// The BATMAN runtime daemon.
+/// The Crew runtime daemon.
 #[derive(Parser)]
-#[command(name = "batcave", version, about = "The BATMAN runtime daemon")]
+#[command(name = "crewd", version, about = "The Crew runtime daemon")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -32,7 +32,7 @@ struct Cli {
 enum Command {
     /// Serve the runtime socket protocol for a repository.
     Serve {
-        /// The BATMAN state root. Defaults to the resolved state root.
+        /// The Crew state root. Defaults to the resolved state root.
         #[arg(long)]
         state_dir: Option<PathBuf>,
         /// The repository this runtime instance serves.
@@ -61,7 +61,7 @@ enum Command {
         /// Retry connecting for up to this many seconds (startup races).
         #[arg(long)]
         wait_seconds: Option<u64>,
-        /// The BATMAN state root. Defaults to the resolved state root.
+        /// The Crew state root. Defaults to the resolved state root.
         #[arg(long)]
         state_dir: Option<PathBuf>,
         /// The repository whose runtime to query.
@@ -70,7 +70,7 @@ enum Command {
     },
     /// Gracefully stop the runtime serving a repository.
     Stop {
-        /// The BATMAN state root. Defaults to the resolved state root.
+        /// The Crew state root. Defaults to the resolved state root.
         #[arg(long)]
         state_dir: Option<PathBuf>,
         /// The repository whose runtime to stop.
@@ -79,7 +79,7 @@ enum Command {
     },
     /// Display runtime events for one or all runs.
     Monitor {
-        /// The BATMAN state root. Defaults to the resolved state root.
+        /// The Crew state root. Defaults to the resolved state root.
         #[arg(long)]
         state_dir: Option<PathBuf>,
         /// The repository whose events to display.
@@ -100,7 +100,7 @@ enum Command {
     },
     /// Run diagnostic checks on the runtime state and configuration.
     Doctor {
-        /// The BATMAN state root. Defaults to the resolved state root.
+        /// The Crew state root. Defaults to the resolved state root.
         #[arg(long)]
         state_dir: Option<PathBuf>,
         /// The repository to diagnose.
@@ -121,7 +121,7 @@ enum Command {
     },
     /// Serve the worker-coordination MCP proxy for one run over stdio.
     CoordinationMcp {
-        /// The BATMAN state root. Defaults to the resolved state root.
+        /// The Crew state root. Defaults to the resolved state root.
         #[arg(long)]
         state_dir: Option<PathBuf>,
         /// The repository this run belongs to.
@@ -185,15 +185,15 @@ enum LeaseCommand {
     /// was never persisted (extension crashed before the recording
     /// upsert): such a lease is unreleasable over RPC, because
     /// `workspace/release` is owner-gated and a new session is a
-    /// different principal. `batcave doctor` reports these as stale.
+    /// different principal. `crewd doctor` reports these as stale.
     Release {
-        /// The BATMAN state root. Defaults to the resolved state root.
+        /// The Crew state root. Defaults to the resolved state root.
         #[arg(long)]
         state_dir: Option<PathBuf>,
         /// The repository whose lease to release.
         #[arg(long)]
         repo: PathBuf,
-        /// The lease to release (full id, as `batcave doctor` prints it).
+        /// The lease to release (full id, as `crewd doctor` prints it).
         #[arg(long)]
         lease_id: String,
         /// Confirm releasing a lease that is still `active` -- this strips
@@ -207,7 +207,7 @@ enum LeaseCommand {
 enum AuditCommand {
     /// Export events to a JSONL file.
     Export {
-        /// The BATMAN state root. Defaults to the resolved state root.
+        /// The Crew state root. Defaults to the resolved state root.
         #[arg(long)]
         state_dir: Option<PathBuf>,
         /// The repository whose events to export.
@@ -274,7 +274,7 @@ pub async fn run() -> ExitCode {
             run_id,
         } => run_monitor(state_dir, repo, run_id).await,
         Command::Version => {
-            println!("batcave {VERSION}");
+            println!("crewd {VERSION}");
             ExitCode::SUCCESS
         }
         Command::Schema => run_schema().await,
@@ -328,20 +328,20 @@ pub async fn run() -> ExitCode {
     }
 }
 
-/// Reads the launcher's `BATMAN_BINARY_SOURCE` hint. The extension sets it
+/// Reads the launcher's `CREW_BINARY_SOURCE` hint. The extension sets it
 /// when it spawns the daemon (`packages/extension/src/runtime.ts`); a
-/// hand-run `batcave` leaves it unset, which is `Unknown` rather than an
+/// hand-run `crewd` leaves it unset, which is `Unknown` rather than an
 /// error -- the field is diagnostic, never load-bearing.
 fn binary_source_from_env() -> batman_protocol::BinarySource {
     use batman_protocol::BinarySource;
-    match std::env::var("BATMAN_BINARY_SOURCE").as_deref() {
+    match std::env::var("CREW_BINARY_SOURCE").as_deref() {
         Ok("override") => BinarySource::Override,
         Ok("package") => BinarySource::Package,
         _ => BinarySource::Unknown,
     }
 }
 
-/// Runs `batcave serve`: acquires the single-instance lock, starts the IPC
+/// Runs `crewd serve`: acquires the single-instance lock, starts the IPC
 /// server, and serves until signalled, idle-shutdown, or in-band stop.
 async fn run_serve(
     state_dir: Option<PathBuf>,
@@ -385,7 +385,7 @@ async fn run_serve(
     }
 }
 
-/// Runs `batcave status`: connects to the runtime, queries `runtime/status`,
+/// Runs `crewd status`: connects to the runtime, queries `runtime/status`,
 /// and prints the result as JSON.
 async fn run_status(
     wait_seconds: Option<u64>,
@@ -417,7 +417,7 @@ async fn run_status(
     }
 }
 
-/// Runs `batcave stop`: signals a live runtime and waits for it to shut down.
+/// Runs `crewd stop`: signals a live runtime and waits for it to shut down.
 async fn run_stop(state_dir: Option<PathBuf>, repo: PathBuf) -> ExitCode {
     use batman_runtime::lifecycle::{self, StopOptions};
 
@@ -441,7 +441,7 @@ async fn run_stop(state_dir: Option<PathBuf>, repo: PathBuf) -> ExitCode {
     }
 }
 
-/// Runs `batcave lease release`: force-releases a workspace lease by id,
+/// Runs `crewd lease release`: force-releases a workspace lease by id,
 /// directly against the lease database -- no daemon required. Prints the
 /// released lease's materialized path (when one exists) so the operator
 /// can remove a leaked worktree the runtime will no longer tear down.
@@ -477,13 +477,13 @@ async fn run_lease_release(
     // A live daemon owns this state: its subscribers would never see an
     // out-of-band mutation (invariant 7), and the lease may belong to an
     // in-flight run it is supervising. Liveness is proven by the advisory
-    // flock, the same probe `batcave stop` uses -- NOT by the socket
+    // flock, the same probe `crewd stop` uses -- NOT by the socket
     // file, which an unclean crash (the exact case this command exists
     // for) leaves behind.
     if batman_runtime::lifecycle::runtime_is_live(&paths.lock) {
         eprintln!(
             "a runtime is serving this repository; release the lease over RPC \
-             (workspace/release) or run `batcave stop` first"
+             (workspace/release) or run `crewd stop` first"
         );
         return ExitCode::from(1);
     }
@@ -637,7 +637,7 @@ async fn run_lease_release(
     ExitCode::SUCCESS
 }
 
-/// Runs `batcave monitor`: connects to the runtime, replays events, and
+/// Runs `crewd monitor`: connects to the runtime, replays events, and
 /// renders them as plain-text lines until interrupted.
 async fn run_monitor(
     state_dir: Option<PathBuf>,
@@ -663,10 +663,10 @@ async fn run_monitor(
     }
 }
 
-/// Runs `batcave schema`: prints the canonical JSON Schema document.
+/// Runs `crewd schema`: prints the canonical JSON Schema document.
 async fn run_schema() -> ExitCode {
     // Read the schema file from the protocol package.
-    let schema_path = std::path::Path::new("packages/protocol-ts/schema/batman.schema.json");
+    let schema_path = std::path::Path::new("packages/protocol-ts/schema/crew.schema.json");
     match std::fs::read_to_string(schema_path) {
         Ok(schema) => {
             print!("{schema}");
@@ -679,7 +679,7 @@ async fn run_schema() -> ExitCode {
     }
 }
 
-/// Runs `batcave audit export`: exports events to a JSONL file.
+/// Runs `crewd audit export`: exports events to a JSONL file.
 async fn run_audit_export(
     state_dir: Option<PathBuf>,
     repo: PathBuf,
@@ -687,7 +687,7 @@ async fn run_audit_export(
     to: Option<String>,
     output: PathBuf,
 ) -> ExitCode {
-    // A failed resolve must not silently fall back to `.batman`: the
+    // A failed resolve must not silently fall back to `.crew`: the
     // export would then report success against a directory that may not
     // exist.
     let state_dir_resolved = match resolve_state_dir(state_dir) {
@@ -722,17 +722,17 @@ async fn run_audit_export(
     }
 }
 
-/// Resolves the state directory, defaulting to `.batman` if `None`.
+/// Resolves the state directory, defaulting to `.crew` if `None`.
 fn resolve_state_dir(state_dir: Option<PathBuf>) -> Result<PathBuf, String> {
     match state_dir {
         Some(dir) => Ok(dir),
         None => {
-            let default = PathBuf::from(".batman");
+            let default = PathBuf::from(".crew");
             if default.exists() {
                 Ok(default)
             } else {
                 Err(
-                    "state directory `.batman` does not exist; use --state-dir to specify it"
+                    "state directory `.crew` does not exist; use --state-dir to specify it"
                         .to_string(),
                 )
             }
@@ -740,7 +740,7 @@ fn resolve_state_dir(state_dir: Option<PathBuf>) -> Result<PathBuf, String> {
     }
 }
 
-/// Runs `batcave doctor`: runs the diagnostic check catalog against the
+/// Runs `crewd doctor`: runs the diagnostic check catalog against the
 /// same paths `serve` uses, so it diagnoses the state a daemon actually
 /// writes rather than a directory only `doctor` believes in.
 async fn run_doctor(
@@ -832,9 +832,9 @@ async fn run_doctor(
     }
 }
 
-/// Runs `batcave coordination-mcp`: proxies MCP `initialize`/`tools/list`/
+/// Runs `crewd coordination-mcp`: proxies MCP `initialize`/`tools/list`/
 /// `tools/call` on stdio to the worker coordination tools over the
-/// runtime socket, authenticated with `BATMAN_WORKER_SCOPE_TOKEN` read
+/// runtime socket, authenticated with `CREW_WORKER_SCOPE_TOKEN` read
 /// from (and removed from) this process's own inherited environment. All
 /// protocol/auth behavior lives in `batman_runtime::coordination::mcp`;
 /// this function only resolves CLI arguments into that call.
@@ -861,7 +861,7 @@ async fn run_coordination_mcp(
     }
 }
 
-/// Runs `batcave display probe`: probes one display backend's status and
+/// Runs `crewd display probe`: probes one display backend's status and
 /// prints it as JSON or human-readable text. Never activates the backend;
 /// this only reads availability/version, exactly like `DisplayBackendTrait::status`.
 async fn run_display_probe(backend: String, json: bool) -> ExitCode {
@@ -916,11 +916,11 @@ async fn run_display_probe(backend: String, json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Runs `batcave conformance`: runs one or all adapters' fixture or live
+/// Runs `crewd conformance`: runs one or all adapters' fixture or live
 /// conformance suite and writes the resulting report(s) to `output` as a
 /// JSON array, printing the exact same JSON to stdout. Exactly one of
 /// `fixture`/`live` must be set. Live mode runs by default; when
-/// `BATMAN_DISABLE_VENDOR_CLI=1` is set, the adapter's `live_report()`
+/// `CREW_DISABLE_VENDOR_CLI=1` is set, the adapter's `live_report()`
 /// returns `Err`, which this command reports as a `{adapter,
 /// mode:"live", passed:false, error}` entry, never a hard process
 /// failure.
@@ -1064,7 +1064,7 @@ async fn run_conformance(adapter: String, fixture: bool, live: bool, output: Pat
     ExitCode::SUCCESS
 }
 
-/// Runs `batcave adapters`: runs every reserved adapter kind's fixture
+/// Runs `crewd adapters`: runs every reserved adapter kind's fixture
 /// conformance suite and prints the resulting reports (the only source of
 /// truth for OMP-facing effective capabilities) as JSON or human-readable
 /// text.
@@ -1102,7 +1102,7 @@ async fn run_adapters(json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Runs `batcave capture`: re-records adapter fixtures from a real vendor CLI,
+/// Runs `crewd capture`: re-records adapter fixtures from a real vendor CLI,
 /// normalizes known nondeterministic values, and rewrites fixture bytes when
 /// the resulting capture differs from the committed artifact.
 async fn run_capture(adapter: String, fixture: Option<String>, dry_run: bool) -> ExitCode {

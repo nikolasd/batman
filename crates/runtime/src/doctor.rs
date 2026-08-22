@@ -1,6 +1,6 @@
 //! Runtime health checking and rollout gate management.
 //!
-//! The [`Doctor`] provides a comprehensive health check of the BATMAN runtime,
+//! The [`Doctor`] provides a comprehensive health check of the Crew runtime,
 //! including:
 //! - Database connectivity
 //! - State directory accessibility
@@ -71,7 +71,7 @@ pub struct FailedCheck {
     pub error: String,
 }
 
-/// Performs health checks on the BATMAN runtime.
+/// Performs health checks on the Crew runtime.
 ///
 /// Every check reports either a pass or a [`FailedCheck`]. A check that
 /// cannot run reports a [`FailedCheck`] whose error starts with `skipped:`
@@ -88,7 +88,7 @@ pub struct Doctor {
     project_id: Option<ProjectId>,
 }
 
-/// The target triples the foundation ships prebuilt `batcave` leaves for.
+/// The target triples the foundation ships prebuilt `crewd` leaves for.
 /// Mirrors `crates/xtask/src/main.rs`'s `SUPPORTED_TARGETS`; the two must
 /// be changed together.
 const SUPPORTED_TARGETS: &[(&str, &str)] = &[
@@ -392,9 +392,9 @@ impl Doctor {
     /// Asserts the committed schema document matches what this binary's
     /// linked `batman-protocol` generates -- the same comparison
     /// `xtask generate --check` performs. This only applies when `--repo`
-    /// happens to be a checkout of the BATMAN source tree itself (the only
+    /// happens to be a checkout of the Crew source tree itself (the only
     /// place this file is ever committed); `--repo` is ordinarily an
-    /// unrelated project BATMAN is running against, so a missing schema
+    /// unrelated project Crew is running against, so a missing schema
     /// document there means "not applicable", not "broken" -- unlike a
     /// present-but-mismatched document, which is always a real drift.
     fn check_schema_compatibility(&self) -> Result<(), DoctorError> {
@@ -403,7 +403,7 @@ impl Doctor {
                 "skipped: no repository root was supplied".to_string(),
             ));
         };
-        let schema_path = repo_root.join("packages/protocol-ts/schema/batman.schema.json");
+        let schema_path = repo_root.join("packages/protocol-ts/schema/crew.schema.json");
         let committed = match std::fs::read(&schema_path) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -516,7 +516,7 @@ impl Doctor {
             .join(", ");
         Err(DoctorError::StateDirError(format!(
             "{} stale workspace lease(s): {detail} -- release one with \
-             `batcave lease release --repo <repo> --lease-id <id>`",
+             `crewd lease release --repo <repo> --lease-id <id>`",
             stale.len()
         )))
     }
